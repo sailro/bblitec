@@ -5,6 +5,8 @@ import { argumentAt } from "../syntax.js";
 import { handleCppType, type DataType } from "../data-types.js";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
+import { validateObjectProperties } from "../option-helpers.js";
+import { isNullishLiteral } from "../symbols.js";
 import {
     compileNullableHitRecord,
     numberField,
@@ -31,6 +33,11 @@ export interface PickingIntrinsicContext
             | "requireEngine"
             | "conditions"
             | "fail"
+            | "unwrap"
+            | "objectProperty"
+            | "propertyName"
+            | "emitDiscardedValue"
+            | "bindings"
         > {}
 
 /**
@@ -48,16 +55,12 @@ export interface PickingIntrinsicContext
  * buffers the readback maps. `disposePicker` releases them, and a build
  * that never disposes still frees them with the renderer.
  *
- * What refuses here is everything the reached slice does not name: the
- * `filter` option is a scene closure over meshes that the candidate
- * collector would have to call per mesh (the generated flow-graph bridge
- * lowers its own predicate through the same `gpu_pick` overload; scene
- * code's closures are not lowered), `discard` and `ignore` select a
- * different pinned pipeline (`picking-advanced-pipeline.js`,
- * `picking-ignore.js`), and `enableDetailedPicking` adds a third
- * attachment plus the barycentric readback that `detailed-picking.js`
- * owns. Each is its own contract, and composing one from this one would
- * be guessing.
+ * `pickAsync`'s `filter` option is the scene's predicate over meshes,
+ * which the shared candidate collector calls per mesh (`pickOptionsFilter`).
+ * `discard` and `ignore` select another pinned pipeline
+ * (`picking-advanced-pipeline.js`, `picking-ignore.js`) and refuse, and
+ * `enableDetailedPicking` adds a third attachment plus the barycentric
+ * readback that `detailed-picking.js` owns.
  */
 export function compilePickingIntrinsic(
     context: PickingIntrinsicContext,
@@ -125,27 +128,33 @@ export function compilePickingIntrinsic(
         // -- the same shape every materialized asset takes.
         case "pickAsync": {
             context.expectArgumentCount(call, 3, 4);
-            if (call.arguments.length === 4) {
-                context.fail(
-                    argumentAt(call, 3),
-                    "pickAsync options are not lowered: `filter` is a " +
-                        "scene closure the candidate collector would call " +
-                        "per mesh, `discard` and `ignore` select a " +
-                        "different pinned picking pipeline, and the " +
-                        "reached slice passes none.",
-                );
-            }
             const picker = context.compileValue(argumentAt(call, 0));
             context.expectKind(picker, "gpu-picker", argumentAt(call, 0));
+            // The coordinates are read before the options literal runs.
+            const [x, y] = [1, 2].map((index) => {
+                const cpp = context.compileNumber(
+                    argumentAt(call, index),
+                    "double",
+                );
+                return call.arguments.length === 3
+                    ? cpp
+                    : context.bindings.pinValueToTemporary(
+                          { kind: "number", cpp },
+                          "pick_coordinate",
+                      ).cpp;
+            });
+            const filter =
+                call.arguments.length === 4
+                    ? pickOptionsFilter(context, argumentAt(call, 3))
+                    : undefined;
             return {
                 kind: "picking-info",
                 dataType: { kind: "handle", handle: "picking-info" },
                 cpp:
                     `bbl::gpu_pick(` +
                     `${context.requireEngine(picker, call)}, ` +
-                    `${picker.cpp}, ` +
-                    `${context.compileNumber(argumentAt(call, 1), "double")}, ` +
-                    `${context.compileNumber(argumentAt(call, 2), "double")})`,
+                    `${picker.cpp}, ${x}, ${y}` +
+                    `${filter === undefined ? "" : `, ${filter}`})`,
                 ...(picker.engineCpp === undefined
                     ? {}
                     : {
@@ -308,4 +317,54 @@ export function compilePickingIntrinsic(
         default:
             return undefined;
     }
+}
+
+/**
+ * `pickAsync`'s options literal: its `filter` as the native pick's
+ * `Engine::PickFilter`, which the shared candidate collector asks per mesh
+ * and under which no pick source draws, as `pickAsyncImpl` does. The pin's
+ * `debugLabel` only names a `console.trace` of the pick; the label is
+ * evaluated for its effects. `discard` and `ignore` select the pin's
+ * advanced pipeline and refuse.
+ */
+function pickOptionsFilter(
+    context: PickingIntrinsicContext,
+    expression: ts.Expression,
+): string | undefined {
+    const options = context.unwrap(expression);
+    if (!ts.isObjectLiteralExpression(options))
+        return context.fail(
+            expression,
+            "pickAsync options are lowered from an object literal naming each option.",
+        );
+    validateObjectProperties(
+        context,
+        options,
+        ["filter", "discard", "ignore", "debugLabel"],
+        "pickAsync options are lowered from plain `filter`, `discard`, `ignore` and `debugLabel` members.",
+    );
+    for (const [name, refusal] of [
+        [
+            "discard",
+            "pickAsync's `discard` rule is not lowered: its WGSL predicate and per-mesh storage select a pinned picking pipeline variant (`picking-advanced-pipeline.js`) composed from the rule.",
+        ],
+        [
+            "ignore",
+            "pickAsync's `ignore` option is not lowered: its mesh and thin-instance exclusions select the pin's advanced picking pipeline (`picking-ignore.js`).",
+        ],
+    ] as const) {
+        const value = context.objectProperty(options, name);
+        if (value) context.fail(value, refusal);
+    }
+    const label = context.objectProperty(options, "debugLabel");
+    if (label) context.emitDiscardedValue(context.compileValue(label));
+    // The pin reads `options?.filter ?? null`: a nullish one filters nothing.
+    const filter = context.objectProperty(options, "filter");
+    if (!filter || isNullishLiteral(context.checker, filter)) return undefined;
+    const predicate = context.dataLowerer.compileForSink(filter, {
+        kind: "function",
+        parameters: [{ kind: "handle", handle: "mesh" }],
+        result: { kind: "boolean" },
+    });
+    return `bbl::Engine::PickFilter([predicate = ${predicate}](bbl::MeshHandle mesh) { return static_cast<bool>(predicate(mesh)); })`;
 }

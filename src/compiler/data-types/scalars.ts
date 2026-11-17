@@ -63,6 +63,7 @@ export const scalarKinds: DataKindOperations<
     | "request-init"
     | "url"
     | "image-bitmap"
+    | "offscreen-canvas-2d"
     | "dom-rect"
     | "gpu"
     | "gpu-adapter"
@@ -168,6 +169,14 @@ export const scalarKinds: DataKindOperations<
     ),
     url: opaqueLeaf("bbl::js::Url", "url"),
     "image-bitmap": opaqueLeaf("bbl::pal::ImageBitmap", "image-bitmap"),
+    "offscreen-canvas-2d": {
+        ...reseatingLeaf(
+            "std::shared_ptr<bbl::pal::OffscreenCanvas>",
+            "offscreen-canvas-2d",
+            true,
+        ),
+        opaqueReference: true,
+    },
     // A snapshot one call measured: its own object, holding no own keys.
     "dom-rect": {
         ...reseatingLeaf(

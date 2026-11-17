@@ -51,6 +51,11 @@ import type {
 } from "../pinned-node-particle.js";
 import type { MaterialPluginManifest } from "../pinned-material-plugins.js";
 import type { PinnedStandardMaterialInput } from "../pinned-standard-variants.js";
+import type {
+    ShaderCreation,
+    ShaderRecipeLookup,
+} from "./shader-derivations.js";
+import type { ShaderMaterialView } from "./shader-material-views.js";
 import type { DataType, TypedArrayKind } from "./data-types.js";
 import type { RegExpLayout } from "./regexp-grammar.js";
 import type { SceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
@@ -58,7 +63,7 @@ import type { CompiledTextData } from "../pinned-text-data.js";
 import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
 import type { LocalCubemapPlan } from "../pinned-local-cubemap.js";
 import type { DeploymentOptions } from "./deployment.js";
-import { knownCondition } from "./values/model.js";
+import { knownCondition, shaderVariantsOf } from "./values/model.js";
 
 /** A static host-page element projected beside scene-created retained UI. */
 export interface NativeHostUiElement {
@@ -514,6 +519,8 @@ export interface EffectManifest {
     name: string;
     fragment: string;
     bindings: EffectBindingManifest[];
+    /** The descriptor's blend over the target; absent, the pass writes its output. */
+    blend?: CompiledBlendState;
 }
 
 export interface SpriteCustomShaderManifest {
@@ -934,6 +941,12 @@ export interface CompiledShaderProgram {
     readonly fragmentSource: string;
     readonly attributes: string[];
     readonly uniforms: string[];
+    /**
+     * How many trailing `uniforms` entries are source numbers lifted into
+     * uniforms (`compileShaderSource`); the pin's `uniformDecls` holds the
+     * entries before them. Absent when none are.
+     */
+    readonly liftedUniforms?: number;
     readonly uniformDefaults: CompiledShaderUniformDefault[];
     /**
      * The `samplers` list: each name reaches WGSL as the pin's own
@@ -963,7 +976,7 @@ export interface CompiledShaderProgram {
     /** The pin's fixed-function blend equation when alpha blending is enabled. */
     readonly blendMode: "alpha" | "additive";
     /** Explicit add-equation factors, in color then alpha source/destination order. */
-    readonly blend?: CompiledShaderBlend;
+    readonly blend?: CompiledBlendState;
     readonly needAlphaTesting: boolean;
     readonly backFaceCulling: boolean;
     readonly depthWrite: boolean;
@@ -999,7 +1012,8 @@ export interface CompiledShaderProgram {
     readonly thinInstanceColorOption?: boolean;
 }
 
-export type CompiledShaderBlend = readonly [
+/** A `GPUBlendState`'s add-equation factors, as the pin spells them. */
+export type CompiledBlendState = readonly [
     srcColor: string,
     dstColor: string,
     srcAlpha: string,
@@ -2241,11 +2255,14 @@ export interface CollectionCardinality {
 
 /**
  * One item of a generation-known list: an element as spelled, or a string
- * generation holds for a part not spelled (`node` is that part).
+ * generation holds for a part not spelled (`node` is that part). An element
+ * a called function returns is read `within` its parameters' bindings.
  */
 export interface StaticListItem {
     readonly node: ts.Expression;
     readonly text?: string;
+    /** Reads the item within the bindings it was spelled in. */
+    readonly within: <T>(read: () => T) => T;
 }
 
 /** A point of the source walk by the run-time regions around it. */
@@ -2453,20 +2470,13 @@ export function commonResourceValue(
             };
         }
     }
-    const runtimeStreams = candidates.flatMap((candidate) =>
-        candidate.runtimeMeshStreams ? [candidate.runtimeMeshStreams] : [],
-    );
     if (
         (common.kind === "mesh" ||
             common.kind === "transform-node" ||
             common.kind === "scene-node") &&
-        runtimeStreams.length > 0
+        candidates.some((candidate) => candidate.runtimeMeshStreams)
     )
-        common.runtimeMeshStreams = runtimeStreams.every(
-            (streams) => streams === "uv",
-        )
-            ? "uv"
-            : true;
+        common.runtimeMeshStreams = true;
     if (!candidates.every((candidate) => candidate.directMorphCompatible))
         delete common.directMorphCompatible;
     if (value.kind === "mesh") {
@@ -2484,11 +2494,7 @@ export function commonResourceValue(
         else delete common.possibleSceneMeshProfiles;
     }
     if (value.kind === "material") {
-        const variants = candidates.map((candidate) =>
-            candidate.sceneShaderVariant === undefined
-                ? candidate.possibleSceneShaderVariants
-                : [candidate.sceneShaderVariant],
-        );
+        const variants = candidates.map(shaderVariantsOf);
         if (variants.length > 0 && variants.every((names) => names?.length))
             common.possibleSceneShaderVariants = [
                 ...new EmissionSet(variants.flatMap((names) => names ?? [])),
@@ -2900,10 +2906,9 @@ export interface ValueFields {
      * attribute stream whose presence is a run-time answer, so the
      * attribute set the Standard and PBR variant keys need is not
      * generation-known. Carried on the value because the refusal belongs at
-     * the material assignment, which is where the pairing exists. `"uv"`:
-     * only the uv stream's presence is decided at run time.
+     * the material assignment, which is where the pairing exists.
      */
-    runtimeMeshStreams?: true | "uv";
+    runtimeMeshStreams?: true;
     /** Stable identity shared by every Value alias of one light handle. */
     lightIdentity?: LightIdentity;
     /**
@@ -3043,6 +3048,11 @@ export interface ValueFields {
      * (tagged absence, growable tuple lanes).
      */
     slotDeclarations?: readonly ts.Declaration[];
+    /**
+     * Stored into a record field declared only as a read-only array view
+     * (`ArrayLike`, `readonly T[]`): no array grows through that field.
+     */
+    readonlyArraySlot?: true;
     /** JavaScript truthiness when it differs from mere optional presence. */
     truthinessCpp?: string;
     /** An Error delivered by native device recovery, with the Error message contract. */
@@ -3202,6 +3212,12 @@ export interface ValueFields {
     sceneShaderVariant?: string;
     /** Possible scene-local programs, distinct from a singleton material identity. */
     possibleSceneShaderVariants?: readonly string[];
+    /** The options `createShaderMaterial` read to create this material. */
+    shaderCreation?: ShaderCreation;
+    /** A recipe map's `get`: the map and the material it was keyed by. */
+    shaderRecipeLookup?: ShaderRecipeLookup;
+    /** A `createMaterialView` over a ShaderMaterial: its source and the programs it draws. */
+    shaderMaterialView?: ShaderMaterialView;
     /** Stable creation slot for a scene-owned material that escapes a scope. */
     sceneMaterialSlot?: number;
     animationFrameRate?: string;
@@ -3216,6 +3232,14 @@ export interface ValueFields {
     /** Static property paths carried from a property-animation clip. */
     animationPaths?: readonly string[];
     staticNumber?: number;
+    /**
+     * The number JavaScript's own `Math` computes for an approximated member
+     * over known arguments (`Math.tan(0.3)`): generation formats it into
+     * source text (`toFixed`) as JavaScript does, while a native expression
+     * still computes it, so it is no `staticNumber`. A binding assigned
+     * again forgets it, as it forgets `staticNumber`.
+     */
+    formattedNumber?: number;
     /** Generation-known boolean retained across readonly scalar bindings. */
     staticBoolean?: boolean;
     /** Materialized mutable parameter; static caller facts cannot fold branches. */
@@ -3230,6 +3254,13 @@ export interface ValueFields {
     /** A value bound by a native runtime iteration, not a static unroll. */
     runtimeIteration?: true;
     staticString?: string;
+    /** The strings a value generation knows only at run time can be: a typeof answer's tags. */
+    possibleStrings?: readonly string[];
+    /**
+     * A URLSearchParams object no deployment fold reads: one the program
+     * constructs, or a URL's own. A mutation of it changes it alone.
+     */
+    ownedQuery?: true;
     /**
      * Strings generation knows a run-time string never is (an event's
      * `type` is no name of a listener family that receives another kind of
@@ -3264,6 +3295,11 @@ export interface ValueFields {
     recordPropertyOrder?: readonly string[];
     /** Complete own-key order proven for a native record whose key set cannot change. */
     recordOwnKeys?: readonly string[];
+    /**
+     * The object literal whose object this record is: the literal at a field
+     * of a `const`'s literal, read where no write replaces that field.
+     */
+    recordLiteral?: ts.ObjectLiteralExpression;
     /** Module namespace exports are live bindings and cannot be written through this record. */
     moduleNamespace?: true;
     /** Fields alias an already-retained native object; escaping must preserve those field references. */
@@ -3379,6 +3415,7 @@ export type Feature =
     | "platform:media-stream"
     | "image:runtime-decode"
     | "image:packaged-bytes"
+    | "image:canvas-encode"
     | "text:data"
     | "text:layout"
     | "text:weight"
@@ -3407,6 +3444,7 @@ export type Feature =
     // The WebGPU-subset device on the engine from createEngine (gpu.hpp).
     | "engine:webgpu-device"
     | "engine:gpu-task-timing"
+    | "engine:screenshot"
     // Per-source-function CPU scopes and allocation counters, reached only by
     // the `--source-profile` generation option (docs/debugging.md).
     | "profile:source"
@@ -3507,6 +3545,7 @@ export type Feature =
     | "material:node-inputs"
     | "material:shader"
     | "material:shader-uniform-ranges"
+    | "material:shader-declaration-lists"
     | "material:shader-storage"
     | "material:shader-external-texture"
     | "material:standard"
@@ -3702,6 +3741,8 @@ export type Feature =
     | "material:parallax-occlusion"
     | "material:runtime-rebuild"
     | "material:ubo-dirty"
+    | "material:view-gpu-release"
+    | "material:shader-view"
     | "texture:file"
     | "texture:compressed"
     | "texture:ktx2"
@@ -3717,18 +3758,23 @@ export type Feature =
     | "frame-graph:resources"
     | "frame-graph:surface-target"
     | "frame-graph:target-disposal"
+    | "frame-graph:color-view-state"
     | "frame-graph:task-mesh-removal"
     | "frame-graph:task-mesh-refresh"
     | "frame-graph:render-task-transmission"
+    | "frame-graph:depth-resolve"
+    | "frame-graph:color-texture-identity"
     | "frame-graph:task-material-override"
     | "frame-graph:task-build"
     | "frame-graph:task-disposal"
     | "frame-graph:task-method-slots"
     | "frame-graph:live-task-add"
+    | "frame-graph:task-removal"
     | "renderer:frame-graph"
     | "effect:wrapper"
     | "effect:wrapper-disposal"
     | "effect:task"
+    | "effect:task-scissor"
     | "renderer:scene"
     | "renderer:transmission"
     | "material:pbr-linear-image-processing"

@@ -19,6 +19,7 @@ import {
 import { nodeParticleManifest } from "./intrinsics/particle.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { SceneMaterialRecorder } from "./scene-materials.js";
+import { ShaderDerivationRecorder } from "./shader-derivations.js";
 import {
     drawsOnInstanceLanes,
     shaderThinInstanceLanes,
@@ -164,6 +165,8 @@ export class SceneManifestRecorder {
     @journaled private accessor selectedToneMapping: string | undefined;
     private readonly effects: Readonly<EffectManifest>[] = emissionArray([]);
     private readonly sceneMaterials = new SceneMaterialRecorder();
+    /** Recipe stores and the materials derived from them. */
+    public readonly shaderDerivations = new ShaderDerivationRecorder();
     private readonly sceneMaterialGltfAssetsBefore: number[] = emissionArray(
         [],
     );
@@ -938,9 +941,23 @@ export class SceneManifestRecorder {
         return this.sceneMaterials.pbrPluginId(plugin);
     }
 
-    /** The plugin list algebra a program's list tests and appends call. */
-    public pbrPluginFunctionsCpp(): string {
-        return this.sceneMaterials.pbrPluginFunctionsCpp();
+    /**
+     * The functions material code calls once generation closed their tables:
+     * the plugin list algebra a program's list tests and appends call, and
+     * each derivation site's source-to-derived shader variant.
+     */
+    public materialFunctionsCpp(): string {
+        const functions = [
+            this.sceneMaterials.pbrPluginFunctionsCpp(),
+            this.shaderDerivations.functionsCpp(),
+        ].filter((lines) => lines.length > 0);
+        if (functions.length === 0) return "";
+        return [
+            "namespace bblscene {",
+            "",
+            ...functions.flatMap((lines) => [...lines, ""]),
+            "}  // namespace bblscene",
+        ].join("\n");
     }
 
     public recordStandardMaterialPlugins(

@@ -13,6 +13,8 @@ export class StaticExpansionBudget {
     @journaled private accessor iterations = 0;
     @journaled private accessor bytes = 0;
     private readonly sites: ts.IterationStatement[] = emissionArray([]);
+    /** @unjournaled Counts refusals a rolled-back probe must still see. */
+    private refusalCount = 0;
     @journaled private accessor exceeded:
         { site: ts.IterationStatement; message: string } | undefined;
 
@@ -38,6 +40,14 @@ export class StaticExpansionBudget {
         if (this.bytes > MAX_STATIC_BYTES) {
             this.refuse(site, `${MAX_STATIC_BYTES} emitted bytes`);
         }
+    }
+
+    /**
+     * How many times the budget refused, kept across rolled-back emission:
+     * a probe the refusal unwinds through restores the budget it spent.
+     */
+    public get refusals(): number {
+        return this.refusalCount;
     }
 
     public assertWithinBudget(): void {
@@ -73,6 +83,7 @@ export class StaticExpansionBudget {
     }
 
     private reject(site: ts.IterationStatement, message: string): never {
+        ++this.refusalCount;
         this.exceeded ??= { site, message };
         return this.fail(this.exceeded.site, this.exceeded.message);
     }

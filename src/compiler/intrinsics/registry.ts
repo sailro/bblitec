@@ -222,6 +222,7 @@ export const sharedBodyIntrinsics: ReadonlySet<string> = new EmissionSet([
     "getViewMatrix",
     "getProjectionMatrix",
     "getViewProjectionMatrix",
+    "getEffectiveAspectRatio",
     "createNavMeshFromSources",
     "createPickingRay",
     "markMaterialUboDirty",

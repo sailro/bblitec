@@ -1,5 +1,6 @@
 #include <bblite/features/geometry_velocity.hpp>
 #include <bblite/features/render_task_transmission.hpp>
+#include <bblite/features/depth_resolve_task.hpp>
 #include <bblite/features/thin_instances.hpp>
 // The Dawn scene renderer's driver: the pass helpers, the pipelines the
 // frame run builds and the frame run itself. The feature families it draws
@@ -22,6 +23,7 @@
 #include "pal_gpu_shader_passes.hpp"
 #include <bblite/features/compute_frame_graph.hpp>
 #include <bblite/features/frame_post_submit.hpp>
+#include <bblite/features/screenshot_capture.hpp>
 #include <bblite/features/device_recovery.hpp>
 #include <bblite/features/has_billboards.hpp>
 #include <bblite/features/has_clustered_lights.hpp>
@@ -45,6 +47,9 @@
 
 #include "pal_dawn_scene.hpp"
 #include "pal_dawn_presentation.hpp"
+#if BBLITE_SCREENSHOT_CAPTURE
+#include "pal_dawn_screenshot.hpp"
+#endif
 #if BBLITE_EXTERNAL_RENDERABLES
 #include "pal_dawn_webgpu.hpp"
 #endif
@@ -3998,7 +4003,8 @@ public:
                             descriptor.timestampWrites = effect_timestamps.get();
                             DawnRenderPass effect_pass{
                                 wgpuCommandEncoderBeginRenderPass(encoder, &descriptor)};
-                            record_dawn_effect_pass(effect_pass, pass);
+                            record_dawn_effect_task_pass(effect_pass, pass, task, target.width,
+                                                         target.height);
                             wgpuRenderPassEncoderEnd(effect_pass);
                             effect_pass.reset();
                             if (target_record.swapchain) {
@@ -4092,6 +4098,14 @@ public:
                                     frame_graph_presented = true;
                                 }
                             }
+                            continue;
+                        }
+#endif
+#if BBLITE_DEPTH_RESOLVE_TASK
+                        if (task.kind == FrameTaskKind::depth_resolve) {
+                            const DawnPassTimestamps resolve_timestamps{timing_sequence.pass()};
+                            encode_depth_resolve(state, engine, encoder, task,
+                                                 resolve_timestamps.get());
                             continue;
                         }
 #endif
@@ -4341,9 +4355,17 @@ public:
         // what a stopped engine hands the screenshot (`freeze`).
         const bool capture_pending = captures.screenshot_pending();
         const bool capture_frame = capture_ready && capture_pending;
+#if BBLITE_SCREENSHOT_CAPTURE
+        // `captureScreenshot`'s copy of the presented image, before any native UI over it.
+        const DawnScreenshotCopy screenshot = record_dawn_screenshot(
+            engine, state.device, encoder, capture_source, state.surface_format, width, height);
+        [[maybe_unused]] const bool screenshot_copied = screenshot.capture.has_value();
+#else
+        [[maybe_unused]] constexpr bool screenshot_copied = false;
+#endif
 #if BBLITE_HAS_UI && !BBLITE_WORKERS
         const UiRenderFrame& ui_frame = record_ui_rml_frame(*ui_runtime, width, height);
-        const bool ui_after_capture_copy = capture_pending && !capture_ui;
+        const bool ui_after_capture_copy = (capture_pending && !capture_ui) || screenshot_copied;
         if (!ui_after_capture_copy) {
             render_sprite_ui_dawn_frame(state, encoder, surface_texture.texture, surface_view,
                                         state.ui, ui_frame, nullptr, state.ui_samples);
@@ -4386,6 +4408,9 @@ public:
             captures.screenshot_saved = true;
         }
         capture.readback.reset();
+#if BBLITE_SCREENSHOT_CAPTURE
+        finish_dawn_screenshot(state, screenshot);
+#endif
 #if BBLITE_HAS_UI && !BBLITE_WORKERS
         if (ui_after_capture_copy) {
             // Complete the canvas-only readback before transitioning the

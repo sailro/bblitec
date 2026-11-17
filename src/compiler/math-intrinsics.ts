@@ -53,6 +53,12 @@ interface MathMember {
      * not agree on them.
      */
     readonly fold?: (...values: number[]) => number;
+    /**
+     * JavaScript's own member, where it has no exact {@link fold}: the value
+     * JavaScript formats into generation-time source text, which generation
+     * computes the same way ({@link foldMathCall}'s `formatted`).
+     */
+    readonly formatted?: (...values: number[]) => number;
     /** The runtime the spelling needs beyond `<cmath>`. */
     readonly reach?: "js-data" | "js-random";
     /** Whether two calls may answer differently, so the value cannot be folded or hoisted. */
@@ -93,26 +99,26 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
 >([
     ["abs", { arity: 1, cpp: cmath("abs"), fold: Math.abs }],
     ["ceil", { arity: 1, cpp: cmath("ceil"), fold: Math.ceil }],
-    ["cos", { arity: 1, cpp: cmath("cos") }],
+    ["cos", { arity: 1, cpp: cmath("cos"), formatted: Math.cos }],
     ["floor", { arity: 1, cpp: cmath("floor"), fold: Math.floor }],
-    ["sin", { arity: 1, cpp: cmath("sin") }],
-    ["sqrt", { arity: 1, cpp: cmath("sqrt") }],
-    ["tan", { arity: 1, cpp: cmath("tan") }],
-    ["atan", { arity: 1, cpp: cmath("atan") }],
-    ["acos", { arity: 1, cpp: cmath("acos") }],
-    ["asin", { arity: 1, cpp: cmath("asin") }],
-    ["log", { arity: 1, cpp: cmath("log") }],
-    ["log2", { arity: 1, cpp: cmath("log2") }],
-    ["log10", { arity: 1, cpp: cmath("log10") }],
-    ["log1p", { arity: 1, cpp: cmath("log1p") }],
-    ["expm1", { arity: 1, cpp: cmath("expm1") }],
-    ["cbrt", { arity: 1, cpp: cmath("cbrt") }],
-    ["sinh", { arity: 1, cpp: cmath("sinh") }],
-    ["cosh", { arity: 1, cpp: cmath("cosh") }],
-    ["tanh", { arity: 1, cpp: cmath("tanh") }],
-    ["asinh", { arity: 1, cpp: cmath("asinh") }],
-    ["acosh", { arity: 1, cpp: cmath("acosh") }],
-    ["atanh", { arity: 1, cpp: cmath("atanh") }],
+    ["sin", { arity: 1, cpp: cmath("sin"), formatted: Math.sin }],
+    ["sqrt", { arity: 1, cpp: cmath("sqrt"), formatted: Math.sqrt }],
+    ["tan", { arity: 1, cpp: cmath("tan"), formatted: Math.tan }],
+    ["atan", { arity: 1, cpp: cmath("atan"), formatted: Math.atan }],
+    ["acos", { arity: 1, cpp: cmath("acos"), formatted: Math.acos }],
+    ["asin", { arity: 1, cpp: cmath("asin"), formatted: Math.asin }],
+    ["log", { arity: 1, cpp: cmath("log"), formatted: Math.log }],
+    ["log2", { arity: 1, cpp: cmath("log2"), formatted: Math.log2 }],
+    ["log10", { arity: 1, cpp: cmath("log10"), formatted: Math.log10 }],
+    ["log1p", { arity: 1, cpp: cmath("log1p"), formatted: Math.log1p }],
+    ["expm1", { arity: 1, cpp: cmath("expm1"), formatted: Math.expm1 }],
+    ["cbrt", { arity: 1, cpp: cmath("cbrt"), formatted: Math.cbrt }],
+    ["sinh", { arity: 1, cpp: cmath("sinh"), formatted: Math.sinh }],
+    ["cosh", { arity: 1, cpp: cmath("cosh"), formatted: Math.cosh }],
+    ["tanh", { arity: 1, cpp: cmath("tanh"), formatted: Math.tanh }],
+    ["asinh", { arity: 1, cpp: cmath("asinh"), formatted: Math.asinh }],
+    ["acosh", { arity: 1, cpp: cmath("acosh"), formatted: Math.acosh }],
+    ["atanh", { arity: 1, cpp: cmath("atanh"), formatted: Math.atanh }],
     [
         "fround",
         {
@@ -131,7 +137,7 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
             reach: "js-data",
         },
     ],
-    ["exp", { arity: 1, cpp: cmath("exp") }],
+    ["exp", { arity: 1, cpp: cmath("exp"), formatted: Math.exp }],
     ["trunc", { arity: 1, cpp: cmath("trunc"), fold: Math.trunc }],
     // JavaScript exponentiation, as `**` lowers (exponentiationCall).
     [
@@ -140,9 +146,10 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
             arity: 2,
             cpp: (args, statics) =>
                 exponentiationCall(args[0]!, args[1]!, statics?.[1]).cpp,
+            formatted: Math.pow,
         },
     ],
-    ["atan2", { arity: 2, cpp: cmath("atan2") }],
+    ["atan2", { arity: 2, cpp: cmath("atan2"), formatted: Math.atan2 }],
     // Not `std::round`: JavaScript rounds a tie toward +Infinity and C
     // rounds it away from zero, so the two disagree on every negative
     // half. `round_js` carries the spec's own rule.
@@ -187,6 +194,7 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
             variadic: true,
             cpp: (args) => `bbl::js::hypot_js({${args.join(", ")}})`,
             rangeCpp: (range) => `bbl::js::hypot_js(${range})`,
+            formatted: Math.hypot,
             reach: "js-data",
         },
     ],
@@ -221,8 +229,9 @@ export function mathMemberIsImpure(name: string): boolean {
  * The generation-time value of `Math.<name>(...values)`, or undefined when
  * the call must run: the one fold every reader shares. The table's exact
  * members fold; an approximated member folds only into generation-time
- * source text (`formatted`, see FORMATTED_MATH_FOLDS), and an impure one
- * (random) never does.
+ * source text (`formatted`): ordinary numeric expressions keep it native,
+ * so their runtime width and library semantics are unchanged. An impure
+ * member (random) never folds.
  */
 export function foldMathCall(
     name: string,
@@ -230,9 +239,7 @@ export function foldMathCall(
     formatted = false,
 ): number | undefined {
     const member = MATH_MEMBERS.get(name);
-    const fold =
-        member?.fold ??
-        (formatted ? FORMATTED_MATH_FOLDS.get(name) : undefined);
+    const fold = member?.fold ?? (formatted ? member?.formatted : undefined);
     return fold && member && mathArityAccepts(member, values.length)
         ? fold(...values)
         : undefined;
@@ -287,21 +294,6 @@ export function mathConstantAccess(
     const access = mathMemberAccess(expression, libraryGlobal, member);
     return access && MATH_CONSTANTS.get(access.name);
 }
-
-/**
- * The transcendental members a reader evaluates only when JavaScript
- * immediately formats the result into generation-time source text
- * (`toFixed` over a folded angle). Ordinary numeric expressions keep these
- * native, so their runtime width and library semantics are unchanged.
- */
-const FORMATTED_MATH_FOLDS: ReadonlyMap<
-    string,
-    (...values: number[]) => number
-> = new EmissionMap<string, (...values: number[]) => number>([
-    ["atan2", Math.atan2],
-    ["cos", Math.cos],
-    ["sin", Math.sin],
-]);
 
 /**
  * `Math.<member>` where `Math` is the default library's object, or

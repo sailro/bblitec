@@ -1,6 +1,7 @@
 #include <bblite/features/geometry_velocity.hpp>
 #include <bblite/features/mesh_opacity.hpp>
 #include <bblite/features/render_task_transmission.hpp>
+#include <bblite/features/depth_resolve_task.hpp>
 #include <bblite/features/thin_instances.hpp>
 // The SDL_GPU scene renderer's driver: the pass helpers, the state's
 // release and the frame run. The feature families it draws through are
@@ -22,6 +23,7 @@
 #include "pal_gpu_shader_passes.hpp"
 #include <bblite/features/compute_frame_graph.hpp>
 #include <bblite/features/frame_post_submit.hpp>
+#include <bblite/features/screenshot_capture.hpp>
 #include <bblite/features/device_recovery.hpp>
 #include <bblite/features/has_billboards.hpp>
 #include <bblite/features/has_clustered_lights.hpp>
@@ -47,6 +49,9 @@
 
 #include "pal_sdl_gpu_scene.hpp"
 #include "pal_sdl_gpu_presentation.hpp"
+#if BBLITE_SCREENSHOT_CAPTURE
+#include "pal_sdl_gpu_screenshot.hpp"
+#endif
 #if BBLITE_EXTERNAL_RENDERABLES
 #include "pal_sdl_gpu_webgpu.hpp"
 #endif
@@ -119,6 +124,9 @@ void release(GpuState& state) {
     release_frame_graph_textures(state);
 #if BBLITE_RENDER_TASK_TRANSMISSION
     release_task_transmissions(state);
+#endif
+#if BBLITE_DEPTH_RESOLVE_TASK
+    state.depth_resolve_pipelines.clear();
 #endif
 #if BBLITE_HAS_SCREEN_SPACE
     // The screen-space programs key only the generated stage table's
@@ -3642,14 +3650,13 @@ public:
                             EffectPass& pass = handle_at(state.effect_tasks, handle);
                             const RenderTargetRecord& target_record =
                                 pal::resolve_render_target(engine, task.effect.target, target_user);
+                            const GpuRenderTarget& effect_output = pal::resolve_gpu_target(
+                                engine, state.render_targets, task.effect.target, target_user);
                             if (!pass.pipeline) {
                                 pass = create_effect_pass(
                                     state.device, engine, task.effect.effect,
-                                    target_record.swapchain
-                                        ? swapchain_format
-                                        : pal::resolve_gpu_target(engine, state.render_targets,
-                                                                  task.effect.target, target_user)
-                                              .color_format,
+                                    target_record.swapchain ? swapchain_format
+                                                            : effect_output.color_format,
                                     // Through the MSAA gate like every other
                                     // task pipeline, so a single-sample run
                                     // matches the 1-sample texture the gate
@@ -3671,12 +3678,21 @@ public:
                                 sdl_timed_pass(command, timing_sequence.pass());
                             SdlRenderPass effect_pass{
                                 SDL_BeginGPURenderPass(command, &effect_target, 1, nullptr)};
-                            record_effect_pass(command, effect_pass, engine, pass,
-                                               task.effect.effect, source_texture);
+                            record_effect_task_pass(command, effect_pass, engine, pass, task,
+                                                    effect_output.width, effect_output.height,
+                                                    source_texture);
                             effect_pass.end();
                             if (target_record.swapchain) {
                                 capture_texture = effect_target.texture;
                             }
+                            continue;
+                        }
+#endif
+#if BBLITE_DEPTH_RESOLVE_TASK
+                        if (task.kind == FrameTaskKind::depth_resolve) {
+                            const auto resolve_timing =
+                                sdl_timed_pass(command, timing_sequence.pass());
+                            encode_depth_resolve(state, engine, command, task);
                             continue;
                         }
 #endif
@@ -4623,6 +4639,12 @@ public:
         [[maybe_unused]] auto& command = current_frame().command;
         [[maybe_unused]] auto& capture_texture = current_frame().capture_texture;
         [[maybe_unused]] auto& visible_color = current_frame().visible_color;
+#if BBLITE_SCREENSHOT_CAPTURE
+        // `captureScreenshot`'s copy of the presented image, before any native UI over it.
+        const SdlScreenshotCopy screenshot = record_sdl_screenshot(
+            engine, state.device, command, current_frame().graph ? capture_texture : visible_color,
+            swapchain_format, width, height);
+#endif
         if (current_frame().graph) {
             if (capture_texture == state.color && capture_texture) {
                 SDL_GPUBlitInfo present{};
@@ -4708,6 +4730,9 @@ public:
             }
             frozen_capture_ = {capture_frame ? visible_color : nullptr, width, height};
         }
+#if BBLITE_SCREENSHOT_CAPTURE
+        finish_sdl_screenshot(state.device, screenshot);
+#endif
         flush_frame_gpu_retirements(engine);
         finish_gpu_task_timing_frame(engine);
         resolve_gpu_frame_timer(engine);

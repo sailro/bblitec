@@ -269,6 +269,112 @@ test("replaceChildren and append insert nodes, text and spread element lists in 
     });
 });
 
+test("a selected receiver evaluates once and appends to the element it selects", (t) => {
+    const output = resolve("artifacts/dom-selected-receiver");
+    mkdirSync(output, { recursive: true });
+    writeFileSync(join(output, "worker.ts"), "self.close();");
+    // The selection is lowered before the method is known; its test runs
+    // once per call however the call lowers.
+    const { cpp } = compileSource(
+        `${realm}
+        const log = document.createElement("div");
+        log.id = "log";
+        document.body.appendChild(log);
+        let picks = 0;
+        const pick = (): boolean => { picks++; return picks === 1; };
+        const a = document.createElement("div");
+        a.id = "a";
+        const b = document.createElement("div");
+        b.id = "b";
+        document.body.append(a, b);
+        const c = document.createElement("span");
+        c.id = "c";
+        (pick() ? a : b).appendChild(c);
+        const d = document.createElement("span");
+        d.id = "d";
+        (pick() ? a : b).appendChild(d);
+        let head: HTMLElement | null = null;
+        if (picks > 2) head = a;
+        const e = document.createElement("span");
+        e.id = "e";
+        (head ?? b).appendChild(e);
+        log.textContent = String(picks);
+        globalThis.close();
+    `,
+        { fileName: join(output, "entry.ts") },
+    );
+    writeFileSync(join(output, "program.hpp"), cpp);
+    runRmlUiFixture(t, "dom-selected-receiver", {
+        macros: { BBLITE_WORKERS: 1, BBLITE_OFFSCREEN_SURFACES: 1 },
+    });
+});
+
+test("scroll extents report the content an element's box overflows", (t) => {
+    const output = resolve("artifacts/dom-scroll-extent");
+    mkdirSync(output, { recursive: true });
+    writeFileSync(join(output, "worker.ts"), "self.close();");
+    const { cpp } = compileSource(
+        `${realm}
+        const box = document.createElement("div");
+        box.style.cssText = "position:absolute;left:0;top:0;width:40px;height:20px;overflow:hidden";
+        const inner = document.createElement("div");
+        inner.style.cssText = "width:10px;height:50px";
+        box.appendChild(inner);
+        const fit = document.createElement("div");
+        fit.style.cssText = "position:absolute;left:100px;top:0;width:40px;height:30px";
+        document.body.append(box, fit);
+        box.id = "box";
+        fit.id = "fit";
+        void [box.scrollWidth, box.scrollHeight, fit.scrollHeight];
+        globalThis.close();
+    `,
+        { fileName: join(output, "entry.ts") },
+    );
+    // The reads request the boxes' extents the display then retains.
+    for (const field of ["scroll_width", "scroll_height"])
+        assert.match(
+            cpp,
+            new RegExp(
+                `ui_get_client_rect\\([^;]+\\)\\.unzoomed\\(\\)\\.${field}\\)`,
+            ),
+        );
+    writeFileSync(join(output, "program.hpp"), cpp);
+    runRmlUiFixture(t, "dom-scroll-extent", {
+        macros: { BBLITE_WORKERS: 1, BBLITE_OFFSCREEN_SURFACES: 1 },
+    });
+});
+
+test("the focused element answers its class list", (t) => {
+    const output = resolve("artifacts/dom-active-classes");
+    mkdirSync(output, { recursive: true });
+    writeFileSync(join(output, "worker.ts"), "self.close();");
+    const { cpp } = compileSource(
+        `${realm}
+        const log = document.createElement("div");
+        log.id = "log";
+        document.body.appendChild(log);
+        const pill = document.createElement("button");
+        pill.className = "pill";
+        const plain = document.createElement("button");
+        document.body.append(pill, plain);
+        const focused = (): string =>
+            document.activeElement instanceof HTMLElement && document.activeElement.classList.contains("pill")
+                ? "pill"
+                : "other";
+        pill.focus();
+        const first = focused();
+        plain.focus();
+        log.textContent = first + " " + focused();
+        globalThis.close();
+    `,
+        { fileName: join(output, "entry.ts") },
+    );
+    writeFileSync(join(output, "program.hpp"), cpp);
+    runRmlUiFixture(t, "dom-active-classes", {
+        macros: { BBLITE_WORKERS: 1, BBLITE_OFFSCREEN_SURFACES: 1 },
+    });
+});
+
 test("focus options retain absent dictionaries, stored flags and evaluation order", (t) => {
     const output = resolve("artifacts/dom-focus-options");
     mkdirSync(output, { recursive: true });
@@ -379,6 +485,10 @@ test("tab order, sibling insertion, replacement, scroll requests and event paths
         record(a.insertAdjacentElement("afterend", e) === e ? "A" : "a");
         list.insertAdjacentElement("afterBegin", item("f"));
         list.insertAdjacentElement("beforeend", item("g"));
+        a.before(item("p"), item("q"));
+        kept.after(item("y"), x);
+        const loose = item("loose");
+        loose.after(item("z"));
         const orphan = item("orphan");
         record(orphan.insertAdjacentElement("afterend", item("h")) === null ? "N" : "n");
         try { a.insertAdjacentElement("middle", item("i")); } catch { record("S"); }
@@ -440,6 +550,7 @@ test("tab order, sibling insertion, replacement, scroll requests and event paths
     assert.ok(result.manifest.features.includes("input:dom"));
     for (const call of [
         "ui_replace_with",
+        "ui_insert_siblings",
         "ui_insert_adjacent_element",
         "ui_scroll_into_view",
         "ui_set_tab_index",

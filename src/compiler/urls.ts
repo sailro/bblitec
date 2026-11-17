@@ -123,9 +123,12 @@ export function urlProperty(
 ): Value | undefined {
     if (owner.dataType?.kind !== "url") return undefined;
     if (property === "searchParams")
-        return lowerer.leafValue(`(${owner.cpp}).search_params()`, {
-            kind: "search-params",
-        });
+        return {
+            ...lowerer.leafValue(`(${owner.cpp}).search_params()`, {
+                kind: "search-params",
+            }),
+            ownedQuery: true,
+        };
     const getter = GETTERS.get(property);
     return getter
         ? lowerer.leafValue(`(${owner.cpp}).${getter}()`, { kind: "string" })

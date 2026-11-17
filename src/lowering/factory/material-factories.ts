@@ -99,6 +99,76 @@ interface StandardMaterialSetters {
 }
 
 /**
+ * `uniformDecls` / `samplerDecls` / `storageBufferDecls` / `attributes`:
+ * the names createShaderMaterial pushed, in declaration order, built once
+ * per variant from the variant table. The variant's uniform slots end with
+ * its lifted source numbers and its samplers with its externalTextures,
+ * which the pin's lists do not hold.
+ */
+const shaderDeclarationNamesCpp = `const std::vector<std::string>& shader_declaration_names(
+    Engine& engine, MaterialHandle material, ShaderDeclarationList list) {
+    // Each variant's lists, indexed by ShaderDeclarationList.
+    static const auto variants = [] {
+        std::vector<std::array<std::vector<std::string>, 4>> built(upstream::shader_variant_count());
+        for (std::uint32_t variant = 0; variant < built.size(); ++variant) {
+            const auto& info = upstream::shader_variant_info(variant);
+            const auto names = [&](ShaderDeclarationList which) -> std::vector<std::string>& {
+                return built[variant][static_cast<std::size_t>(which)];
+            };
+            for (auto slot = info.uniform_slots.begin(); slot != info.uniform_slots.end() - info.lifted_uniforms; ++slot)
+                names(ShaderDeclarationList::uniforms).emplace_back(slot->name);
+            names(ShaderDeclarationList::samplers).assign(info.samplers.begin(), info.samplers.end() - info.external_textures);
+            for (const auto& slot : info.storage_buffers)
+                names(ShaderDeclarationList::storage_buffers).emplace_back(slot.name);
+            names(ShaderDeclarationList::attributes).assign(info.attributes.begin(), info.attributes.end());
+        }
+        return built;
+    }();
+    return variants.at(shader_material(engine, material).shader_variant)[static_cast<std::size_t>(list)];
+}
+
+`;
+
+/**
+ * `createMaterialView(source, { features: 0 })` over a ShaderMaterial, and
+ * the program its redefined properties derive. The view keeps the source's
+ * slots (`shader_resource_material`), which a derived program declares
+ * alike; its own record draws the derived variant.
+ */
+const shaderMaterialViewsCpp = `
+MaterialHandle create_shader_material_view(
+    Engine& engine,
+    MaterialHandle source) {
+    return create_no_color_material_view(engine, source, false, true, false);
+}
+
+void derive_shader_material_view(
+    Engine& engine,
+    MaterialHandle view,
+    std::uint32_t variant,
+    bool transmissive) {
+    MaterialRecord& record = ${recordAt("engine.materials", "view")};
+    if (!record.shader_material || record.no_color ||
+        record.source_material.value == invalid_handle) {
+        throw std::runtime_error("A derived program needs a ShaderMaterial view.");
+    }
+    apply_shader_material_variant(record, variant);
+    record.shader_transmissive = transmissive;
+    record.shader_uniform_upload.reset();
+}
+
+std::uint32_t shader_material_view_variant(
+    const Engine& engine,
+    MaterialHandle view) {
+    const MaterialRecord& record = ${recordAt("engine.materials", "view")};
+    if (!record.shader_material || record.source_material.value == invalid_handle) {
+        throw std::runtime_error("A derived program needs a ShaderMaterial view.");
+    }
+    return record.shader_variant;
+}
+`;
+
+/**
  * The material/texture half of the factory unit, completing the class:
  * node, shader, PBR, grid and Standard material factories plus the
  * pixels/file texture factories and the Standard texture setters.
@@ -322,7 +392,12 @@ void queue_node_material_group(Scene& scene, MeshHandle mesh) {
 
     public lowerShaderMaterialFactory({
         rangeUpdates = false,
-    }: { rangeUpdates?: boolean } = {}): LoweredSource {
+        declarationLists = false,
+    }: {
+        rangeUpdates?: boolean;
+        /** The scene reads a ShaderMaterial's declaration lists. */
+        declarationLists?: boolean;
+    } = {}): LoweredSource {
         const modulePath = "src/material/shader/shader-material.ts";
         const { declaration } = this.context.functionDeclaration(
             modulePath,
@@ -430,8 +505,29 @@ ${rangeUpdates ? lowerShaderUniformRangeUpdates(this.context) : ""}
 
 // The generated shader-variant table carries the pinned fixed-function
 // mapping (needAlphaBlending -> blend alpha mode, backFaceCulling ->
-// double-sided, needAlphaTesting, depthWrite) and the reflected uniform
-// layout with the createShaderMaterial defaultValue floats.
+// double-sided, needAlphaTesting, depthWrite) and its system uniforms'
+// dependencies; a material view derived from another program takes them
+// the same way.
+void apply_shader_material_variant(
+    MaterialRecord& material,
+    std::uint32_t variant) {
+    const upstream::ShaderVariantInfo& info =
+        upstream::shader_variant_info(variant);
+    material.shader_variant = variant;
+    material.shader_thin_instance_colors = info.thin_instance_color_option;
+    material.double_sided = !info.back_face_culling;
+    material.shader_alpha_testing = info.alpha_testing;
+    material.shader_depth_write = info.depth_write;
+    material.alpha_mode =
+        info.alpha_blending ? MaterialAlphaMode::blend : MaterialAlphaMode::opaque;
+    material.shader_system_dependencies = info.system_dependencies;
+    // shaderSystemDependencies: the packet's union of its slots' bits.
+    material.shader_system_dependency_mask = 0;
+    for (const auto bits : info.system_dependencies) material.shader_system_dependency_mask |= bits;
+}
+
+// The reflected uniform layout carries the createShaderMaterial
+// defaultValue floats.
 MaterialHandle create_shader_material(
     Engine& engine,
     std::uint32_t variant) {
@@ -440,23 +536,13 @@ MaterialHandle create_shader_material(
     MaterialRecord material;
     material.shader_material = true;
     material.source_group_builder = ${materialGroupIdentity(this.context, "shader")};
-    material.shader_variant = variant;
-    material.shader_thin_instance_colors = info.thin_instance_color_option;
-    material.double_sided = !info.back_face_culling;
-    material.shader_alpha_testing = info.alpha_testing;
-    material.shader_depth_write = info.depth_write;
-    if (info.alpha_blending) {
-        material.alpha_mode = MaterialAlphaMode::blend;
-    }
+    apply_shader_material_variant(material, variant);
     material.shader_uniform_values = info.defaults;
     material.shader_uniform_values.resize(info.value_count, 0.0f);
     material.shader_uniforms = std::make_shared<ShaderUniformState>();
     material.shader_uniform_snapshot = shader_uniform_render_values;
     material.shader_alpha_cutoff = shader_material_alpha_cutoff;
     material.shader_packet_initialize = initialize_shader_packet_camera_cache;
-    material.shader_system_dependencies = info.system_dependencies;
-    // shaderSystemDependencies: the packet's union of its slots' bits.
-    for (const auto bits : info.system_dependencies) material.shader_system_dependency_mask |= bits;
     for (const auto& slot : info.uniform_slots) {
         auto values = slot.defaults;
         if (values.empty()) values = default_shader_uniform_values(slot.name, slot.count);
@@ -663,7 +749,7 @@ void set_shader_storage_buffer(
 
 ${lowerShaderStorageNameBinding(this.context)}
 
-#if BBLITE_SHADOWS_CSM
+${declarationLists ? shaderDeclarationNamesCpp : ""}#if BBLITE_SHADOWS_CSM
 void set_shader_csm_texture(
     Engine& engine,
     MaterialHandle material,
@@ -2002,10 +2088,61 @@ MaterialHandle create_standard_material(Engine& engine) {
         };
     }
 
+    /**
+     * `releaseMaterialViewGpu`: a shader material view drops the custom
+     * uniform state it does not share with its source, and its next use
+     * repacks from zero bytes, as `ensureCustomUbo` recreates the buffer.
+     */
+    private lowerMaterialViewGpuRelease(): string {
+        const module = "src/material/shader/shader-material-view-gpu.ts";
+        const { declaration: release } = this.context.functionDeclaration(
+            module,
+            "releaseMaterialViewGpu",
+        );
+        this.context.assertStatementShapes(
+            release,
+            release.body!.statements,
+            "if (isMaterialView(view) && isShaderMaterial(view)) { _retireShaderMaterialViewGpu(engine, view); }",
+            "Material view GPU release",
+        );
+        const { declaration: retire } = this.context.functionDeclaration(
+            module,
+            "_retireShaderMaterialViewGpu",
+        );
+        this.context.assertStatementShapes(
+            retire,
+            retire.body!.statements,
+            'if (!Object.hasOwn(view, "_shaderCustomUbo") || !view._shaderCustomUbo) { return; } const buffer = view._shaderCustomUbo; const owner = Object.hasOwn(view, "_shaderCustomEngine") ? view._shaderCustomEngine : undefined; view._shaderCustomUbo = null; view._shaderCustomData = null; view._shaderCustomBytes = null; view._shaderCustomVersion = -1; view._shaderCustomEngine = undefined; retireGpuResources(owner ?? engine, () => buffer.destroy());',
+            "Shader material view custom buffer retirement",
+        );
+        return `
+
+// ${this.context.provenance(module, "releaseMaterialViewGpu", `${module}#_retireShaderMaterialViewGpu`)}
+// Neither backend holds a custom uniform buffer of the view's own: SDL_GPU
+// pushes the packed block per draw, and Dawn writes it into the drawing
+// mesh's bindings, released with the mesh.
+void release_material_view_gpu(
+    Engine& engine,
+    MaterialHandle view) {
+    MaterialRecord& record = ${recordAt("engine.materials", "view")};
+    if (record.source_material.value == invalid_handle || !record.shader_material) {
+        return;
+    }
+    const MaterialRecord& source = ${recordAt("engine.materials", "record.source_material")};
+    if (!record.shader_uniform_upload ||
+        record.shader_uniform_upload == source.shader_uniform_upload) {
+        return;
+    }
+    record.shader_uniform_upload.reset();
+}`;
+    }
+
     public lowerNoColorMaterialViews(
         esmShadows = false,
         nodeEsmCasters = false,
         nodePcfCasters = false,
+        viewGpuRelease = false,
+        shaderViews = false,
     ): LoweredSource {
         const nodeCasters = nodeEsmCasters || nodePcfCasters;
         const standardModule = "src/material/standard/no-color-view.ts";
@@ -2121,7 +2258,9 @@ MaterialHandle create_standard_material(Engine& engine) {
                       "createPbrEsmShadowMaterialView"
                     : "") +
                 (nodeEsmCasters ? ",createNodeEsmShadowMaterialView" : "") +
-                (nodeCasters ? ",createNodeNoColorMaterialView" : ""),
+                (nodeCasters ? ",createNodeNoColorMaterialView" : "") +
+                (viewGpuRelease ? ",releaseMaterialViewGpu" : "") +
+                (shaderViews ? ",createMaterialView" : ""),
             header: "",
             source: `// ${this.context.provenance(
                 viewModule,
@@ -2139,7 +2278,8 @@ MaterialHandle create_no_color_material_view(
     Engine& engine,
     MaterialHandle source,
     bool standard,
-    bool shader = false) {
+    bool shader = false,
+    bool no_color = true) {
     if (source.value >= engine.materials.size()) {
         throw std::runtime_error("Invalid source material handle.");
     }
@@ -2149,7 +2289,7 @@ MaterialHandle create_no_color_material_view(
             "No-color material view family does not match its source.");
     }
     MaterialRecord view = source_record;
-    view.no_color = true;
+    view.no_color = no_color;
     view.source_material =
         source_record.source_material.value == invalid_handle
             ? source
@@ -2178,6 +2318,7 @@ MaterialHandle create_shader_no_color_material_view(
     MaterialHandle source) {
     return create_no_color_material_view(engine, source, false, true);
 }
+${shaderViews ? shaderMaterialViewsCpp : ""}
 ${
     !nodeCasters
         ? ""
@@ -2305,7 +2446,7 @@ void mark_material_ubo_dirty(
     }
     const MaterialHandle source = ${recordAt("engine.materials", "material")}.source_material;
     ++${recordAt("engine.materials", "source.value == invalid_handle ? material : source")}.ubo_version;
-}
+}${viewGpuRelease ? this.lowerMaterialViewGpuRelease() : ""}
 
 } // namespace bbl
 `,

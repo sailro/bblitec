@@ -247,3 +247,32 @@ test("retained collection keys keep their engines alive across closure calls", (
         `,
     );
 });
+
+test("a new array of owned resources handed to engine-less array slots is stored as one", () => {
+    // The local holds the handles the callbacks take: each callback gets
+    // the array the local holds, not a copy of its elements.
+    const { cpp } = compileSource(`
+        import {createBox, createEngine, type Mesh} from "@babylonjs/lite";
+        const engine = await createEngine(document.createElement("canvas"));
+        const ready: ((meshes: Mesh[]) => void)[] = [];
+        const parts: { mesh: Mesh }[][] = [];
+        const visible: Mesh[] = [];
+        async function load(index: number): Promise<void> {
+            parts[index] = [{ mesh: createBox(engine, { size: index + 1 }) }];
+            const meshes = parts[index]!.map((part) => part.mesh);
+            visible.push(...meshes);
+            for (const callback of ready) callback(meshes);
+        }
+        const held: Mesh[][] = [];
+        const picks = new Set<Mesh>();
+        ready.push((meshes) => { held.push(meshes); for (const mesh of meshes) picks.add(mesh); });
+        await load(0);
+        if (held[0]!.length !== 1 || picks.size !== 1 || visible.length !== 1) throw new Error("ready meshes");
+    `);
+    const local = /bbl::js::Array<bbl::MeshHandle> (v_\w+_meshes) = /.exec(cpp);
+    assert.ok(local, "engine-less local array");
+    assert.match(
+        cpp,
+        new RegExp(String.raw`v_bblite_stored_callback_\d+\(${local[1]}\);`),
+    );
+});

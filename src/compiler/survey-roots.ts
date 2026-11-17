@@ -301,8 +301,9 @@ function emptyValueOf(
     // pass. Its array is one its caller owns, which a borrowed view only
     // lends a callee; the `unknown` values a type reaches are stored as
     // documents, as a parsed value of it is.
-    // A value typed `object` is dynamic, as such a binding is; an iterable
-    // is an empty array of its element (`iterableArray`).
+    // A value typed `object` or `any` is dynamic, as such a binding is (an
+    // untyped module's parameter); an iterable is an empty array of its
+    // element (`iterableArray`).
     const mapped =
         context.dataTypes.orDynamicJsonTypes(() => {
             const stored = context.dataTypes.fromStoredTsType(type, node);
@@ -312,7 +313,9 @@ function emptyValueOf(
         }) ??
         (context.dataTypes.holdsObjectValue(type)
             ? context.dataTypes.dynamicJsonType(type)
-            : undefined) ??
+            : (type.flags & ts.TypeFlags.Any) !== 0
+              ? ({ kind: "json" } as const)
+              : undefined) ??
         iterableArray(context, type, node);
     const checker = context.checker;
     const record = checker.getNonNullableType(type);
@@ -916,9 +919,10 @@ interface CapturedLocal {
 const capturedLocals = new WeakMap<ts.Node, CapturedLocal[]>();
 
 /**
- * The initializer of a `const` declared `local` that holds a function --
- * a literal, a choice of literals (`traced ? <T>(...) => ... : ...`), a
- * factory's result -- if any.
+ * The initializer of a `const` declared `local` that holds a function, or
+ * a function or nothing -- a literal, a choice of literals
+ * (`traced ? <T>(...) => ... : ...`), a factory's result, an optional hook
+ * (`host?.track`) -- if any.
  */
 function constFunctionInitializer(
     checker: ts.TypeChecker,
@@ -935,7 +939,7 @@ function constFunctionInitializer(
     return callSignatures(
         checker,
         checker.getTypeAtLocation(local.name),
-        "exact",
+        "present",
     ).length > 0
         ? local.initializer
         : undefined;

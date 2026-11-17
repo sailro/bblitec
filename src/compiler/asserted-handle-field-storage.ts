@@ -3,10 +3,14 @@ import type { StorageRequest } from "./replay-storage.js";
 import type ts from "typescript";
 import type { DataType } from "./data-types/model.js";
 
-/** An erased field whose reached assertion requires native resource storage. */
+/** Erased storage a native handle can settle: a record field or a parameter. */
+export type ErasedHandleStorage =
+    ts.PropertySignature | ts.PropertyDeclaration | ts.ParameterDeclaration;
+
+/** An erased field or parameter whose reached use requires native resource storage. */
 export class AssertedHandleFieldStorageRequired extends StorageDemand {
     constructor(
-        readonly declaration: ts.PropertySignature | ts.PropertyDeclaration,
+        readonly declaration: ErasedHandleStorage,
         readonly storage: DataType,
     ) {
         super("An asserted resource field must retain its native handle.");

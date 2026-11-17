@@ -348,6 +348,255 @@ check(
 `,
 );
 
+// Adapters a generic factory builds, held as `Adapter<unknown>`, are the
+// objects the factory keyed: the candidates they hand out come back to them
+// through the erased adapter as the same objects, and so do their states.
+check(
+    "erased-adapter-candidate-identity",
+    `
+    interface Candidate<S> { readonly state: S; readonly finite: boolean }
+    interface Adapter<S> { current(): Candidate<S>; resolve(previous: Candidate<S>): Candidate<S> | null; commit(candidate: Candidate<S>): void; cloneState(state: S): S; statesEqual(a: S, b: S): boolean }
+    interface Active<S> { readonly adapter: Adapter<S>; readonly initial: Candidate<S>; last: Candidate<S>; rejected: S | null }
+    let active: Active<unknown> | null = null;
+    function begin<S>(adapter: Adapter<S>): void { const initial = adapter.current(); active = { adapter, initial, last: initial, rejected: null }; }
+    function step(): boolean {
+        const gesture = active;
+        if (!gesture) return false;
+        const next = gesture.adapter.resolve(gesture.last);
+        if (!next || !next.finite) {
+            if (next) gesture.rejected = gesture.adapter.cloneState(next.state);
+            return false;
+        }
+        if (gesture.adapter.statesEqual(gesture.last.state, next.state)) return false;
+        gesture.adapter.commit(next);
+        gesture.last = next;
+        return true;
+    }
+    function createAdapter<S>(initial: S, move: (state: S) => S, apply: (state: S) => void, clone: (state: S) => S, equal: (a: S, b: S) => boolean): Adapter<S> {
+        const known = new WeakMap<object, S>();
+        const make = (state: S, finite: boolean): Candidate<S> => { const candidate: Candidate<S> = { state, finite }; known.set(candidate, state); return candidate; };
+        let moves = 0;
+        return {
+            current: () => make(initial, true),
+            resolve: (previous) => { const state = known.get(previous); if (state === undefined || state !== previous.state) throw new Error("unknown previous"); return make(move(state), ++moves < 3); },
+            commit: (candidate) => { const state = known.get(candidate); if (state === undefined) throw new Error("unknown candidate"); apply(state); },
+            cloneState: clone,
+            statesEqual: equal,
+        };
+    }
+    interface House { x: number }
+    interface Tower { h: number; name: string }
+    let house: House = { x: 1 };
+    const first = house;
+    let tower: Tower = { h: 2, name: "t" };
+    begin(createAdapter<House>(house, (s) => ({ x: s.x + 1 }), (s) => { house = s; }, (s) => ({ ...s }), (a, b) => a.x === b.x));
+    if (active!.initial.state !== first || active!.last !== active!.initial) throw new Error("house initial");
+    if (!step() || !step() || house.x !== 3 || active!.last.state !== house) throw new Error("house " + house.x);
+    if (step() || (active!.rejected as House).x !== 4 || active!.rejected === house) throw new Error("house rejection");
+    begin(createAdapter<Tower>(tower, (s) => ({ h: s.h * 2, name: s.name + "!" }), (s) => { tower = s; }, (s) => ({ ...s }), (a, b) => a.h === b.h && a.name === b.name));
+    if (!step() || tower.h !== 4 || tower.name !== "t!" || active!.last.state !== tower) throw new Error("tower " + tower.h);
+`,
+);
+
+// So are adapters whose generic methods are functions an options record
+// stores: each is called through the erased adapter's table.
+check(
+    "erased-adapter-stored-functions",
+    `
+    interface Candidate<S> { readonly state: S; readonly score: number }
+    interface Adapter<S> { readonly id: number; current(): Candidate<S>; commit(candidate: Candidate<S>): void; cloneState(state: S): S; statesEqual(a: S, b: S): boolean }
+    interface Options<S> { readonly id: number; read(): S; write(state: S): void; cloneState(state: S): S; statesEqual(a: S, b: S): boolean }
+    interface Active<S> { readonly adapter: Adapter<S>; readonly initial: Candidate<S>; saved: S | null }
+    let active: Active<unknown> | null = null;
+    const begun: Adapter<unknown>[] = [];
+    function begin<S>(adapter: Adapter<S>): void { active = { adapter, initial: adapter.current(), saved: null }; begun.push(adapter); }
+    function createAdapter<S>(options: Options<S>): Adapter<S> {
+        const known = new WeakMap<object, S>();
+        return {
+            id: options.id,
+            current: () => { const candidate: Candidate<S> = { state: options.read(), score: options.id }; known.set(candidate, candidate.state); return candidate; },
+            commit: (candidate) => { const state = known.get(candidate); if (state === undefined) throw new Error("unknown candidate"); options.write(options.cloneState(state)); },
+            cloneState: options.cloneState,
+            statesEqual: options.statesEqual,
+        };
+    }
+    interface House { f: number }
+    interface Tower { a: number; name: string }
+    let house: House = { f: 1 };
+    let tower: Tower = { a: 2, name: "t" };
+    const houseOptions: Options<House> = { id: 7, read: () => house, write: (state) => { house = state; }, cloneState: (state) => ({ ...state }), statesEqual: (a, b) => a.f === b.f };
+    const towerOptions: Options<Tower> = { id: 9, read: () => tower, write: (state) => { tower = state; }, cloneState: (state) => ({ ...state, name: state.name }), statesEqual: (a, b) => a.a === b.a && a.name === b.name };
+    const options: Options<House>[] = [houseOptions, { ...houseOptions, id: 8 }];
+    begin(createAdapter(options[Math.random() > 2 ? 1 : 0]!));
+    const gesture = active!;
+    gesture.saved = gesture.adapter.cloneState(gesture.initial.state);
+    if (gesture.saved === gesture.initial.state || !gesture.adapter.statesEqual(gesture.saved, gesture.initial.state)) throw new Error("house clone");
+    gesture.adapter.commit(gesture.initial);
+    if (house.f !== 1 || house === gesture.initial.state || gesture.adapter.id !== 7) throw new Error("house commit");
+    begin(createAdapter(towerOptions));
+    active!.adapter.commit(active!.initial);
+    if (tower.name !== "t" || begun.length !== 2 || begun[0] === begun[1] || begun[1] !== active!.adapter) throw new Error("tower commit");
+`,
+);
+
+// So is an adapter a binding holds at its concrete type, which the program
+// also calls there.
+check(
+    "erased-adapter-concrete-binding",
+    `
+    interface Candidate<S> { readonly state: S; readonly score: number }
+    interface Adapter<S> { readonly id: number; current(): Candidate<S>; commit(candidate: Candidate<S>): void; cloneState(state: S): S; statesEqual(a: S, b: S): boolean }
+    interface Active<S> { readonly adapter: Adapter<S>; readonly initial: Candidate<S> }
+    let active: Active<unknown> | null = null;
+    function begin<S>(adapter: Adapter<S>): void { active = { adapter, initial: adapter.current() }; }
+    function createAdapter<S>(id: number, read: () => S, write: (state: S) => void, clone: (state: S) => S, equal: (a: S, b: S) => boolean): Adapter<S> {
+        const known = new WeakMap<object, S>();
+        return {
+            id,
+            current: () => { const candidate: Candidate<S> = { state: read(), score: id }; known.set(candidate, candidate.state); return candidate; },
+            commit: (candidate) => { const state = known.get(candidate); if (state === undefined) throw new Error("unknown candidate"); write(clone(state)); },
+            cloneState: clone,
+            statesEqual: equal,
+        };
+    }
+    interface House { f: number }
+    interface Tower { a: number; name: string }
+    let house: House = { f: 1 };
+    let tower: Tower = { a: 2, name: "t" };
+    const houseAdapter: Adapter<House> = createAdapter<House>(7, () => house, (state) => { house = state; }, (state) => ({ ...state }), (a, b) => a.f === b.f);
+    begin(houseAdapter);
+    const copy = houseAdapter.cloneState(house);
+    if (copy === house || copy.f !== 1 || !houseAdapter.statesEqual(copy, house)) throw new Error("house adapter clone");
+    if (active!.adapter !== houseAdapter || active!.initial.state !== house) throw new Error("house begin");
+    active!.adapter.commit(active!.initial);
+    if (house.f !== 1 || house === active!.initial.state || !active!.adapter.statesEqual(house, active!.initial.state)) throw new Error("house commit");
+    const towerAdapter: Adapter<Tower> = createAdapter<Tower>(9, () => tower, (state) => { tower = state; }, (state) => ({ ...state }), (a, b) => a.a === b.a && a.name === b.name);
+    begin(towerAdapter);
+    active!.adapter.commit(active!.initial);
+    if (active!.adapter !== towerAdapter || tower.name !== "t" || tower === active!.initial.state) throw new Error("tower commit");
+`,
+);
+
+// A stored generic method takes adapters whose optional method returns
+// `unknown`: each instantiation's parameter is the record each adapter is
+// stored as, that result a dynamic value.
+check(
+    "stored-generic-unknown-member-parameter",
+    `
+    interface Candidate<S> { readonly state: S; readonly score: number }
+    interface Adapter<S> { readonly stableId: number; current(): Candidate<S>; companion?(stableId: number): unknown; cloneState(state: S): S }
+    interface Controller { begin<S>(adapter: Adapter<S>): boolean; begun(): number }
+    function createController(limit: number): Controller {
+        let begun = 0;
+        return {
+            begin<S>(adapter: Adapter<S>): boolean {
+                const initial = adapter.current();
+                if (initial.score > limit) return false;
+                begun += adapter.stableId;
+                return adapter.companion?.(adapter.stableId) === undefined && adapter.cloneState(initial.state) !== initial.state;
+            },
+            begun: () => begun,
+        };
+    }
+    function createAdapter<S>(stableId: number, state: () => S, clone: (state: S) => S): Adapter<S> {
+        return { stableId, current: () => ({ state: state(), score: stableId }), companion: (id) => (id === stableId ? undefined : { id }), cloneState: clone };
+    }
+    interface House { f: number }
+    interface Tower { a: number; name: string }
+    const house: House = { f: 1 };
+    const tower: Tower = { a: 2, name: "t" };
+    const controllers = [createController(8), createController(10)];
+    const controller = controllers[Math.random() > 2 ? 0 : 1]!;
+    if (!controller.begin(createAdapter<House>(7, () => house, (state) => ({ ...state })))) throw new Error("house begin");
+    if (!controller.begin(createAdapter<Tower>(9, () => tower, (state) => ({ ...state })))) throw new Error("tower begin");
+    if (controller.begin(createAdapter<House>(11, () => house, (state) => state))) throw new Error("house over limit");
+    if (controller.begun() !== 16) throw new Error("begun " + controller.begun());
+`,
+);
+
+// So does a stored method declared for one state type.
+check(
+    "stored-unknown-member-parameter",
+    `
+    interface Adapter<S> { readonly stableId: number; current(): S; companion?(stableId: number): unknown }
+    interface Controller { readonly limit: number; measure(adapter: Adapter<House>): number }
+    function createController(limit: number): Controller {
+        return { limit, measure: (adapter) => adapter.stableId * limit + adapter.current().f + (adapter.companion?.(0) === undefined ? 0 : 1) };
+    }
+    function createAdapter<S>(stableId: number, state: () => S): Adapter<S> {
+        return { stableId, current: state, companion: (id) => (id === stableId ? undefined : { id }) };
+    }
+    interface House { f: number }
+    const controllers = [createController(8), createController(10)];
+    const controller = controllers[Math.random() > 2 ? 0 : 1]!;
+    const measured = controller.measure(createAdapter<House>(7, () => ({ f: 2 })));
+    if (measured !== 73) throw new Error("measure " + measured);
+`,
+);
+
+check(
+    "omitted-rest-under-instantiation",
+    `
+    interface Token { readonly key: number }
+    function attach<T extends object>(row: T, id: Token): T & { readonly id: Token } {
+        const item = { ...row } as T & { readonly id: Token };
+        Object.defineProperty(item, "id", { value: id, enumerable: true, writable: false, configurable: false });
+        return item;
+    }
+    function strip<T extends { readonly id: Token }>(row: T): Omit<T, "id"> {
+        const { id: _id, ...rest } = row;
+        return rest;
+    }
+    function cloneRows<T extends { readonly id: Token }>(
+        input: readonly T[],
+        clone: (row: Omit<T, "id">) => Omit<T, "id">,
+    ): Array<Omit<T, "id"> & { readonly id: Token }> {
+        const items: Array<Omit<T, "id"> & { readonly id: Token }> = [];
+        let key = 10;
+        for (const row of input) {
+            const { id: _sourceId, ...withoutId } = row;
+            items.push(attach(clone(withoutId), { key: key++ }));
+        }
+        return items;
+    }
+    const slit = attach({ tower: 2, height: 1.5 }, { key: 1 });
+    const stripped = strip(slit);
+    if (stripped.tower !== 2 || stripped.height !== 1.5 || Object.keys(stripped).join() !== "tower,height")
+        throw new Error("omitted rest");
+    const other = strip(attach({ side: -1 }, { key: 2 }));
+    if (other.side !== -1 || Object.keys(other).join() !== "side") throw new Error("second instantiation");
+    const clones = cloneRows([slit, attach({ tower: 3, height: 0.5 }, { key: 3 })], (row) => ({ ...row, tower: row.tower + 5 }));
+    if (clones.length !== 2 || clones[0]!.tower !== 7 || clones[1]!.height !== 0.5 || clones[1]!.id.key !== 11 ||
+        Object.keys(clones[0]!).join() !== "tower,height,id")
+        throw new Error("cloned rows");
+    `,
+);
+
+check(
+    "nested-instantiation-intersection-fields",
+    `
+    interface Token { readonly key: number }
+    type HostRecord = { readonly id: Token; tower: number };
+    function attach<T extends object>(row: T, id: Token): T & { readonly id: Token } {
+        const item = { ...row } as T & { readonly id: Token };
+        Object.defineProperty(item, "id", { value: id, enumerable: true, writable: false, configurable: false });
+        return item;
+    }
+    function removeHost<T extends HostRecord>(rows: readonly T[], removed: number): T[] {
+        return rows.flatMap((row) => {
+            if (row.tower === removed) return [];
+            const { id, ...fields } = row;
+            return [attach({ ...fields, tower: row.tower > removed ? row.tower - 1 : row.tower }, id) as T];
+        });
+    }
+    const rows = [attach({ tower: 0, s: 1 }, { key: 1 }), attach({ tower: 2, s: 3 }, { key: 2 })];
+    const kept = removeHost(rows, 0);
+    if (kept.length !== 1 || kept[0]!.tower !== 1 || kept[0]!.s !== 3 || kept[0]!.id !== rows[1]!.id ||
+        Object.keys(kept[0]!).join() !== "tower,s,id")
+        throw new Error("removed host");
+    `,
+);
+
 test("Arguments object unsupported mutations and unconstrained storage refuse explicitly", () => {
     for (const mutation of [
         "arguments[0]=3;",

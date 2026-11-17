@@ -1,5 +1,5 @@
 import type {
-    CompiledShaderBlend,
+    CompiledBlendState,
     CompiledShaderSampler,
     CompiledShaderStorageBuffer,
 } from "./compiler/types.js";
@@ -22,7 +22,7 @@ export interface ShaderMaterialProgramSource {
     defines?: Array<{ name: string; value: boolean | number }>;
     needAlphaBlending: boolean;
     blendMode?: "alpha" | "additive";
-    blend?: CompiledShaderBlend;
+    blend?: CompiledBlendState;
     needAlphaTesting: boolean;
     backFaceCulling: boolean;
     depthWrite: boolean;

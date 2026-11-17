@@ -49,6 +49,38 @@ test("unsupported flex sizing and malformed layout values refuse", () => {
         );
 });
 
+test("a layout value with a runtime number in a cssText template keeps its form", () => {
+    const compile = (declarations: string) =>
+        compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        await createEngine({});
+        const offset = Number(localStorage.getItem("offset"));
+        const label = localStorage.getItem("label") ?? "";
+        const panel = document.createElement("div");
+        panel.style.cssText = "display:flex;" + \`${declarations}\`;
+        document.body.appendChild(panel);
+    `);
+    const result = compile(
+        "margin-left:${(offset - 1) * 82}px;margin-right:${offset}%;",
+    );
+    assert.match(
+        result.cpp,
+        /margin-left:", bbl::js::number_to_string\([^\n]*\), "px;margin-right:", bbl::js::number_to_string\(/,
+    );
+    // A string hole may hold any text; a number needs its unit, may be
+    // negative where a padding cannot, and doubles a sign written before it.
+    for (const declarations of [
+        "margin-left:${label}px;",
+        "margin-left:${offset};",
+        "padding-top:${offset}px;",
+        "margin-left:-${offset}px;",
+    ])
+        assert.throws(
+            () => compile(declarations),
+            /supported literal flex and box forms/,
+        );
+});
+
 test("native flex layout wraps, resizes, reverses alignment and resets shorthand components", (t) => {
     runRmlUiFixture(t, "ui-flex");
 });

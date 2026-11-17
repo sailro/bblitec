@@ -659,10 +659,11 @@ test(
     },
 );
 
-test("keeps a compile-time instance out of a container that shares objects", () => {
-    assert.throws(
-        () =>
-            compileSource(`
+test(
+    "shares a compile-time instance a container stores from its construction",
+    { skip: !nativeTools },
+    () => {
+        const result = compileSource(`
                 class Node {
                     readonly weight: number;
                     constructor(weight: number) { this.weight = weight; }
@@ -670,11 +671,16 @@ test("keeps a compile-time instance out of a container that shares objects", () 
                 const first = new Node(1);
                 const seen = new Set<Node>();
                 seen.add(first);
-                const unused = seen.size;
-            `),
-        /compile-time record/,
-    );
-});
+                seen.add(first);
+                if (seen.size !== 1) throw new Error("one shared object");
+    `);
+        runGeneratedProgram(
+            nativeTools!,
+            "shared-container-instance",
+            result.cpp,
+        );
+    },
+);
 
 /**
  * A hoisted field is bound from the constructor argument the CALLER

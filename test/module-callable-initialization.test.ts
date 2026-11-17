@@ -126,14 +126,15 @@ test("imported callable factories retain evaluated bindings and shared private c
     generate();
 });
 
-test("a forged object cannot enter a stored private-class callback parameter", () => {
-    assert.throws(
-        () =>
-            generate(
-                files.entry +
-                    "\nif (read({}) !== null) throw new Error('forged brand');",
-            ),
-        /storing it here would mint a second object/,
+test("a forged object reaching a stored private-class callback throws at its class assertion", () => {
+    // As in JavaScript, reading `#value` of an object that is no Box throws
+    // TypeError, which the program's own catch turns into null.
+    assert.match(
+        generate(
+            files.entry +
+                "\nif (read({}) !== null) throw new Error('forged brand');",
+        ),
+        /v_bblite_stored_callback_\d+\(v_fn\d+_value\.asserted_instance<bblscene::Box>\(\)\)/,
     );
 });
 

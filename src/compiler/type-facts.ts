@@ -214,6 +214,33 @@ export function callSignatures(
 }
 
 /**
+ * The properties of a record type all of whose properties are optional
+ * (TypeScript's weak type, no call, construct or index signature), which
+ * takes only a value sharing one of them; undefined for another type.
+ */
+export function weakTypeProperties(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): readonly ts.Symbol[] | undefined {
+    const objects = unionMembers(type).filter(
+        (member) => (member.flags & ts.TypeFlags.Object) !== 0,
+    );
+    const properties = objects.flatMap((member) => member.getProperties());
+    return properties.length > 0 &&
+        properties.every(
+            (property) => (property.flags & ts.SymbolFlags.Optional) !== 0,
+        ) &&
+        objects.every(
+            (member) =>
+                member.getCallSignatures().length === 0 &&
+                member.getConstructSignatures().length === 0 &&
+                checker.getIndexInfosOfType(member).length === 0,
+        )
+        ? properties
+        : undefined;
+}
+
+/**
  * Whether a slot of this type -- a Map value, an array element, an object
  * field -- can hold `null` but never `undefined`: its absent content is
  * then `null`, so a missing slot is the only `undefined` a read yields.
@@ -631,6 +658,19 @@ export function objectLikeType(type: ts.Type): boolean {
     );
 }
 
+/** Whether a slot of this type holds a record: an object neither array-like nor callable or constructible. */
+export function recordObjectType(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): boolean {
+    return (
+        objectLikeType(type) &&
+        !checker.isArrayLikeType(type) &&
+        type.getCallSignatures().length === 0 &&
+        type.getConstructSignatures().length === 0
+    );
+}
+
 /**
  * An intersection a union keeps although the checker reduced it to
  * `never` (`B & { ok: true }` of `(A | B) & { ok: true }`, whose `ok` is
@@ -680,16 +720,26 @@ export function presentLiteralKeys(
 
 /**
  * Whether the slot `expression` is stored into is typed so that nothing can
- * change an array's length through it: its contextual type is known and no
- * present member is a growable array (`readonly number[]`, `ArrayLike`,
- * primitives).
+ * change an array's length through it: its contextual type is known and
+ * holds no growable array (`readonlyArrayType`).
  */
 export function storedAsReadonlyArray(
     checker: ts.TypeChecker,
     expression: ts.Expression,
 ): boolean {
     const type = checker.getContextualType(expression);
-    if (type === undefined) return false;
+    return type !== undefined && readonlyArrayType(checker, type);
+}
+
+/**
+ * Whether nothing can change an array's length through a slot of `type`:
+ * no present member is a growable array (`readonly number[]`, `ArrayLike`,
+ * primitives).
+ */
+export function readonlyArrayType(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): boolean {
     const members = presentMembers(type);
     return (
         members.length > 0 &&
@@ -761,6 +811,14 @@ export function presentValuesTruthy(
 export function isNullable(type: ts.Type): boolean {
     const absent = nullability(type);
     return absent.null || absent.undefined;
+}
+
+/** A type the checker's flow narrowed to exclude null and undefined. */
+export function provenPresent(type: ts.Type): boolean {
+    return (
+        (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) === 0 &&
+        !isNullable(type)
+    );
 }
 
 /**

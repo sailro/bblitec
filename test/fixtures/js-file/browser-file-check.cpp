@@ -144,6 +144,17 @@ int main(int argc, char** argv) {
     bbl::js::revoke_object_url(engine, second);
     bbl::js::revoke_object_url(engine, reused);
 
+    // An object URL's string names it: revoking that string revokes it, any other string nothing.
+    const bbl::ObjectUrlHandle named = bbl::js::create_object_url(engine, blob);
+    const std::string named_text = bbl::js::object_url_string(named);
+    bbl::js::revoke_object_url(engine, std::string_view("https://example.invalid/"));
+    bbl::js::revoke_object_url(engine, std::string_view("blob:1"));
+    bbl::js::revoke_object_url(engine, std::string_view("blob:x:1"));
+    require(engine.object_urls[named.slot].active, "other strings revoke nothing");
+    bbl::js::revoke_object_url(engine, std::string_view(named_text));
+    require(!engine.object_urls[named.slot].active, "revocation by the URL's string");
+    bbl::js::revoke_object_url(engine, std::string_view(named_text));
+
     const bbl::UiElementHandle input_handle{static_cast<std::uint32_t>(engine.ui_elements.size())};
     bbl::UiElementRecord input;
     input.tag = "input";

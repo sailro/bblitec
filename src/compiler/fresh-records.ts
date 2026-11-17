@@ -1,20 +1,26 @@
 import ts from "typescript";
-import { forEachAnalysisNode } from "./analysis-walk.js";
+import { forEachAnalysisNode, identifiersByName } from "./analysis-walk.js";
 import { forEachReturn } from "./loop-control.js";
 import {
     declaredInDefaultLibrary,
+    declaredSymbol,
     libraryGlobal,
     isNullishLiteral,
     calledFunction,
     namedMember,
     accessedPropertySymbol,
     resolvedSymbol,
+    valueSymbolOf,
 } from "./symbols.js";
 import {
     isOperandSelection,
+    isUnexportedConstDeclaration,
+    objectProperty,
     unwrapExpression,
     valueOperands,
     variableKind,
+    writeSiteOf,
+    type ConstDeclaration,
 } from "./syntax.js";
 
 /**
@@ -89,6 +95,108 @@ export function yieldsFreshObject(
     node: ts.Node,
 ): boolean {
     return fresh(checker, node, new Set());
+}
+
+/**
+ * The object literal `literal` stores at `key` (through `const` aliases):
+ * its last writer's value (`objectProperty`), where no later spread or
+ * computed member may replace it.
+ */
+export function literalFieldObject(
+    checker: ts.TypeChecker,
+    literal: ts.ObjectLiteralExpression,
+    key: string,
+): ts.ObjectLiteralExpression | undefined {
+    const stored = objectProperty(literal, key);
+    const created = stored && constObjectLiteral(checker, stored);
+    return created && ts.isObjectLiteralExpression(created.literal)
+        ? created.literal
+        : undefined;
+}
+
+/** The unexported `const` local `read` names (`isUnexportedConstDeclaration`). */
+function constLocal(
+    checker: ts.TypeChecker,
+    read: ts.Expression,
+): ConstDeclaration | undefined {
+    const unwrapped = unwrapExpression(read);
+    const declaration = ts.isIdentifier(unwrapped)
+        ? declaredSymbol(checker, unwrapped)?.valueDeclaration
+        : undefined;
+    return isUnexportedConstDeclaration(declaration) ? declaration : undefined;
+}
+
+/** The unexported `const` local `read` names, initialized with a fresh object (`fresh`). */
+export function freshConstLocal(
+    checker: ts.TypeChecker,
+    read: ts.Expression,
+    fresh: (initializer: ts.Expression) => boolean,
+): ts.VariableDeclaration | undefined {
+    const declaration = constLocal(checker, read);
+    return declaration && fresh(declaration.initializer)
+        ? declaration
+        : undefined;
+}
+
+/** @unjournaled Pure functions of the checked program: `readOnlyFreshConst` by declaration. */
+const readOnlyConsts = new WeakMap<
+    ts.TypeChecker,
+    WeakMap<ts.VariableDeclaration, boolean>
+>();
+
+/**
+ * Whether `name` reads a `freshConstLocal` whose initializer yields a fresh
+ * object ({@link yieldsFreshObject}) that only reads of its properties
+ * reference: no other reference holds that object, so no write in the
+ * program reaches its fields.
+ */
+export function readOnlyFreshConst(
+    checker: ts.TypeChecker,
+    name: ts.Node,
+): boolean {
+    const declaration = ts.isIdentifier(name)
+        ? constLocal(checker, name)
+        : undefined;
+    if (!declaration) return false;
+    let known = readOnlyConsts.get(checker);
+    if (!known) readOnlyConsts.set(checker, (known = new WeakMap()));
+    let answer = known.get(declaration);
+    if (answer === undefined) {
+        answer =
+            yieldsFreshObject(checker, declaration.initializer) &&
+            onlyPropertyReads(checker, declaration);
+        known.set(declaration, answer);
+    }
+    return answer;
+}
+
+/** Whether every reference to a declaration's binding reads one of its properties. */
+function onlyPropertyReads(
+    checker: ts.TypeChecker,
+    declaration: ConstDeclaration,
+): boolean {
+    const symbol = declaredSymbol(checker, declaration.name);
+    const references =
+        identifiersByName(declaration.getSourceFile()).get(
+            declaration.name.text,
+        ) ?? [];
+    return references.every((reference) => {
+        if (
+            reference === declaration.name ||
+            valueSymbolOf(checker, reference) !== symbol
+        )
+            return true;
+        const read = reference.parent;
+        return (
+            ts.isPropertyAccessExpression(read) &&
+            read.expression === reference &&
+            writeSiteOf(read) === undefined &&
+            !(
+                ts.isCallExpression(read.parent) &&
+                read.parent.expression === read
+            )
+        );
+    });
 }
 
 /**

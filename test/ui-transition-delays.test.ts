@@ -40,7 +40,8 @@ const program = `
     badge.id = "badge";
     badge.style.cssText = ["position:absolute", "left:12px", "transition:opacity 90ms linear"].join(";");
     document.body.appendChild(badge);
-    const springMs = Number("120");
+    // A number generation does not know: the delays are written at run time.
+    const springMs = 120 + Math.floor(Math.random());
     const pill = document.createElement("div");
     pill.id = "pill";
     pill.className = "pill";

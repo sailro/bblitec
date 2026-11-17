@@ -25,6 +25,10 @@ import {
     pinnedErrorCodeOf,
     pinnedErrorMessageCpp,
 } from "./pinned-error.js";
+import {
+    PinnedNumericLowerer,
+    type PinnedBinding,
+} from "./pinned-numeric-lowerer.js";
 
 const effectModule = "src/effect/effect-renderer.ts";
 const uniformEffectModule = "src/effect/uniform-effect-renderer.ts";
@@ -137,6 +141,133 @@ export interface EffectFactoryOptions {
     readonly taskBuild?: boolean;
     readonly taskDisposal?: boolean;
     readonly taskMethodSlots?: boolean;
+    readonly taskScissor?: boolean;
+}
+
+/**
+ * `EffectRenderTask.execute`'s `task.scissor`, lowered from the pinned body:
+ * the rectangle the fullscreen draw rasterizes over a target's extent, or
+ * none when the pass ends undrawn. The pin reads it after `beginRenderPass`,
+ * so the pass clears the whole target either way. The rectangle is the
+ * `setScissorRect` arguments as WebGPU integer coordinates (`gpu_size`).
+ */
+export function lowerEffectTaskScissor(context: LoweringContext): string {
+    const { file, declaration: execute } = context.propertyFunction(
+        effectModule,
+        "createEffectRenderTask",
+        "execute",
+        { unique: true },
+    );
+    const statements = execute.body.statements;
+    const read = statements.findIndex(
+        (statement) =>
+            ts.isVariableStatement(statement) &&
+            statement.declarationList.declarations.some(
+                (declaration) =>
+                    ts.isIdentifier(declaration.name) &&
+                    declaration.name.text === "scissor",
+            ),
+    );
+    const guard = statements[read + 1];
+    const draw = statements[read + 2];
+    if (
+        read < 1 ||
+        !guard ||
+        !ts.isIfStatement(guard) ||
+        guard.elseStatement ||
+        !ts.isBlock(guard.thenStatement) ||
+        !context.expressionMatchesShape(guard.expression, "scissor") ||
+        !draw ||
+        !ts.isExpressionStatement(draw) ||
+        !context.expressionMatchesShape(
+            draw.expression,
+            "pass.setPipeline(pipeline)",
+        )
+    ) {
+        context.contractError(
+            execute,
+            "Expected EffectRenderTask.execute to narrow its pass under `if (scissor)` between beginning it and drawing.",
+        );
+    }
+    context.assertExpressionShape(
+        context.variableInitializer(statements[read]!, "scissor"),
+        "task.scissor",
+        "Effect task scissor",
+    );
+    context.assertExpressionShape(
+        context.variableInitializer(statements[read - 1]!, "pass"),
+        "eng._currentEncoder.beginRenderPass(task._renderPassDescriptor)",
+        "Effect task pass",
+    );
+    const body = guard.thenStatement.statements;
+    const corners = ["x0", "x1", "y0", "y1"] as const;
+    const empty = body[corners.length];
+    const narrow = body[corners.length + 1];
+    if (
+        body.length !== corners.length + 2 ||
+        !empty ||
+        !ts.isIfStatement(empty) ||
+        empty.elseStatement ||
+        !ts.isBlock(empty.thenStatement) ||
+        !narrow ||
+        !ts.isExpressionStatement(narrow) ||
+        !ts.isCallExpression(narrow.expression) ||
+        !context.expressionMatchesShape(
+            narrow.expression.expression,
+            "pass.setScissorRect",
+        ) ||
+        narrow.expression.arguments.length !== 4
+    ) {
+        context.contractError(
+            guard,
+            "Expected the effect task scissor to compute x0, x1, y0 and y1, end an empty pass undrawn, then set the scissor rectangle.",
+        );
+    }
+    context.assertStatementShapes(
+        empty.thenStatement,
+        empty.thenStatement.statements,
+        "pass.end(); return 0;",
+        "Effect task empty scissor",
+    );
+    const lane = (member: string): [string, PinnedBinding] => [
+        `scissor.${member}`,
+        { cpp: `scissor.${member}`, type: "scalar" },
+    ];
+    const lowerer = new PinnedNumericLowerer(file, {
+        bindings: new Map<string, PinnedBinding>([
+            lane("x"),
+            lane("y"),
+            lane("width"),
+            lane("height"),
+            ["rt._width", { cpp: "target_width", type: "scalar" }],
+            ["rt._height", { cpp: "target_height", type: "scalar" }],
+        ]),
+        calls: new Map(),
+    });
+    const declared = body.slice(0, corners.length);
+    const lanes = corners.map(
+        (name) =>
+            `    const double ${name} = ${lowerer.expression(context.variableInitializer(declared, name))};`,
+    );
+    lowerer.bindPorts(
+        corners.map((name) => [name, { cpp: name, type: "scalar" }]),
+        empty,
+    );
+    const rectangle = narrow.expression.arguments.map(
+        (argument) =>
+            `static_cast<std::int32_t>(gpu_u32(gpu_size(${lowerer.expression(argument)})))`,
+    );
+    return `// ${context.provenance(effectModule, "createEffectRenderTask execute")}
+std::optional<PixelViewport> effect_task_scissor(
+    const NormalizedViewport& scissor,
+    double target_width,
+    double target_height) {
+${lanes.join("\n")}
+    if (${lowerer.expression(empty.expression)}) return std::nullopt;
+    return PixelViewport{
+        ${rectangle.join(",\n        ")}};
+}
+`;
 }
 
 /**
@@ -233,6 +364,7 @@ export class EffectLowerer {
         taskBuild = false,
         taskDisposal = false,
         taskMethodSlots = false,
+        taskScissor = false,
     }: EffectFactoryOptions = {}): LoweredSource {
         return {
             modulePath: effectModule,
@@ -412,7 +544,7 @@ TaskHandle create_effect_render_task(
     task.effect = std::move(options);
     return append_frame_task(engine, std::move(task));
 }
-${disposal || taskBuild ? lowerEffectWrapperDisposal(this.context, disposal) : ""}${taskDisposal ? lowerEffectTaskDisposal(this.context, taskMethodSlots) : ""}${taskMethodSlots ? lowerEffectTaskMethods(disposal || taskBuild, taskDisposal) : ""}
+${taskScissor ? `\n${lowerEffectTaskScissor(this.context)}` : ""}${disposal || taskBuild ? lowerEffectWrapperDisposal(this.context, disposal) : ""}${taskDisposal ? lowerEffectTaskDisposal(this.context, taskMethodSlots) : ""}${taskMethodSlots ? lowerEffectTaskMethods(disposal || taskBuild, taskDisposal) : ""}
 } // namespace bbl
 `,
         };

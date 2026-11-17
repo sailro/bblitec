@@ -1368,8 +1368,11 @@ export class UiProjection {
             ts.isPropertyAccessExpression(owner) &&
             isUiTreeRead(owner.name.text) &&
             elementReceiver(owner.expression);
+        // The focused element is a retained element (the fullscreen one is
+        // an optional handle, read by its own owner).
         if (
             !treeRead &&
+            this.documentStateElement(owner) !== "activeElement" &&
             (!(ts.isCallExpression(owner) || isOperandSelection(owner)) ||
                 !holdsElement(expression))
         )
@@ -1579,18 +1582,24 @@ export class UiProjection {
             : undefined;
     }
 
+    /** Which element the document's state names (`document.activeElement`, `document.fullscreenElement`), if `value` reads one. */
+    private documentStateElement(
+        value: ts.Expression,
+    ): "activeElement" | "fullscreenElement" | undefined {
+        return ts.isPropertyAccessExpression(value) &&
+            (value.name.text === "activeElement" ||
+                value.name.text === "fullscreenElement") &&
+            this.context.libraryGlobal(value.expression) === "document"
+            ? value.name.text
+            : undefined;
+    }
+
     /** Whether an expression is already known to produce retained UI state. */
     public isNativeUiValueExpression(expression: ts.Expression): boolean {
         if (this.documentRootTag(expression)) return true;
         if (this.primaryCanvasDataset(expression)) return true;
         const value = this.context.unwrap(expression);
-        if (
-            ts.isPropertyAccessExpression(value) &&
-            (value.name.text === "activeElement" ||
-                value.name.text === "fullscreenElement") &&
-            this.context.libraryGlobal(value.expression) === "document"
-        )
-            return true;
+        if (this.documentStateElement(value) !== undefined) return true;
         if (ts.isElementAccessExpression(value)) {
             const dataType = this.context.dataLowerer.dataTypeAt(value);
             return (
@@ -2672,6 +2681,42 @@ export class UiProjection {
      * generation naming the property. Values may be runtime substitutions;
      * only the static property names are policed here.
      */
+    /**
+     * @unjournaled The runtime holes of the style template being lowered
+     * that hold numbers (`compileUiStyleString`), by index: set for that one
+     * lowering and restored when it ends.
+     */
+    private numericStyleHoles: ReadonlySet<number> = new Set();
+
+    /**
+     * Whether a layout declaration's value is one the pinned layout
+     * formatters lay out (`supportedUiLayoutValue`); undefined for another
+     * property. A value with runtime holes is where each holds a number and
+     * every shape a finite number's text takes gives such a value; the text
+     * of NaN or an infinity makes the declaration invalid, which CSS drops.
+     */
+    private uiLayoutValueSupported(
+        property: string,
+        value: string,
+    ): boolean | undefined {
+        const holes = /__bblite_ui_style_(\d+)__/gi;
+        const indices = [...value.matchAll(holes)].map((hole) =>
+            Number(hole[1]),
+        );
+        if (indices.length === 0 || !isUiLayoutProperty(property))
+            return supportedUiLayoutValue(property, value);
+        return (
+            indices.every((index) => this.numericStyleHoles.has(index)) &&
+            ["0", "1", "-1.5", "1e-7", "-1e+21", "1.5e+21", "-1.5e-7"].every(
+                (text) =>
+                    supportedUiLayoutValue(
+                        property,
+                        value.replace(holes, text),
+                    ) === true,
+            )
+        );
+    }
+
     private auditUiStyleDeclarations(
         value: string,
         site: ts.Node | undefined,
@@ -2872,7 +2917,7 @@ export class UiProjection {
             }
             // RmlUi's cascade resolves the layout properties' CSS-wide keywords.
             if (
-                supportedUiLayoutValue(property, literalValue) === false &&
+                this.uiLayoutValueSupported(property, literalValue) === false &&
                 keyword === undefined
             ) {
                 this.uiStyleRefusal(
@@ -3504,10 +3549,15 @@ export class UiProjection {
                 ) {
                     lowered = `${property}:${this.lowerUiStyleValue(property, declaration.slice(colon + 1), site)}`;
                 } else if (colon >= 0 && isUiLayoutProperty(property)) {
+                    // A runtime hole keeps its marker's case.
                     lowered = `${property}:${declaration
                         .slice(colon + 1)
                         .trim()
-                        .toLowerCase()}`;
+                        .split(/(__BBLITE_UI_STYLE_\d+__)/)
+                        .map((chunk, index) =>
+                            index % 2 === 1 ? chunk : chunk.toLowerCase(),
+                        )
+                        .join("")}`;
                 }
                 declarations.push(
                     lowered.replaceAll(";", UiProjection.UI_MASKED_SEMICOLON),
@@ -4569,11 +4619,26 @@ export class UiProjection {
                     substitutions.push(part);
                 }
             }
-            const lowered = this.lowerUiAttributeLiteral(
-                "style",
-                source,
-                expression,
+            const enclosing = this.numericStyleHoles;
+            this.numericStyleHoles = new Set(
+                substitutions.flatMap((substitution, index) =>
+                    unionMembers(
+                        this.context.checker.getTypeAtLocation(substitution),
+                    ).every((member) => valueKindOf(member) === "number")
+                        ? [index]
+                        : [],
+                ),
             );
+            let lowered: string;
+            try {
+                lowered = this.lowerUiAttributeLiteral(
+                    "style",
+                    source,
+                    expression,
+                );
+            } finally {
+                this.numericStyleHoles = enclosing;
+            }
             const chunks = lowered.split(
                 /(__BBLITE_UI_(?:STYLE|ASSET)_\d+__)/g,
             );
@@ -6805,12 +6870,24 @@ export class UiProjection {
         valueExpression: ts.Expression,
         site: ts.Node,
         knownValue?: Value,
+        important = false,
     ): void {
         const nativeProperty = this.nativeUiStyleProperty(property);
         const knownString = knownValue
             ? knownValue.staticString
             : this.tryUiStaticString(valueExpression);
+        // The PAL flags an important declaration's own properties; a custom
+        // property or the background shorthand's longhands it does not.
+        if (
+            important &&
+            (nativeProperty.startsWith("--") || property === "background")
+        )
+            this.context.fail(
+                site,
+                `An important '${property}' declaration is not represented.`,
+            );
         const capability =
+            !important &&
             this.context.options.deferredCapabilities &&
             deferredUiStyleCapability(nativeProperty, knownString);
         if (
@@ -6917,7 +6994,7 @@ export class UiProjection {
         this.context.emit({
             kind: "expression",
             code:
-                `bbl::ui_set_style_property(${engine}, ${styleElement.cpp}, ` +
+                `bbl::${important ? "ui_set_important_style_property" : "ui_set_style_property"}(${engine}, ${styleElement.cpp}, ` +
                 `${this.context.cppString(nativeProperty)}, ${written});`,
         });
     }

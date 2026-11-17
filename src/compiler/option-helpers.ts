@@ -576,20 +576,57 @@ export function foldingNoRecordFields(
     };
 }
 
-export function compilePositiveInteger(
+/** `engine.msaaSamples`: the engine's own sample count; undefined for another expression. */
+function engineSampleCount(
     context: StaticFoldContext,
     expression: ts.Expression,
-): string {
+): string | undefined {
     const unwrapped = context.resolveStaticExpression(expression);
     if (
         ts.isPropertyAccessExpression(unwrapped) &&
         ts.isIdentifier(unwrapped.expression) &&
         unwrapped.name.text === "msaaSamples" &&
         context.bindings.lookup(unwrapped.expression).kind === "engine"
-    ) {
-        const engine = context.bindings.lookup(unwrapped.expression);
-        return engineSampleCountCpp(engine);
-    }
+    )
+        return engineSampleCountCpp(
+            context.bindings.lookup(unwrapped.expression),
+        );
+    return undefined;
+}
+
+/**
+ * A render attachment's `samples`, the WebGPU texture `sampleCount` the pin
+ * passes through: 1 or 4. The engine's own count, a count generation knows,
+ * or one the run decides, which `bbl::render_target_sample_count` checks
+ * where the attachment is made.
+ */
+/** The sample counts WebGPU takes, as the pin types them (`1 | 4`). */
+export function isSampleCount(count: number): count is 1 | 4 {
+    return count === 1 || count === 4;
+}
+
+export function compileRenderTargetSampleCount(
+    context: StaticFoldContext & Pick<LoweringServices, "compileNumber">,
+    expression: ts.Expression,
+): string {
+    const engineCount = engineSampleCount(context, expression);
+    if (engineCount) return engineCount;
+    const count = staticNumberValue(context, expression);
+    if (count === undefined)
+        return `bbl::render_target_sample_count(${context.compileNumber(expression, "double")})`;
+    if (!isSampleCount(count))
+        context.fail(
+            context.resolveStaticExpression(expression),
+            "A render target's sample count is 1 or 4.",
+        );
+    return `${count}u`;
+}
+
+export function compilePositiveInteger(
+    context: StaticFoldContext,
+    expression: ts.Expression,
+): string {
+    const unwrapped = context.resolveStaticExpression(expression);
     const value = compileStaticNumber(context, unwrapped, "A count");
     if (!Number.isInteger(value) || value <= 0) {
         context.fail(unwrapped, "Expected a positive integer literal.");
@@ -883,6 +920,16 @@ export function staticNumberValue(
         return values.every((value): value is number => value !== undefined)
             ? foldMathCall(mathCall.name, values)
             : undefined;
+    }
+    // A string generation knows has a known length.
+    if (
+        ts.isPropertyAccessExpression(node) &&
+        node.name.text === "length" &&
+        ts.isIdentifier(node.expression)
+    ) {
+        const text = context.bindings.lookupOptional(node.expression);
+        if (text?.staticString !== undefined && !text.parameterBinding)
+            return text.staticString.length;
     }
     if (ts.isPropertyAccessExpression(node) && context.staticProperty) {
         return context.staticProperty(node);

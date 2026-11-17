@@ -42,7 +42,8 @@ function encodedImageCodec(bytes: Buffer | undefined): string | undefined {
 /**
  * The image codecs a program links: those its packaged assets reach, WebP
  * for a run-time `createImageBitmap` decode (`image:runtime-decode`), whose
- * bytes generation cannot see, and those of the images a packaged zip
+ * bytes generation cannot see, PNG and JPEG for a canvas encode
+ * (`image:canvas-encode`), and those of the images a packaged zip
  * archive holds where a loader decodes bytes the program holds
  * (`image:packaged-bytes`).
  */
@@ -53,6 +54,10 @@ export function reachedImageCodecs(
 ): string[] {
     const reached = new Set<string>();
     if (features.includes("image:runtime-decode")) reached.add("webp");
+    if (features.includes("image:canvas-encode")) {
+        reached.add("png");
+        reached.add("jpeg");
+    }
     for (const asset of assets) {
         const materialized = resolve(outputPath, "assets", asset.output);
         // Only glTF and .babylon documents are read past their signature.

@@ -1,9 +1,13 @@
 import type { DataType, HandleKind } from "./data-types/model.js";
+import { programObservations } from "./program-observations.js";
 import {
     isEngineScopedHandleKind,
     isWindowHandleKind,
 } from "./data-types/handles.js";
-import { AssertedHandleFieldStorageRequired } from "./asserted-handle-field-storage.js";
+import {
+    AssertedHandleFieldStorageRequired,
+    type ErasedHandleStorage,
+} from "./asserted-handle-field-storage.js";
 import { INDEXED_DB_OBJECTS, indexedDbRequestKind } from "./indexed-db.js";
 import {
     EngineOwnerStorageRequired,
@@ -95,6 +99,12 @@ import {
 import { AbsentRecordProperties } from "./absent-record-properties.js";
 import { ReplayStorage } from "./replay-storage.js";
 import { EnumRecordStorageRequired } from "./enum-record-storage.js";
+import {
+    agreedKeyOrder,
+    ownKeyOrder,
+    RecordKeyOrderRequired,
+    RecordKeyOrders,
+} from "./record-key-orders.js";
 import { SharedClassStorageRequired } from "./shared-class-storage.js";
 import {
     numericSlotRead,
@@ -103,6 +113,7 @@ import {
     type NumericSlotKind,
 } from "./numeric-slot-storage.js";
 import {
+    observedUnderOwnType,
     recordCopyObservation,
     type RecordObservationContext,
 } from "./record-observations.js";
@@ -150,6 +161,7 @@ import {
     isNullable,
     nullability,
     presentMembers,
+    readonlyArrayType,
     isTypeReference,
     type AbsentValueKind,
     undefinedOnly,
@@ -194,6 +206,7 @@ import {
 } from "./class-members.js";
 import { sourceFilesWalk } from "./analysis-walk.js";
 import {
+    bindingElementKey,
     propertyKey,
     unwrapExpression,
     isTypeAssertion,
@@ -333,6 +346,7 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
     PointerDrag: "pointer-drag",
     SceneContext: "scene",
     RenderTarget: "render-target",
+    RenderTargetTextureResult: "render-target-texture",
     SceneColorGrab: "transmission-grab",
     SceneNode: "scene-node",
     LightBase: "light",
@@ -363,6 +377,8 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
     ComputeBindingSet: "compute-binding-set",
     ComputeUniformLayout: "compute-uniform-layout",
     Material: "material",
+    // Every view the native factories make is a material record of its own.
+    MaterialView: "material",
     PhysicsWorld: "physics-world",
     PhysicsBody: "physics-body",
     PhysicsConstraint: "physics-constraint",
@@ -791,6 +807,11 @@ const LIBRARY_OBJECT_KINDS: readonly (readonly [
     ["RequestInit", "dom", { kind: "request-init" }],
     ["URL", "dom", { kind: "url" }],
     ["ImageBitmap", "dom", { kind: "image-bitmap" }],
+    [
+        "OffscreenCanvasRenderingContext2D",
+        "dom",
+        { kind: "offscreen-canvas-2d" },
+    ],
     ["DOMRect", "dom", { kind: "dom-rect" }],
     ["DOMRectReadOnly", "dom", { kind: "dom-rect" }],
     ["IdleDeadline", "dom", { kind: "idle-deadline" }],
@@ -853,6 +874,7 @@ const WEB_PLATFORM_HEADERS: readonly (readonly [
     [["request-init"], "web_platform"],
     [["url"], "js_url"],
     [["image-bitmap"], "pal_image_bitmap"],
+    [["offscreen-canvas-2d"], "pal_canvas"],
     [["idle-deadline"], "pal_idle_callbacks"],
     [["uninhabited-object"], "pal_media_stream"],
     // A stored error or rejection listener spells the realm's error event.
@@ -1345,6 +1367,28 @@ function unionPresence(
 }
 
 /**
+ * Whether a struct field is a property of the object, which a document
+ * view of it lists and reads: a private name's slot (`#x`) is none.
+ */
+function isPropertyField(field: DataStructField): boolean {
+    return !(field.declarations ?? []).some((declaration) => {
+        const name = ts.getNameOfDeclaration(declaration);
+        return name !== undefined && ts.isPrivateIdentifier(name);
+    });
+}
+
+/** `items` in the order `order` gives their keys, the others after them as they were. */
+function inKeyOrder<T>(
+    items: readonly T[],
+    key: (item: T) => string,
+    order: readonly string[],
+): T[] {
+    const positions = new Map(order.map((name, index) => [name, index]));
+    const at = (item: T): number => positions.get(key(item)) ?? positions.size;
+    return [...items].sort((left, right) => at(left) - at(right));
+}
+
+/**
  * The C++ spelling of a class field. A private name's sigil is not an
  * identifier character, and the prefix keeps `#x` apart from a public `_x`
  * on the same class; readers find fields by their source name, so this is
@@ -1369,6 +1413,63 @@ function erasedFieldHolds(known: DataType, storage: DataType): boolean {
  * Map's lookups take, or none when it is used any other way.
  */
 const erasedMapKeys = new WeakMap<ts.Symbol, readonly ts.Expression[]>();
+
+/**
+ * The record and the keys a mapped type selects properties of the record
+ * by, as its alias's arguments: an alias of the shape of `Pick` (`{ [P in
+ * K]: T[P] }`, adding no modifier and renaming no key), whose constraint
+ * and template name its own parameters, keeps the keys; `Omit<T, K>`,
+ * `Pick` over the keys `K` leaves, keeps the others.
+ */
+function keyedSelection(
+    type: ts.Type,
+): { record: ts.Type; keys: ts.Type; kept: boolean } | undefined {
+    const parameters = type.aliasTypeArguments ?? [];
+    if (libraryName(type.aliasSymbol) === "Omit") {
+        const [record, keys] = parameters;
+        return record && keys ? { record, keys, kept: false } : undefined;
+    }
+    const alias = type.aliasSymbol?.declarations?.find(
+        ts.isTypeAliasDeclaration,
+    );
+    const mapped = alias?.type;
+    if (
+        !alias ||
+        !mapped ||
+        !ts.isMappedTypeNode(mapped) ||
+        mapped.readonlyToken ||
+        mapped.questionToken ||
+        mapped.nameType
+    )
+        return undefined;
+    // The alias argument a type node names: a bare reference to one of the
+    // alias's parameters.
+    const argument = (node: ts.TypeNode | undefined): ts.Type | undefined => {
+        const name =
+            node &&
+            ts.isTypeReferenceNode(node) &&
+            !node.typeArguments &&
+            ts.isIdentifier(node.typeName)
+                ? node.typeName.text
+                : undefined;
+        const index =
+            alias.typeParameters?.findIndex(
+                (parameter) => parameter.name.text === name,
+            ) ?? -1;
+        return index < 0 ? undefined : parameters[index];
+    };
+    const template = mapped.type;
+    const keys = argument(mapped.typeParameter.constraint);
+    const record =
+        template &&
+        ts.isIndexedAccessTypeNode(template) &&
+        ts.isTypeReferenceNode(template.indexType) &&
+        ts.isIdentifier(template.indexType.typeName) &&
+        template.indexType.typeName.text === mapped.typeParameter.name.text
+            ? argument(template.objectType)
+            : undefined;
+    return record && keys ? { record, keys, kept: true } : undefined;
+}
 
 /**
  * The object a record type's values already are, which stores them: a
@@ -1574,9 +1675,7 @@ export class DataTypeRegistry {
     ): void {
         if (this.enumMapKeyOrders.has(type.enumName)) return;
         const members = this.enumMembers(type.enumName);
-        const own = Object.keys(
-            Object.fromEntries(keys.map((key) => [key, true])),
-        );
+        const own = ownKeyOrder(keys);
         if (
             own.length !== members.length ||
             own.some((key, index) => key !== members[index])
@@ -1607,6 +1706,72 @@ export class DataTypeRegistry {
         (target, sources, property, node) =>
             this.retainConvertedRecordProperty(target, sources, property, node),
     );
+    /** The own-key orders native records are created and enumerated in. */
+    public readonly keyOrders = new RecordKeyOrders();
+
+    /**
+     * An enumerated struct lays its fields out in the one order its records
+     * create their keys in; records creating them in different orders keep
+     * each its own as documents, and refuse where no document holds them.
+     * One replay settles every struct the program needs settled.
+     */
+    private checkRecordKeyOrders(): void {
+        const reordered: RecordKeyOrderRequired[] = [];
+        const documents: NativeRecordStorageRequired[] = [];
+        this.keyOrders.check(
+            (name) =>
+                this.structsByName
+                    .get(name)
+                    ?.fields.filter(
+                        (field) =>
+                            isPropertyField(field) &&
+                            !isSymbolPropertyKey(field.sourceName),
+                    )
+                    .map((field) => ({
+                        key: field.sourceName,
+                        maybe:
+                            field.optionalProperty === true ||
+                            this.presenceByTags(name, field),
+                    })),
+            (name, orders, node) => {
+                // A class instance creates its keys as its constructor runs.
+                if (this.isClassStruct(name)) return;
+                const source = this.nativeRecordSources.get(name);
+                const record =
+                    source && recordIdentity(this.checker, source.type);
+                if (
+                    orders &&
+                    record &&
+                    !this.storage.demandedKeyOrders(record, orders)
+                ) {
+                    reordered.push(new RecordKeyOrderRequired(record, orders));
+                    return;
+                }
+                const document =
+                    orders ||
+                    (source &&
+                        this.documentRecords.has(
+                            this.structIdentity(source.type),
+                        ))
+                        ? undefined
+                        : this.documentRecordDemand(name);
+                if (document) {
+                    documents.push(new NativeRecordStorageRequired(document));
+                    return;
+                }
+                this.fail(
+                    node,
+                    orders
+                        ? `'${name}' records create their keys in one order its layout does not take; enumerating them would list them in another.`
+                        : `'${name}' records create their own keys in different orders; enumerating them requires each record's own order, which no document holds for these records.`,
+                );
+            },
+        );
+        const [document, ...otherDocuments] = documents;
+        if (document) throw document.joinedWith(otherDocuments);
+        const [order, ...otherOrders] = reordered;
+        if (order) throw order.joinedWith(otherOrders);
+    }
 
     /** An observable extra property joins the concrete record layouts that carried it. */
     private retainConvertedRecordProperty(
@@ -1707,6 +1872,44 @@ export class DataTypeRegistry {
     /** Whether arrays of the named literal union store its members as strings. */
     public storesEnumElementsAsStrings(name: string): boolean {
         return this.storage.stringElementUnions.has(this.enumLiterals(name));
+    }
+
+    /**
+     * Whether array elements of `source` and `target` types are stored
+     * alike but for literal unions whose string storage this compile took
+     * while it lowered (a survey takes a demand at once): an array built
+     * before that demand stores the union's members as tags, one built
+     * after as strings, through optional lanes and nested arrays.
+     */
+    public storedAlikeSinceStart(source: DataType, target: DataType): boolean {
+        const late = (type: DataType): DataType => {
+            switch (type.kind) {
+                case "enum": {
+                    const union = this.enumLiterals(type.name);
+                    return this.storage.takenDuringAttempt(union)
+                        ? { kind: "string" }
+                        : type;
+                }
+                case "optional": {
+                    const inner = late(type.inner);
+                    return inner === type.inner ? type : { ...type, inner };
+                }
+                case "vector":
+                case "span": {
+                    const element = late(type.element);
+                    return element === type.element
+                        ? type
+                        : { ...type, element };
+                }
+                default:
+                    return type;
+            }
+        };
+        const [lateSource, lateTarget] = [late(source), late(target)];
+        return (
+            (lateSource !== source || lateTarget !== target) &&
+            dataTypesEqual(lateSource, lateTarget)
+        );
     }
 
     /**
@@ -1900,6 +2103,11 @@ export class DataTypeRegistry {
         const key = this.computePhantomBrandKey(type);
         this.phantomBrandKeys.set(type, key ?? null);
         return key;
+    }
+
+    /** Whether a checked type is a phantom brand, which no object has without an assertion. */
+    public isPhantomBrand(type: ts.Type): boolean {
+        return this.phantomBrandKey(type) !== undefined;
     }
 
     /** @unjournaled Whether a checked type is a phantom brand, from source alone. */
@@ -2130,6 +2338,8 @@ export class DataTypeRegistry {
     /** Property declarations a getter, and a setter, define. */
     private readonly getterProperties = new EmissionSet<ts.Node>();
     private readonly setterProperties = new EmissionSet<ts.Node>();
+    /** Property declarations whose values are documents (`documentFields`). */
+    private readonly documentProperties = new EmissionSet<ts.Node>();
     /**
      * Property declarations a class's prototype accessor stands for (an
      * `implements`ed or converted class getter): no own property of the
@@ -2216,6 +2426,12 @@ export class DataTypeRegistry {
                 this.withRecordDemand(demand, () =>
                     this.partialRecords.add(this.structIdentity(demand.type)),
                 );
+            for (const name of demand.documentFields ?? [])
+                for (const declaration of this.checker.getPropertyOfType(
+                    demand.type,
+                    name,
+                )?.declarations ?? [])
+                    this.documentProperties.add(declaration);
             for (const { name, setter, own } of demand.accessors ?? [])
                 for (const declaration of this.checker.getPropertyOfType(
                     demand.type,
@@ -2619,6 +2835,50 @@ export class DataTypeRegistry {
         return { ...source, document: true };
     }
 
+    /**
+     * Whether struct `name`'s record type declares a method or an
+     * accessor, which no document holds (`ownedDocument`).
+     */
+    private declaresBehavior(name: string): boolean {
+        const source = this.nativeRecordSources.get(name);
+        return (
+            source !== undefined &&
+            this.checker
+                .getPropertiesOfType(source.type)
+                .some((property) =>
+                    (property.declarations ?? []).some(
+                        (declaration) =>
+                            ts.isMethodSignature(declaration) ||
+                            ts.isMethodDeclaration(declaration) ||
+                            ts.isAccessor(declaration),
+                    ),
+                )
+        );
+    }
+
+    /**
+     * The demand storing property `field` of struct `name`'s records as a
+     * document (`documentFields`); undefined where no source registered the
+     * struct or the property is already one.
+     */
+    private documentFieldDemand(
+        name: string,
+        field: string,
+    ): NativeRecordStorageDemand | undefined {
+        const source = this.nativeRecordSources.get(name);
+        const property =
+            source && this.checker.getPropertyOfType(source.type, field);
+        if (
+            !source ||
+            !property ||
+            (property.declarations ?? []).some((declaration) =>
+                this.documentProperties.has(declaration),
+            )
+        )
+            return undefined;
+        return { ...source, documentFields: [field] };
+    }
+
     /** The document demand naming record type `record` itself; undefined where it has the layout. */
     private ownDocumentDemand(
         record: ts.Type,
@@ -2877,20 +3137,7 @@ export class DataTypeRegistry {
         type: ts.Type,
     ): InstantiatedRecord | undefined {
         if (!this.mentionsSubstitution(type)) return undefined;
-        const object = type as ts.ObjectType;
-        const [generic, arguments_] =
-            type.aliasSymbol && type.aliasTypeArguments?.length
-                ? [type.aliasSymbol, type.aliasTypeArguments]
-                : type.isIntersection()
-                  ? [type, type.types]
-                  : (object.objectFlags & ts.ObjectFlags.Reference) !== 0
-                    ? [
-                          (type as ts.TypeReference).target,
-                          this.checker.getTypeArguments(
-                              type as ts.TypeReference,
-                          ),
-                      ]
-                    : [undefined, []];
+        const [generic, arguments_] = this.genericArguments(type);
         if (!generic) return undefined;
         const resolved = arguments_.map((argument) => {
             const concrete = this.resolveTypeParameter(argument);
@@ -2901,6 +3148,27 @@ export class DataTypeRegistry {
         return resolved.every((argument) => argument !== undefined)
             ? instantiatedRecord(generic, resolved)
             : undefined;
+    }
+
+    /**
+     * The generic declaration a record type instantiates and the arguments
+     * it takes: an alias's symbol, a generic interface's or class's type,
+     * or an intersection itself, of its parts.
+     */
+    private genericArguments(
+        type: ts.Type,
+    ): readonly [ts.Symbol | ts.Type | undefined, readonly ts.Type[]] {
+        const object = type as ts.ObjectType;
+        return type.aliasSymbol && type.aliasTypeArguments?.length
+            ? [type.aliasSymbol, type.aliasTypeArguments]
+            : type.isIntersection()
+              ? [type, type.types]
+              : (object.objectFlags & ts.ObjectFlags.Reference) !== 0
+                ? [
+                      (type as ts.TypeReference).target,
+                      this.checker.getTypeArguments(type as ts.TypeReference),
+                  ]
+                : [undefined, []];
     }
 
     /**
@@ -3180,6 +3448,34 @@ export class DataTypeRegistry {
         return set ? "get-set" : "get";
     }
 
+    /** @unjournaled Pure functions of the checked program: whether a declaration types a read-only array view. */
+    private readonly readonlyArrayDeclarations = new WeakMap<
+        ts.Declaration,
+        boolean
+    >();
+
+    /**
+     * Whether every declaration a field stores types it as a read-only array
+     * view (`readonlyArrayType`): no array grows through the field.
+     */
+    public readonlyArrayField(field: DataStructField): boolean {
+        const declarations = field.declarations ?? [];
+        return (
+            declarations.length > 0 &&
+            declarations.every((declaration) => {
+                let known = this.readonlyArrayDeclarations.get(declaration);
+                if (known === undefined) {
+                    known = readonlyArrayType(
+                        this.checker,
+                        this.checker.getTypeAtLocation(declaration),
+                    );
+                    this.readonlyArrayDeclarations.set(declaration, known);
+                }
+                return known;
+            })
+        );
+    }
+
     /**
      * A field's native initializer from the value it stores: in an accessor
      * slot, the value is held inline. `{}` is the default value.
@@ -3355,14 +3651,23 @@ export class DataTypeRegistry {
             )
         )
             return;
-        for (const declaration of field.declarations ?? [])
-            if (
-                isEngineOwnerStorageDeclaration(declaration) &&
-                !this.storage.engineOwners.has(declaration)
-            ) {
-                this.requireEngineOwner(declaration);
-                return;
-            }
+        const owners = (field.declarations ?? []).filter(
+            isEngineOwnerStorageDeclaration,
+        );
+        // A field whose owner the storage took after this attempt laid it
+        // out (a survey pass takes demands as it lowers) raises that demand
+        // again, for a layout built with it.
+        const owner =
+            owners.find(
+                (declaration) => !this.storage.engineOwners.has(declaration),
+            ) ??
+            owners.find((declaration) =>
+                this.storage.takenDuringAttempt(declaration),
+            );
+        if (owner) {
+            this.requireEngineOwner(owner);
+            return;
+        }
         this.fail(
             node,
             `Resource field '${field.sourceName}' requires represented engine owner storage.`,
@@ -3374,16 +3679,17 @@ export class DataTypeRegistry {
      * node writing it (`nodeOf`), in order. A field's storage depends on its own
      * declarations alone, so the store demands every field that needs its
      * engine in one replay; a field that refuses ends the scan, as the
-     * store would.
+     * store would. `elements` as `requireEngineFieldStorage` takes it.
      */
     public requireEngineFieldsStorage(
         fields: readonly DataStructField[],
         nodeOf: (field: DataStructField) => ts.Node,
+        elements = false,
     ): void {
         const demands: EngineOwnerStorageRequired[] = [];
         for (const field of fields) {
             try {
-                this.requireEngineFieldStorage(field, nodeOf(field));
+                this.requireEngineFieldStorage(field, nodeOf(field), elements);
             } catch (error) {
                 if (!(error instanceof EngineOwnerStorageRequired)) {
                     if (demands.length === 0) throw error;
@@ -3406,23 +3712,43 @@ export class DataTypeRegistry {
                 ? target.inner
                 : target;
         if (present.kind !== "handle") return;
-        const access = unwrapExpression(expression);
-        if (
-            !ts.isPropertyAccessExpression(access) &&
-            !ts.isElementAccessExpression(access)
-        )
-            return;
-        const property = accessedPropertySymbol(this.checker, access);
-        const declaration =
-            property?.declarations?.length === 1
-                ? property.declarations[0]
-                : undefined;
+        const declaration = this.readFieldDeclaration(expression);
         if (declaration)
             this.requireWrittenHandleFieldStorage(
                 declaration,
                 target,
                 expression,
             );
+    }
+
+    /** Whether an expression reads a record field the program types `unknown`. */
+    public isErasedFieldRead(expression: ts.Expression): boolean {
+        const declaration = this.readFieldDeclaration(expression);
+        return (
+            declaration !== undefined &&
+            (ts.isPropertySignature(declaration) ||
+                ts.isPropertyDeclaration(declaration)) &&
+            (this.checker.getTypeAtLocation(declaration).flags &
+                ts.TypeFlags.Unknown) !==
+                0
+        );
+    }
+
+    /** The one declaration of the field an access or a destructured binding reads. */
+    private readFieldDeclaration(
+        expression: ts.Expression,
+    ): ts.Declaration | undefined {
+        const access = unwrapExpression(expression);
+        const property =
+            ts.isPropertyAccessExpression(access) ||
+            ts.isElementAccessExpression(access)
+                ? accessedPropertySymbol(this.checker, access)
+                : ts.isIdentifier(access)
+                  ? this.destructuredField(access)
+                  : undefined;
+        return property?.declarations?.length === 1
+            ? property.declarations[0]
+            : undefined;
     }
 
     /**
@@ -3509,8 +3835,37 @@ export class DataTypeRegistry {
     }
 
     /**
-     * A native handle written to an erased (`unknown`) record field settles
-     * that field's layout as an assertion would: the field keeps the handle.
+     * The field a `const` destructuring binding holds (`const { view } =
+     * entry`, `for (const { view } of entries)`): the member its pattern
+     * reads. A default, a rest or a computed key holds something else.
+     */
+    private destructuredField(
+        identifier: ts.Identifier,
+    ): ts.Symbol | undefined {
+        const element = resolvedSymbol(
+            this.checker,
+            identifier,
+        )?.valueDeclaration;
+        if (
+            !element ||
+            !ts.isBindingElement(element) ||
+            element.initializer ||
+            element.dotDotDotToken ||
+            !ts.isObjectBindingPattern(element.parent) ||
+            variableKind(element) !== "const"
+        )
+            return undefined;
+        const key = bindingElementKey(element);
+        return key === undefined
+            ? undefined
+            : this.checker.getTypeAtLocation(element.parent).getProperty(key);
+    }
+
+    /**
+     * A native handle written to an erased record field (`unknown`) or
+     * parameter (`unknown` or `object`) settles that storage's layout as an
+     * assertion would: it keeps the handle. A parameter's `null` and
+     * `undefined` members make it optional.
      */
     public requireWrittenHandleFieldStorage(
         declaration: ts.Declaration,
@@ -3523,22 +3878,55 @@ export class DataTypeRegistry {
                 : target;
         if (
             present.kind !== "handle" ||
-            (!ts.isPropertySignature(declaration) &&
-                !ts.isPropertyDeclaration(declaration)) ||
-            (this.checker.getTypeAtLocation(declaration).flags &
-                ts.TypeFlags.Unknown) ===
-                0
+            !this.isErasedHandleStorage(declaration)
         )
             return;
-        const storage = this.engineOwnedStorage(target);
+        const absent = ts.isParameter(declaration)
+            ? nullability(this.checker.getTypeAtLocation(declaration))
+            : undefined;
+        const storage = this.engineOwnedStorage(
+            absent?.null || absent?.undefined
+                ? this.nullableType(present, !absent.null)
+                : target,
+        );
         const known = this.storage.assertedHandleFields.get(declaration);
         if (!known || erasedFieldWidens(known, storage))
             throw new AssertedHandleFieldStorageRequired(declaration, storage);
         if (!erasedFieldHolds(known, storage))
             this.fail(
                 node,
-                "An erased field holds incompatible native handles.",
+                "An erased field or parameter holds incompatible native handles.",
             );
+    }
+
+    /**
+     * Whether a declaration is storage a native handle can settle: a record
+     * field typed `unknown`, or a program parameter, not a rest one, typed
+     * `unknown` or `object` besides `null` and `undefined`.
+     */
+    private isErasedHandleStorage(
+        declaration: ts.Declaration,
+    ): declaration is ErasedHandleStorage {
+        const type = this.checker.getTypeAtLocation(declaration);
+        if (
+            ts.isPropertySignature(declaration) ||
+            ts.isPropertyDeclaration(declaration)
+        )
+            return (type.flags & ts.TypeFlags.Unknown) !== 0;
+        return (
+            ts.isParameter(declaration) &&
+            !declaration.dotDotDotToken &&
+            !declaration.getSourceFile().isDeclarationFile &&
+            ((type.flags & ts.TypeFlags.Unknown) !== 0 ||
+                holdsObjectKeyword(type))
+        );
+    }
+
+    /** The handle storage a reached use settled an erased parameter with. */
+    public assertedParameterStorage(
+        declaration: ts.ParameterDeclaration,
+    ): DataType | undefined {
+        return this.storage.assertedHandleFields.get(declaration);
     }
 
     private assertedHandleFieldStorage(
@@ -3897,9 +4285,15 @@ export class DataTypeRegistry {
                     true,
                 );
             // Every property any arm declares takes one storage in the
-            // joined layout, including those the union's own fields omit.
+            // joined layout, including those the union's own fields omit;
+            // two instantiations of one generic record, the storage their
+            // structs give it.
+            const generic = this.genericArguments(sourceRecord)[0];
             if (
-                sourceInstantiation || targetInstantiation
+                sourceInstantiation ||
+                targetInstantiation ||
+                (generic !== undefined &&
+                    generic === this.genericArguments(targetRecord)[0])
                     ? union !== sourceUnion ||
                       this.structLayoutsCompatible(sourceFields, targetFields)
                     : layoutsCompatible(
@@ -3927,6 +4321,39 @@ export class DataTypeRegistry {
                 });
                 return;
             }
+            // A fresh literal's records the program reads only as the
+            // target type are built in the target's layout: one object.
+            if (
+                !union &&
+                !sourceUnion &&
+                !sourceInstantiation &&
+                !targetInstantiation &&
+                !this.demandedJoins
+                    .get(sourceRecord)
+                    ?.some(
+                        (join) =>
+                            join.target === targetRecord &&
+                            join.kind === "construction",
+                    ) &&
+                this.constructedAsTarget(
+                    sourceRecord,
+                    targetRecord,
+                    observation,
+                )
+            ) {
+                this.requireJoin({
+                    ...source,
+                    type: sourceRecord,
+                    joins: [
+                        {
+                            source: sourceRecord,
+                            target: targetRecord,
+                            kind: "construction",
+                        },
+                    ],
+                });
+                return;
+            }
         }
         return this.fail(
             node,
@@ -3935,10 +4362,42 @@ export class DataTypeRegistry {
     }
 
     /**
+     * Whether records of an object literal's type (its symbol declared by
+     * literals alone) can be built in a plain target record's layout: the
+     * target declares each of its
+     * properties, and nothing reads, writes, enumerates or copies them
+     * through the literal's own type (`observedUnderOwnType`).
+     */
+    private constructedAsTarget(
+        literal: ts.Type,
+        target: ts.Type,
+        observation: RecordObservationContext,
+    ): boolean {
+        const declarations = literal.getSymbol()?.declarations ?? [];
+        return (
+            declarations.length > 0 &&
+            declarations.every(ts.isObjectLiteralExpression) &&
+            isPlainRecord(this.checker, target) &&
+            this.checker
+                .getPropertiesOfType(literal)
+                .every(
+                    (property) =>
+                        this.checker.getPropertyOfType(
+                            target,
+                            property.name,
+                        ) !== undefined,
+                ) &&
+            !observedUnderOwnType(observation, literal)
+        );
+    }
+
+    /**
      * Shared records and arrays retain nested records through one dictionary
      * or document view. A field one record stores as a dynamic value and the
      * other as an array or map holds one object in JavaScript: the record
-     * storing it typed takes the document layout, which holds that value.
+     * storing it typed takes the document layout, which holds that value,
+     * or, where its type declares a method or an accessor, stores just that
+     * field as a document.
      */
     public requireSharedValueViews(source: DataType, target: DataType): void {
         const seen = new Set<string>();
@@ -3974,6 +4433,20 @@ export class DataTypeRegistry {
                     left.name,
                     right.name,
                 );
+            // One function under both types takes and returns one value.
+            if (
+                left.kind === "function" &&
+                right.kind === "function" &&
+                !left.generic &&
+                !right.generic &&
+                left.parameters.length === right.parameters.length
+            ) {
+                left.parameters.forEach((parameter, index) =>
+                    compare(parameter, right.parameters[index]!),
+                );
+                if (left.result && right.result)
+                    compare(left.result, right.result);
+            }
         };
         const container = (type: DataType): boolean =>
             type.kind === "vector" ||
@@ -3999,7 +4472,14 @@ export class DataTypeRegistry {
                         : stored.kind === "json" && container(held)
                           ? leftRecord
                           : undefined;
-                const demand = typed && this.documentRecordDemand(typed);
+                // A document holds no method or accessor: a record type
+                // declaring one keeps its native layout, the field the
+                // document holds stored as a document.
+                const demand =
+                    typed &&
+                    (this.declaresBehavior(typed)
+                        ? this.documentFieldDemand(typed, field.sourceName)
+                        : this.documentRecordDemand(typed));
                 if (demand) throw new NativeRecordStorageRequired(demand);
                 compare(from.type, field.type);
             }
@@ -4203,6 +4683,16 @@ export class DataTypeRegistry {
         right: DataType,
     ): DataType | undefined {
         if (dataTypesEqual(left, right)) return left;
+        // One declared signature stored generically in one layout is that
+        // table in both: it holds every concrete signature its calls reach.
+        if (
+            left.kind === "function" &&
+            right.kind === "function" &&
+            !left.generic !== !right.generic &&
+            left.signatureSite !== undefined &&
+            left.signatureSite === right.signatureSite
+        )
+            return left.generic ? left : right;
         // One signature declared twice is stored once; the storage keeps
         // only the completion facts every value it holds proves.
         if (left.kind === "function" && right.kind === "function") {
@@ -4879,6 +5369,17 @@ export class DataTypeRegistry {
         const concrete = this.resolveTypeParameter(type);
         const direct = pinnedHandleKind(concrete);
         if (direct) return direct;
+        // Pinned types of one engine object (`ShaderMaterial & MaterialView`)
+        // intersect to that object.
+        if (concrete.isIntersection()) {
+            const kinds = new Set(
+                concrete.types.map((member) =>
+                    pinnedHandleKind(this.resolveTypeParameter(member)),
+                ),
+            );
+            const [kind] = kinds;
+            if (kinds.size === 1 && kind) return kind;
+        }
         const sources = concrete.isIntersection()
             ? concrete.types
             : (concrete.flags & ts.TypeFlags.Object) !== 0 &&
@@ -5231,7 +5732,16 @@ export class DataTypeRegistry {
         if ((objectType.objectFlags & ts.ObjectFlags.Reference) !== 0) {
             const reference = type as ts.TypeReference;
             const target = reference.target;
-            if (library && libraryName(type) === "Promise") {
+            // A PromiseLike is a native promise where no site of the program
+            // gives an object a `then` member (`definitions`).
+            if (
+                library &&
+                (libraryName(type) === "Promise" ||
+                    (libraryName(type) === "PromiseLike" &&
+                        !programObservations(
+                            this.classHierarchy.program,
+                        ).definitions.has("then")))
+            ) {
                 const [argument] = this.checker.getTypeArguments(reference);
                 if (!argument) return undefined;
                 const resolvedType = this.resolveTypeParameter(argument);
@@ -5803,6 +6313,7 @@ export class DataTypeRegistry {
             const given = "symbol" in source ? passed?.[index] : undefined;
             const mapped =
                 given ??
+                (parameter && this.assertedParameterStorage(parameter)) ??
                 (restArguments &&
                 "symbol" in source &&
                 this.isUnknownRestParameter(source.symbol)
@@ -5834,6 +6345,10 @@ export class DataTypeRegistry {
                             ? this.dynamicJsonType(parameterType)
                             : undefined) ??
                         this.fromStoredTsType(parameterType, location) ??
+                        // Every call writes its argument here: a record
+                        // type reaching `unknown` members stores them as
+                        // dynamic values, as a result's does.
+                        this.storedDynamicRecordType(parameterType, location) ??
                         // An `unknown` parameter passed `undefined`, `null`
                         // or `{}`, values without storage of their own,
                         // holds them as the dynamic value it can be.
@@ -5978,7 +6493,8 @@ export class DataTypeRegistry {
             ...(optionalParameters.length > 0 ? { optionalParameters } : {}),
         };
         // Parameter declarations connect a stored signature to the body's
-        // demands for nullish tags or a resource's engine owner.
+        // demands for nullish tags, a resource's engine owner or an erased
+        // parameter's handle.
         const sites = declarations.map((entry, index) => {
             if (!entry) return "";
             const [declaration, symbol] = entry;
@@ -5989,7 +6505,8 @@ export class DataTypeRegistry {
             if (
                 (!absent.null ||
                     (!absent.undefined && !declaration.initializer)) &&
-                dataTypesEqual(stored, this.collectionKeyStorage(stored))
+                dataTypesEqual(stored, this.collectionKeyStorage(stored)) &&
+                !this.isErasedHandleStorage(declaration)
             )
                 return "";
             const site = `${declaration.getSourceFile().fileName}:${declaration.pos}`;
@@ -6020,6 +6537,30 @@ export class DataTypeRegistry {
     ): ts.ParameterDeclaration | undefined {
         const site = type.parameterSites?.[index];
         return site ? this.parameterSites.get(site) : undefined;
+    }
+
+    /**
+     * A function stored where a signature's erased parameter receives the
+     * native handle its own parameter holds: that parameter takes the
+     * handle's storage too.
+     */
+    public requireErasedHandleParameters(
+        source: DataType<"function">,
+        target: DataType<"function">,
+        node: ts.Node,
+    ): void {
+        source.parameters.forEach((stored, index) => {
+            const declaration = this.signatureParameterDeclaration(
+                target,
+                index,
+            );
+            if (declaration && target.parameters[index]?.kind === "json")
+                this.requireWrittenHandleFieldStorage(
+                    declaration,
+                    stored,
+                    node,
+                );
+        });
     }
 
     private fromGenericFunction(
@@ -7023,7 +7564,9 @@ export class DataTypeRegistry {
             );
         }
 
-        return this.internMappedStruct(name, fields, presences);
+        return this.internMappedStruct(name, fields, presences, undefined, [
+            type,
+        ]);
     }
 
     /** Required, non-null payloads use their existing empty storage for an absent union key. */
@@ -7129,7 +7672,9 @@ export class DataTypeRegistry {
                 ),
             );
         }
-        return this.internMappedStruct(name, fields, presences);
+        return this.internMappedStruct(name, fields, presences, undefined, [
+            type,
+        ]);
     }
 
     /**
@@ -7682,7 +8227,9 @@ export class DataTypeRegistry {
                 ),
             );
         }
-        return this.internMappedStruct(name, fields, presences);
+        return this.internMappedStruct(name, fields, presences, undefined, [
+            type,
+        ]);
     }
 
     /**
@@ -8144,6 +8691,16 @@ export class DataTypeRegistry {
         ) {
             return true;
         }
+        // A mapped type over a parameter (`Omit<T, "id">`) has no members
+        // to walk: its alias arguments name what it maps.
+        if (
+            (objectType.objectFlags & ts.ObjectFlags.Mapped) !== 0 &&
+            type.aliasTypeArguments?.some((argument) =>
+                this.mentionsSubstitution(argument, seen),
+            )
+        ) {
+            return true;
+        }
         if (
             callSignatures(this.checker, type, "exact").some(
                 (signature) =>
@@ -8232,6 +8789,12 @@ export class DataTypeRegistry {
     ): DataType | undefined {
         const assertedHandle = this.assertedHandleFieldStorage(node, property);
         if (assertedHandle) return assertedHandle;
+        if (
+            property?.declarations?.some((declaration) =>
+                this.documentProperties.has(declaration),
+            )
+        )
+            return { kind: "json" };
         const resolved = this.resolveTypeParameter(type);
         const members = unionMembers(resolved);
         // A required null-only field has storage before its record joins
@@ -8294,36 +8857,113 @@ export class DataTypeRegistry {
             if (member.key === undefined) return undefined;
             keys.push(member.key);
         }
-        // An object of these keys orders them as JavaScript does.
-        return Object.keys(
-            Object.fromEntries(keys.map((key) => [key, undefined])),
-        );
+        return ownKeyOrder(keys);
     }
 
     /** Intersection constraints keep their refinements without hiding concrete generic fields. */
     private structProperties(type: ts.Type): readonly ts.Symbol[] {
+        const keyed = this.keyedProperties(type);
+        if (keyed) return keyed;
         const declared = this.checker.getPropertiesOfType(type);
         // A literal's fields follow the order its own keys are created in.
         const order = this.objectLiteralKeyOrder(type);
-        const positions = new Map(order?.map((key, index) => [key, index]));
-        const at = (symbol: ts.Symbol): number =>
-            positions.get(symbol.name) ?? positions.size;
         const properties = order
-            ? [...declared].sort((left, right) => at(left) - at(right))
+            ? inKeyOrder(declared, (symbol) => symbol.name, order)
             : declared;
         if (!type.isIntersection()) return properties;
-        const byName = new Map(
+        // In its members' order, as the checker orders a concrete
+        // intersection's: a member a type parameter names contributes the
+        // properties of the instantiation in force where it stands.
+        const declaredByName = new Map(
             properties.map((property) => [property.name, property]),
         );
+        const byName = new Map<string, ts.Symbol>();
+        // Each name's properties as the members declare it under the
+        // instantiation, and whether a substituted member is among them.
+        const resolved = new Map<
+            string,
+            { symbols: ts.Symbol[]; substituted: boolean }
+        >();
         for (const member of type.types) {
             const concrete = this.resolveTypeParameter(member);
-            for (const property of concrete.isIntersection()
-                ? this.structProperties(concrete)
-                : this.checker.getPropertiesOfType(concrete))
+            const keyed = this.keyedProperties(concrete);
+            const substituted = concrete !== member || keyed !== undefined;
+            for (const property of keyed ??
+                (concrete.isIntersection()
+                    ? this.structProperties(concrete)
+                    : this.checker.getPropertiesOfType(concrete))) {
+                const entry = resolved.get(property.name);
+                if (entry) {
+                    entry.symbols.push(property);
+                    entry.substituted ||= substituted;
+                } else
+                    resolved.set(property.name, {
+                        symbols: [property],
+                        substituted,
+                    });
                 if (!byName.has(property.name))
-                    byName.set(property.name, property);
+                    byName.set(
+                        property.name,
+                        declaredByName.get(property.name) ?? property,
+                    );
+            }
         }
+        // The checker types a property a substituted member declares against
+        // the parameter (`T["tower"]`); where every member declaring it
+        // agrees under the instantiation, the property is that one.
+        for (const [name, { symbols, substituted }] of resolved)
+            if (substituted && this.agreeingProperties(symbols))
+                byName.set(name, symbols[0]!);
+        for (const property of properties)
+            if (!byName.has(property.name)) byName.set(property.name, property);
         return [...byName.values()];
+    }
+
+    /**
+     * Whether properties of one name are one property: one type, the same
+     * optionality and mutability, and data declarations only (an accessor's
+     * declaration decides its slot).
+     */
+    private agreeingProperties(symbols: readonly ts.Symbol[]): boolean {
+        const [first] = symbols;
+        if (!first) return false;
+        const type = this.checker.getTypeOfSymbol(first);
+        const optional = (first.flags & ts.SymbolFlags.Optional) !== 0;
+        const readOnly = propertyIsReadOnly(first);
+        return symbols.every(
+            (symbol) =>
+                this.checker.getTypeOfSymbol(symbol) === type &&
+                ((symbol.flags & ts.SymbolFlags.Optional) !== 0) === optional &&
+                propertyIsReadOnly(symbol) === readOnly &&
+                (symbol.declarations ?? []).every(
+                    (declaration) =>
+                        !this.getterProperties.has(declaration) &&
+                        !this.setterProperties.has(declaration),
+                ),
+        );
+    }
+
+    /**
+     * The properties of a mapped type selecting a record's properties by
+     * key (`keyedSelection`) whose arguments the instantiation in force
+     * substitutes: those of the record that the keys' literals select, or
+     * leave, each keeping its modifiers, as a homomorphic mapped type does.
+     * Undefined for any other type and for keys that are not string
+     * literals.
+     */
+    private keyedProperties(type: ts.Type): readonly ts.Symbol[] | undefined {
+        const selection = keyedSelection(type);
+        if (!selection || !this.mentionsSubstitution(type)) return undefined;
+        const names = new Set<string>();
+        for (const key of unionMembers(
+            this.resolveTypeParameter(selection.keys),
+        )) {
+            if (!key.isStringLiteral()) return undefined;
+            names.add(key.value);
+        }
+        return this.structProperties(
+            this.resolveTypeParameter(selection.record),
+        ).filter((property) => names.has(property.name) === selection.kept);
     }
 
     /**
@@ -8524,7 +9164,14 @@ export class DataTypeRegistry {
             let unionField: DataType | undefined;
             for (const [index, value] of values.entries()) {
                 if (!storing(value) || empty(value)) continue;
-                const { mapped } = value;
+                // A shape typing it only as a dynamic value (`unknown`)
+                // holds what the others store in it as dynamic values.
+                const mapped =
+                    value.mapped ??
+                    this.withDynamicJsonTypes(
+                        true,
+                        () => valueOf(declared[index]!).mapped,
+                    );
                 const next =
                     mapped && this.joinedStorage(stored, storage(mapped));
                 if (next) {
@@ -8672,6 +9319,7 @@ export class DataTypeRegistry {
             fields,
             presences,
             call,
+            [type, ...(component?.shapes ?? [])],
         );
         if (
             [...layout.properties.values()].some((declared) =>
@@ -8696,12 +9344,53 @@ export class DataTypeRegistry {
         return this.prototypeAccessorStructs.has(name);
     }
 
+    /**
+     * The order the key orders demanded for `records` put `keys` in
+     * (`RecordKeyOrderRequired`); undefined where none is demanded.
+     */
+    private demandedKeyOrder(
+        records: readonly ts.Type[],
+        keys: readonly string[],
+    ): string[] | undefined {
+        const demanded = [...new Set(records)].flatMap((record) => {
+            const orders = this.storage.recordKeyOrders.get(
+                recordIdentity(this.checker, record),
+            );
+            return orders ? [orders] : [];
+        });
+        return demanded.length > 0
+            ? agreedKeyOrder(demanded.flat(), keys)
+            : undefined;
+    }
+
+    /**
+     * The struct of `fields`, an existing one with the same layout or a new
+     * one: an enumerated record type of `records` lays its fields out in the
+     * order its records create their keys in (`demandedKeyOrder`).
+     */
     private internMappedStruct(
         provisionalName: string,
         fields: DataStructField[],
         presences: readonly FieldPresence[],
         call?: DataType<"function">,
+        records: readonly ts.Type[] = [],
     ): DataType<"struct"> {
+        const order = this.demandedKeyOrder(
+            records,
+            fields.map((field) => field.sourceName),
+        );
+        if (order) {
+            const placed = inKeyOrder(
+                fields.map((field, index) => ({
+                    field,
+                    presence: presences[index]!,
+                })),
+                ({ field }) => field.sourceName,
+                order,
+            );
+            fields = placed.map(({ field }) => field);
+            presences = placed.map(({ presence }) => presence);
+        }
         fields = fields.map((field) => ({
             ...field,
             type: this.engineFieldStorage(field.type, field.declarations),
@@ -9566,10 +10255,17 @@ export class DataTypeRegistry {
      * construction. Returns when the replay already does.
      */
     public requireSharedClass(declaration: ts.ClassLikeDeclaration): void {
-        if (!this.isSharedClass(declaration))
-            throw new SharedClassStorageRequired(
-                this.sharedClassKey(declaration),
-            );
+        const demand = this.sharedClassDemand(declaration);
+        if (demand) throw demand;
+    }
+
+    /** The replay sharing the class from its first construction, unless this one does. */
+    public sharedClassDemand(
+        declaration: ts.ClassLikeDeclaration,
+    ): SharedClassStorageRequired | undefined {
+        return this.isSharedClass(declaration)
+            ? undefined
+            : new SharedClassStorageRequired(this.sharedClassKey(declaration));
     }
 
     /** Whether a replay shares the class from its first construction. */
@@ -10337,6 +11033,38 @@ export class DataTypeRegistry {
     }
 
     /**
+     * Whether a value of `type` is plain data: strings, numbers, booleans
+     * and enums, optionals, unions and lists of them, and structs of those.
+     */
+    public holdsPlainData(type: DataType, node: ts.Node, depth = 0): boolean {
+        if (depth > 4) return false;
+        switch (type.kind) {
+            case "string":
+            case "number":
+            case "boolean":
+            case "enum":
+                return true;
+            case "optional":
+            case "tagged":
+                return this.holdsPlainData(type.inner, node, depth + 1);
+            case "vector":
+                return this.holdsPlainData(type.element, node, depth + 1);
+            case "union":
+                return type.members.every((member) =>
+                    this.holdsPlainData(member, node, depth + 1),
+                );
+            case "struct":
+                return this.structFields(type.name, node, "accessors").every(
+                    (field) =>
+                        !field.accessor &&
+                        this.holdsPlainData(field.type, node, depth + 1),
+                );
+            default:
+                return false;
+        }
+    }
+
+    /**
      * A struct's fields. A use that reads or writes every field as stored
      * data refuses an accessor-backed one; the uses that run accessors pass
      * `"accessors"`.
@@ -10538,13 +11266,15 @@ export class DataTypeRegistry {
     /**
      * Materializes a uniform static numeric table (nested readonly array
      * literals with numeric leaves) as a generated constant. Returns the
-     * table's native reference and dimensions.
+     * table's native reference and dimensions. Each row and leaf is read
+     * through `unwrap`, as the caller's shape test reads it.
      */
     public registerTable(
         declaration: ts.Node,
         preferredName: string,
         literal: ts.ArrayLiteralExpression,
         compileLeaf: (expression: ts.Expression) => number,
+        unwrap: (expression: ts.Expression) => ts.Expression,
     ): { reference: string; dimensions: number[] } {
         const existing = this.tables.get(declaration);
         if (existing) {
@@ -10553,12 +11283,17 @@ export class DataTypeRegistry {
                 dimensions: existing.dimensions,
             };
         }
-        const dimensions = this.tableDimensions(literal, compileLeaf);
+        const dimensions = this.tableDimensions(literal, compileLeaf, unwrap);
         const name = this.uniqueName(
             sanitizeIdentifier(preferredName),
             this.tableNames,
         );
-        const values = this.renderTableValues(literal, dimensions, compileLeaf);
+        const values = this.renderTableValues(
+            literal,
+            dimensions,
+            compileLeaf,
+            unwrap,
+        );
         this.tables.set(declaration, {
             name,
             dimensions,
@@ -10628,6 +11363,7 @@ export class DataTypeRegistry {
     private tableDimensions(
         literal: ts.ArrayLiteralExpression,
         compileLeaf: (expression: ts.Expression) => number,
+        unwrap: (expression: ts.Expression) => ts.Expression,
     ): number[] {
         if (literal.elements.length === 0) {
             this.fail(
@@ -10635,17 +11371,22 @@ export class DataTypeRegistry {
                 "Static tables require non-empty array literals.",
             );
         }
-        const first = literal.elements[0]!;
+        const first = unwrap(literal.elements[0]!);
         if (ts.isArrayLiteralExpression(first)) {
-            const inner = this.tableDimensions(first, compileLeaf);
-            for (const element of literal.elements) {
+            const inner = this.tableDimensions(first, compileLeaf, unwrap);
+            for (const entry of literal.elements) {
+                const element = unwrap(entry);
                 if (!ts.isArrayLiteralExpression(element)) {
                     this.fail(
                         element,
                         "Static tables require uniform nesting.",
                     );
                 }
-                const elementDims = this.tableDimensions(element, compileLeaf);
+                const elementDims = this.tableDimensions(
+                    element,
+                    compileLeaf,
+                    unwrap,
+                );
                 if (elementDims.join(",") !== inner.join(",")) {
                     this.fail(
                         element,
@@ -10656,7 +11397,7 @@ export class DataTypeRegistry {
             return [literal.elements.length, ...inner];
         }
         for (const element of literal.elements) {
-            compileLeaf(element);
+            compileLeaf(unwrap(element));
         }
         return [literal.elements.length];
     }
@@ -10665,21 +11406,23 @@ export class DataTypeRegistry {
         literal: ts.ArrayLiteralExpression,
         dimensions: number[],
         compileLeaf: (expression: ts.Expression) => number,
+        unwrap: (expression: ts.Expression) => ts.Expression,
     ): string {
         // The innermost numeric row is a JavaScript tuple and every outer level
         // is a std::array aggregate. Preserve the aggregate's double braces while
         // constructing the row through Tuple's initializer-list constructor.
         if (dimensions.length === 1) {
             return `{${literal.elements
-                .map((element) => doubleLiteral(compileLeaf(element)))
+                .map((element) => doubleLiteral(compileLeaf(unwrap(element))))
                 .join(", ")}}`;
         }
         return `{{${literal.elements
             .map((element) =>
                 this.renderTableValues(
-                    element as ts.ArrayLiteralExpression,
+                    unwrap(element) as ts.ArrayLiteralExpression,
                     dimensions.slice(1),
                     compileLeaf,
+                    unwrap,
                 ),
             )
             .join(", ")}}}`;
@@ -10852,6 +11595,7 @@ export class DataTypeRegistry {
                         return;
                     }
                     this.jsonSerializedStructs.set(current.name, node);
+                    this.keyOrders.noteEnumeration(current.name, node);
                     path.push(current.name);
                     for (const field of this.structFields(
                         current.name,
@@ -11130,8 +11874,13 @@ export class DataTypeRegistry {
                     );
             }
         this.jsonBoxedStructs.set(type.name, node);
+        this.keyOrders.noteEnumeration(type.name, node);
         this.cppType(type);
-        for (const field of this.structFields(type.name, node, "accessors")) {
+        for (const field of this.structFields(
+            type.name,
+            node,
+            "accessors",
+        ).filter(isPropertyField)) {
             // The view lists a field among its own keys while it is one.
             this.ownPresence(type.name, field, "value", "->", node);
             if (
@@ -11154,7 +11903,9 @@ export class DataTypeRegistry {
             `inline bbl::js::Array<std::string> json_value_keys(const ${name}& value);`,
         ]);
         for (const name of names) {
-            const fields = this.structsByName.get(name)!.fields;
+            const fields = this.structsByName
+                .get(name)!
+                .fields.filter(isPropertyField);
             const node = this.jsonBoxedStructs.get(name)!;
             const presences = fields.map((field) =>
                 this.ownPresence(name, field, "value", "->", node),
@@ -11476,6 +12227,7 @@ export class DataTypeRegistry {
     public renderPreamble(structuredClone = false): DataPreamble {
         this.checkFieldPresenceReads();
         this.absentProperties.check();
+        this.checkRecordKeyOrders();
         const used = this.reachableNamedTypes();
         if (
             used.structs.size === 0 &&

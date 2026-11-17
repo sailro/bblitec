@@ -14,6 +14,7 @@
 #include <bblite/features/live_task_add.hpp>
 #include <bblite/features/render_target_disposal.hpp>
 #include <bblite/features/render_task_transmission.hpp>
+#include <bblite/features/depth_resolve_task.hpp>
 
 #include "pal_sdl_gpu_scene.hpp"
 
@@ -383,7 +384,8 @@ void create_frame_graph_textures(GpuState& state, const Engine& engine,
             target.depth = create_frame_texture(
                 state.device, target.depth_format, samples, target.width, target.height,
                 SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET |
-                    (record.sampled_depth ? SDL_GPU_TEXTUREUSAGE_SAMPLER : 0),
+                    (record.sampled_depth || record.depth_binding ? SDL_GPU_TEXTUREUSAGE_SAMPLER
+                                                                  : 0),
                 // One layer per cascade for a cascaded shadow map, one for
                 // every other attachment. `create_render_target` normalises
                 // it, so the record's own invariant is at least one.
@@ -577,12 +579,12 @@ void save_geometry_id_buffer_png(GpuState& state, std::uint32_t width, std::uint
 }
 #endif
 
-#if BBLITE_RENDERER_TRANSMISSION || BBLITE_RENDER_TASK_TRANSMISSION
+#if BBLITE_RENDERER_TRANSMISSION || BBLITE_RENDER_TASK_TRANSMISSION || BBLITE_DEPTH_RESOLVE_TASK
 SDL_GPUGraphicsPipeline* create_fullscreen_pipeline(SDL_GPUDevice* device,
                                                     const PinnedStage& vertex,
                                                     const PinnedStage& fragment,
-                                                    SDL_GPUTextureFormat format,
-                                                    const char* label) {
+                                                    SDL_GPUTextureFormat format, const char* label,
+                                                    bool depth) {
     SDL_GPUColorTargetDescription target{};
     target.format = format;
     SDL_GPUGraphicsPipelineCreateInfo info{};
@@ -591,15 +593,25 @@ SDL_GPUGraphicsPipeline* create_fullscreen_pipeline(SDL_GPUDevice* device,
     info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
     info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
     info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
-    info.target_info.color_target_descriptions = &target;
-    info.target_info.num_color_targets = 1;
+    if (depth) {
+        info.depth_stencil_state.enable_depth_test = true;
+        info.depth_stencil_state.enable_depth_write = true;
+        info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_ALWAYS;
+        info.target_info.has_depth_stencil_target = true;
+        info.target_info.depth_stencil_format = format;
+    } else {
+        info.target_info.color_target_descriptions = &target;
+        info.target_info.num_color_targets = 1;
+    }
     SDL_GPUGraphicsPipeline* pipeline =
         create_sdl_gpu_graphics_pipeline(device, vertex.shader, &info);
     if (!pipeline)
         gpu_error(label);
     return pipeline;
 }
+#endif
 
+#if BBLITE_RENDERER_TRANSMISSION || BBLITE_RENDER_TASK_TRANSMISSION
 void encode_grab_pass(SDL_GPUCommandBuffer* command, SDL_GPUGraphicsPipeline* pipeline,
                       SDL_GPUTexture* target, const SDL_GPUTextureSamplerBinding* sampled,
                       SDL_GPUTexture* storage) {
@@ -616,6 +628,54 @@ void encode_grab_pass(SDL_GPUCommandBuffer* command, SDL_GPUGraphicsPipeline* pi
     } else {
         SDL_BindGPUFragmentSamplers(pass, 0, sampled, 1);
     }
+    count_gpu_draw(SDL_DrawGPUPrimitives, pass, 3, 1, 0, 0);
+}
+#endif
+
+#if BBLITE_DEPTH_RESOLVE_TASK
+void encode_depth_resolve(GpuState& state, const Engine& engine, SDL_GPUCommandBuffer* command,
+                          const FrameTaskRecord& task) {
+    const TargetUser user = task_target_user(task);
+    const DepthResolveTaskOptions& options = task.depth_resolve;
+    const RenderTargetRecord& source_record = resolve_render_target(engine, options.source, user);
+    const RenderTargetRecord& target_record = resolve_render_target(engine, options.target, user);
+    const GpuRenderTarget& source = handle_at(state.render_targets, options.source);
+    const GpuRenderTarget& target = handle_at(state.render_targets, options.target);
+    require_depth_resolve(options, source_record, target_record, {source.width, source.height},
+                          {target.width, target.height},
+                          target_sample_count(state, source_record) != SDL_GPU_SAMPLECOUNT_1);
+    auto cached =
+        std::find_if(state.depth_resolve_pipelines.begin(), state.depth_resolve_pipelines.end(),
+                     [&](const auto& entry) { return entry.first == target.depth_format; });
+    if (cached == state.depth_resolve_pipelines.end()) {
+        const PinnedStage vertex =
+            load_pinned_stage(state.device, "depth-resolve.vert", SDL_GPU_SHADERSTAGE_VERTEX);
+        const PinnedStage fragment =
+            load_pinned_stage(state.device, "depth-resolve.frag", SDL_GPU_SHADERSTAGE_FRAGMENT);
+        // The pin's pipeline: no colour target, the target's depth written
+        // under `always`.
+        OwnedSdlPipeline pipeline{
+            create_fullscreen_pipeline(state.device, vertex, fragment, target.depth_format,
+                                       "SDL_CreateGPUGraphicsPipeline depth resolve", true),
+            {state.device}};
+        state.depth_resolve_pipelines.emplace_back(target.depth_format, std::move(pipeline));
+        cached = std::prev(state.depth_resolve_pipelines.end());
+    }
+    SDL_GPUDepthStencilTargetInfo depth{};
+    depth.texture = target.depth;
+    depth.clear_depth = upstream::depth_resolve_clear_depth;
+    depth.load_op = SDL_GPU_LOADOP_CLEAR;
+    depth.store_op = SDL_GPU_STOREOP_STORE;
+    depth.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
+    depth.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+    SdlRenderPass pass{SDL_BeginGPURenderPass(command, nullptr, 0, &depth)};
+    if (!pass)
+        gpu_error("SDL_BeginGPURenderPass depth resolve");
+    SDL_BindGPUGraphicsPipeline(pass, cached->second.get());
+    // A Texture2DMS is Load()-ed and carries no sampler: it binds as a
+    // storage texture.
+    SDL_GPUTexture* const source_depth = source.depth;
+    SDL_BindGPUFragmentStorageTextures(pass, 0, &source_depth, 1);
     count_gpu_draw(SDL_DrawGPUPrimitives, pass, 3, 1, 0, 0);
 }
 #endif

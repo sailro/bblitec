@@ -53,6 +53,7 @@ import type { EngineLifecycle } from "./engine-lifecycle.js";
 import type { SharedClosureAnalysis } from "./shared-closure-analysis.js";
 import type { DynamicBindingStorage } from "./dynamic-binding-storage.js";
 import type { NativeEmissionRegistry } from "./native-emission-registry.js";
+import type { ShaderStage } from "../shader-ir.js";
 import type { AssetRegistry } from "./asset-registry.js";
 import type { AdmissionRecorder } from "./admissions.js";
 import type { IntrinsicOptions } from "./intrinsic-options.js";
@@ -67,6 +68,16 @@ export type NativeReturnValueCompiler = (
     type: DataType,
     node: ts.Node,
 ) => string;
+
+/** A shader stage's text and the uniforms it reads its lifted numbers from. */
+export interface ShaderSourceText {
+    source: string;
+    dynamicUniforms: Array<{
+        name: string;
+        type: "f32";
+        components: string[];
+    }>;
+}
 
 /** Where a native declaration was emitted (`emissionMark`). */
 export type EmissionMark = Pick<
@@ -158,6 +169,8 @@ export interface LoweringServices {
     >;
     /** Record parameters a storage demand gave their own object. */
     readonly parameterObjects: ReadonlySet<ts.ParameterDeclaration>;
+    /** Whether the storage took a demand for `declaration` while this attempt lowered (`ReplayStorage.takenDuringAttempt`). */
+    storageTakenDuringAttempt(declaration: ts.Declaration): boolean;
     readonly conditions: ConditionLowerer;
     readonly browserErasure: BrowserErasure;
     readonly declarations: DeclarationLowerer;
@@ -363,6 +376,8 @@ export interface LoweringServices {
         cppType?: string,
     ): NativeCaptureBinding;
     takeNativeTemporary(cpp: string, boundary: number): string;
+    /** Whether `cpp` names a native local registered since `boundary`. */
+    nativeLocalSince(cpp: string, boundary: number): boolean;
     /** Whether a value names a native binding nothing reassigns. */
     hasStableNativeBinding(value: Value): boolean;
     allocateUserFunctionPrefix(): string;
@@ -377,6 +392,16 @@ export interface LoweringServices {
     objectProperties(
         object: ts.ObjectLiteralExpression,
     ): readonly ts.ObjectLiteralElementLike[];
+    /** The literal `{ key: owner.key, ... }` of `keys`, placed where `owner` stands. */
+    memberLiteral(
+        owner: ts.Expression,
+        keys: readonly string[],
+    ): ts.ObjectLiteralExpression;
+    /**
+     * The plain data a value holds when generation knows all of it and its
+     * facts are current; undefined otherwise. `expression` reads the value.
+     */
+    staticLiteralData(value: Value, expression: ts.Expression): unknown;
     /**
      * An application function run once at generation per declaration and
      * arguments; its plain-data result. `pinnedStandIn` binds pinned imports
@@ -400,14 +425,10 @@ export interface LoweringServices {
         written: (name: ts.Identifier) => boolean,
         label: string,
     ): ExecutedResult;
-    compileShaderSource(expression: ts.Expression): {
-        source: string;
-        dynamicUniforms: Array<{
-            name: string;
-            type: "f32";
-            components: string[];
-        }>;
-    };
+    compileShaderSource(
+        expression: ts.Expression,
+        stage: ShaderStage,
+    ): ShaderSourceText;
     resolveStaticExpression(
         expression: ts.Expression,
         resolving?: ReadonlySet<ts.Symbol>,
@@ -477,6 +498,7 @@ export interface LoweringServices {
     isFunctionEvaluationRepeated(lexicalThis: Value | undefined): boolean;
     isLocalCallbackEvaluationRepeated(declaration: ts.Node): boolean;
     enterStaticIteration(statement: ts.IterationStatement): void;
+    withinStaticExpansionBudget<T>(expand: () => T, declined: T): T;
     leaveStaticIteration(): void;
     isInParameterizedResourceLoop(statement?: ts.IterationStatement): boolean;
     parameterizedResourceLoop(
@@ -781,6 +803,8 @@ export interface LoweringServices {
     knownValueWithoutEvaluation(expression: ts.Expression): Value | undefined;
     knownCollectionCardinality(expression: ts.Expression): number | undefined;
     runtimeCollectionCardinality(expression: ts.Expression): number | undefined;
+    /** Whether a collection's generation facts describe it where the walk stands. */
+    collectionFactsHold(value: Value): boolean;
     recordArrayPush(value: Value, added: number | undefined): boolean;
     /**
      * Gives a list a block-scoped declaration creates a cardinality of its
@@ -789,6 +813,8 @@ export interface LoweringServices {
     declaredCollection(value: Value): void;
     /** Whether a mutation here runs whenever `value`'s collection was created. */
     mutatesWhereCreated(value: Value): boolean;
+    /** Whether a push here onto the compile-time list `elements` runs whenever its binding did. */
+    mutatesListWhereCreated(elements: readonly Value[]): boolean;
     recordCollectionKey(value: Value, key: Value, removed?: boolean): void;
     recordCollectionClear(value: Value): void;
     expectKind(value: Value, kind: ValueKind, node: ts.Node): void;
@@ -854,5 +880,10 @@ export interface LoweringServices {
         node: ts.Node,
         message: string,
         reason?: import("./compile-error.js").CompileError["reason"],
+    ): never;
+    refuseWithDemand(
+        node: ts.Node,
+        message: string,
+        demand: import("./storage-demand.js").StorageDemand,
     ): never;
 }

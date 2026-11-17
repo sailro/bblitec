@@ -297,25 +297,39 @@ export function pinnedErrorMessageCpp(
             `Expected pinned error ${code} to interpolate its ${args.length} argument(s).`,
         );
     }
-    const pieces: string[] = [];
-    let literal = template.head.text;
+    const literals = [template.head.text];
+    const holes: string[] = [];
     for (const span of template.templateSpans) {
         const index = decoder.parameters.findIndex((parameter) =>
             sameSyntax(parameter.name, span.expression),
         );
         const value = args[index]!;
         if (typeof value === "object") {
-            pieces.push(cppStringLiteral(literal), value.cpp);
-            literal = span.literal.text;
+            holes.push(value.cpp);
+            literals.push(span.literal.text);
         } else {
-            literal += String(value) + span.literal.text;
+            literals[literals.length - 1] += String(value) + span.literal.text;
         }
     }
-    pieces.push(cppStringLiteral(literal));
-    return `(std::string(${pieces[0]})${pieces
-        .slice(1)
-        .map((piece) => ` + ${piece}`)
-        .join("")})`;
+    return `(${pinnedMessageConcatenation(literals, holes)})`;
+}
+
+/**
+ * A pinned message as one C++ `std::string` expression: its literal text
+ * around run-time holes, each a C++ expression already converted to
+ * `std::string`. `literals` holds one more entry than `holes`.
+ */
+export function pinnedMessageConcatenation(
+    literals: readonly string[],
+    holes: readonly string[],
+): string {
+    return [
+        `std::string(${cppStringLiteral(literals[0]!)})`,
+        ...holes.flatMap((hole, index) => [
+            hole,
+            cppStringLiteral(literals[index + 1]!),
+        ]),
+    ].join(" + ");
 }
 
 /** The diagnostic table belongs to the pin; numeric error IDs are build outputs. */

@@ -32,7 +32,11 @@ import {
     type DataType,
 } from "./data-types.js";
 import type { Value } from "./types.js";
-import { lightSetter, typedLightOwner } from "./assignments.js";
+import {
+    lightSetter,
+    recordMaterialDraw,
+    typedLightOwner,
+} from "./assignments.js";
 import {
     isInstrumentationHostWrite,
     isRefusedRealmHostWrite,
@@ -117,8 +121,10 @@ import {
 import {
     emitHandleCollectionLoop,
     isRecursiveImportedMeshWalk,
+    type ElementFields,
     type HandleCollectionTarget,
 } from "./handle-collections.js";
+import { shaderDeclarationWalk } from "./shader-declaration-lists.js";
 import { recordAt } from "./record-access.js";
 import { ownEntries } from "./object-statics.js";
 import { ASSIGNMENT_OPERATORS } from "../lowering/pinned-operators.js";
@@ -127,6 +133,7 @@ import { isNativeInertCall } from "./native-inert-calls.js";
 import { counterWrite } from "./counted-loops.js";
 
 import { knownCondition, ownKeysKnown } from "./values/model.js";
+import { staticStringCoercion } from "./expressions.js";
 
 interface StatementLoweringContext extends Pick<
     LoweringServices,
@@ -147,6 +154,7 @@ interface StatementLoweringContext extends Pick<
     | "refusedDemand"
     | "bindEmptyStorage"
     | "checker"
+    | "program"
     | "symbols"
     | "dataTypes"
     | "sceneManifest"
@@ -223,10 +231,12 @@ interface StatementLoweringContext extends Pick<
     | "noteErasedElementWrite"
     | "requiresStaticIteration"
     | "requiresStaticDataIteration"
+    | "withinStaticExpansionBudget"
     | "executedModuleConstantElements"
     | "emitNativeDataIteration"
     | "knownCollectionCardinality"
     | "runtimeCollectionCardinality"
+    | "collectionFactsHold"
     | "parameterizedResourceLoop"
     | "emitParameterizedResourceLoop"
     | "isInParameterizedResourceLoop"
@@ -2651,40 +2661,29 @@ export class StatementLowerer {
                 statement.statement,
                 new EmissionSet([indexSymbol]),
             );
-        if (needsSpecialization) {
-            forEachAnalysisNode(
-                statement.statement,
-                (node) => {
-                    if (ts.isReturnStatement(node)) {
-                        context.fail(
-                            node,
-                            "A return from a resource loop changes its composition count; " +
-                                "move the return outside the construction loop.",
-                        );
-                    }
-                    if (
-                        (ts.isBreakStatement(node) ||
-                            ts.isContinueStatement(node)) &&
-                        node.label
-                    ) {
-                        context.fail(
-                            node,
-                            "A labeled resource-loop exit cannot preserve static composition order.",
-                        );
-                    }
-                },
-                { functions: "skip" },
-            );
-        }
-        if (
-            (!this.bindsEnclosingLoop(statement.statement) ||
-                needsSpecialization ||
-                staticExits) &&
+        const expand = (): boolean =>
             this.emitStaticIndexFor(
                 context,
                 statement,
                 this.bindsEnclosingLoop(statement.statement) && staticExits,
-            )
+            );
+        // A setup loop unrolled only because it reaches pinned calls, with
+        // no pass needing its own specialization, loop control or frame
+        // yields, runs as a native loop where unrolling would exceed the
+        // static budget; the native body still refuses any construction it
+        // records.
+        const optional =
+            resourceLoop &&
+            !needsSpecialization &&
+            !this.bindsEnclosingLoop(statement.statement) &&
+            !containsFrameYield(context, statement.statement);
+        if (
+            (!this.bindsEnclosingLoop(statement.statement) ||
+                needsSpecialization ||
+                staticExits) &&
+            (optional
+                ? context.withinStaticExpansionBudget(expand, false)
+                : expand())
         ) {
             return;
         }
@@ -3116,6 +3115,37 @@ export class StatementLowerer {
                 "Static index-loop bodies cannot mutate the loop index.",
             );
         }
+        // Each unrolled pass composes its own resources: an exit that ends
+        // the expansion early would change how many there are. A loop whose
+        // passes cannot be counted at generation runs at run time instead,
+        // its constructions with it, and keeps its exits.
+        if (
+            reachesResource &&
+            context.requiresStaticDataIteration(statement.statement)
+        )
+            forEachAnalysisNode(
+                statement.statement,
+                (node) => {
+                    if (ts.isReturnStatement(node)) {
+                        context.fail(
+                            node,
+                            "A return from a resource loop changes its composition count; " +
+                                "move the return outside the construction loop.",
+                        );
+                    }
+                    if (
+                        (ts.isBreakStatement(node) ||
+                            ts.isContinueStatement(node)) &&
+                        node.label
+                    ) {
+                        context.fail(
+                            node,
+                            "A labeled resource-loop exit cannot preserve static composition order.",
+                        );
+                    }
+                },
+                { functions: "skip" },
+            );
         this.emitUnrolledLoop(
             context,
             statement,
@@ -3346,6 +3376,7 @@ export class StatementLowerer {
             // Keep this object's identity: later iterations observe field
             // deletions, while rebinding the source must not change its owner.
             context.dataTypes.markStoredObjectReferences(dataType);
+            context.dataTypes.keyOrders.noteEnumeration(dataType.name, node);
             const fields = context.dataTypes.structFields(
                 dataType.name,
                 node,
@@ -3511,8 +3542,6 @@ export class StatementLowerer {
         const head = this.loopHead(context, statement);
         if (isSuspensionPoint(statement))
             return this.emitForAwait(context, statement, head);
-        // A retained callback can run after another closure registers members.
-        // Its initial empty cardinality is not a proof that its loop is empty.
         const subject = context.unwrap(statement.expression);
         const containerType = ts.isIdentifier(subject)
             ? (context.bindings.lookupOptional(subject)?.dataType ??
@@ -3522,11 +3551,6 @@ export class StatementLowerer {
             containerType && "element" in containerType
                 ? containerType.element
                 : undefined;
-        if (
-            liveElement?.kind === "function" &&
-            this.emitRuntimeForOf(context, statement, head)
-        )
-            return;
         const runtimeCardinality = context.runtimeCollectionCardinality(
             statement.expression,
         );
@@ -3560,6 +3584,9 @@ export class StatementLowerer {
             return;
         }
         if (this.emitAssetFlattenedMeshesForOf(context, statement, head)) {
+            return;
+        }
+        if (this.emitShaderDeclarationForOf(context, statement, head)) {
             return;
         }
         if (this.emitHandleCollectionForOf(context, statement, head)) {
@@ -3707,8 +3734,10 @@ export class StatementLowerer {
             : undefined;
         const bound =
             binding?.tupleElements ??
-            binding?.staticElementsOwner?.staticElements ??
-            binding?.staticElements;
+            (binding && context.collectionFactsHold(binding)
+                ? (binding.staticElementsOwner?.staticElements ??
+                  binding.staticElements)
+                : undefined);
         if (!literal && !bound) return false;
         if (
             literal?.elements.some(
@@ -4000,11 +4029,13 @@ export class StatementLowerer {
             () => {
                 if (
                     headIsArrayPattern(head) &&
+                    this.preferNativeDataIteration(context, statement) &&
                     context.dataIterationTarget(statement.expression)
                 ) {
                     // A homogeneous static table already has an exact native
                     // row representation. Keep its established range-for
-                    // lowering; tuple unrolling is needed only for
+                    // lowering unless the body needs each row's lanes known;
+                    // tuple unrolling is otherwise needed only for
                     // heterogeneous/optional rows.
                     return undefined;
                 }
@@ -4216,7 +4247,7 @@ export class StatementLowerer {
         statement: ts.ForOfStatement,
         head: LoopHead,
         target: HandleCollectionTarget,
-        extraBinding?: Partial<Value>,
+        extraBinding?: ElementFields,
     ): void {
         const binding = headIdentifier(head);
         if (!binding) {
@@ -4259,6 +4290,27 @@ export class StatementLowerer {
         } else {
             emitBody();
         }
+    }
+
+    /** `for (const decl of <material>.uniformDecls)` and its sibling lists. */
+    private emitShaderDeclarationForOf(
+        context: StatementLoweringContext,
+        statement: ts.ForOfStatement,
+        head: LoopHead,
+    ): boolean {
+        const binding = headIdentifier(head);
+        const walk =
+            binding &&
+            shaderDeclarationWalk(context, statement.expression, binding);
+        if (!walk) return false;
+        this.emitCollectionForOfBody(
+            context,
+            statement,
+            head,
+            walk.target,
+            walk.entry,
+        );
+        return true;
     }
 
     private emitHandleCollectionForOf(
@@ -4814,9 +4866,30 @@ export class StatementLowerer {
                         code: `${target.cpp} = ${context.conditions.compileCondition(unwrapped.right)};`,
                     });
                 } else if (operator === "+=" && isStringValue(target)) {
-                    context.dataLowerer.emitStringCompound(
+                    const appended = context.dataLowerer.emitStringCompound(
                         unwrapped,
                         target.cpp,
+                    );
+                    // A local whose text is written in order appends what
+                    // generation knows of both sides.
+                    const known =
+                        target.staticString === undefined
+                            ? undefined
+                            : staticStringCoercion(appended);
+                    context.recordDataAssignmentMetadata(
+                        target,
+                        unwrapped,
+                        unwrapped.left,
+                        false,
+                        {
+                            kind: "string",
+                            cpp: target.cpp,
+                            ...(known === undefined
+                                ? {}
+                                : {
+                                      staticString: target.staticString + known,
+                                  }),
+                        },
                     );
                 } else if (target.kind === "string" && operator === "=") {
                     // A literal union or parsed value spells its string.
@@ -5715,64 +5788,87 @@ export class StatementLowerer {
         context.expectKind(mesh, "mesh", argumentAt(call, offset));
         context.expectSameEngine(task, mesh, call);
         const engine = context.requireEngine(task, call);
-        // The pin's own `opts.material ?? mesh.material`: a call with no
+        // The pin's own `opts?.material ?? mesh.material`: a call with no
         // override draws the mesh with the material it already carries.
-        let materialCpp = `${recordAt(`${engine}.meshes`, mesh.cpp)}.material`;
-        let materialOverride = false;
-        if (call.arguments.length === 2 + offset) {
-            const options = context.expectObjectLiteral(
-                argumentAt(call, 1 + offset),
-            );
-            const materialExpression = context.objectProperty(
-                options,
-                "material",
-            );
-            if (!materialExpression || options.properties.length !== 1) {
-                context.fail(
+        const add = (optionsExpression: ts.Expression | undefined): void => {
+            let materialCpp = `${recordAt(`${engine}.meshes`, mesh.cpp)}.material`;
+            let materialOverride = false;
+            if (
+                optionsExpression &&
+                !context.symbols.isGlobalUndefined(
+                    context.unwrap(optionsExpression),
+                )
+            ) {
+                const options = context.expectObjectLiteral(optionsExpression);
+                const materialExpression = context.objectProperty(
                     options,
-                    "Reached RenderTask.addMesh requires only a material override.",
+                    "material",
                 );
-            }
-            const material = context.compileValue(materialExpression);
-            context.expectKind(material, "material", materialExpression);
-            context.expectSameEngine(task, material, call);
-            materialCpp = material.cpp;
-            materialOverride = true;
-            const meshProfile =
-                mesh.sceneMeshIndex ?? mesh.sceneMeshProfileIndex;
-            context.sceneManifest.recordSceneShaderMaterialDraw(
-                meshProfile,
-                material,
-            );
-            if (material.scenePbrMaterialIndex !== undefined) {
-                if (meshProfile === undefined) {
-                    context.sceneManifest.recordUnknownSceneMeshMaterial(
-                        material.scenePbrMaterialIndex,
-                    );
-                } else {
-                    context.sceneManifest.recordScenePbrMaterialMesh(
-                        material.scenePbrMaterialIndex,
-                        meshProfile,
+                if (!materialExpression || options.properties.length !== 1) {
+                    context.fail(
+                        options,
+                        "Reached RenderTask.addMesh requires only a material override.",
                     );
                 }
-            } else if (
-                !material.standardMaterial &&
-                material.nodeMaterialIndex === undefined &&
-                material.shaderVariant === undefined &&
-                material.sceneShaderVariant === undefined &&
-                !material.possibleSceneShaderVariants?.length &&
-                !material.assetPbrMaterial
-            ) {
-                context.sceneManifest.recordUnknownSceneMaterialAssignment(
+                const material = context.compileValue(materialExpression);
+                context.expectKind(material, "material", materialExpression);
+                context.expectSameEngine(task, material, call);
+                materialCpp = material.cpp;
+                materialOverride = true;
+                const meshProfile =
+                    mesh.sceneMeshIndex ?? mesh.sceneMeshProfileIndex;
+                recordMaterialDraw(
+                    context,
+                    material,
+                    [meshProfile],
                     meshProfile,
                 );
+                if (material.scenePbrMaterialIndex !== undefined) {
+                    if (meshProfile === undefined) {
+                        context.sceneManifest.recordUnknownSceneMeshMaterial(
+                            material.scenePbrMaterialIndex,
+                        );
+                    } else {
+                        context.sceneManifest.recordScenePbrMaterialMesh(
+                            material.scenePbrMaterialIndex,
+                            meshProfile,
+                        );
+                    }
+                }
+                context.reachFeature(
+                    "frame-graph:task-material-override",
+                    call,
+                );
             }
-            context.reachFeature("frame-graph:task-material-override", call);
+            context.emit({
+                kind: "expression",
+                code: `bbl::add_render_task_mesh(${engine}, ${task.cpp}, ${mesh.cpp}, ${materialCpp}, ${materialOverride});`,
+            });
+        };
+        const optionsExpression =
+            call.arguments.length === 2 + offset
+                ? argumentAt(call, 1 + offset)
+                : undefined;
+        const selected = optionsExpression && context.unwrap(optionsExpression);
+        // Options a condition selects (`view ? { material: view } : undefined`)
+        // add the mesh as the selected arm does.
+        if (selected && ts.isConditionalExpression(selected)) {
+            const condition = context.conditions.compileCondition(
+                selected.condition,
+            );
+            const known = knownCondition(condition);
+            if (known !== undefined) {
+                add(known ? selected.whenTrue : selected.whenFalse);
+                return true;
+            }
+            context.emit({ kind: "open", code: `if (${condition}) {` });
+            this.inRuntimeControlFlow(context, () => add(selected.whenTrue));
+            context.emit({ kind: "branch", code: "} else {" });
+            this.inRuntimeControlFlow(context, () => add(selected.whenFalse));
+            context.emit({ kind: "close", code: "}" });
+            return true;
         }
-        context.emit({
-            kind: "expression",
-            code: `bbl::add_render_task_mesh(${engine}, ${task.cpp}, ${mesh.cpp}, ${materialCpp}, ${materialOverride});`,
-        });
+        add(optionsExpression);
         return true;
     }
 }

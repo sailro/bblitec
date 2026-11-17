@@ -129,8 +129,9 @@ inline EffectPass create_effect_pass(SDL_GPUDevice* device, const Engine& engine
 
     SDL_GPUColorTargetDescription color{};
     color.format = format;
-    // `blend: options.blend` — the reached slice declares none, and a
-    // descriptor that does refuses at generation.
+    // `blend: options.blend`.
+    if (entry.blend_enabled)
+        color.blend_state = blend_state_from(entry.blend);
     SDL_GPUGraphicsPipelineCreateInfo info{};
     info.vertex_shader = vertex.shader.get();
     info.fragment_shader = fragment.shader.get();
@@ -163,12 +164,10 @@ inline EffectPass create_effect_pass(SDL_GPUDevice* device, const Engine& engine
             throw std::runtime_error("Effect texture '" + name + "' has no declared binding.");
         const EffectTextureSlot& slot = effect_texture_slot(wrapper, declared->binding);
         const auto image = pass.texture_images.add(
-            slot, pass.textures.size(),
+            engine, slot, pass.textures.size(),
             [&](const EffectTextureSlot& current) { return upload_effect_image(device, current); });
-        pass.textures.push_back(
-            {image ? image->get() : nullptr,
-             create_texture_sampler(device, slot.pixels_texture ? slot.pixels_texture->sampler
-                                                                : effect_texture_sampler())});
+        pass.textures.push_back({image ? image->get() : nullptr,
+                                 create_texture_sampler(device, effect_slot_sampler(engine, slot))});
         if (slot.render_texture)
             pass.render_textures.emplace_back(pass.textures.size() - 1, slot.binding);
     }
@@ -193,13 +192,12 @@ inline void upload_effect_pixels(SDL_GPUDevice* device, const Engine& engine, Ef
                                  EffectWrapperHandle handle) {
     const auto& wrapper = handle_at(engine.effect_wrappers, handle);
     pass.texture_images.refresh(
-        wrapper, [&](const EffectTextureSlot& slot) { return upload_effect_image(device, slot); },
+        engine, wrapper,
+        [&](const EffectTextureSlot& slot) { return upload_effect_image(device, slot); },
         [&](std::size_t position, const EffectTextureSlot& slot,
             const std::shared_ptr<OwnedSdlTexture>& image) {
             auto& binding = pass.textures.at(position);
-            const auto sampler =
-                create_texture_sampler(device, slot.pixels_texture ? slot.pixels_texture->sampler
-                                                                   : effect_texture_sampler());
+            const auto sampler = create_texture_sampler(device, effect_slot_sampler(engine, slot));
             SDL_ReleaseGPUSampler(device, binding.sampler);
             binding = {image ? image->get() : nullptr, sampler};
             std::erase_if(pass.render_textures,
@@ -258,6 +256,22 @@ inline void record_effect_pass(SDL_GPUCommandBuffer* command, SDL_GPURenderPass*
                                     static_cast<Uint32>(textures->size()));
     }
     SDL_DrawGPUPrimitives(render_pass, 3, 1, 0, 0);
+}
+
+/**
+ * `EffectRenderTask.execute`'s draw into its already-open pass over a `target_width` x
+ * `target_height` target (`effect_task_draw`): under its scissor, or none.
+ */
+inline void record_effect_task_pass(SDL_GPUCommandBuffer* command, SDL_GPURenderPass* render_pass,
+                                    const Engine& engine, const EffectPass& pass,
+                                    const FrameTaskRecord& task, std::uint32_t target_width,
+                                    std::uint32_t target_height,
+                                    const EffectRenderTextureSource& render_texture) {
+    const EffectTaskDraw draw = effect_task_draw(task, target_width, target_height);
+    if (!draw.draws)
+        return;
+    set_pass_scissor(render_pass, draw.scissor);
+    record_effect_pass(command, render_pass, engine, pass, task.effect.effect, render_texture);
 }
 
 } // namespace bbl::pal

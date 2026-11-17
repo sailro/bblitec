@@ -314,6 +314,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/engine/gpu-task-timing.ts + src/engine/gpu-task-timer.ts",
         consumers: CMAKE,
     },
+    "engine:screenshot": {
+        provenance:
+            "src/engine/screenshot.ts#captureScreenshot + " +
+            "src/engine/screenshot-readback.ts",
+        consumers: CMAKE,
+    },
     "profile:source": {
         provenance:
             "native-architecture: the --source-profile diagnostic's function scopes " +
@@ -825,6 +831,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/material/shader/shader-uniform-range.ts",
         consumers: CMAKE,
     },
+    "material:shader-declaration-lists": {
+        provenance:
+            "src/material/shader/shader-material.ts createShaderMaterial " +
+            "(uniformDecls, samplerDecls, storageBufferDecls)",
+        consumers: CMAKE,
+    },
     "material:shader-storage": {
         provenance:
             "src/material/shader/storage-buffer.ts + " +
@@ -1274,6 +1286,15 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/material/material-dirty.ts markMaterialUboDirty",
         consumers: CMAKE,
     },
+    "material:view-gpu-release": {
+        provenance:
+            "src/material/shader/shader-material-view-gpu.ts releaseMaterialViewGpu",
+        consumers: CMAKE,
+    },
+    "material:shader-view": {
+        provenance: "src/material/material-view.ts createMaterialView",
+        consumers: CMAKE,
+    },
     "material:runtime-rebuild": {
         provenance:
             "src/material/material-rebuild.ts rebuildMaterial after startEngine",
@@ -1648,6 +1669,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "(src/engine/render-target.ts disposeRenderTarget)",
         consumers: CMAKE,
     },
+    "frame-graph:color-view-state": {
+        provenance:
+            "src/engine/render-target.ts buildRenderTarget/disposeRenderTarget " +
+            "(RenderTarget._colorView, read through a cast)",
+        consumers: CMAKE,
+    },
     "frame-graph:task-mesh-removal": {
         provenance:
             "src/frame-graph/render-task.ts removeMeshFromTask " +
@@ -1665,6 +1692,18 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "(executePassWithTransmission, transmission-depth-grab.ts)",
         consumers: CMAKE,
     },
+    "frame-graph:depth-resolve": {
+        provenance:
+            "src/frame-graph/depth-resolve-task.ts createDepthResolveTask",
+        consumers: CMAKE,
+    },
+    "frame-graph:color-texture-identity": {
+        provenance:
+            "src/engine/render-target.ts buildRenderTarget/disposeRenderTarget " +
+            "(RenderTarget._colorTexture, read through a cast; " +
+            "src/engine/surface.ts setSurfaceSize's _resize)",
+        consumers: CMAKE,
+    },
     "frame-graph:task-material-override": {
         provenance:
             "src/frame-graph/render-task.ts addMeshToTask (opts.material)",
@@ -1678,6 +1717,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "src/frame-graph/frame-graph-actions.ts addTask on a built graph " +
             "(src/frame-graph/frame-graph.ts buildFrameGraphTask)",
+        consumers: CMAKE,
+    },
+    "frame-graph:task-removal": {
+        provenance: "src/frame-graph/frame-graph-actions.ts removeTask",
         consumers: CMAKE,
     },
     "frame-graph:task-method-slots": {
@@ -1718,6 +1761,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "src/effect/effect-renderer.ts createEffectRenderTask " +
             "(the frame-graph pass into a RenderTarget)",
+        consumers: CMAKE,
+    },
+    "effect:task-scissor": {
+        provenance:
+            "src/effect/effect-renderer.ts createEffectRenderTask execute " +
+            "(EffectRenderTask.scissor)",
         consumers: CMAKE,
     },
     "renderer:scene": {
@@ -1851,6 +1900,11 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "image:packaged-bytes": {
         provenance:
             "texture-2d.ts loadTexture2D of an object URL, whose bytes the program holds; generation links the codecs of the images its packaged files and their archive members hold (image-codecs.ts)",
+        consumers: CMAKE,
+    },
+    "image:canvas-encode": {
+        provenance:
+            "HTMLCanvasElement.toDataURL and OffscreenCanvas.convertToBlob over the composed canvas pixels, encoded by the PNG and JPEG codecs it links",
         consumers: CMAKE,
     },
     "platform:window": {

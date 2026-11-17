@@ -1170,6 +1170,25 @@ export interface WriteSite {
 }
 
 /**
+ * Whether an array or object literal is a destructuring pattern: the left
+ * side of `=` or a for-of or for-in loop's target, or one nested in such.
+ */
+export function isDestructuringPattern(
+    literal: ts.ArrayLiteralExpression | ts.ObjectLiteralExpression,
+): boolean {
+    if (inDestructuringPattern(literal)) return true;
+    const root = outermostWrapper(literal);
+    const consumer = root.parent;
+    return (
+        (ts.isBinaryExpression(consumer) &&
+            consumer.left === root &&
+            consumer.operatorToken.kind === ts.SyntaxKind.EqualsToken) ||
+        ((ts.isForOfStatement(consumer) || ts.isForInStatement(consumer)) &&
+            consumer.initializer === root)
+    );
+}
+
+/**
  * Whether a node sits inside a destructuring pattern: an array or object
  * literal that is, through the patterns around it, the left side of `=` or
  * the target of a for-of or for-in loop.
@@ -1613,17 +1632,22 @@ export function aliasKey(key: string | undefined): string {
     return key ?? ANY_KEY;
 }
 
+/** Whether a number is an array index: an integer in `[0, 2^32 - 2]`. */
+export function isArrayIndex(value: number): boolean {
+    return Number.isInteger(value) && value >= 0 && value <= 2 ** 32 - 2;
+}
+
 /**
- * The array index a key names: its canonical non-negative integer
- * (`"2"` -> 2; `"02"`, `"-1"`, `"1.5"` name no index).
+ * The array index a key names: its canonical text of an array index
+ * (`"2"` -> 2; `"02"`, `"-1"`, `"1.5"`, `"4294967295"` name no index),
+ * which JavaScript also orders ahead of an object's other own keys.
  */
 export function keyIndex(key: string | undefined): number | undefined {
     const value = Number(key);
     return key !== undefined &&
         key !== "" &&
         String(value) === key &&
-        Number.isSafeInteger(value) &&
-        value >= 0
+        isArrayIndex(value)
         ? value
         : undefined;
 }
@@ -2244,6 +2268,48 @@ export function evaluationContainer(node: ts.Node): EvaluationContainer {
     );
 }
 
+/**
+ * A node holding a list of statements: a block, a source file, a namespace
+ * body, a `case` or `default` clause.
+ */
+type StatementList =
+    ts.Block | ts.SourceFile | ts.ModuleBlock | ts.CaseOrDefaultClause;
+
+/** Whether a statement list is a block or a source file: no namespace body or clause. */
+export function isBlockOrSourceFile(
+    list: ts.Node,
+): list is ts.Block | ts.SourceFile {
+    return ts.isBlock(list) || ts.isSourceFile(list);
+}
+
+/**
+ * The statements on one side of `statement` in the list holding it, in
+ * source order; undefined where its parent is no statement list `holds`
+ * accepts (any, by default).
+ */
+export function statementsBeside(
+    statement: ts.Node,
+    side: "before" | "after",
+    holds: (list: StatementList) => boolean = () => true,
+): readonly ts.Statement[] | undefined {
+    const list: ts.Node | undefined = statement.parent;
+    if (
+        !list ||
+        !(
+            ts.isBlock(list) ||
+            ts.isSourceFile(list) ||
+            ts.isModuleBlock(list) ||
+            ts.isCaseOrDefaultClause(list)
+        ) ||
+        !holds(list)
+    )
+        return undefined;
+    const index = list.statements.findIndex((child) => child === statement);
+    return side === "before"
+        ? list.statements.slice(0, index)
+        : list.statements.slice(index + 1);
+}
+
 /** Whether a node is written inside another. */
 export function isDeclaredInside(
     node: ts.Node,
@@ -2467,6 +2533,58 @@ export function functionOfDeclaration(
             ts.isFunctionExpression(initializer))
         ? initializer
         : undefined;
+}
+
+/** A `const` statement's declaration binding one name to an initializer. */
+export type ConstDeclaration = ts.VariableDeclaration & {
+    readonly name: ts.Identifier;
+    readonly initializer: ts.Expression;
+    readonly parent: ts.VariableDeclarationList & {
+        readonly parent: ts.VariableStatement;
+    };
+};
+
+function isConstDeclaration(
+    declaration: ts.Node | undefined,
+): declaration is ConstDeclaration {
+    const statement = declaration?.parent?.parent;
+    return (
+        declaration !== undefined &&
+        ts.isVariableDeclaration(declaration) &&
+        declaration.initializer !== undefined &&
+        ts.isIdentifier(declaration.name) &&
+        statement !== undefined &&
+        ts.isVariableStatement(statement) &&
+        variableKind(statement.declarationList) === "const"
+    );
+}
+
+/**
+ * Whether a declaration is a module constant: a source file's own top-level
+ * `const` binding one name to an initializer.
+ */
+export function isModuleConstDeclaration(
+    declaration: ts.Node | undefined,
+): declaration is ConstDeclaration {
+    return (
+        isConstDeclaration(declaration) &&
+        ts.isSourceFile(declaration.parent.parent.parent) &&
+        !declaration.parent.parent.parent.isDeclarationFile
+    );
+}
+
+/**
+ * Whether a declaration is a `const` binding one name to an initializer
+ * whose statement its module does not export: other modules reach an
+ * exported one through imports and namespace members.
+ */
+export function isUnexportedConstDeclaration(
+    declaration: ts.Node | undefined,
+): declaration is ConstDeclaration {
+    return (
+        isConstDeclaration(declaration) &&
+        !hasExportModifier(declaration.parent.parent)
+    );
 }
 
 /**
@@ -2910,6 +3028,17 @@ export function propertyPath(expression: ts.Expression): string[] | undefined {
     if (!ts.isPropertyAccessExpression(unwrapped)) return undefined;
     const owner = propertyPath(unwrapped.expression);
     return owner ? [...owner, unwrapped.name.text] : undefined;
+}
+
+/** Whether two key lists (a key path, an own-key order) hold the same keys in order. */
+export function sameKeys(
+    left: readonly string[],
+    right: readonly string[],
+): boolean {
+    return (
+        left.length === right.length &&
+        left.every((key, index) => key === right[index])
+    );
 }
 
 /**

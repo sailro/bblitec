@@ -16,6 +16,7 @@
 #include "pal_owned_gpu_record.hpp"
 #include "pal_device_options.hpp"
 #include "pal_gpu_common.hpp"
+#include "pal_gpu_images.hpp"
 #include "pal_gpu_shader_path.hpp"
 #include "pal_dawn_completion.hpp"
 #include "pal_dawn_formats.hpp"
@@ -1544,18 +1545,19 @@ struct DawnSurfaceCapture {
     std::uint32_t bytes_per_row = 0;
 };
 
-#if BBLITE_VISUAL_CAPTURE
-inline DawnSurfaceCapture begin_dawn_surface_capture(WGPUDevice device, WGPUCommandEncoder encoder,
-                                                     WGPUTexture surface, std::uint32_t width,
-                                                     std::uint32_t height) {
+/** Records the copy of an RGBA8 `texture` into a mappable buffer of `bytes_per_row`-byte rows. */
+inline DawnSurfaceCapture record_dawn_texture_copy(WGPUDevice device, WGPUCommandEncoder encoder,
+                                                   WGPUTexture texture, std::uint32_t width,
+                                                   std::uint32_t height,
+                                                   std::uint32_t bytes_per_row) {
     DawnSurfaceCapture capture;
-    capture.bytes_per_row = (width * 4 + 255) & ~255u;
+    capture.bytes_per_row = bytes_per_row;
     WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
     descriptor.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
     descriptor.size = static_cast<std::uint64_t>(capture.bytes_per_row) * height;
     capture.readback = wgpuDeviceCreateBuffer(device, &descriptor);
     WGPUTexelCopyTextureInfo source = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
-    source.texture = surface;
+    source.texture = texture;
     WGPUTexelCopyBufferInfo destination = WGPU_TEXEL_COPY_BUFFER_INFO_INIT;
     destination.layout.bytesPerRow = capture.bytes_per_row;
     destination.layout.rowsPerImage = height;
@@ -1563,6 +1565,14 @@ inline DawnSurfaceCapture begin_dawn_surface_capture(WGPUDevice device, WGPUComm
     const WGPUExtent3D extent{width, height, 1};
     wgpuCommandEncoderCopyTextureToBuffer(encoder, &source, &destination, &extent);
     return capture;
+}
+
+#if BBLITE_VISUAL_CAPTURE
+inline DawnSurfaceCapture begin_dawn_surface_capture(WGPUDevice device, WGPUCommandEncoder encoder,
+                                                     WGPUTexture surface, std::uint32_t width,
+                                                     std::uint32_t height) {
+    return record_dawn_texture_copy(device, encoder, surface, width, height,
+                                    readback_bytes_per_row(width * 4));
 }
 
 inline void save_capture_png(std::span<const std::uint8_t> pixels, std::uint32_t width,

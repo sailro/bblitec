@@ -1,5 +1,6 @@
 #include <bblite/pal_dom_events.hpp>
 #include <iostream>
+#include <map>
 
 namespace {
 using Target = bbl::DomEventTarget;
@@ -303,6 +304,42 @@ void pointer_dispatch_completion() {
         }
     }
 }
+
+/** UIEvent.detail: a press's click count reaches its mousedown, mouseup and click; a tap counts one. */
+void click_counts() {
+    bbl::Engine engine;
+    std::map<std::string, double> details;
+    int id = 1;
+    for (const auto type : {"pointerover", "mouseover", "pointerdown", "mousedown", "pointerup",
+                            "mouseup", "click", "mousemove"})
+        bbl::on_dom_pointer(engine, child, type, id++,
+                            [&details, type](const Event& event) { details[type] = event.detail; });
+    const std::vector path{child, parent, document, window};
+    bbl::dom_pointer_input(engine, bbl::DomPointerAction::Down,
+                           Event{.button = 0, .buttons = 1, .detail = 2}, path)
+        ->dispatch(engine);
+    bbl::dom_pointer_input(engine, bbl::DomPointerAction::Up,
+                           Event{.button = 0, .buttons = 0, .detail = 2}, path)
+        ->dispatch(engine);
+    require(details == std::map<std::string, double>{{"click", 2},
+                                                     {"mousedown", 2},
+                                                     {"mouseover", 0},
+                                                     {"mouseup", 2},
+                                                     {"pointerdown", 0},
+                                                     {"pointerover", 0},
+                                                     {"pointerup", 0}},
+            "a press's click count reaches mousedown, mouseup and click alone");
+    details.clear();
+    bbl::DomTouchContact contact;
+    contact.path = path;
+    bbl::DomEventBatch tap;
+    bbl::append_dom_touch_tap(engine, tap, contact);
+    tap.dispatch(engine);
+    require(details ==
+                std::map<std::string, double>{
+                    {"click", 1}, {"mousedown", 1}, {"mousemove", 0}, {"mouseup", 1}},
+            "a tap's compatibility mouse events count one click");
+}
 } // namespace
 
 int main() {
@@ -314,5 +351,6 @@ int main() {
     engine_ownership();
     physical_input_transactions();
     pointer_dispatch_completion();
+    click_counts();
     std::cout << "dom-event-check: ok\n";
 }

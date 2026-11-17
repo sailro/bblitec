@@ -102,7 +102,7 @@ inline DawnEffectPass create_dawn_effect_pass(DawnDevice& device_state, const En
             continue;
         const EffectTextureSlot& slot = effect_texture_slot(wrapper, binding.binding);
         const auto image = pass.texture_images.add(
-            slot, pass.textures.size(), [&](const EffectTextureSlot& current) {
+            engine, slot, pass.textures.size(), [&](const EffectTextureSlot& current) {
                 return upload_dawn_effect_image(device_state.device, device_state.queue, current);
             });
         DawnSampledTexture sampled;
@@ -110,9 +110,8 @@ inline DawnEffectPass create_dawn_effect_pass(DawnDevice& device_state, const En
             sampled.texture = image->retain();
             sampled.view = create_dawn_texture_view(sampled.texture, nullptr);
         }
-        sampled.sampler = create_texture_sampler(device_state.device,
-                                                 slot.pixels_texture ? slot.pixels_texture->sampler
-                                                                     : effect_texture_sampler());
+        sampled.sampler =
+            create_texture_sampler(device_state.device, effect_slot_sampler(engine, slot));
         pass.textures.push_back(std::move(sampled));
         if (slot.render_texture)
             render_bindings.push_back(binding.binding);
@@ -199,6 +198,9 @@ inline DawnEffectPass create_dawn_effect_pass(DawnDevice& device_state, const En
         load_wgsl_module(device_state.device, std::string(entry.fragment_stem))};
     WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
     color_target.format = format;
+    // `blend: options.blend`.
+    const WGPUBlendState blend = blend_state_from(entry.blend);
+    color_target.blend = entry.blend_enabled ? &blend : nullptr;
     WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
     fragment.module = module;
     fragment.entryPoint = string_view("effectFragment");
@@ -224,7 +226,7 @@ inline void upload_dawn_effect_pass(DawnDevice& device, Engine& engine, DawnEffe
                                     EffectWrapperHandle handle) {
     EffectWrapperRecord& wrapper = handle_at(engine.effect_wrappers, handle);
     pass.texture_images.refresh(
-        wrapper,
+        engine, wrapper,
         [&](const EffectTextureSlot& slot) {
             return upload_dawn_effect_image(device.device, device.queue, slot);
         },
@@ -234,9 +236,7 @@ inline void upload_dawn_effect_pass(DawnDevice& device, Engine& engine, DawnEffe
             sampled.texture = image ? image->retain() : DawnTexture{};
             sampled.view =
                 image ? create_dawn_texture_view(sampled.texture, nullptr) : DawnTextureView{};
-            sampled.sampler = create_texture_sampler(
-                device.device,
-                slot.pixels_texture ? slot.pixels_texture->sampler : effect_texture_sampler());
+            sampled.sampler = create_texture_sampler(device.device, effect_slot_sampler(engine, slot));
             const auto& variant = upstream::effect_variants.at(wrapper.variant);
             std::size_t texture_position = 0;
             for (std::size_t index = 0; index < variant.binding_count; ++index) {
@@ -333,6 +333,20 @@ inline void record_dawn_effect_pass(WGPURenderPassEncoder render_pass, const Daw
         wgpuRenderPassEncoderSetBindGroup(render_pass, 0, pass.group, 0, nullptr);
     }
     wgpuRenderPassEncoderDraw(render_pass, 3, 1, 0, 0);
+}
+
+/**
+ * `EffectRenderTask.execute`'s draw into its already-open pass over a `target_width` x
+ * `target_height` target (`effect_task_draw`): under its scissor, or none.
+ */
+inline void record_dawn_effect_task_pass(WGPURenderPassEncoder render_pass,
+                                         const DawnEffectPass& pass, const FrameTaskRecord& task,
+                                         std::uint32_t target_width, std::uint32_t target_height) {
+    const EffectTaskDraw draw = effect_task_draw(task, target_width, target_height);
+    if (!draw.draws)
+        return;
+    set_pass_scissor(render_pass, draw.scissor);
+    record_dawn_effect_pass(render_pass, pass);
 }
 
 } // namespace bbl::pal

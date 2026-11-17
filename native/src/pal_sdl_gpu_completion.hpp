@@ -12,11 +12,22 @@
 
 namespace bbl::pal {
 
+/** A fence that signals once the work submitted to `device` before it has completed. */
+inline SDL_GPUFence* submit_sdl_queue_fence(SDL_GPUDevice* device) {
+    SdlGpuCommand command{SDL_AcquireGPUCommandBuffer(device)};
+    if (!command)
+        gpu_error("SDL_AcquireGPUCommandBuffer completion fence");
+    auto* fence = command.submit_with_fence();
+    if (!fence)
+        gpu_error("SDL_SubmitGPUCommandBufferAndAcquireFence completion");
+    return fence;
+}
+
 /** Capture the queue boundary on its owner; only the native fence wait leaves that thread. */
 class SdlSubmissionCompletion final : public OffscreenCompletion {
 public:
     SdlSubmissionCompletion(SDL_GPUDevice* owner, std::function<void(std::exception_ptr)> complete)
-        : device_(owner), fence_(capture(owner), {owner}),
+        : device_(owner), fence_(submit_sdl_queue_fence(owner), {owner}),
           waiter_([this, complete = std::move(complete)] {
               std::exception_ptr error;
               try {
@@ -29,15 +40,6 @@ public:
           }) {}
 
 private:
-    static SDL_GPUFence* capture(SDL_GPUDevice* device) {
-        SdlGpuCommand command{SDL_AcquireGPUCommandBuffer(device)};
-        if (!command)
-            gpu_error("SDL_AcquireGPUCommandBuffer completion fence");
-        auto* fence = command.submit_with_fence();
-        if (!fence)
-            gpu_error("SDL_SubmitGPUCommandBufferAndAcquireFence completion");
-        return fence;
-    }
     SDL_GPUDevice* device_;
     OwnedSdlFence fence_;
     JoiningThread waiter_;

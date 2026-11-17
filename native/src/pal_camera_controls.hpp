@@ -190,7 +190,7 @@ inline void handle_owned_camera_pointer_event(const SDL_Event& event,
     // (sign and the 100-pixel notch) is the application bridge's, so both
     // wheel consumers cannot disagree on it.
     if (event.type == SDL_EVENT_MOUSE_WHEEL && state.listens("wheel")) {
-        state.wheel(dom_wheel_delta_y(event.wheel));
+        state.wheel(dom_wheel_delta(event.wheel, DomWheelAxis::y));
     }
 }
 
@@ -263,7 +263,7 @@ inline void handle_camera_pointer_event(const SDL_Event& event, CameraRecord& ca
     // (sign and the 100-pixel notch) is the application bridge's, so both
     // wheel consumers cannot disagree on it.
     if (event.type == SDL_EVENT_MOUSE_WHEEL && camera.kind == CameraKind::arc_rotate) {
-        upstream::apply_arc_rotate_wheel(camera, dom_wheel_delta_y(event.wheel));
+        upstream::apply_arc_rotate_wheel(camera, dom_wheel_delta(event.wheel, DomWheelAxis::y));
     }
 }
 

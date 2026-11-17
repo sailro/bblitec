@@ -108,6 +108,7 @@ import {
 } from "./string-searches.js";
 import {
     arrayElementType,
+    classInstanceDeclaration,
     declaredContextualType,
     isTypeReference,
     presentMembers,
@@ -117,6 +118,10 @@ import {
     unionMembers,
 } from "./type-facts.js";
 import { jsToUint32Call } from "../lowering/pinned-operators.js";
+import {
+    readShaderRecipe,
+    recordShaderRecipeStore,
+} from "./shader-derivations.js";
 
 /** The member a call names ({@link namedMember}). */
 function calledMember(
@@ -1413,6 +1418,52 @@ function compileMissingPrimitiveMethod(
     );
 }
 
+/**
+ * `value.method(...)` on a document whose declared type is a class the
+ * program stores, naming one of its methods: the class instance the document
+ * holds, which it asserts (any other document throws TypeError), runs the
+ * method. A document's view of an instance holds only its fields.
+ */
+function compileDocumentClassMethod(
+    lowerer: DataLowerer,
+    call: ts.CallExpression,
+    callee: NamedMember,
+    owner: Value,
+): Value | undefined {
+    const context = lowerer.context;
+    const type = context.checker.getNonNullableType(
+        context.checker.getTypeAtLocation(callee.expression),
+    );
+    const declaration = classInstanceDeclaration(type);
+    if (
+        !declaration ||
+        !context.checker
+            .getPropertyOfType(type, callee.name)
+            ?.declarations?.some(ts.isMethodDeclaration)
+    )
+        return undefined;
+    const asserted = lowerer.documentClassInstance(
+        owner,
+        type,
+        callee.expression,
+    );
+    if (asserted?.dataType?.kind !== "struct") return undefined;
+    // The instance is a copy: the receiver binds it by reference, and the
+    // document read it is asserted from may be a temporary that alone owns it.
+    const instance: Value = {
+        ...asserted,
+        cpp: `${context.dataTypes.cppType(asserted.dataType)}(${asserted.cpp})`,
+    };
+    const receiver =
+        context.classLowerer.hydrate(instance, callee.expression) ?? instance;
+    return context.classLowerer.compileMethodCall(
+        receiver,
+        callee.name,
+        call,
+        context.classOf(receiver) ?? declaration,
+    );
+}
+
 function compileKnownDataMethod(
     lowerer: DataLowerer,
     call: ts.CallExpression,
@@ -1433,6 +1484,13 @@ function compileKnownDataMethod(
         callee.expression,
     );
     if (isJsonValue(narrowedOwner)) {
+        const classMethodCall = compileDocumentClassMethod(
+            lowerer,
+            call,
+            callee,
+            narrowedOwner,
+        );
+        if (classMethodCall) return classMethodCall;
         const held = compileJsonMemberCall(
             lowerer.context,
             call,
@@ -4002,16 +4060,22 @@ function compileMapDataMethod(
                 ...(slotFoundCpp ? { slotFoundCpp } : {}),
             };
         }
-        return {
-            // Map.get declares its absence, so source guards may narrow it.
-            ...lowerer.mapPropertyValue(
-                narrowed.cpp,
-                key,
-                dataType.value,
-                false,
-            ),
-            ...(slotFoundCpp ? { slotFoundCpp } : {}),
-        };
+        return readShaderRecipe(
+            lowerer.context,
+            callee.expression,
+            keyValue,
+            argumentAt(call, 0),
+            () => ({
+                // Map.get declares its absence, so source guards may narrow it.
+                ...lowerer.mapPropertyValue(
+                    narrowed.cpp,
+                    key,
+                    dataType.value,
+                    false,
+                ),
+                ...(slotFoundCpp ? { slotFoundCpp } : {}),
+            }),
+        );
     }
     if (method === "set") {
         if (call.arguments.length !== 2) {
@@ -4058,6 +4122,14 @@ function compileMapDataMethod(
                     : `bbl::js::snapshot_value(${keyCpp})`,
         });
         const assignedValue = lowerer.context.compileValue(argumentAt(call, 1));
+        recordShaderRecipeStore(
+            lowerer.context,
+            callee.expression,
+            keyValue,
+            argumentAt(call, 1),
+            assignedValue,
+            call,
+        );
         if (
             lowerer.context.dataTypes.carriesBorrowedPlatformEvent(
                 dataType.value,
@@ -4284,22 +4356,42 @@ function compileStringPositionSearch(
     const searchNode = argumentAt(call, 0);
     const searchValue = context.compileValue(searchNode);
     const positionNode = call.arguments[1];
+    // A position generation knows, or none: the search folds over known text.
+    const knownPosition =
+        positionNode === undefined
+            ? null
+            : (staticNumberValue(context, positionNode) ??
+              context.probeEmission(
+                  () => {
+                      const value = context.compileValue(positionNode);
+                      return value.kind === "number" &&
+                          value.staticNumber !== undefined &&
+                          !value.parameterBinding
+                          ? value.staticNumber
+                          : undefined;
+                  },
+                  () => false,
+              ));
     if (
-        search.fold &&
-        !positionNode &&
+        knownPosition !== undefined &&
         narrowed.staticString !== undefined &&
         searchValue.staticString !== undefined
     ) {
+        if (positionNode)
+            context.emitDiscardedValue(context.compileValue(positionNode));
         const value = search.fold(
             narrowed.staticString,
             searchValue.staticString,
+            knownPosition ?? undefined,
         );
-        return {
-            kind: "boolean",
-            cpp: value ? "true" : "false",
-            staticBoolean: value,
-            dataType: { kind: "boolean" },
-        };
+        return typeof value === "boolean"
+            ? {
+                  kind: "boolean",
+                  cpp: value ? "true" : "false",
+                  staticBoolean: value,
+                  dataType: { kind: "boolean" },
+              }
+            : numberConstantValue(value);
     }
     const searchText = lowerer.compileKnownValueForSink(
         pins[1]

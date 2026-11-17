@@ -50,6 +50,7 @@ export const featureSources: Record<Feature, string[]> = {
     "platform:media-stream": [],
     "image:runtime-decode": [],
     "image:packaged-bytes": [],
+    "image:canvas-encode": ["src/pal_image.cpp"],
     "platform:window": ["src/pal_window_realm.cpp", "src/pal_media_query.cpp"],
     "backend:sdl": ["src/pal_sdl.cpp", "src/pal_image.cpp"],
     "engine:device-recovery": [],
@@ -58,6 +59,7 @@ export const featureSources: Record<Feature, string[]> = {
     // Each backend binds the device at createEngine; CMake derives the Dawn twin.
     "engine:webgpu-device": ["src/pal_sdl_gpu_webgpu_device.cpp"],
     "engine:gpu-task-timing": [],
+    "engine:screenshot": [],
     "profile:source": ["src/pal_source_profile.cpp"],
     "compute:storage-texture": [],
     "compute:texture-mipmaps": [],
@@ -155,6 +157,7 @@ export const featureSources: Record<Feature, string[]> = {
     "material:node-inputs": [],
     "material:shader": [],
     "material:shader-uniform-ranges": [],
+    "material:shader-declaration-lists": [],
     // Storage buffers are owned by the common runtime record and uploaded by
     // whichever already-reached scene renderer is selected.
     "material:shader-storage": [],
@@ -176,6 +179,8 @@ export const featureSources: Record<Feature, string[]> = {
     "material:parallax-occlusion": [],
     "material:runtime-rebuild": [],
     "material:ubo-dirty": [],
+    "material:view-gpu-release": [],
+    "material:shader-view": [],
     "material:standard-vertex-colors": [],
     "material:standard-skeleton": [],
     "material:standard-uv-offset": [],
@@ -354,20 +359,25 @@ export const featureSources: Record<Feature, string[]> = {
     "frame-graph:resources": [],
     "frame-graph:surface-target": [],
     "frame-graph:target-disposal": [],
+    "frame-graph:color-view-state": [],
     "frame-graph:task-mesh-removal": [],
     "frame-graph:task-mesh-refresh": [],
     "frame-graph:render-task-transmission": [],
+    "frame-graph:depth-resolve": [],
+    "frame-graph:color-texture-identity": [],
     "frame-graph:task-material-override": [],
     "frame-graph:task-build": [],
     "frame-graph:task-disposal": [],
     "frame-graph:task-method-slots": [],
     "frame-graph:live-task-add": [],
+    "frame-graph:task-removal": [],
     // A standalone FrameGraphContext has its own task-only driver. It does
     // not pull the scene renderer, camera math, mesh upload, or image loader.
     "renderer:frame-graph": ["src/pal_sdl_gpu_frame_graph.cpp"],
     "effect:wrapper": [],
     "effect:wrapper-disposal": [],
     "effect:task": [],
+    "effect:task-scissor": [],
     "renderer:scene": ["src/pal_sdl_gpu.cpp"],
     "renderer:transmission": [],
     "material:pbr-linear-image-processing": [],
@@ -839,8 +849,11 @@ interface MainCppProjection {
     postProcessCompositeCount: number;
     screenSpaceTaskCount: number;
     renderDataPreamble: () => DataPreamble;
-    /** The PBR plugin list algebra, over the signatures the whole program reaches. */
-    renderPbrPluginFunctions?: () => string;
+    /**
+     * The PBR plugin list algebra and the derived shader variants, over the
+     * signatures and recipes the whole program reaches.
+     */
+    renderMaterialFunctions?: () => string;
     nativeFunctions: readonly NativeFunctionDefinition[];
     staticNativeDeclarations: readonly string[];
     /** The emitted entry-body lines; the render marks unused locals in place. */
@@ -1100,9 +1113,8 @@ inline void begin_scene_mesh_profile(Engine&, std::uint32_t) {}
     if (dataPreamble.standalone.length > 0) {
         preambleSections.push(dataPreamble.standalone);
     }
-    const pbrPluginFunctions = projection.renderPbrPluginFunctions?.() ?? "";
-    if (pbrPluginFunctions.length > 0)
-        preambleSections.push(pbrPluginFunctions);
+    const materialFunctions = projection.renderMaterialFunctions?.() ?? "";
+    if (materialFunctions.length > 0) preambleSections.push(materialFunctions);
     if (
         nativeFunctionPrototypes.length > 0 ||
         nativeFunctionDefinitions.length > 0
@@ -1160,6 +1172,7 @@ ${(
     [
         ["compute:storage-texture", "pal_compute_storage_texture"],
         ["engine:gpu-task-timing", "pal_gpu_task_timing"],
+        ["engine:screenshot", "pal_screenshot"],
         ["compute:texture-mipmaps", "pal_compute_texture_mipmaps"],
         ["environment:procedural-sky", "pal_procedural_sky_environment"],
         ["environment:sky-atmosphere", "upstream/procedural_sky_atmosphere"],
@@ -1217,7 +1230,7 @@ ${projection.deferredCapabilitiesReached ? "#include <bblite/deferred_capability
                 ? [{ scene: false, text: meshProfileFallback }]
                 : []),
             ...sceneDeclarations(dataPreamble.shared),
-            ...sceneDeclarations(pbrPluginFunctions),
+            ...sceneDeclarations(materialFunctions),
             ...nativeFunctionPrototypes.map((prototype) => ({
                 scene: true,
                 text: prototype,

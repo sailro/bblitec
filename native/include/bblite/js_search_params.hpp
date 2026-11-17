@@ -2,7 +2,11 @@
 
 #include <bblite/js_data.hpp>
 #include <bblite/js_encoding.hpp>
+#include <cstdint>
 #include <iterator>
+#include <span>
+#include <string>
+#include <vector>
 
 namespace bbl::js {
 namespace search_params_detail {
@@ -145,27 +149,35 @@ inline std::string decode_uri(std::string_view input) {
     return uri_detail::decode(input, uri_detail::reserved);
 }
 
-/** `btoa(data)`: base64 of each UTF-16 unit as one byte; a unit above 0xFF is an InvalidCharacterError. */
-inline std::string string_to_base64(const std::string& input) {
+/** RFC 4648 base64 of `bytes`, padded. */
+inline std::string bytes_to_base64(std::span<const std::uint8_t> bytes) {
     constexpr char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    const auto units = string_code_units(input);
     std::string output;
-    output.reserve((units.size() + 2) / 3 * 4);
-    for (std::size_t index = 0; index < units.size(); index += 3) {
-        const std::size_t count = std::min<std::size_t>(3, units.size() - index);
+    output.reserve((bytes.size() + 2) / 3 * 4);
+    for (std::size_t index = 0; index < bytes.size(); index += 3) {
+        const std::size_t count = std::min<std::size_t>(3, bytes.size() - index);
         std::uint32_t chunk = 0;
-        for (std::size_t offset = 0; offset < 3; ++offset) {
-            const char16_t unit = offset < count ? units[index + offset] : char16_t{0};
-            if (unit > 0xFF)
-                throw NamedError(
-                    "InvalidCharacterError",
-                    "The string to be encoded contains characters outside of the Latin1 range.");
-            chunk = (chunk << 8) | unit;
-        }
+        for (std::size_t offset = 0; offset < 3; ++offset)
+            chunk = (chunk << 8) | (offset < count ? bytes[index + offset] : 0u);
         for (std::size_t digit = 0; digit < 4; ++digit)
             output.push_back(digit <= count ? alphabet[(chunk >> (18 - 6 * digit)) & 63] : '=');
     }
     return output;
+}
+
+/** `btoa(data)`: base64 of each UTF-16 unit as one byte; a unit above 0xFF is an InvalidCharacterError. */
+inline std::string string_to_base64(const std::string& input) {
+    const auto units = string_code_units(input);
+    std::vector<std::uint8_t> bytes;
+    bytes.reserve(units.size());
+    for (const char16_t unit : units) {
+        if (unit > 0xFF)
+            throw NamedError(
+                "InvalidCharacterError",
+                "The string to be encoded contains characters outside of the Latin1 range.");
+        bytes.push_back(static_cast<std::uint8_t>(unit));
+    }
+    return bytes_to_base64(bytes);
 }
 
 /** `atob(data)`: forgiving-base64 decode, each byte one UTF-16 unit, or an InvalidCharacterError. */

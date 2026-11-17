@@ -1318,9 +1318,42 @@ test("keeps pure imported data builders on the static path", () => {
     );
 
     assert.doesNotMatch(result.cpp, /v_module\d+_row/);
+    // The field reads the call's held result.
     assert.match(
         result.cpp,
-        /double v_selected = bblscene::buildRow\(\)\.value;/,
+        /auto (v_bblite_function_result_\d+) = bblscene::buildRow\(\);\s+\[\[maybe_unused\]\] double v_selected = \1\.value;/,
+    );
+});
+
+test("a const names the result its call holds for the record's facts", () => {
+    const { cpp } = compileSource(`
+        interface Image { width: number; height: number; indices: Uint8Array }
+        function decode(data: Uint8Array): Image {
+            const indices = data.slice(0, 4);
+            return { width: 2, height: 2, indices };
+        }
+        function area(image: Image): number {
+            return image.width * image.height + image.indices.length;
+        }
+        function main(): void {
+            const img = decode(new Uint8Array(8));
+            img.indices[0] = img.width;
+            console.log(area(img) + img.indices[0]!);
+            let other = decode(new Uint8Array(4));
+            console.log(area(other));
+        }
+        main();
+    `);
+    // The const is the object the holder holds, written through in place; a
+    // `let` the program may rebind keeps its own copy.
+    assert.match(
+        cpp,
+        /auto (v_bblite_function_result_\d+) = bblscene::decode\(bbl::js::u8_array_sized\(8\.0\)\);\s+\[\[maybe_unused\]\] bblscene::Image& v_img = \1;/,
+    );
+    assert.match(cpp, /array_store_checked\(v_img\.indices, 0\.0,/);
+    assert.match(
+        cpp,
+        /auto (v_bblite_function_result_\d+) = bblscene::decode\(bbl::js::u8_array_sized\(4\.0\)\);\s+\[\[maybe_unused\]\] bblscene::Image v_other = \1;/,
     );
 });
 
@@ -2864,15 +2897,14 @@ test("spreads a native partial struct into a wider struct", () => {
 
     // Nothing reads a copied key's presence, so an own undefined needs no
     // document: the wider record stays native and copies present fields.
-    assert.match(
-        result.cpp,
-        /bblscene::Item v_item = bbl::js::make_ref<bblscene::ItemData>\(\);/,
-    );
+    // The program stores only a boolean read off `item`, so `item` holds its
+    // fields in place.
+    assert.match(result.cpp, /bblscene::Item v_item\{\};/);
     for (const key of ["label", "enabled"])
         assert.match(
             result.cpp,
             new RegExp(
-                String.raw`if \(v_options->${key}\.has_value\(\)\) \{\s*v_item->${key} = \(\*v_options->${key}\);`,
+                String.raw`if \(v_options->${key}\.has_value\(\)\) \{\s*v_item\.${key} = \(\*v_options->${key}\);`,
             ),
         );
     // `label` is never written, so the copy's presence is known statically.
@@ -4063,6 +4095,59 @@ test("a literal key reads the entry it names beside writes into another literal'
     `);
     // \`merged[key]\` writes only the object its own literal creates.
     assert.match(result.cpp, /v_picked = \(v_active->scale \+ 2\.0\);/);
+});
+
+test("a record read by a literal-union key holds only the properties the key names", (t) => {
+    // `input[side]` over "left" | "right" never reads `reach`, a record of
+    // another shape, nor the scalar gaps beside it.
+    const result = compileSource(`type RingWindowSide = "left" | "right";
+interface RingWindowPlacement { id: string; side: RingWindowSide; left: number; top: number; width: number }
+interface RingWindowReach { left: number; right: number; top: number; bottom: number }
+interface RingWindowStack { placements: readonly RingWindowPlacement[]; reach: RingWindowReach }
+interface RingWindowStackInput {
+  left: { width: number; items: readonly { id: string; height: number }[] };
+  right: { width: number; items: readonly { id: string; height: number }[] };
+  reach: RingWindowReach;
+  sideGap: number;
+  stackGap: number;
+}
+function stackRingWindowColumns(input: Readonly<RingWindowStackInput>): RingWindowStack {
+  const placements: RingWindowPlacement[] = [];
+  const reach: RingWindowReach = { ...input.reach };
+  for (const side of ["left", "right"] as const) {
+    const column = input[side];
+    if (column.items.length === 0) continue;
+    const total = column.items.reduce((sum, item) => sum + item.height, 0) + input.stackGap * (column.items.length - 1);
+    const left = side === "left" ? -(input.reach.left + input.sideGap) - column.width : input.reach.right + input.sideGap;
+    let top = -total / 2;
+    for (const item of column.items) {
+      placements.push({ id: item.id, side, left, top, width: column.width });
+      top += item.height + input.stackGap;
+    }
+    if (side === "left") reach.left = Math.max(reach.left, -left);
+    else reach.right = Math.max(reach.right, left + column.width);
+    reach.top = Math.min(reach.top, -total / 2);
+    reach.bottom = Math.max(reach.bottom, total / 2);
+  }
+  return { placements, reach };
+}
+const items = [{ id: "a", height: Math.random() * 10 }];
+const out = stackRingWindowColumns({ left: { width: 10, items }, right: { width: 12, items: [] }, reach: { left: 1, right: 2, top: -3, bottom: 3 }, sideGap: 4, stackGap: 2 });
+if (out.placements.length !== 1 || out.placements[0]!.width !== 10 || out.reach.left !== 15 || out.reach.right !== 2) throw new Error("stack");
+`);
+    const tools = optionalNativeFixtureTools();
+    if (!tools)
+        return t.skip(
+            "Native fixture compiler unavailable; generation assertions passed.",
+        );
+    runGeneratedProgram(
+        tools,
+        "compiler-literal-union-key-subset",
+        result.cpp,
+        {
+            expectedOutput: "",
+        },
+    );
 });
 
 test("a member a literal key's entry never sets compares unequal to a present value", () => {
@@ -6219,17 +6304,45 @@ void main();
     }
 });
 
+/** A repair of a parsed value: each non-finite number under it reset to 0. */
+const REPAIR = `interface Mutable { [key: string]: unknown }
+export function repairNonFinite(value: unknown): boolean {
+    if (value === null || typeof value !== "object") return false;
+    let repaired = false;
+    const record = value as Mutable;
+    for (const key of Object.keys(record)) {
+        const child = record[key];
+        if (typeof child === "number") {
+            if (!Number.isFinite(child)) {
+                record[key] = 0;
+                repaired = true;
+            }
+            continue;
+        }
+        if (child !== null && typeof child === "object" && repairNonFinite(child)) repaired = true;
+    }
+    return repaired;
+}
+`;
+
 test("a builder holding options a native table's entry fills as one object reads the members neither sets as absent in each key's arm", () => {
     // The table's entries hold a run-time value, so it is native; the
     // builder observes its options' identity, so it holds them as one
     // native object. `fade`, which neither sets, alone would create the
     // buffer.
-    const directory = resolve("artifacts/compiler-stored-table-options");
-    mkdirSync(directory, { recursive: true });
-    writeFileSync(join(directory, "noop-worker.ts"), "self.close();\n");
-    writeFileSync(
-        join(directory, "species.ts"),
-        `import type { EngineContext } from "@babylonjs/lite";
+    // A repair of a parsed value that writes a slot only while it holds a
+    // non-finite number replaces neither the record entry nor its finite or
+    // absent members, so it keeps the same facts.
+    for (const repaired of [false, true]) {
+        const directory = resolve(
+            `artifacts/compiler-stored-table-options${repaired ? "-repaired" : ""}`,
+        );
+        mkdirSync(directory, { recursive: true });
+        writeFileSync(join(directory, "noop-worker.ts"), "self.close();\n");
+        if (repaired) writeFileSync(join(directory, "repair.ts"), REPAIR);
+        writeFileSync(
+            join(directory, "species.ts"),
+            `import type { EngineContext } from "@babylonjs/lite";
 import { herd, type Herd, type HerdOptions } from "./herd";
 export type Species = "deer" | "fox" | "hen";
 interface SpeciesDef { file: string; height: number; glow?: boolean; base: { speed: number }; seed: number }
@@ -6249,10 +6362,10 @@ export async function buildHerds(engine: EngineContext, capacity: number): Promi
     return Promise.all(types.map((type) => herd(engine, optionsFor(type, capacity))));
 }
 `,
-    );
-    writeFileSync(
-        join(directory, "herd.ts"),
-        `import { createShaderMaterial, createStorageBuffer, updateStorageBuffer, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";
+        );
+        writeFileSync(
+            join(directory, "herd.ts"),
+            `import { createShaderMaterial, createStorageBuffer, updateStorageBuffer, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";
 export interface HerdOptions { file: string; height: number; glow?: boolean; capacity: number; fade?: boolean; dither?: boolean }
 const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
 @vertex fn mainVertex(input: VertexInput) -> VertexOutput {
@@ -6298,17 +6411,17 @@ export async function herd(engine: EngineContext, opts: HerdOptions): Promise<He
     return build(engine, opts, capacity);
 }
 `,
-    );
-    const result = compileSource(
-        `import { addToScene, createArcRotateCamera, createEngine, createPlane, createSceneContext, registerScene, startEngine } from "@babylonjs/lite";
+        );
+        const result = compileSource(
+            `import { addToScene, createArcRotateCamera, createEngine, createPlane, createSceneContext, registerScene, startEngine } from "@babylonjs/lite";
 import { buildHerds, isSpecies, speciesSpeed } from "./species";
-const worker = new Worker(new URL("./noop-worker.ts", import.meta.url), { type: "module" });
+${repaired ? 'import { repairNonFinite } from "./repair";\n' : ""}const worker = new Worker(new URL("./noop-worker.ts", import.meta.url), { type: "module" });
 worker.terminate();
 async function main(): Promise<void> {
     const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
     const scene = createSceneContext(engine);
     scene.camera = createArcRotateCamera(-Math.PI / 2, Math.PI / 2, 8, { x: 0, y: 0, z: 0 });
-    const herds = await buildHerds(engine, 8);
+${repaired ? '    if (repairNonFinite(JSON.parse(\'{"x":1e999,"y":{"z":2}}\'))) console.log("repaired");\n' : ""}    const herds = await buildHerds(engine, 8);
     const plane = createPlane(engine, { width: 2, height: 2 });
     plane.material = herds[0]!.material;
     console.log(herds[1]!.label());
@@ -6319,23 +6432,64 @@ async function main(): Promise<void> {
 }
 void main();
 `,
-        {
-            fileName: join(directory, "entry.ts"),
-        },
-    );
-    assert.deepEqual(
-        result.manifest.customShaderPrograms.map((program) => [
-            /\* ([0-9.]+), ([0-9.]+)\)/.exec(program.vertexSource)?.slice(1),
-            program.vertexSource.includes("(input.position * 1.1)"),
-        ]),
-        [
-            [["2.9", "1.0"], false],
-            [["0.8", "1.0"], true],
-            [["0.4", "1.0"], false],
-        ],
-    );
-    // The buffer only a present `fade` creates is never made or written.
-    assert.doesNotMatch(result.cpp, /bbl::update_storage_buffer\(/);
+            {
+                fileName: join(directory, "entry.ts"),
+            },
+        );
+        assert.deepEqual(
+            result.manifest.customShaderPrograms.map((program) => [
+                /\* ([0-9.]+), ([0-9.]+)\)/
+                    .exec(program.vertexSource)
+                    ?.slice(1),
+                program.vertexSource.includes("(input.position * 1.1)"),
+            ]),
+            [
+                [["2.9", "1.0"], false],
+                [["0.8", "1.0"], true],
+                [["0.4", "1.0"], false],
+            ],
+        );
+        // The buffer only a present `fade` creates is never made or written.
+        assert.doesNotMatch(result.cpp, /bbl::update_storage_buffer\(/);
+    }
+});
+
+test("a known-key read of a native table folds the members a repair of a parsed value cannot replace, and runs as JavaScript does", (t) => {
+    // The repair resets a parsed value's non-finite number; the table's
+    // entry, its string, its finite numbers and the member it lacks are
+    // none, so the read by a literal key folds while the loop's run-time
+    // keys read the native table.
+    const source = `
+type Kind = "deer" | "fox";
+interface Def { file: string; height: number; bad: number; glow?: boolean; seed: number }
+const TABLE: Record<Kind, Def> = {
+    deer: { file: "Deer.glb", height: 2.9, bad: 3, seed: Math.random() },
+    fox: { file: "Fox.glb", height: 0.8, bad: 1, glow: true, seed: Math.random() },
+};
+${REPAIR.replace("export ", "")}
+function describe(kind: Kind): string {
+    const def = TABLE[kind];
+    return def.file + ":" + def.height + ":" + def.bad + ":" + (def.glow ? "glow" : "plain");
+}
+const saved = JSON.parse('{"a":1,"b":{"c":2}}') as { a: number; b: { c: number } };
+saved.a /= 0;
+if (!repairNonFinite(saved) || saved.a !== 0 || saved.b.c !== 2) throw new Error("repair");
+const kinds = Object.keys(TABLE) as Kind[];
+const seen = kinds.map((kind) => describe(kind)).join(",");
+if (seen !== "Deer.glb:2.9:3:plain,Fox.glb:0.8:1:glow") throw new Error(seen);
+if (describe("deer") !== "Deer.glb:2.9:3:plain") throw new Error("deer " + describe("deer"));
+`;
+    runInNewContext(transpileCommonJs(source, "native-table-repair.ts"), {
+        exports: {},
+    });
+    const result = compileSource(source);
+    // The known key's description is generation's: its check folds away.
+    assert.doesNotMatch(result.cpp, /"deer "/);
+    const tools = optionalNativeFixtureTools();
+    if (!tools) return t.skip("Native fixture compiler unavailable.");
+    runGeneratedProgram(tools, "compiler/native-table-repair", result.cpp, {
+        expectedOutput: "",
+    });
 });
 
 test("an async callee's optional record parameter it was handed reads its members without a presence test", () => {
@@ -6355,6 +6509,980 @@ test("an async callee's optional record parameter it was handed reads its member
         void main();
     `);
     assert.doesNotMatch(result.cpp, /optional_chain/);
+});
+
+test("a profile a constant table gives by a known key composes each key's shader", () => {
+    // A profile helper reads a constant table by a string-union key, with a
+    // fallback, and an options builder derives flags from the profile: each
+    // key's arm composes its own program. The table's entry is a literal,
+    // one a helper builds from known scalars, or one a conditional spread
+    // adds where a known flag allows it.
+    const programs = (source: string): readonly string[] =>
+        compileSource(source).manifest.customShaderPrograms.map(
+            (program) =>
+                /position \* ([0-9.]+)/.exec(program.vertexSource)?.[1] ?? "",
+        );
+    for (const source of [
+        `import { createEngine, createSceneContext, createShaderMaterial, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";
+type Kind = "a" | "b";
+interface Profile { file: string; height: number; shared?: boolean; tint: "body" | false }
+const BASE: Profile = { file: "base.glb", height: 4.4, tint: "body" };
+const DEMO = typeof location === "undefined" ? false : location.search.includes("demo");
+function allows(kind: Kind): boolean { return kind !== "b"; }
+function matched(file: string, height: number): Profile {
+    return { ...BASE, file, height, shared: true };
+}
+const MODELS: Readonly<{ a: Profile } & Partial<Record<Kind, Profile>>> = {
+    a: BASE,
+    b: { file: "b.glb", height: 3, shared: true, tint: "body" },
+};
+function profile(kind: Kind): Profile {
+    const p = MODELS[kind] ?? BASE;
+    if (!p) throw new Error(\`no \${kind}\`);
+    return p;
+}
+function options(kind: Kind) {
+    const p = profile(kind);
+    return { file: p.file, shared: p.shared === true, tinted: p.tint !== false } as const;
+}
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*S*/, 1.0); return out; }\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+function surface(engine: EngineContext, o: { file: string; shared: boolean; tinted: boolean }): ShaderMaterial {
+    const vertex = VERTEX.replace("/*S*/", o.shared ? (o.tinted ? "0.5" : "0.6") : "1.0");
+    return createShaderMaterial({ name: o.file, vertexSource: wgsl\`\${vertex}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    const kinds = (["a", "b"] as const).filter(() => Math.random() < 2);
+    const build = (kind: Kind): ShaderMaterial => surface(engine, options(kind));
+    kinds.map(build);
+}
+void main();
+`,
+        `import { createEngine, createSceneContext, createShaderMaterial, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";
+type Kind = "a" | "b";
+interface Profile { file: string; height: number; shared?: boolean; tint: "body" | false }
+const BASE: Profile = { file: "base.glb", height: 4.4, tint: "body" };
+const DEMO = typeof location === "undefined" ? false : location.search.includes("demo");
+function allows(kind: Kind): boolean { return kind !== "b"; }
+function matched(file: string, height: number): Profile {
+    return { ...BASE, file, height, shared: true };
+}
+const MODELS: Readonly<{ a: Profile } & Partial<Record<Kind, Profile>>> = {
+    a: BASE,
+    b: matched("b.glb", 3),
+};
+function profile(kind: Kind): Profile {
+    const p = MODELS[kind] ?? BASE;
+    if (!p) throw new Error(\`no \${kind}\`);
+    return p;
+}
+function options(kind: Kind) {
+    const p = profile(kind);
+    return { file: p.file, shared: p.shared === true, tinted: p.tint !== false } as const;
+}
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*S*/, 1.0); return out; }\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+function surface(engine: EngineContext, o: { file: string; shared: boolean; tinted: boolean }): ShaderMaterial {
+    const vertex = VERTEX.replace("/*S*/", o.shared ? (o.tinted ? "0.5" : "0.6") : "1.0");
+    return createShaderMaterial({ name: o.file, vertexSource: wgsl\`\${vertex}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    const kinds = (["a", "b"] as const).filter(() => Math.random() < 2);
+    const build = (kind: Kind): ShaderMaterial => surface(engine, options(kind));
+    kinds.map(build);
+}
+void main();
+`,
+        `import { createEngine, createSceneContext, createShaderMaterial, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";
+type Kind = "a" | "b";
+interface Profile { file: string; height: number; shared?: boolean; tint: "body" | false }
+const BASE: Profile = { file: "base.glb", height: 4.4, tint: "body" };
+const DEMO = typeof location === "undefined" ? false : location.search.includes("demo");
+function allows(kind: Kind): boolean { return kind !== "b"; }
+function matched(file: string, height: number): Profile {
+    return { ...BASE, file, height, shared: true };
+}
+const MODELS: Readonly<{ a: Profile } & Partial<Record<Kind, Profile>>> = {
+    a: BASE,
+    ...(!DEMO || allows("b") ? { b: { ...BASE, file: "b.glb", height: 3, shared: true } } : {}),
+};
+function profile(kind: Kind): Profile {
+    const p = MODELS[kind] ?? BASE;
+    if (!p) throw new Error(\`no \${kind}\`);
+    return p;
+}
+function options(kind: Kind) {
+    const p = profile(kind);
+    return { file: p.file, shared: p.shared === true, tinted: p.tint !== false } as const;
+}
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*S*/, 1.0); return out; }\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+function surface(engine: EngineContext, o: { file: string; shared: boolean; tinted: boolean }): ShaderMaterial {
+    const vertex = VERTEX.replace("/*S*/", o.shared ? (o.tinted ? "0.5" : "0.6") : "1.0");
+    return createShaderMaterial({ name: o.file, vertexSource: wgsl\`\${vertex}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    const kinds = (["a", "b"] as const).filter(() => Math.random() < 2);
+    const build = (kind: Kind): ShaderMaterial => surface(engine, options(kind));
+    kinds.map(build);
+}
+void main();
+`,
+    ])
+        assert.deepEqual(programs(source), ["1.0", "0.5"]);
+});
+
+test("a shader text appended under a known condition composes its program, and a known string compared with a boolean folds", () => {
+    // `scale += ...` under a condition generation knows keeps the text,
+    // as `scale = scale + ...` does; a herd builder awaits a cache, then
+    // composes each part from options a key's helper built.
+    const scales = (source: string): readonly (string | undefined)[] =>
+        compileSource(source).manifest.customShaderPrograms.map(
+            (program) =>
+                /position \* ([^,]+), 1\.0/.exec(program.vertexSource)?.[1],
+        );
+    assert.deepEqual(
+        scales(`import { createEngine, createSceneContext, createShaderMaterial, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";
+type Kind = "a" | "b";
+interface Coat { tint: number }
+interface Opts { file: string; fade?: boolean; coat?: Coat; albedo?: number; highlight?: { strength: number }; clips: readonly string[] }
+const COAT: Coat = { tint: 0.5 };
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*S*/, 1.0); return out; }\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+const cache = new Map<string, Promise<number[]>>();
+async function prepare(o: Opts): Promise<number[]> {
+    await Promise.resolve();
+    return o.clips.map((clip) => clip.length);
+}
+function prepared(o: Opts): Promise<number[]> {
+    let p = cache.get(o.file);
+    if (!p) { p = prepare(o); cache.set(o.file, p); }
+    return p;
+}
+function surface(engine: EngineContext, name: string, fade: boolean, coat: Coat | undefined, albedo: number | undefined): ShaderMaterial {
+    const s = { fade, coat, albedo };
+    let scale = s.fade ? "0.5" : "1.0";
+    if (s.fade) scale += " * 0.9";
+    const vertex = VERTEX.replace("/*S*/", scale);
+    return createShaderMaterial({ name, vertexSource: wgsl\`\${vertex}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+function instance(engine: EngineContext, o: Opts, parts: number[]): ShaderMaterial[] {
+    const out: ShaderMaterial[] = [];
+    const part = parts.length; out.push(surface(engine, \`\${o.file}-\${part}\`, o.fade === true, o.coat, o.albedo));
+    return out;
+}
+function create(engine: EngineContext, o: Opts): Promise<ShaderMaterial[]> {
+    void prepared;
+    return Promise.resolve(instance(engine, o, [1]));
+}
+function options(kind: Kind) {
+    return { file: \`\${kind}.glb\`, clips: ["idle", "walk"], fade: true, coat: { tint: 0.5 } } as const;
+}
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    const lit = Math.random() < 2 ? { highlight: { strength: 2 } } : undefined;
+    const kinds = (["a", "b"] as const).filter(() => Math.random() < 2);
+    const build = (kind: Kind): Promise<ShaderMaterial[]> => create(engine, { ...options(kind)});
+    await Promise.all(kinds.map(build));
+}
+void main();
+`),
+        // `options` always sets `fade`: the unfaded program is unreachable.
+        ["0.5 * 0.9"],
+    );
+    // The record a spread copies keeps the coat its helper always sets.
+    assert.deepEqual(
+        scales(`import { createEngine, createSceneContext, createShaderMaterial, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";
+type Kind = "a" | "b";
+interface Coat { tint: number }
+interface Opts { file: string; fade?: boolean; coat?: Coat; albedo?: number; highlight?: { strength: number }; clips: readonly string[] }
+const COAT: Coat = { tint: 0.5 };
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*S*/, 1.0); return out; }\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+const cache = new Map<string, Promise<number[]>>();
+async function prepare(o: Opts): Promise<number[]> {
+    await Promise.resolve();
+    return o.clips.map((clip) => clip.length);
+}
+function prepared(o: Opts): Promise<number[]> {
+    let p = cache.get(o.file);
+    if (!p) { p = prepare(o); cache.set(o.file, p); }
+    return p;
+}
+function surface(engine: EngineContext, name: string, s: { fade: boolean; coat?: Coat; albedo?: number; highlight?: { strength: number } }): ShaderMaterial {
+    let scale = s.fade ? "0.5" : "1.0";
+    if (s.coat) scale += " * 0.9";
+    if (s.albedo !== undefined) scale += " * 0.8";
+    if (s.highlight) scale += " * 1.1";
+    const vertex = VERTEX.replace("/*S*/", scale);
+    return createShaderMaterial({ name, vertexSource: wgsl\`\${vertex}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+function instance(engine: EngineContext, o: Opts, parts: number[]): ShaderMaterial[] {
+    const out: ShaderMaterial[] = [];
+    for (const part of parts) out.push(surface(engine, \`\${o.file}-\${part}\`, { fade: o.fade === true, coat: o.coat, albedo: o.albedo, highlight: o.highlight }));
+    return out;
+}
+async function create(engine: EngineContext, o: Opts): Promise<ShaderMaterial[]> {
+    const parts = await prepared(o);
+    return instance(engine, o, parts);
+}
+function options(kind: Kind) {
+    return { file: \`\${kind}.glb\`, clips: ["idle", "walk"], fade: true, coat: COAT } as const;
+}
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    const lit = Math.random() < 2 ? { highlight: { strength: 2 } } : undefined;
+    const kinds = (["a", "b"] as const).filter(() => Math.random() < 2);
+    const build = (kind: Kind): Promise<ShaderMaterial[]> => create(engine, { ...options(kind), highlight: lit?.highlight });
+    await Promise.all(kinds.map(build));
+}
+void main();
+`),
+        ["0.5 * 0.9 * 1.1", "0.5 * 0.9"],
+    );
+    // A known string is no boolean: comparing one with `false` folds.
+    assert.deepEqual(
+        scales(`import { createEngine, createSceneContext, createShaderMaterial, wgsl, type EngineContext } from "@babylonjs/lite";
+interface Profile { file: string; shared?: boolean; tint: "body" | false }
+const B: Profile = { file: "b.glb", shared: true, tint: "body" };
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*S*/, 1.0); return out; }\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+function surface(engine: EngineContext, p: Profile): void {
+    const a = MODE === 1 ? p.shared === true : MODE === 2 ? p.tint !== false : p.file === "b.glb";
+    const vertex = VERTEX.replace("/*S*/", a ? "0.5" : "1.0");
+    createShaderMaterial({ name: "m", vertexSource: wgsl\`\${vertex}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+const MODE: number = 2;
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    const p = B;
+    surface(engine, p);
+}
+void main();
+`),
+        ["0.5"],
+    );
+});
+
+test("a table entry a shared helper builds from a module constant keeps its known fields", () => {
+    // The helper spreads a module constant, reads its fields, and computes
+    // one through a local: its shared call keeps the fields the body knows,
+    // and the table read by an arm's key keeps the entry present.
+    const programs = (source: string): readonly string[] =>
+        compileSource(source).manifest.customShaderPrograms.map(
+            (program) =>
+                /position \* ([0-9.]+)/.exec(program.vertexSource)?.[1] ?? "",
+        );
+    for (const source of [
+        `import { createEngine, createSceneContext, createShaderMaterial, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";
+type Kind = "a" | "b";
+interface Bounds { minY: number; maxY: number }
+interface Profile { file: string; height: number; bounds: Bounds; shared?: boolean; tint: "body" | false }
+const BASE: Profile = { file: "base.glb", height: 4.4, bounds: { minY: 0, maxY: 1.7 }, tint: "body" };
+const DEMO = typeof location === "undefined" ? false : location.search.includes("demo");
+function allows(kind: Kind): boolean { return kind !== "b"; }
+function matched(file: string, bounds: Readonly<Bounds>): Profile {
+    const height = (bounds.maxY - bounds.minY) * BASE.height / (BASE.bounds.maxY - BASE.bounds.minY);
+    return { ...BASE, file, height, bounds, shared: true };
+}
+const MODELS: Readonly<{ a: Profile } & Partial<Record<Kind, Profile>>> = {
+    a: BASE,
+    b: matched("b.glb", { minY: 0, maxY: 1.6 }),
+};
+function profile(kind: Kind): Profile {
+    const p = MODELS[kind] ?? BASE;
+    if (!p) throw new Error(\`no \${kind}\`);
+    return p;
+}
+function options(kind: Kind) {
+    const p = profile(kind);
+    return { file: p.file, shared: p.shared === true, tinted: p.tint !== false } as const;
+}
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*S*/, 1.0); return out; }\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+function surface(engine: EngineContext, o: { file: string; shared: boolean; tinted: boolean }): ShaderMaterial {
+    const vertex = VERTEX.replace("/*S*/", o.shared ? (o.tinted ? "0.5" : "0.6") : "1.0");
+    return createShaderMaterial({ name: o.file, vertexSource: wgsl\`\${vertex}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    const kinds = (["a", "b"] as const).filter(() => Math.random() < 2);
+    const build = (kind: Kind): ShaderMaterial => surface(engine, options(kind));
+    kinds.map(build);
+}
+void main();
+`,
+        `import { createEngine, createSceneContext, createShaderMaterial, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";
+type Kind = "a" | "b";
+interface Bounds { minY: number; maxY: number }
+interface Profile { file: string; height: number; bounds: Bounds; shared?: boolean; tint: "body" | false }
+const BASE: Profile = { file: "base.glb", height: 4.4, bounds: { minY: 0, maxY: 1.7 }, tint: "body" };
+const DEMO = typeof location === "undefined" ? false : location.search.includes("demo");
+function allows(kind: Kind): boolean { return kind !== "b"; }
+function matched(file: string, bounds: Readonly<Bounds>): Profile {
+    return { ...BASE, file, height: BASE.height, bounds, shared: true };
+}
+const MODELS: Readonly<{ a: Profile } & Partial<Record<Kind, Profile>>> = {
+    a: BASE,
+    b: matched("b.glb", { minY: 0, maxY: 1.6 }),
+};
+function profile(kind: Kind): Profile {
+    const p = MODELS[kind] ?? BASE;
+    if (!p) throw new Error(\`no \${kind}\`);
+    return p;
+}
+function options(kind: Kind) {
+    const p = profile(kind);
+    return { file: p.file, shared: p.shared === true, tinted: p.tint !== false } as const;
+}
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*S*/, 1.0); return out; }\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+function surface(engine: EngineContext, o: { file: string; shared: boolean; tinted: boolean }): ShaderMaterial {
+    const vertex = VERTEX.replace("/*S*/", o.shared ? (o.tinted ? "0.5" : "0.6") : "1.0");
+    return createShaderMaterial({ name: o.file, vertexSource: wgsl\`\${vertex}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    const kinds = (["a", "b"] as const).filter(() => Math.random() < 2);
+    const build = (kind: Kind): ShaderMaterial => surface(engine, options(kind));
+    kinds.map(build);
+}
+void main();
+`,
+    ])
+        assert.deepEqual(programs(source), ["1.0", "0.5"]);
+});
+
+test("an options record a known key selects between literals keeps its fields through an async call", () => {
+    // Nine flags exceed one call's run-time tests, so the call splits on
+    // the kind; each arm's options helper selects one literal, and its
+    // fields reach the material through an async function's parameter.
+    const programs =
+        compileSource(`import { createEngine, createSceneContext, createShaderMaterial, wgsl, type EngineContext, type SceneContext, type ShaderMaterial } from "@babylonjs/lite";
+type Kind = "a" | "b";
+interface Opts { file: string; f1?: boolean; f2?: boolean; f3?: boolean; f4?: boolean; f5?: boolean; f6?: boolean; f7?: boolean; f8?: boolean; f9?: boolean; capacity: number }
+interface Prepared { claimed: Set<SceneContext>; count: number }
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*S*/, 1.0); return out; }\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+const cache = new Map<string, Prepared>();
+async function prepare(opts: Opts): Promise<Prepared> {
+    const known = cache.get(opts.file);
+    if (known) return known;
+    const fresh: Prepared = { claimed: new Set(), count: opts.capacity };
+    await Promise.resolve();
+    cache.set(opts.file, fresh);
+    return fresh;
+}
+function build(engine: EngineContext, opts: Opts, prepared: Prepared): ShaderMaterial {
+    let scale = "1.0";
+    if (opts.f1 === true) scale += " * 1.1";
+    if (opts.f2 === true) scale += " * 1.2";
+    if (opts.f3 === true) scale += " * 1.3";
+    if (opts.f4 === true) scale += " * 1.4";
+    if (opts.f5 === true) scale += " * 1.5";
+    if (opts.f6 === true) scale += " * 1.6";
+    if (opts.f7 === true) scale += " * 1.7";
+    if (opts.f8 === true) scale += " * 1.8";
+    if (opts.f9 === true) scale += " * 1.9";
+    const vertex = VERTEX.replace("/*S*/", scale);
+    return createShaderMaterial({ name: \`creature-\${opts.file}-\${prepared.count}\`, vertexSource: wgsl\`\${vertex}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+async function create(engine: EngineContext, scene: SceneContext, opts: Opts): Promise<ShaderMaterial> {
+    let prepared = await prepare(opts);
+    if (prepared.claimed.has(scene)) prepared = { claimed: new Set(), count: opts.capacity };
+    prepared.claimed.add(scene);
+    return build(engine, opts, prepared);
+}
+function options(kind: Kind): Opts {
+    return kind === "a" ? { file: "a.glb", f1: true, f3: true, capacity: 4 } : { file: "b.glb", f2: true, f9: true, capacity: 8 };
+}
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    const scene = createSceneContext(engine);
+    const kinds = (["a", "b"] as const).filter(() => Math.random() < 2);
+    await Promise.all(kinds.map((kind) => create(engine, scene, options(kind))));
+}
+void main();
+`).manifest.customShaderPrograms.map(
+            (program) =>
+                /position \* ([^,]+), 1\.0/.exec(program.vertexSource)?.[1] ??
+                "",
+        );
+    assert.deepEqual(programs, ["1.0 * 1.1 * 1.3", "1.0 * 1.2 * 1.9"]);
+});
+
+test("a record argument known present stays present in an async function's parameter", () => {
+    // `lit?.f5` reads the record the call passes: it is no run-time
+    // test, so the nine flags compose one program.
+    const programs =
+        compileSource(`import { createEngine, createSceneContext, createShaderMaterial, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*S*/, 1.0); return out; }\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+interface Opts { name: string; f1?: boolean; f2?: boolean; f3?: boolean; f4?: boolean; f5?: boolean; f6?: boolean; f7?: boolean; f8?: boolean; f9?: boolean }
+async function create(engine: EngineContext, opts: Opts): Promise<ShaderMaterial> {
+    await Promise.resolve();
+    let scale = "1.0";
+    if (opts.f1 === true) scale += " * 1.1";
+    if (opts.f2 === true) scale += " * 1.2";
+    if (opts.f3 === true) scale += " * 1.3";
+    if (opts.f4 === true) scale += " * 1.4";
+    if (opts.f5 === true) scale += " * 1.5";
+    if (opts.f6 === true) scale += " * 1.6";
+    if (opts.f7 === true) scale += " * 1.7";
+    if (opts.f8 === true) scale += " * 1.8";
+    if (opts.f9 === true) scale += " * 1.9";
+    const vertex = VERTEX.replace("/*S*/", scale);
+    return createShaderMaterial({ name: opts.name, vertexSource: wgsl\`\${vertex}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+async function preload(engine: EngineContext, lit?: { f5?: boolean; f6?: boolean }, f4 = false): Promise<ShaderMaterial[]> {
+    const build = (name: string): Promise<ShaderMaterial> => create(engine, { name, f1: true, f2: false, f3: true, f4, f5: lit?.f5, f6: lit?.f6, f7: false, f8: true, f9: false });
+    const names = ["a", "b", "c"].filter(() => Math.random() < 2);
+    return Promise.all(names.map(build));
+}
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    await preload(engine, { f5: true, f6: false }, false);
+}
+void main();
+`).manifest.customShaderPrograms.map(
+            (program) =>
+                /position \* ([^,]+), 1\.0/.exec(program.vertexSource)?.[1] ??
+                "",
+        );
+    assert.deepEqual(programs, ["1.0 * 1.1 * 1.3 * 1.5 * 1.8"]);
+});
+
+test("a native helper's returned record keeps the fields its body knows, and two known strings compare at generation", () => {
+    // `options(24)` compiles to a native function; its result still says
+    // `dir` is "humans" and `fade` is true, directly, through a spread into
+    // an options literal, and through an async call's parameter.
+    const programs = (source: string): readonly string[] =>
+        compileSource(source).manifest.customShaderPrograms.map(
+            (program) =>
+                /position \* ([0-9.]+)/.exec(program.vertexSource)?.[1] ?? "",
+        );
+    assert.deepEqual(
+        programs(`import { createEngine, createSceneContext, createShaderMaterial, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*S*/, 1.0); return out; }\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+interface Opts { dir?: string; fade?: boolean; extra?: boolean; capacity: number }
+function options(capacity: number) {
+    return { dir: "humans", fade: true, capacity } as const;
+}
+async function create(engine: EngineContext, opts: Opts): Promise<ShaderMaterial> {
+    await Promise.resolve();
+    const vertex = VERTEX.replace("/*S*/", opts.fade === true ? (opts.dir === "humans" ? "0.5" : "0.6") : "1.0");
+    return createShaderMaterial({ name: \`m\${opts.capacity}\`, vertexSource: wgsl\`\${vertex}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    await create(engine, { ...options(24), extra: false });
+}
+void main();
+`),
+        ["0.5"],
+    );
+    assert.deepEqual(
+        programs(`import { createEngine, createSceneContext, createShaderMaterial, wgsl } from "@babylonjs/lite";
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*S*/, 1.0); return out; }\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+interface Opts { dir?: string; fade?: boolean; extra?: boolean; capacity: number }
+function options(capacity: number) {
+    return { dir: "humans", fade: true, capacity } as const;
+}
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    const direct = options(24);
+    const a = VERTEX.replace("/*S*/", direct.dir === "humans" ? "0.5" : "0.6");
+    createShaderMaterial({ name: "a", vertexSource: wgsl\`\${a}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+    const spread: Opts = { ...options(24), extra: false };
+    const b = VERTEX.replace("/*S*/", spread.dir === "humans" ? "0.7" : "0.8");
+    createShaderMaterial({ name: "b", vertexSource: wgsl\`\${b}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+void main();
+`),
+        ["0.5", "0.7"],
+    );
+});
+
+test("a native helper's returned record keeps the primitives of a record one of its fields holds", () => {
+    // `fadeOf()` returns `{ profile }`, the record `profileOf()` returns,
+    // plain or frozen: its result still knows `profile.a`. A write to `a`
+    // leaves it a run-time read.
+    const source = (profile: string, write = ""): string =>
+        `import { createEngine, createSceneContext, createShaderMaterial, wgsl } from "@babylonjs/lite";
+interface Profile { a: number }
+function profileOf(): Profile { return ${profile}; }
+function fadeOf(): { readonly profile: Profile } { const profile = profileOf(); return { profile }; }
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    const fade = fadeOf();
+    ${write}
+    const vertex = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * \${fade.profile.a.toFixed(1)}, 1.0); return out; }\`;
+    createShaderMaterial({ name: "m", vertexSource: wgsl\`\${vertex}\`, fragmentSource: wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+void main();
+`;
+    for (const profile of ["{ a: 0.4 }", "Object.freeze({ a: 0.4 })"])
+        assert.deepEqual(
+            compileSource(source(profile)).manifest.customShaderPrograms.map(
+                (program) =>
+                    /position \* ([0-9.]+)/.exec(program.vertexSource)?.[1] ??
+                    "",
+            ),
+            ["0.4"],
+            profile,
+        );
+    assert.throws(
+        () => compileSource(source("{ a: 0.4 }", "fade.profile.a = 2;")),
+        /'vertex' is bound as data without a static string/,
+    );
+});
+
+test("a native helper's returned record literal is an object an optional field holds", () => {
+    // `scaleOf` tests the optional `profile` its options hold: the record
+    // `profileOf()` returns is there. A helper that may return `undefined`
+    // leaves the test a run-time one.
+    const source = (helper: string): string =>
+        `import { createEngine, createSceneContext, createShaderMaterial, wgsl } from "@babylonjs/lite";
+interface Profile { readonly a: number }
+interface Opts { profile?: Profile | undefined }
+${helper}
+function scaleOf(opts: Opts): string { const p = opts.profile; return p ? p.a.toFixed(1) : "1.0"; }
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    const profile = profileOf();
+    const scale = scaleOf({ profile });
+    const vertex = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * \${scale}, 1.0); return out; }\`;
+    createShaderMaterial({ name: "m", vertexSource: wgsl\`\${vertex}\`, fragmentSource: wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+void main();
+`;
+    assert.deepEqual(
+        compileSource(
+            source(
+                "function profileOf(): Profile { return Object.freeze({ a: 0.4 }); }",
+            ),
+        ).manifest.customShaderPrograms.map(
+            (program) =>
+                /position \* ([0-9.]+)/.exec(program.vertexSource)?.[1] ?? "",
+        ),
+        ["0.4"],
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                source(
+                    "function profileOf(): Profile | undefined { return Math.random() > 2 ? undefined : Object.freeze({ a: 0.4 }); }",
+                ),
+            ),
+        /'vertex' is bound as data without a static string/,
+    );
+});
+
+test("a static record's number field folds inside a Math call whatever another record's whole-object writes", () => {
+    // `reset` assigns over a `Toggle`, which the options type's `enabled`
+    // could view; the options record `limitOf` reads is a static one, so its
+    // `max` is what reading it yields. Writing that record leaves the read
+    // a run-time one.
+    const source = (body: string): string =>
+        `import { createEngine, createSceneContext, createShaderMaterial, wgsl } from "@babylonjs/lite";
+interface Opts { max?: number; enabled?: boolean }
+interface Toggle { enabled: boolean; label: string }
+const toggle: Toggle = { enabled: true, label: "a" };
+function reset(target: Toggle): void { Object.assign(target, { enabled: false }); }
+function limitOf(options: Opts = {}): number { return Math.max(1, options.max ?? 40); }
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    reset(toggle);
+    console.log(toggle.enabled);
+    ${body}
+    const vertex = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * \${limit.toFixed(1)}, 1.0); return out; }\`;
+    createShaderMaterial({ name: "m", vertexSource: wgsl\`\${vertex}\`, fragmentSource: wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+void main();
+`;
+    assert.deepEqual(
+        compileSource(
+            source("const limit = limitOf({ max: 30 });"),
+        ).manifest.customShaderPrograms.map(
+            (program) =>
+                /position \* ([0-9.]+)/.exec(program.vertexSource)?.[1] ?? "",
+        ),
+        ["30.0"],
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                source(
+                    "const opts: Opts = { max: 30 }; Object.assign(opts, { max: 50 }); const limit = limitOf(opts);",
+                ),
+            ),
+        /'vertex' is bound as data without a static string/,
+    );
+});
+
+test("a parameter's scalar no write in the program replaces keeps its value when another field is written", () => {
+    // `opts.count` is written, so the parameter is mutated; the flags no write
+    // in the program reaches keep their values, and the nine compose one program.
+    const programs =
+        compileSource(`import { createEngine, createSceneContext, createShaderMaterial, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*S*/, 1.0); return out; }\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+interface Opts { name: string; count?: number; f1?: boolean; f2?: boolean; f3?: boolean; f4?: boolean; f5?: boolean; f6?: boolean; f7?: boolean; f8?: boolean; f9?: boolean }
+const registered: Opts[] = [];
+function remember(opts: Opts): number { registered.push(opts); for (const r of registered) r.count = (r.count ?? 0) + 1; return registered.length; }
+async function create(engine: EngineContext, opts: Opts): Promise<ShaderMaterial> {
+    opts.count = 1;
+    remember(opts);
+    await Promise.resolve();
+    let scale = "1.0";
+    if (opts.f1 === true) scale += " * 1.1";
+    if (opts.f2 === true) scale += " * 1.2";
+    if (opts.f3 === true) scale += " * 1.3";
+    if (opts.f4 === true) scale += " * 1.4";
+    if (opts.f5 === true) scale += " * 1.5";
+    if (opts.f6 === true) scale += " * 1.6";
+    if (opts.f7 === true) scale += " * 1.7";
+    if (opts.f8 === true) scale += " * 1.8";
+    if (opts.f9 === true) scale += " * 1.9";
+    const vertex = VERTEX.replace("/*S*/", scale);
+    return createShaderMaterial({ name: opts.name, vertexSource: wgsl\`\${vertex}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+async function preload(engine: EngineContext, lit?: { f5?: boolean; f6?: boolean }, f4 = false): Promise<ShaderMaterial[]> {
+    const build = (name: string): Promise<ShaderMaterial> => create(engine, { name, f1: true, f2: false, f3: true, f4, f5: lit?.f5, f6: lit?.f6, f7: false, f8: true, f9: false });
+    const names = ["a", "b", "c"].filter(() => Math.random() < 2);
+    return Promise.all(names.map(build));
+}
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    await preload(engine, { f5: true, f6: false }, false);
+}
+void main();
+`).manifest.customShaderPrograms.map(
+            (program) =>
+                /position \* ([^,]+), 1\.0/.exec(program.vertexSource)?.[1] ??
+                "",
+        );
+    assert.deepEqual(programs, ["1.0 * 1.1 * 1.3 * 1.5 * 1.8"]);
+});
+
+test("a shared options record keeps what it knows of its members' presence", () => {
+    // The options a map holds and the program writes are one shared object:
+    // its coat, a constant the call sets, is present, and the flags it
+    // leaves unset are absent, through a stored copy and a field read.
+    const programs =
+        compileSource(`import { createEngine, createSceneContext, createShaderMaterial, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*S*/, 1.0); return out; }\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+interface Coat { tint: number }
+const COAT: Coat = { tint: 0.5 };
+interface Opts { name: string; count?: number; coat?: Coat; f1?: boolean; f2?: boolean; f3?: boolean; f4?: boolean; f5?: boolean; f6?: boolean; f7?: boolean; f8?: boolean; f9?: boolean }
+const live = new Map<string, Opts>();
+function build(engine: EngineContext, opts: Opts): ShaderMaterial {
+    let scale = "1.0";
+    if (opts.coat) scale += " * 0.9";
+    if (opts.f1 === true) scale += " * 1.1";
+    if (opts.f2 === true) scale += " * 1.2";
+    if (opts.f3 === true) scale += " * 1.3";
+    if (opts.f4 === true) scale += " * 1.4";
+    if (opts.f5 === true) scale += " * 1.5";
+    if (opts.f6 === true) scale += " * 1.6";
+    if (opts.f7 === true) scale += " * 1.7";
+    if (opts.f8 === true) scale += " * 1.8";
+    if (opts.f9 === true) scale += " * 1.9";
+    const vertex = VERTEX.replace("/*S*/", scale);
+    return createShaderMaterial({ name: opts.name, vertexSource: wgsl\`\${vertex}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+async function create(engine: EngineContext, opts: Opts): Promise<ShaderMaterial> {
+    live.set(opts.name, opts);
+    await Promise.resolve();
+    return build(engine, opts);
+}
+function touch(): void { for (const o of live.values()) o.count = (o.count ?? 0) + 1; }
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    const names = ["a", "b", "c"].filter(() => Math.random() < 2);
+    await Promise.all(names.map((name) => create(engine, { name, coat: COAT, f1: true, f3: true, f8: true })));
+    touch();
+}
+void main();
+`).manifest.customShaderPrograms.map(
+            (program) =>
+                /position \* ([^,]+), 1\.0/.exec(program.vertexSource)?.[1] ??
+                "",
+        );
+    assert.deepEqual(programs, ["1.0 * 0.9 * 1.1 * 1.3 * 1.8"]);
+});
+
+test("a case split reads a value generation knows absent as no test", () => {
+    // Three run-time tests split the call; the options' unset flags, passed
+    // on as values, are known absent and add none.
+    const programs =
+        compileSource(`import { createEngine, createSceneContext, createShaderMaterial, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*S*/, 1.0); return out; }\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+interface Coat { tint: number }
+const COAT: Coat = { tint: 0.5 };
+interface Opts { name: string; count?: number; coat?: Coat; f1?: boolean; f2?: boolean; f3?: boolean; f4?: boolean; f5?: boolean; f6?: boolean; f7?: boolean; f8?: boolean; f9?: boolean }
+const live = new Map<string, Opts>();
+interface Surface { name: string; coat?: Coat; f1?: boolean; f2?: boolean; f3?: boolean; f4?: boolean; f5?: boolean; f6?: boolean; f7?: boolean; f8?: boolean; f9?: boolean; x: boolean; y: boolean; z: boolean }
+function surface(engine: EngineContext, o: Surface): ShaderMaterial {
+    let scale = o.x ? "1.0" : "2.0";
+    if (o.y) scale += " * 0.7";
+    if (o.z) scale += " * 0.6";
+    if (o.coat) scale += " * 0.9";
+    if (o.f1 === true) scale += " * 1.1";
+    if (o.f2 === true) scale += " * 1.2";
+    if (o.f3 === true) scale += " * 1.3";
+    if (o.f4 === true) scale += " * 1.4";
+    if (o.f5 === true) scale += " * 1.5";
+    if (o.f6 === true) scale += " * 1.6";
+    if (o.f7 === true) scale += " * 1.7";
+    if (o.f8 === true) scale += " * 1.8";
+    if (o.f9 === true) scale += " * 1.9";
+    const vertex = VERTEX.replace("/*S*/", scale);
+    return createShaderMaterial({ name: o.name, vertexSource: wgsl\`\${vertex}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+function build(engine: EngineContext, opts: Opts, part: { x: boolean; y: boolean; z: boolean }): ShaderMaterial {
+    return surface(engine, { name: opts.name, coat: opts.coat, f1: opts.f1, f2: opts.f2, f3: opts.f3, f4: opts.f4, f5: opts.f5, f6: opts.f6, f7: opts.f7, f8: opts.f8, f9: opts.f9, x: part.x, y: part.y, z: part.z });
+}
+async function create(engine: EngineContext, opts: Opts): Promise<ShaderMaterial> {
+    live.set(opts.name, opts);
+    await Promise.resolve();
+    const part = { x: Math.random() < 0.5, y: Math.random() < 0.5, z: Math.random() < 0.5 };
+    return build(engine, opts, part);
+}
+function touch(): void { for (const o of live.values()) o.count = (o.count ?? 0) + 1; }
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    const names = ["a", "b", "c"].filter(() => Math.random() < 2);
+    await Promise.all(names.map((name) => create(engine, { name, coat: COAT, f1: true, f3: true, f8: true })));
+    touch();
+}
+void main();
+`).manifest.customShaderPrograms.map(
+            (program) =>
+                /position \* ([^,]+), 1\.0/.exec(program.vertexSource)?.[1] ??
+                "",
+        );
+    assert.equal(programs.length, 8);
+    assert.ok(
+        programs.every((scale) => scale.endsWith(" * 0.9 * 1.1 * 1.3 * 1.8")),
+    );
+});
+
+test("a config record's object field and a weak record type's member stay present", () => {
+    // The lighting record's highlight is a config field its type declares
+    // an object; the lighting type's properties are all optional, so only a
+    // value sharing one of them can be viewed as it, and the engine call that
+    // may write the shadow generator writes no lighting record.
+    const programs =
+        compileSource(`import { createEngine, createSceneContext, createShaderMaterial, createDirectionalLight, addToScene, createCsmDirectionalShadowGenerator, setShadowGeneratorEnabled, wgsl, type EngineContext, type ShaderMaterial, type ShadowGenerator } from "@babylonjs/lite";
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*S*/, 1.0); return out; }\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+interface Highlight { color: [number, number, number]; strength: number }
+interface Config { interaction: { light: Highlight; radius: number } }
+function loadConfig(radius: number): Config { return { interaction: { light: { color: [1, 0.4, 0.1], strength: 0.2 }, radius } }; }
+interface Lighting { shadow?: ShadowGenerator; highlight?: Highlight; tint?: number }
+interface Opts { name: string; highlight?: Highlight; x: boolean; y: boolean; z: boolean; w: boolean }
+function surface(engine: EngineContext, o: Opts): ShaderMaterial {
+    let scale = o.x ? "1.0" : "2.0";
+    if (o.y) scale += " * 0.7";
+    if (o.z) scale += " * 0.6";
+    if (o.w) scale += " * 0.5";
+    if (o.highlight) scale += " * 1.1";
+    const vertex = VERTEX.replace("/*S*/", scale);
+    return createShaderMaterial({ name: o.name, vertexSource: wgsl\`\${vertex}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+async function preload(engine: EngineContext, lit?: Lighting): Promise<ShaderMaterial[]> {
+    const build = (name: string): ShaderMaterial => {
+        const part = { x: Math.random() < 0.5, y: Math.random() < 0.5, z: Math.random() < 0.5, w: Math.random() < 0.5 };
+        return surface(engine, { name, highlight: lit?.highlight, x: part.x, y: part.y, z: part.z, w: part.w });
+    };
+    await Promise.resolve();
+    return ["a", "b"].filter(() => Math.random() < 2).map(build);
+}
+const bag: Record<string, unknown> = {};
+const lights: Lighting[] = [];
+function put(o: Record<string, unknown>, k: string, v: unknown): void { o[k] = v; }
+async function main(): Promise<void> {
+    put(bag, String(Math.random()), 1);
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    const scene = createSceneContext(engine);
+    const sun = createDirectionalLight([-0.5, -1, -0.4], 1.2);
+    addToScene(scene, sun);
+    const shadow = createCsmDirectionalShadowGenerator(engine, sun, { mapSize: 1024, numCascades: 3 });
+    setShadowGeneratorEnabled(shadow, true);
+    const config = loadConfig(Math.random());
+    const lighting: Lighting = { shadow, highlight: config.interaction.light, tint: config.interaction.radius };
+    lights.push(lighting);
+    await preload(engine, lighting);
+}
+void main();
+`).manifest.customShaderPrograms.map(
+            (program) =>
+                /position \* ([^,]+), 1\.0/.exec(program.vertexSource)?.[1] ??
+                "",
+        );
+    assert.equal(programs.length, 16);
+    assert.ok(programs.every((scale) => scale.endsWith(" * 1.1")));
+});
+
+test("a string search over known text and position folds, and a known string has a known length", () => {
+    // A shader variant replaces a token it requires once: indexOf, indexOf
+    // from the position after it, and the slices around it are known.
+    const programs =
+        compileSource(`import { createEngine, createSceneContext, createShaderMaterial, wgsl } from "@babylonjs/lite";
+const HEAD = "// skinned";
+function vertexFor(bones: boolean, scale: number): string {
+    return \`\${HEAD}
+struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * \${bones ? scale : 1}, 1.0); return out; }\`;
+}
+function withPresence(vertex: string): { vertex: string } {
+    const output = "struct VertexOutput {";
+    const field = \`\${output} @location(9) vPresence: f32,\`;
+    const once = (source: string, token: string, replacement: string): string => {
+        const at = source.indexOf(token);
+        if (at < 0 || source.indexOf(token, at + token.length) >= 0) throw new Error(\`token not unique: \${token}\`);
+        return source.slice(0, at) + replacement + source.slice(at + token.length);
+    };
+    return { vertex: once(vertex, output, field) };
+}
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    let vertexSource = vertexFor(true, 0.5);
+    const present = withPresence(vertexSource);
+    vertexSource = present.vertex;
+    createShaderMaterial({ name: "m", vertexSource: wgsl\`\${vertexSource}\`, fragmentSource: wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+void main();
+`).manifest.customShaderPrograms.map(
+            (program) =>
+                /position \* ([0-9.]+)/.exec(program.vertexSource)?.[1] ?? "",
+        );
+    assert.deepEqual(programs, ["0.5"]);
+});
+
+test("a const holding a fresh record only read through its properties keeps the record's fields", () => {
+    // A dynamic-key write on a dictionary may reach any record of string
+    // fields, but not the helper's fresh result a const holds and only reads.
+    const programs =
+        compileSource(`import { createEngine, createSceneContext, createShaderMaterial, wgsl } from "@babylonjs/lite";
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * 0.5, 1.0); return out; }\`;
+const FRAGMENT = "@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }";
+type Sources = { vertex: string; fragment: string };
+function withTag(vertex: string, fragment: string): Sources {
+    return { vertex: \`// tagged\\n\${vertex}\`, fragment };
+}
+const kept: Sources[] = [];
+const names: Record<string, string> = {};
+function put(record: Record<string, string>, key: string, value: string): void { record[key] = value; }
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    kept.push({ vertex: "a", fragment: "b" });
+    put(names, String(Math.random()), "x");
+    let vertexSource = VERTEX;
+    const present = withTag(vertexSource, FRAGMENT);
+    vertexSource = present.vertex;
+    createShaderMaterial({ name: "m", vertexSource: wgsl\`\${vertexSource}\`, fragmentSource: wgsl\`\${present.fragment}\`, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+void main();
+`).manifest.customShaderPrograms.map(
+            (program) =>
+                /position \* ([0-9.]+)/.exec(program.vertexSource)?.[1] ?? "",
+        );
+    assert.deepEqual(programs, ["0.5"]);
+});
+
+test("a field a const's literal stores keeps its nested record's fields", () => {
+    // The defaults' `drops` object is the one their literal creates there,
+    // so a write through a function's own fresh dictionary reaches none of
+    // its fields; writing it through another reference or replacing it
+    // leaves the field a run-time read.
+    const source = `import { createEngine, createSceneContext, createShaderMaterial, wgsl } from "@babylonjs/lite";
+interface Config { drops: { saturationDrift: number }; level: string }
+const DEFAULT_CONFIG: Config = { drops: { saturationDrift: 0.5 }, level: "high" };
+const configs: Config[] = [DEFAULT_CONFIG, { drops: { saturationDrift: 0.1 }, level: "low" }];
+function tally(names: readonly string[]): Record<string, number> {
+    const counts: Record<string, number> = {};
+    for (const name of names) counts[name] = (counts[name] ?? 0) + 1;
+    return counts;
+}
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    const picked = configs[Math.floor(Math.random() * configs.length)]!;
+    console.log(picked.level, picked.drops === DEFAULT_CONFIG.drops, Object.keys(tally([picked.level, "x"])).length);
+    const tone = DEFAULT_CONFIG.drops.saturationDrift;
+    const vertex = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * \${tone.toFixed(1)}, 1.0); return out; }\`;
+    createShaderMaterial({ name: "m", vertexSource: wgsl\`\${vertex}\`, fragmentSource: wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+void main();
+`;
+    const programs = compileSource(source).manifest.customShaderPrograms.map(
+        (program) =>
+            /position \* ([0-9.]+)/.exec(program.vertexSource)?.[1] ?? "",
+    );
+    assert.deepEqual(programs, ["0.5"]);
+    for (const write of [
+        "picked.drops.saturationDrift = 2;",
+        "picked.drops = { saturationDrift: 3 };",
+    ])
+        assert.throws(
+            () =>
+                compileSource(
+                    source.replace(
+                        "const tone = DEFAULT_CONFIG",
+                        `${write} const tone = DEFAULT_CONFIG`,
+                    ),
+                ),
+            /'vertex' is bound as data without a static string/,
+        );
 });
 
 test("a material builder iterated over a constant table's keys composes one program per key", () => {
@@ -8058,6 +9186,123 @@ test("withdraws the length fold from a container handed to a call", () => {
     );
 });
 
+test("keeps a length fold past writes that build another function's own array", () => {
+    // `keep` pushes only into the array its `out` creates, before returning
+    // it: no other array, `NONE.rules` included, changes, so the stylesheet
+    // the length selects stays a known string.
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        interface Layer {
+            readonly rules: readonly string[];
+            readonly bind: (n: number) => void;
+        }
+        const NONE: Layer = { rules: [], bind: () => {} };
+        function layer(on: boolean): Layer {
+            if (!on) return NONE;
+            return { rules: [".a { width: 3px; }"], bind: (n: number) => { console.log(n); } };
+        }
+        function keep<T>(items: readonly T[], count: number): T[] {
+            const out: T[] = [];
+            for (let i = 0; i < count; i++) out.push(items[i]!);
+            return out;
+        }
+        async function main() {
+            await createEngine({});
+            const chosen = layer(false);
+            const sheet = document.createElement("style");
+            sheet.textContent = chosen.rules.length > 0 ? ".panel { width: 1px; }" : ".panel { width: 2px; }";
+            document.head.appendChild(sheet);
+        }
+        void main();
+    `);
+
+    assert.match(result.cpp, /ui_add_class_style[^\n]*"panel"[^\n]*width:2px/);
+    assert.doesNotMatch(result.cpp, /width:1px/);
+});
+
+test("withdraws the length fold past a write after another function shares its array", () => {
+    // `keep`, called with strings, hands its array to `sink` before
+    // pushing: once shared, the push may change any string array,
+    // `NONE.rules` included.
+    assert.throws(
+        () =>
+            compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        interface Layer {
+            readonly rules: readonly string[];
+            readonly bind: (n: number) => void;
+        }
+        const NONE: Layer = { rules: [], bind: () => {} };
+        function layer(on: boolean): Layer {
+            if (!on) return NONE;
+            return { rules: [".a { width: 3px; }"], bind: (n: number) => { console.log(n); } };
+        }
+        function sink(a: readonly unknown[]): void { console.log(a.length); }
+        function keep<T>(items: readonly T[], count: number): T[] {
+            const out: T[] = [];
+            sink(out);
+            for (let i = 0; i < count; i++) out.push(items[i]!);
+            return out;
+        }
+        async function main() {
+            await createEngine({});
+            keep([".b { width: 4px; }"], 1);
+            const chosen = layer(false);
+            const sheet = document.createElement("style");
+            sheet.textContent = chosen.rules.length > 0 ? ".panel { width: 1px; }" : ".panel { width: 2px; }";
+            document.head.appendChild(sheet);
+        }
+        void main();
+    `),
+        /Expected a string literal/,
+    );
+});
+
+test("keeps a length fold past writes no call can aim at the array", () => {
+    // `append` only ever pushes numbers, `mark` writes a named key and
+    // `brand` defines one: none changes the elements or length of a
+    // string array, so the stylesheet the length selects stays a known
+    // string.
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        interface Layer {
+            readonly rules: readonly string[];
+            readonly bind: (n: number) => void;
+        }
+        const NONE: Layer = { rules: [], bind: () => {} };
+        function layer(on: boolean): Layer {
+            if (!on) return NONE;
+            return { rules: [".a { width: 3px; }"], bind: (n: number) => { console.log(n); } };
+        }
+        function append<T>(list: T[], item: T): void { list.push(item); }
+        function mark<T extends object>(item: T): T & { mark?: number } {
+            const copy: T & { mark?: number } = { ...item };
+            copy.mark = 2;
+            return copy;
+        }
+        function brand<T extends object>(item: T): T {
+            const copy = { ...item };
+            Object.defineProperty(copy, "id", { value: 1, enumerable: true, writable: false, configurable: false });
+            return copy;
+        }
+        const totals: number[] = [];
+        async function main() {
+            await createEngine({});
+            append(totals, 3);
+            mark({ x: 1 });
+            const chosen = layer(false);
+            const sheet = document.createElement("style");
+            sheet.textContent = chosen.rules.length > 0 ? ".panel { width: 1px; }" : ".panel { width: 2px; }";
+            document.head.appendChild(sheet);
+        }
+        void main();
+        void brand;
+    `);
+
+    assert.match(result.cpp, /ui_add_class_style[^\n]*"panel"[^\n]*width:2px/);
+    assert.doesNotMatch(result.cpp, /width:1px/);
+});
+
 test("builds ribbon paths through native nested loops", () => {
     const result = compileSource(`
         import { createEngine, createRibbon } from "@babylonjs/lite";
@@ -8236,6 +9481,36 @@ test("keeps a complete snapshot when a const object is materialized then spread"
 
     assert.match(result.cpp, /0\.05/);
     assert.match(result.cpp, /1\.0/);
+});
+
+test("a document spread with a member no dictionary holds is the record its callee only reads", () => {
+    // Each key the parameter's type declares reads one copy of the
+    // document's own properties; a record held past the call refuses.
+    const source = (use: string): string => `
+        import { createBox, createEngine, type Mesh } from "@babylonjs/lite";
+        interface Options { a?: number; c?: number; sink?: Mesh }
+        const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+        const doc = JSON.parse('{"a":1,"z":2}') as { a: number };
+        function read(options: Options): number { return (options.a ?? 0) + (options.c ?? 0); }
+        ${use}
+    `;
+    const result = compileSource(
+        source("const total = read({ ...doc, sink: createBox(engine) });"),
+    );
+    assert.match(
+        result.cpp,
+        /bbl::js::json_spread_into\(v_bblite_document_spread_\d+, v_doc\);/,
+    );
+    assert.match(result.cpp, /v_bblite_document_spread_\d+\.get\("c"\)/);
+    assert.throws(
+        () =>
+            compileSource(
+                source(
+                    "const options: Options = { ...doc, sink: createBox(engine) };\nconst total = read(options);",
+                ),
+            ),
+        /A document spread into the closed record type 'Options' holds only the keys it declares: it is built as an argument its callee only reads/,
+    );
 });
 
 test("shares a static element snapshot through a const array alias", () => {
@@ -16224,6 +17499,23 @@ test("projects render-canvas focus into native host state", () => {
     assert.match(result.cpp, /bbl::focus_canvas\(v_engine\)/);
 });
 
+test("a record field holding the erased render canvas focuses and locks the render surface", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        interface Deps { canvas: HTMLCanvasElement }
+        async function main(deps: Deps) {
+            const engine = await createEngine(deps.canvas);
+            deps.canvas.focus();
+            deps.canvas.addEventListener("click", () => { void deps.canvas.requestPointerLock(); });
+            void engine;
+        }
+        void main({ canvas: document.getElementById("renderCanvas") as HTMLCanvasElement });
+    `);
+
+    assert.match(result.cpp, /bbl::focus_canvas\(v_fn\d+_engine\)/);
+    assert.match(result.cpp, /bbl::request_pointer_lock\(v_fn\d+_engine\)/);
+});
+
 test("lowers dynamic engine canvas cursor writes", () => {
     const result = compileSource(`
         import { createEngine } from "@babylonjs/lite";
@@ -16437,6 +17729,35 @@ test("carries explicit alpha blending and mesh render order", () => {
     assert.match(result.cpp, /\.has_render_order = true/);
 });
 
+test("reads a mesh's renderOrder and copies it, undefined until assigned", () => {
+    // The pin's draw reads `mesh.renderOrder ?? default`: copying an
+    // unassigned order leaves the copy on its family default.
+    const result = compileSource(`
+        import { addToScene, createBox, createEngine, createSceneContext } from "@babylonjs/lite";
+        const engine = await createEngine({});
+        const scene = createSceneContext(engine);
+        const base = createBox(engine);
+        const patch = createBox(engine);
+        if (Math.random() > 0.5) base.renderOrder = 110;
+        patch.renderOrder = base.renderOrder;
+        addToScene(scene, base);
+        addToScene(scene, patch);
+    `);
+
+    assert.match(
+        result.cpp,
+        /const std::optional<double> (v_bblite_render_order_\d+) = [^\n]*bbl::handle_at\(v_engine\.meshes, v_base\)\.render_order_value\(\)/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::handle_at\(v_engine\.meshes, v_patch\)\.render_order = v_bblite_render_order_\d+\.value_or\(0\.0\);/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::handle_at\(v_engine\.meshes, v_patch\)\.has_render_order = v_bblite_render_order_\d+\.has_value\(\);/,
+    );
+});
+
 test("folds module-relative demo asset URLs to the pinned public root", () => {
     const result = compileSource(
         `
@@ -16624,9 +17945,11 @@ test("lowers global RegExp exec loops and lastIndex", () => {
 });
 
 test("converts runtime strings with Number", () => {
+    // The reached reassignment leaves the string a run-time value.
     const result = compileSource(`
         function main() {
             let value = "42";
+            if (Math.random() > 2) value = "7";
             const converted = Number(value);
         }
     `);
@@ -18609,8 +19932,7 @@ test("reaches a shader material's samplers and defines", () => {
     assert.match(result.cpp, /bbl::set_shader_texture\([^)]*, 0u,/);
 });
 
-test("binds a numeric shader source factory default at its reached call", () => {
-    const result = compileSource(`
+const NUMERIC_SOURCE_FACTORY = `
         import { createEngine, createShaderMaterial } from "babylon-lite";
 
         const vertexSource = (depthBias: number) => \`struct VertexOutput {
@@ -18641,22 +19963,52 @@ test("binds a numeric shader source factory default at its reached call", () => 
             await createEngine({});
             makeMaterial();
         }
-    `);
+    `;
+
+test("binds a numeric shader source factory default at its reached call", () => {
+    const result = compileSource(NUMERIC_SOURCE_FACTORY);
 
     assert.match(
         result.manifest.customShaderPrograms[0]?.vertexSource ?? "",
-        /shaderUniforms\.bblDynamicDepthBias/,
+        /shaderUniforms\.bblDynamicVertex0/,
     );
     assert.deepEqual(result.manifest.customShaderPrograms[0]?.uniforms, [
         "worldViewProjection",
-        "bblDynamicDepthBias:f32",
+        "bblDynamicVertex0:f32",
     ]);
+    // A known number's uniform holds the number its spelling denotes.
     assert.match(
         result.cpp,
-        /const std::array<float, 1> values\{static_cast<float>\(0\.0\)\}; bbl::initialize_shader_uniform_values\([^;]*, 0u, 1u, values\.data\(\)\);/,
+        /const std::array<float, 1> values\{0\.0f\}; bbl::initialize_shader_uniform_values\([^;]*, 0u, 1u, values\.data\(\)\);/,
     );
     // An omitted argument runs the default inside the shared helper.
     assert.match(result.cpp, /bblscene::bbl_recursive_fn\d+_group\)\(\)/);
+});
+
+test("reads a numeric shader source factory's run-time argument from a uniform", () => {
+    const result = compileSource(
+        NUMERIC_SOURCE_FACTORY.replace(
+            "makeMaterial();",
+            "makeMaterial(Math.random());",
+        ),
+    );
+
+    // The module-scope constant is gone; its read reads the uniform, which
+    // holds the number the spelled text denotes.
+    const [program] = result.manifest.customShaderPrograms;
+    assert.doesNotMatch(program?.vertexSource ?? "", /DEPTH_BIAS/);
+    assert.match(
+        program?.vertexSource ?? "",
+        /out\.position\.z = out\.position\.z \+ shaderUniforms\.bblDynamicVertex0 \/ out\.position\.w;/,
+    );
+    assert.deepEqual(program?.uniforms, [
+        "worldViewProjection",
+        "bblDynamicVertex0:f32",
+    ]);
+    assert.match(
+        result.cpp,
+        /const std::array<float, 1> values\{static_cast<float>\(bbl::js::number_from_string\(bbl::js::number_to_exponential\([^;]*, 6\.0\)\)\)\}; bbl::initialize_shader_uniform_values\([^;]*, 0u, 1u, values\.data\(\)\);/,
+    );
 });
 
 test("reads the pin's wgsl tag as the identity over a shader source", () => {
@@ -18703,11 +20055,11 @@ test("reads the pin's wgsl tag as the identity over a shader source", () => {
     const [program] = result.manifest.customShaderPrograms;
     assert.match(
         program?.vertexSource ?? "",
-        /shaderUniforms\.bblDynamicDepthBias/,
+        /shaderUniforms\.bblDynamicVertex0/,
     );
     assert.deepEqual(program?.uniforms, [
         "worldViewProjection",
-        "bblDynamicDepthBias:f32",
+        "bblDynamicVertex0:f32",
     ]);
     assert.match(program?.fragmentSource ?? "", /return vec4<f32>\(0\.5\);/);
     assert.ok(!(program?.fragmentSource ?? "").includes("wgsl"));
@@ -19621,6 +20973,63 @@ test("reads a TransformNode name in a runtime template", () => {
     );
     assert.match(result.cpp, /bbl::add_to_scene\(v_scene, v_root\)/);
     assert.match(result.cpp, /bbl::set_transform_node_rotation\(/);
+});
+
+test("a shader material draws a mesh whose optional streams are decided at run time", () => {
+    // The pin binds a zero buffer for a declared stream the mesh lacks, so
+    // the shader program does not depend on which streams the run passes;
+    // a Standard material's variant key still does.
+    const compile = (material: string) =>
+        compileSource(`
+        import { addToScene, createEngine, createMeshFromData, createSceneContext, createShaderMaterial, createStandardMaterial } from "@babylonjs/lite";
+        const vertexSource = \`struct VertexOutput{@builtin(position) position:vec4<f32>,};
+@vertex fn mainVertex(input:VertexInput)->VertexOutput{var out:VertexOutput;out.position=shaderSystem.worldViewProjection*vec4<f32>(input.position,1.0);return out;}\`;
+        const fragmentSource = \`struct VertexOutput{@builtin(position) position:vec4<f32>,};
+@fragment fn mainFragment(input:VertexOutput)->@location(0) vec4<f32>{return vec4<f32>(1.0);}\`;
+        const engine = await createEngine({});
+        const scene = createSceneContext(engine);
+        let uv2: Float32Array | null = null;
+        if (Math.random() > 0.5) uv2 = new Float32Array(2);
+        const colors = Math.random() > 0.5 ? new Float32Array(4) : undefined;
+        const mesh = createMeshFromData(engine, "patch", new Float32Array([0, 0, 0]), new Float32Array([0, 1, 0]), new Uint32Array([0]), new Float32Array(2), uv2!, undefined, colors);
+        mesh.material = ${material};
+        addToScene(scene, mesh);
+        void createShaderMaterial; void createStandardMaterial; void vertexSource; void fragmentSource;
+    `);
+    const result = compile(
+        `createShaderMaterial({ vertexSource, fragmentSource, attributes: ["position", "uv2", "color"], uniforms: ["worldViewProjection"] })`,
+    );
+    assert.match(result.cpp, /runtime_attribute_features = true/);
+    assert.match(result.cpp, /bbl::set_mesh_material\(/);
+    assert.throws(
+        () => compile("createStandardMaterial()"),
+        /optional vertex streams are decided at run time/,
+    );
+});
+
+test("a material the pin types ShaderMaterial draws a mesh with run-time streams wherever it was read from", () => {
+    // A record field holds the material, so its value carries no shader
+    // variant of its own; its type still names the shader family.
+    const result = compileSource(`
+        import { addToScene, createEngine, createMeshFromData, createSceneContext, createShaderMaterial, type ShaderMaterial } from "@babylonjs/lite";
+        const vertexSource = \`struct VertexOutput{@builtin(position) position:vec4<f32>,};
+@vertex fn mainVertex(input:VertexInput)->VertexOutput{var out:VertexOutput;out.position=shaderSystem.worldViewProjection*vec4<f32>(input.position,1.0);return out;}\`;
+        const fragmentSource = \`struct VertexOutput{@builtin(position) position:vec4<f32>,};
+@fragment fn mainFragment(input:VertexOutput)->@location(0) vec4<f32>{return vec4<f32>(1.0);}\`;
+        const engine = await createEngine({});
+        const scene = createSceneContext(engine);
+        interface MaterialSet { material: ShaderMaterial }
+        let set: MaterialSet | undefined;
+        const build = (uvs: Float32Array | undefined): void => {
+            set = { material: createShaderMaterial({ vertexSource, fragmentSource, attributes: ["position", "uv"], uniforms: ["worldViewProjection"] }) };
+            const mesh = createMeshFromData(engine, "crown", new Float32Array([0, 0, 0]), new Float32Array([0, 1, 0]), new Uint32Array([0]), uvs, Math.random() > 0.5 ? new Float32Array(2) : undefined);
+            (mesh as unknown as { material: unknown }).material = set.material;
+            addToScene(scene, mesh);
+        };
+        build(Math.random() > 0.5 ? new Float32Array(2) : undefined);
+    `);
+    assert.match(result.cpp, /runtime_attribute_features = true/);
+    assert.match(result.cpp, /bbl::set_mesh_material\(/);
 });
 
 test("discards side-effect-free void expressions and preserves void calls", () => {
@@ -23213,4 +24622,19 @@ test("animation lists and cross-fades require every selected group to share its 
                 : /Animation manager and group\/scene belong to different engines/,
         );
     }
+});
+
+test("a scene's _renderableVersion reads the native count of its builds", () => {
+    const result = compileSource(`
+        import { addToScene, createBox, createEngine, createSceneContext } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+            const scene = createSceneContext(engine);
+            addToScene(scene, createBox(engine));
+            const version = (scene as unknown as { _renderableVersion: number })._renderableVersion;
+            document.title = String(version);
+        }
+        void main();
+    `);
+    assert.match(result.cpp, /bbl::scene_renderable_version\(/);
 });

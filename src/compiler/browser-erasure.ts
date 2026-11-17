@@ -1107,7 +1107,10 @@ export class BrowserErasure {
             ts.isPropertyAccessExpression(unwrapped) ||
             ts.isElementAccessExpression(unwrapped)
         )
-            return this.isBrowserOwner(unwrapped.expression);
+            return (
+                this.browserRecordField(unwrapped) !== undefined ||
+                this.isBrowserOwner(unwrapped.expression)
+            );
         if (ts.isNewExpression(unwrapped))
             return (
                 this.context.libraryGlobal(unwrapped.expression) !== undefined
@@ -1122,6 +1125,31 @@ export class BrowserErasure {
             this.isBrowserOnlyNullableClassFactoryCall(unwrapped) ||
             this.evaluateBrowserHelperCall(unwrapped) !== undefined
         );
+    }
+
+    /**
+     * The browser value a compile-time record holds in the field a read
+     * names (a record parameter's `deps.canvas`, nested records too): the
+     * read erases as a name bound to that value does.
+     */
+    public browserRecordField(expression: ts.Expression): Value | undefined {
+        const field = ts.isPropertyAccessExpression(expression)
+            ? this.recordField(expression)
+            : undefined;
+        return field?.kind === "browser" ? field : undefined;
+    }
+
+    /** The value a bound record, or a record field of one, holds in a field. */
+    private recordField(
+        expression: ts.PropertyAccessExpression,
+    ): Value | undefined {
+        const receiver = this.context.unwrap(expression.expression);
+        const record = ts.isIdentifier(receiver)
+            ? this.context.bindings.lookupOptional(receiver)
+            : ts.isPropertyAccessExpression(receiver)
+              ? this.recordField(receiver)
+              : undefined;
+        return record?.recordProperties?.[expression.name.text];
     }
 
     public isBrowserDomValue(expression: ts.Expression): boolean {
@@ -1464,6 +1492,7 @@ export class BrowserErasure {
         if (windowViewportDimension(this.context, unwrapped)) {
             return false;
         }
+        if (this.browserRecordField(unwrapped)) return true;
         if (
             ts.isPropertyAccessExpression(unwrapped) &&
             ts.isIdentifier(unwrapped.expression) &&
@@ -1748,7 +1777,10 @@ export class BrowserErasure {
                 ts.isPropertyAccessExpression(unwrapped) ||
                 ts.isElementAccessExpression(unwrapped)
             ) {
-                return owner(unwrapped.expression);
+                return (
+                    this.browserRecordField(unwrapped) ??
+                    owner(unwrapped.expression)
+                );
             }
             // A call producing retained UI (a helper or createElement) owns
             // the members read and called on its result.
@@ -2014,19 +2046,28 @@ export class BrowserErasure {
             // `Math.round(seconds * PHYSICS_FPS)`, where the seconds come
             // from the query the reference fixes and the rate is one of
             // these, so refusing the constant refuses a product the query
-            // has already answered.
+            // has already answered. So does another function's `const`
+            // (a `?debug` flag a scene builder reads, deciding a write the
+            // entry asks about): what this evaluator folds is the
+            // deployment's, the same on every call, and the answer is kept
+            // per node for every scope.
             //
-            // Only a `const`. A mutable top-level binding has an initializer
-            // too, and folding a read of it to that initializer would answer
-            // with a value the program has already reassigned. Resolution
-            // itself is the compiler's own, and only what THIS evaluator
-            // folds comes back -- a constant naming a handle or a factory
-            // call still answers nothing.
-            const resolved = this.context.constantInitializer(unwrapped);
+            // Only a `const`. A mutable binding has an initializer too, and
+            // folding a read of it to that initializer would answer with a
+            // value the program has already reassigned. Only what THIS
+            // evaluator folds comes back -- a constant naming a handle or a
+            // factory call still answers nothing.
+            const module = this.context.constantInitializer(unwrapped);
+            const resolved =
+                module === undefined || module === unwrapped
+                    ? constInitializer(this.context, unwrapped)
+                    : module;
             return resolved === undefined || resolved === unwrapped
                 ? undefined
                 : this.browserValueOf(resolved);
         }
+        const field = this.browserRecordField(unwrapped);
+        if (field) return field.browserValue;
         // `new URL(path, import.meta.url).href`: the module-relative URL as
         // the package resolves it.
         const constructed = ts.isPropertyAccessExpression(unwrapped)
@@ -2460,7 +2501,19 @@ export class BrowserErasure {
             !this.isGlobalObject(unwrapped.expression)
         )
             return false;
-        const name = unwrapped.name.text;
+        const { member, global } = this.globalNamed(unwrapped.name.text);
+        return (
+            !declaredInDomLibrary(member) &&
+            !declaredInDomLibrary(global) &&
+            !declaredIn(global, "default-lib")
+        );
+    }
+
+    /** What the libraries and the program declare as `name` on the global object: a `Window` member and a global value. */
+    private globalNamed(name: string): {
+        member: ts.Symbol | undefined;
+        global: ts.Symbol | undefined;
+    } {
         const checker = this.context.checker;
         const window = checker.resolveName(
             "Window",
@@ -2468,23 +2521,20 @@ export class BrowserErasure {
             ts.SymbolFlags.Type,
             false,
         );
-        const member =
-            window &&
-            checker.getPropertyOfType(
-                checker.getDeclaredTypeOfSymbol(window),
+        return {
+            member:
+                window &&
+                checker.getPropertyOfType(
+                    checker.getDeclaredTypeOfSymbol(window),
+                    name,
+                ),
+            global: checker.resolveName(
                 name,
-            );
-        const global = checker.resolveName(
-            name,
-            undefined,
-            ts.SymbolFlags.Value,
-            false,
-        );
-        return (
-            !declaredInDomLibrary(member) &&
-            !declaredInDomLibrary(global) &&
-            !declaredIn(global, "default-lib")
-        );
+                undefined,
+                ts.SymbolFlags.Value,
+                false,
+            ),
+        };
     }
 
     /** A read of an {@link ABSENT_GLOBAL_MEMBERS} member off the global object. */
@@ -2499,21 +2549,27 @@ export class BrowserErasure {
     }
 
     /**
-     * A member of the global object only the program's own types declare
-     * (`(globalThis as { bridge?: Bridge }).bridge`): a host page or shell
-     * installs it, and none does natively, so it is absent unless the
-     * program writes it onto the global object itself.
+     * A member of the global object no library declares: only the program's
+     * own types name it (`(globalThis as { bridge?: Bridge }).bridge`), or
+     * nothing does and an index signature reads it
+     * (`(window as unknown as Record<string, unknown>).hook`). A host page
+     * or shell installs it, and none does natively, so it is absent unless
+     * the program writes it onto the global object itself.
      */
     private isUninstalledProgramGlobal(
         access: ts.PropertyAccessExpression,
     ): boolean {
-        const declarations =
-            accessedPropertySymbol(this.context.checker, access)
-                ?.declarations ?? [];
+        const { member, global } = this.globalNamed(access.name.text);
         if (
-            declarations.length === 0 ||
-            !declarations.every(
-                (declaration) => declarationOrigin(declaration) === "program",
+            ![
+                accessedPropertySymbol(this.context.checker, access),
+                member,
+                global,
+            ].every((symbol) =>
+                (symbol?.declarations ?? []).every(
+                    (declaration) =>
+                        declarationOrigin(declaration) === "program",
+                ),
             )
         )
             return false;

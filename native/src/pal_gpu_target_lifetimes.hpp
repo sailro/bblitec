@@ -52,6 +52,8 @@ inline TargetUser task_target_user(const FrameTaskRecord& task) {
         return {"Effect task", task.effect.name};
     case FrameTaskKind::ssao:
         return {"SSAO task", task.ssao.name};
+    case FrameTaskKind::depth_resolve:
+        return {"Depth-resolve task", task.depth_resolve.name};
     case FrameTaskKind::compute:
         break;
     }
@@ -149,6 +151,7 @@ void visit_task_textures(const FrameTaskRecord& task, Sampled&& sampled, Attache
         return;
     case FrameTaskKind::geometry:
     case FrameTaskKind::effect:
+    case FrameTaskKind::depth_resolve:
     case FrameTaskKind::compute:
         return;
     }
@@ -198,6 +201,10 @@ template <class Visit> void visit_task_targets(const FrameTaskRecord& task, Visi
         return;
     case FrameTaskKind::effect:
         visit(task.effect.target);
+        return;
+    case FrameTaskKind::depth_resolve:
+        visit(task.depth_resolve.source);
+        visit(task.depth_resolve.target);
         return;
     case FrameTaskKind::ssao:
     case FrameTaskKind::compute:

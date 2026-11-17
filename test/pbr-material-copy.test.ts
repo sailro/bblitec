@@ -121,6 +121,46 @@ test("grows a PBR material's plugin list through the program's signature algebra
     assert.doesNotMatch(result.cpp, /case 256u: return \d+;/);
 });
 
+test("a plugin's priority stays its literal's beside writes that cannot replace it", () => {
+    // `merged` holds its own fresh object: its run-time keys write that
+    // object, never the plugin, whose literal type a dictionary admits.
+    // `repair` writes only a slot holding a non-finite number.
+    const result = compileSource(
+        pbrScene(
+            `
+            material.plugins = [ranked];
+            box.material = material;
+            console.log(Object.keys(unify(["a", "b"])).length);
+            repair(JSON.parse("{}") as unknown);
+        `,
+            `const ranked: MaterialPlugin = {
+                name: "ranked",
+                priority: 450,
+                getCustomCode: (shaderType) =>
+                    shaderType === "fragment" ? { CUSTOM_FRAGMENT_UPDATE_DIFFUSE: "baseColor = baseColor * 0.5;" } : null,
+            };
+            function unify(keys: readonly string[]): Record<string, unknown> {
+                const merged: Record<string, unknown> = {};
+                for (const key of keys) merged[key] = key.length;
+                return merged;
+            }
+            function repair(value: unknown): void {
+                const record = value as Record<string, unknown>;
+                for (const key of Object.keys(record)) {
+                    const child = record[key];
+                    if (typeof child === "number" && !Number.isFinite(child)) record[key] = 0;
+                }
+            }`,
+        ),
+    );
+    assert.deepEqual(
+        result.manifest.scenePbrMaterials?.[0]?.plugins?.map(
+            (plugin) => plugin.priority,
+        ),
+        [450],
+    );
+});
+
 const BENT_NORMAL_IMPORTS = `import { addToScene, createSceneContext, enableBentNormals, loadTexture2D, registerScene } from "@babylonjs/lite";`;
 
 test("records a bent normal texture as a state its material can reach", () => {

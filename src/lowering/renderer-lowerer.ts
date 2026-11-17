@@ -324,6 +324,8 @@ export class RendererLowerer {
             orthographicCamera?: boolean;
             publicCameraMatrices?: boolean;
             shaderPrograms?: CompiledShaderProgram[];
+            /** The scene reads a ShaderMaterial's declaration lists. */
+            shaderDeclarationLists?: boolean;
             /**
              * The engine's floating-origin mode.
              *
@@ -338,7 +340,10 @@ export class RendererLowerer {
         this.assertPinnedTransparentSort();
         const reachedShaderPrograms = options.shaderPrograms ?? [];
         const { shaderVariantTable, shaderVariantEntries } =
-            this.loweredShaderVariants(reachedShaderPrograms);
+            this.loweredShaderVariants(
+                reachedShaderPrograms,
+                options.shaderDeclarationLists === true,
+            );
         // The camera matrix chain the source below emits comes from the
         // pinned writers themselves: the multiply and both projection
         // writers are translated whole from their own ASTs, and the view
@@ -738,6 +743,8 @@ export class RendererLowerer {
      */
     private loweredShaderVariants(
         reachedShaderPrograms: readonly CompiledShaderProgram[],
+        /** The table carries what a declaration-list read needs. */
+        shaderDeclarationLists: boolean,
     ) {
         const systemLayout = shaderSystemLayouts(this.context);
         const shaderVariantTable = reachedShaderPrograms.map((program) => {
@@ -833,6 +840,8 @@ export class RendererLowerer {
                 depthOnlyFragment: program.depthOnlyFragment,
                 valueCount,
                 defaults,
+                liftedUniforms: program.liftedUniforms ?? 0,
+                attributes: program.attributes,
                 uniformSlots: shaderUniformSlots(program.uniforms).map(
                     (slot) => ({
                         ...slot,
@@ -912,7 +921,13 @@ export class RendererLowerer {
             .join(", ")}},
         ${info.externalTextures}u,
         {${info.uniformSlots.map((slot) => `ShaderUniformInfo{"${slot.name}", "${slot.type}", ${slot.offset === undefined ? "bbl::invalid_handle" : `${slot.offset}u`}, ${slot.count}u, {${slot.defaults.map(floatLiteral).join(", ")}}}`).join(", ")}},
-        ${info.thinInstanceColorOption === undefined ? "js::Nullable<double>{}" : `js::Nullable<double>{${info.thinInstanceColorOption ? "1.0" : "0.0"}}`},
+${
+    shaderDeclarationLists
+        ? `        ${info.liftedUniforms}u,
+        {${info.attributes.map((name) => `"${name}"`).join(", ")}},
+`
+        : ""
+}        ${info.thinInstanceColorOption === undefined ? "js::Nullable<double>{}" : `js::Nullable<double>{${info.thinInstanceColorOption ? "1.0" : "0.0"}}`},
         {${info.system.map((bits) => `${bits}u`).join(", ")}},
 ${
     info.depthBias === undefined &&
@@ -963,6 +978,8 @@ ${
             publicCameraMatrices?: boolean;
             /** The scene reaches `setMeshOpacity`. */
             meshOpacity?: boolean;
+            /** The scene reads a ShaderMaterial's declaration lists. */
+            shaderDeclarationLists?: boolean;
         },
         systemMatrixEnumerators: string,
         linearToneMapping: number,
@@ -1281,7 +1298,16 @@ struct ShaderVariantInfo {
     // slots setShaderExternalTexture fills with a video's frame.
     std::uint32_t external_textures = 0;
     std::vector<ShaderUniformInfo> uniform_slots;
-    js::Nullable<double> thin_instance_color_option;
+${
+    options.shaderDeclarationLists
+        ? `    // How many trailing uniform_slots are source numbers lifted into
+    // uniforms; the material's uniformDecls holds the slots before them.
+    std::uint32_t lifted_uniforms = 0;
+    // The material's attributes option, in its order.
+    std::vector<const char*> attributes;
+`
+        : ""
+}    js::Nullable<double> thin_instance_color_option;
     // The declared system uniforms' dependency bits, in their layout's order
     // (shader-system-dependencies.ts).
     std::vector<std::uint32_t> system_dependencies;

@@ -8,7 +8,10 @@ import {
     DynamicBindingStorageRequired,
     ParameterObjectStorageRequired,
 } from "../src/compiler/dynamic-binding-storage.js";
+import { EngineOwnerStorageRequired } from "../src/compiler/engine-owner-storage.js";
 import { GenericFunctionStorageRequired } from "../src/compiler/generic-function-storage.js";
+import { NativeRecordStorageRequired } from "../src/compiler/native-record-storage.js";
+import type { StorageDemand } from "../src/compiler/storage-demand.js";
 import {
     demandOrPlan,
     StorageDemandPlanner,
@@ -514,6 +517,88 @@ test("a demand lowering can go on past is planned, one kind per plan", () => {
     );
 });
 
+test("past a demand lowering went on without, a plan collects demands of a key and keeps the order of the rest", () => {
+    // A record join goes on with a copy. An engine owner and an absence tag
+    // add only their keys: the plan collects them and goes on. A later
+    // join then could come before one following from the owner, which
+    // would change the order the compile lays records out in: the plan ends
+    // there, as at a binding's demand.
+    const { checker, statements, context, declarationAt } = plannedStatements(`
+        interface Target { name: string; type: string }
+        function keep(first: { value: number }) {}
+        const first = { name: "a", type: "f32" };
+        const second = { name: "b", type: "u32" };
+        const tagged: string | null | undefined = undefined;
+        let other = { gain: 1 };
+    `);
+    const typeOf = (index: number) =>
+        checker.getTypeAtLocation(declarationAt(index).name);
+    const target = checker.getDeclaredTypeOfSymbol(
+        checker.getSymbolAtLocation(
+            (statements[0] as ts.InterfaceDeclaration).name,
+        )!,
+    );
+    const join = (index: number) =>
+        new NativeRecordStorageRequired({
+            identity: typeOf(index),
+            type: typeOf(index),
+            node: statements[index]!,
+            frames: [],
+            joins: [{ source: typeOf(index), target, kind: "value" }],
+        });
+    const owner = (statements[1] as ts.FunctionDeclaration).parameters[0]!;
+    const plan = (keys: boolean, last: StorageDemand) => {
+        const before = storagePlanningStatistics();
+        const planner = new StorageDemandPlanner(checker);
+        const lowered: number[] = [];
+        planner.run(() => {
+            attemptPlanned(planner, context, statements[2]!, () => {
+                demandOrPlan(join(2));
+                if (keys) demandOrPlan(new EngineOwnerStorageRequired(owner));
+                lowered.push(2);
+            });
+            attemptPlanned(planner, context, statements[3]!, () => {
+                demandOrPlan(last);
+                lowered.push(3);
+            });
+            if (keys)
+                attemptPlanned(planner, context, statements[4]!, () => {
+                    throw new AbsenceTagStorageRequired(declarationAt(4));
+                });
+        });
+        return {
+            demands: planner.demands.map((request) => request.kind),
+            lowered,
+            writes: storagePlanningStatistics().writes - before.writes,
+        };
+    };
+    // Joins alone go on, as before.
+    assert.deepEqual(plan(false, join(3)), {
+        demands: ["record", "record"],
+        lowered: [2, 3],
+        writes: 0,
+    });
+    const ended = {
+        demands: ["record", "engine-owner"],
+        lowered: [2],
+        writes: 1,
+    };
+    assert.deepEqual(plan(true, join(3)), ended);
+    assert.deepEqual(
+        plan(
+            true,
+            new DynamicBindingStorageRequired(declarationAt(5), undefined),
+        ),
+        ended,
+    );
+    // A demand of a key goes on past any.
+    assert.deepEqual(plan(true, new ParameterObjectStorageRequired(owner)), {
+        demands: ["record", "engine-owner", "parameter-object", "absence-tag"],
+        lowered: [2, 3],
+        writes: 0,
+    });
+});
+
 test("a plan that went on past a demand ends at the next statement's demand of another kind", () => {
     // Lowering on past the parameter's copy, the next statement's demand
     // may follow from it: the plan ends there.
@@ -575,6 +660,43 @@ test("a plan goes on past an engine owner and meets the next store's", () => {
     // After the first owner one plan keeps the others' stores and meets
     // all three; the next plan is the compile.
     assert.equal(planned.collected, 3);
+    assert.equal(planned.constructions, 4);
+});
+
+test("a plan goes on past a record join and meets the next store's engine owner", () => {
+    // The join is stored as a copy; the owner adds only its key, so the
+    // plan that goes on past the join collects it.
+    const source = `
+        interface Spot { x: number; y: number }
+        interface A { x: number }
+        interface Holder { readonly el: HTMLElement }
+        interface Other { readonly other: HTMLElement }
+        const holders: Holder[] = [];
+        const others: Other[] = [];
+        function gather(spot: Spot): number {
+            const as: A[] = [spot];
+            spot.x = 7;
+            return as[0]!.x;
+        }
+        const root = document.createElement("div");
+        document.body.appendChild(root);
+        holders.push({ el: root });
+        const spots: Spot[] = [{ x: 1, y: 2 }];
+        const total = spots.map(gather)[0];
+        others.push({ other: root });
+        holders[0]!.el.classList.add("x");
+        others[0]!.other.classList.add("y");
+        if (total !== 7) throw new Error("joined");
+    `;
+    const strict = measured(false, () => compileSource(source));
+    const planned = measured(true, () => compileSource(source));
+    assert.deepEqual(planned.result, strict.result);
+    // The worker realm, the first owner, the join, the second owner, then
+    // the compile.
+    assert.equal(strict.constructions, 5);
+    // The worker realm and the first owner; one plan meets the join and
+    // the second owner; then the compile.
+    assert.equal(planned.collected, 2);
     assert.equal(planned.constructions, 4);
 });
 
@@ -915,4 +1037,48 @@ test("a record read out of an asserted parse is a document with everything read 
     if (out !== "hall|Ada1|1|front") throw new Error(out);
 `;
     await oneReplay(t, "parse-roots", source);
+});
+
+test("an array literal of constants an identity read stores by reference replays once for all of them", () => {
+    // Each constant's record needs its own object once the array holds
+    // records by reference; a later element naming a constant joins the
+    // first element's demand, plain or past a conditional spread, so the
+    // literal replays as often as a literal of one constant does.
+    const program = (literal: string, last: string, index: number) => `
+    interface Decl { name: string; size: number }
+    const A: Decl = { name: "a", size: 1 };
+    const B: Decl = { name: "b", size: 2 };
+    const C: Decl = { name: "c", size: 3 };
+    async function main(): Promise<void> {
+        await Promise.resolve();
+        const held: Decl[] = ${literal};
+        if (held.indexOf(${last}) !== ${index} || held[0]!.name !== "a") throw new Error("identity");
+        globalThis.close();
+    }
+    void main();
+`;
+    const single = measured(false, () =>
+        compileSource(program("[A]", "A", 0)),
+    ).constructions;
+    const tools = optionalNativeFixtureTools(false);
+    for (const [name, literal] of [
+        ["listed", "[A, B, C]"],
+        ["spread", "[...(Date.now() > 0 ? [A, B] : []), C]"],
+    ] as const) {
+        const compiled = measured(false, () =>
+            compileSource(program(literal, "C", 2)),
+        );
+        assert.equal(compiled.constructions, single, name);
+        if (tools)
+            runGeneratedProgram(
+                tools,
+                `storage-demand-planner/literal-constants-${name}`,
+                compiled.result.cpp,
+                {
+                    flags: ["/DBBLITE_WORKERS=1"],
+                    expectedOutput: "",
+                    timeoutMs: 15000,
+                },
+            );
+    }
 });

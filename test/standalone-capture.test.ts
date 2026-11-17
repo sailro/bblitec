@@ -78,6 +78,7 @@ test("standalone renderers synchronize live contexts, batch uploads and capture 
                 sdlShared,
                 "struct SdlCopyTextureDestination final : GpuObject {",
             ),
+            cppFunction(sdlShared, "inline void set_pass_scissor("),
             cppFunction(sdlShared, "inline void set_pass_viewport("),
             cppFunction(
                 sdlShared,

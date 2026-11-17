@@ -1,5 +1,5 @@
 import { EmissionSet, EmissionMap } from "./emission-transaction.js";
-import { someAnalysisNode } from "./analysis-walk.js";
+import { someAnalysisNode, sourceFileNodes } from "./analysis-walk.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { countedLoopShape, stepsUpByOne } from "./counted-loops.js";
@@ -41,6 +41,7 @@ import {
 } from "./parameter-effects.js";
 import {
     guardsOperands,
+    isBlockScopedVariable,
     isDeclaredInside,
     rootIdentifier,
     unwrapExpression,
@@ -904,6 +905,91 @@ export function sharedFunctionHasCallEffects(
     return constructs || reachesOpaqueCallee(context, body);
 }
 
+/** The index of the first of position-ordered `nodes` starting at or after `pos`. */
+function firstNodeFrom(nodes: readonly ts.Node[], pos: number): number {
+    let low = 0;
+    let high = nodes.length;
+    while (low < high) {
+        const middle = (low + high) >>> 1;
+        if (nodes[middle]!.pos < pos) low = middle + 1;
+        else high = middle;
+    }
+    return low;
+}
+
+/** @unjournaled Syntax answers: the nodes that can run once a statement begins, by statement (by file for a whole file). */
+const nodesRunningFrom = new WeakMap<ts.Node, ReadonlySet<ts.Node>>();
+
+/** @unjournaled Syntax answers of `writtenOnceBegun`, by declared name, then by statement or file. */
+const writtenFrom = new WeakMap<ts.Identifier, Map<ts.Node, boolean>>();
+
+/**
+ * Whether code that can run once `standing` begins writes through the
+ * binding `name` declares, as `loopBoundMayChange` finds writes: `standing`
+ * and the statements after it in its block, and every function or class
+ * the block holds, which may run later. Without a statement of the block
+ * (or function) declaring the binding, or for a `var`, which outlives one
+ * run of its block, the whole file can.
+ */
+export function writtenOnceBegun(
+    context: Pick<ResourceLoopContext, "checker" | "symbols">,
+    name: ts.Identifier,
+    standing: ts.Statement | undefined,
+): boolean {
+    const file = name.getSourceFile();
+    const list = ts.findAncestor(name, ts.isVariableDeclarationList);
+    const block =
+        standing &&
+        (ts.isCaseClause(standing.parent) || ts.isDefaultClause(standing.parent)
+            ? standing.parent.parent
+            : standing.parent);
+    const from =
+        standing &&
+        block &&
+        isDeclaredInside(name, ts.isBlock(block) ? block.parent : block) &&
+        (!list || isBlockScopedVariable(list))
+            ? standing
+            : file;
+    let byStatement = writtenFrom.get(name);
+    if (!byStatement)
+        writtenFrom.set(name, (byStatement = new Map<ts.Node, boolean>()));
+    const known = byStatement.get(from);
+    if (known !== undefined) return known;
+    let reached = nodesRunningFrom.get(from);
+    if (!reached) {
+        const nodes = sourceFileNodes(file);
+        if (from === file || !block) reached = new Set(nodes);
+        else {
+            // Preorder lists nodes by position: the block's nodes start
+            // between its own start and end.
+            const inBlock = new Set<ts.Node>();
+            for (
+                let index = firstNodeFrom(nodes, block.pos);
+                index < nodes.length && nodes[index]!.pos <= block.end;
+                index++
+            ) {
+                const node = nodes[index]!;
+                if (
+                    node.end <= block.end &&
+                    (node.pos >= from.pos ||
+                        ts.findAncestor(node, (owner) =>
+                            owner === block
+                                ? "quit"
+                                : ts.isFunctionLike(owner) ||
+                                  ts.isClassLike(owner),
+                        ) !== undefined)
+                )
+                    inBlock.add(node);
+            }
+            reached = inBlock;
+        }
+        nodesRunningFrom.set(from, reached);
+    }
+    const written = loopBoundMayChange(context, from, name, "deep", reached);
+    byStatement.set(from, written);
+    return written;
+}
+
 /**
  * A folded bound must not be invalidated by the loop or its called helpers.
  * `bound` is an expression, or a binding's own declared name standing for
@@ -1090,6 +1176,10 @@ export const runtimeProfileConstructionIntrinsics: ReadonlySet<string> =
         "createStandardMaterial",
         "createPbrMaterial",
         "createShaderMaterial",
+        // A shader or standard material's no-color view is created from its
+        // source alone; a PBR view keeps a generation-known record.
+        "createShaderNoColorMaterialView",
+        "createStandardNoColorMaterialView",
         "parseNodeMaterialFromSnippet",
     ]);
 

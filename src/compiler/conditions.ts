@@ -19,12 +19,14 @@ import {
     conditionComparison,
     foldBooleanComparison,
     foldExcludedString,
+    foldStringComparison,
     foldSettledComparison,
     type ComparisonContext,
 } from "./comparisons.js";
 import {
     BUFFER_VIEW_KINDS,
     TYPED_ARRAY_KINDS,
+    isPinnedType,
     unrecordedFact,
     type DataType,
 } from "./data-types.js";
@@ -99,6 +101,7 @@ interface ConditionContext
             | "registerNativeBindingType"
             | "registerNativeConstBinding"
             | "requireDefaultEngine"
+            | "requireEngine"
             | "sharedClosures"
             | "symbols"
             | "unwrap"
@@ -394,6 +397,37 @@ export class ConditionLowerer {
     }
 
     /**
+     * A render target's `_colorView`, read through a cast and tested for
+     * presence (`if (!rt._colorView) return;`): set once the target is
+     * built and until it is disposed. Undefined for any other expression.
+     */
+    private renderTargetColorViewPresence(
+        expression: ts.Expression,
+    ): string | undefined {
+        const read = this.context.unwrap(expression);
+        if (
+            !ts.isPropertyAccessExpression(read) ||
+            read.questionDotToken ||
+            read.name.text !== "_colorView"
+        )
+            return undefined;
+        // A name, or a read the pin types `RenderTarget` (`rtt.rt`), so
+        // another owner falls through before it is compiled.
+        const owner = this.context.unwrap(read.expression);
+        if (
+            !ts.isIdentifier(owner) &&
+            !isPinnedType(this.context.checker.getTypeAtLocation(owner), [
+                "RenderTarget",
+            ])
+        )
+            return undefined;
+        const target = this.context.compileValue(owner);
+        if (target.kind !== "render-target") return undefined;
+        this.context.reachFeature("frame-graph:color-view-state", read);
+        return `bbl::render_target_color_view_set(${this.context.requireEngine(target, read)}, ${target.cpp})`;
+    }
+
+    /**
      * The C++ condition an expression tests, folded to `true`/`false`
      * where generation settles it.
      */
@@ -411,6 +445,8 @@ export class ConditionLowerer {
         requireObservedPromise(this.context, expression);
         const unwrapped = this.context.unwrapValue(expression);
         if (this.context.symbols.isNullishLiteral(unwrapped)) return "false";
+        const colorView = this.renderTargetColorViewPresence(unwrapped);
+        if (colorView !== undefined) return colorView;
         // A BigInt is truthy unless it is zero.
         if (isBigIntTyped(this.context.checker, unwrapped)) {
             const condition = this.context.dataLowerer.truthinessCondition(
@@ -780,20 +816,26 @@ export class ConditionLowerer {
                             ).cpp,
                         );
                     // A value-or-promise union holds a promise in its
-                    // promise members.
+                    // promise members; an optional one only while present.
+                    const union = type?.kind === "optional" ? type.inner : type;
                     if (
-                        type?.kind === "union" &&
-                        type.members.some((member) => member.kind === "promise")
+                        union?.kind === "union" &&
+                        union.members.some(
+                            (member) => member.kind === "promise",
+                        )
                     ) {
                         const held = this.context.bindings.pinValueToTemporary(
                             value,
                             "instance_candidate",
                         ).cpp;
-                        return unionArmsTest(
-                            held,
-                            type,
+                        const arms = unionArmsTest(
+                            union === type ? held : optionalValueCpp(held),
+                            union,
                             (member) => member.kind === "promise",
                         );
+                        return union === type
+                            ? arms
+                            : `(${optionalPresentCpp(held)} && ${arms})`;
                     }
                     this.requirePromisesApart(unwrapped);
                 }
@@ -923,6 +965,8 @@ export class ConditionLowerer {
             if (foldedBoolean) {
                 return foldedBoolean;
             }
+            const strings = foldStringComparison(this.context, unwrapped);
+            if (strings) return strings;
             const excluded = foldExcludedString(this.context, unwrapped);
             if (excluded) return excluded;
             // The data equality path has to inspect both operands before it

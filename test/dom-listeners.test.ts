@@ -148,3 +148,86 @@ test("a gamepad listener stays on the immediate path", () => {
     );
     assert.ok(result.manifest.features.includes("input:gamepad"));
 });
+
+/** The body of the generated closure that reads the captured `name`. */
+function closureReading(cpp: string, name: string): string {
+    const start = cpp.lastIndexOf(
+        "\nvoid v_bblite_closure_body_",
+        cpp.indexOf(`auto& ${name} = v_bblite_environment_`),
+    );
+    assert.ok(start >= 0, `no closure captures ${name}`);
+    return cpp.slice(start, cpp.indexOf("\n}\n", start));
+}
+
+test("a never-written table of listener rows registers and removes each row's listener under its literal type", () => {
+    const { cpp } = compileSource(
+        `
+        const canvas = document.createElement("canvas");
+        document.body.appendChild(canvas);
+        let seen = 0;
+        const onDown = (): void => { seen += 1; };
+        const onWheel = (): void => { seen += 2; };
+        const listeners: [string, EventListener, AddEventListenerOptions?][] = [
+            ["pointerdown", onDown as EventListener],
+            ["wheel", onWheel as EventListener, { passive: false }],
+        ];
+        for (const [ev, h, optsL] of listeners) canvas.addEventListener(ev, h, optsL);
+        const button = document.createElement("button");
+        document.body.appendChild(button);
+        button.addEventListener("click", () => {
+            for (const [ev, h] of listeners) canvas.removeEventListener(ev, h);
+            console.log(seen);
+        });
+    `,
+        { fileName: "listener-table.ts" },
+    );
+    const main = cpp.slice(cpp.indexOf("\nint main()"));
+    // Each row's listener is the callback it stores, under its own type; a
+    // row without options registers with the default ones.
+    assert.match(
+        main,
+        /bbl::on_dom_pointer\([^\n]*"pointerdown", \(\w+\)\.identity\(\), \w+, false, false, bbl::dom_listener_passive_default\(/,
+    );
+    assert.match(
+        main,
+        /bbl::on_dom_pointer\([^\n]*"wheel", \(\w+\)\.identity\(\), /,
+    );
+    // The closure reads the same table later and removes the same two.
+    const dispose = closureReading(cpp, "v_listeners");
+    assert.match(
+        dispose,
+        /bbl::off_dom_pointer\([^\n]*"pointerdown", \(\w+\)\.identity\(\), false\);[\s\S]*bbl::off_dom_pointer\([^\n]*"wheel", \(\w+\)\.identity\(\), false\);/,
+    );
+});
+
+test("lists of listener types unroll where their listeners are added and removed later", () => {
+    for (const declaration of [
+        `const pointerTypes = ["pointerdown", "pointerup"] as const;`,
+        `const pointerTypes: string[] = ["pointerdown", "pointerup"];`,
+    ]) {
+        const { cpp } = compileSource(
+            `
+            ${declaration}
+            const target = document.createElement("div");
+            document.body.appendChild(target);
+            let seen = 0;
+            const onPointer = (): void => { seen += 1; };
+            for (const type of pointerTypes) target.addEventListener(type, onPointer);
+            const button = document.createElement("button");
+            document.body.appendChild(button);
+            button.addEventListener("click", () => {
+                for (const type of pointerTypes) target.removeEventListener(type, onPointer);
+                console.log(seen);
+            });
+        `,
+            { fileName: "listener-types.ts" },
+        );
+        for (const pattern of [
+            /bbl::on_dom_pointer\([^\n]*"pointerdown", 1u, /,
+            /bbl::on_dom_pointer\([^\n]*"pointerup", 1u, /,
+            /bbl::off_dom_pointer\([^\n]*"pointerdown", 1u, false\);/,
+            /bbl::off_dom_pointer\([^\n]*"pointerup", 1u, false\);/,
+        ])
+            assert.match(cpp, pattern);
+    }
+});

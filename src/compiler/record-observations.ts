@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { writeGuardRejects } from "./value-guards.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { isOpaqueEngineObject, pinnedSourceHandleKind } from "./data-types.js";
 import type { EvaluationOrder } from "./evaluation-order.js";
@@ -8,13 +9,19 @@ import {
     arrayElementType,
     arrayShape,
     unionMembers,
+    weakTypeProperties,
 } from "./type-facts.js";
 import {
     programObservations,
     type ObservedWrite,
     type ProgramObservations,
 } from "./program-observations.js";
-import { yieldsNewArray } from "./fresh-records.js";
+import { freshConstLocal, yieldsNewArray } from "./fresh-records.js";
+import { enclosedReference } from "./array-length-growth.js";
+import {
+    determinedTypeArguments,
+    mentionsTypeParameter,
+} from "./type-arguments.js";
 import { bindingReferences, soleBindingRead } from "./binding-references.js";
 import { OPEN_HOLDER_FLAGS } from "./written-holders.js";
 import {
@@ -38,7 +45,6 @@ import {
     equalityOperator,
     positionalParameter,
     variableKind,
-    hasExportModifier,
     propertyKey,
     valueConsumer,
     isGeneratorFunction,
@@ -76,6 +82,11 @@ const answers = new WeakMap<
 >();
 /** @unjournaled Pure functions of the checked program, kept across replays. */
 const arrayWriteAnswers = new WeakMap<
+    ts.Type,
+    WeakMap<ts.Type, string | null>
+>();
+/** @unjournaled Pure functions of the checked program, kept across replays. */
+const builtArrayWriteAnswers = new WeakMap<
     ts.Type,
     WeakMap<ts.Type, string | null>
 >();
@@ -170,6 +181,45 @@ export function recordCopyObservation(
     return answer;
 }
 
+/** @unjournaled Pure answers of the checked program, kept across replays. */
+const ownTypeReads = new WeakMap<ts.Type, boolean>();
+
+/**
+ * Whether the program reaches a record of the object literal type `literal`
+ * through that type itself: a read, call, write or enumeration of its
+ * members, or a copy or wholesale read of it, through an expression the
+ * checker types as it. A read through a destructuring assignment target, which names no
+ * source, reaches it.
+ */
+export function observedUnderOwnType(
+    context: RecordObservationContext,
+    literal: ts.Type,
+): boolean {
+    const known = ownTypeReads.get(literal);
+    if (known !== undefined) return known;
+    const { checker } = context;
+    const observations = programObservations(context.program);
+    const own = (type: ts.Type): boolean =>
+        unionMembers(checker.getNonNullableType(type)).includes(literal);
+    const typed = (node: ts.Node): boolean =>
+        own(checker.getTypeAtLocation(node));
+    const observed =
+        [...observations.writes.keys()].some(own) ||
+        [...observations.enumerations].some(own) ||
+        checker
+            .getPropertiesOfType(literal)
+            .some((property) =>
+                [
+                    ...(observations.namedReads.get(property.name) ?? []),
+                    ...(observations.memberCalls.get(property.name) ?? []),
+                ].some(({ object }) => object === undefined || typed(object)),
+            ) ||
+        observations.wholesaleReads.some(typed) ||
+        observations.copies.some(({ from }) => typed(from));
+    ownTypeReads.set(literal, observed);
+    return observed;
+}
+
 /**
  * Whether any write in the program can replace `property` on a record of
  * `source` type: one through a holder that can hold such a record, or through
@@ -177,7 +227,9 @@ export function recordCopyObservation(
  * Asking only whether the field stays present, a plain assignment of a value
  * that is neither null nor undefined cannot remove it. A record whose object
  * an `origin` literal creates is reached by no write through a `const` holding
- * another literal's object (`ObservedWrite.freshObject`).
+ * another literal's object (`ObservedWrite.freshObject`). With `holding`, the
+ * value the field is known to hold, a write that runs only when its slot
+ * holds another value (`writeGuardRejects`) is not counted.
  */
 export function recordFieldIsWritten(
     context: RecordObservationContext,
@@ -185,6 +237,7 @@ export function recordFieldIsWritten(
     property: string,
     keepsPresent = false,
     origin?: ts.Node,
+    holding?: { readonly value: unknown },
 ): boolean {
     return cachedFieldWrite(
         context,
@@ -193,6 +246,36 @@ export function recordFieldIsWritten(
         keepsPresent,
         origin,
         false,
+        holding,
+    );
+}
+
+/**
+ * Whether any write in the program can add, replace or delete a key of a
+ * map record of `source` type (one declaring an index signature): through a
+ * holder of a type that can hold such a record and is not open to any value,
+ * or through any holder with a key only the run time knows. A named write
+ * through an open holder is attributed to the types declaring its name, as
+ * {@link recordFieldIsWritten} attributes it.
+ */
+export function recordKeysAreWritten(
+    context: RecordObservationContext,
+    source: ts.Type,
+): boolean {
+    const holds = holderTest(context.checker);
+    const observations = programObservations(context.program);
+    return (
+        writesWhere(
+            observations,
+            (type) =>
+                (type.flags & OPEN_HOLDER_FLAGS) === 0 && holds(type, [source]),
+            () => true,
+        ) !== undefined ||
+        writesWhere(
+            observations,
+            (type) => holds(type, [source]),
+            (write) => write.property === undefined,
+        ) !== undefined
     );
 }
 
@@ -203,14 +286,25 @@ export function recordFieldIsWritten(
  * `const` holding a fresh literal's object, in that function's own body
  * (no nested function, no generator), builds the object before the
  * function returns it, and is not counted. What such a write stores is
- * the reader's to know.
+ * the reader's to know. With `holding`, the value the member is known to
+ * hold, a write that runs only when its slot holds another value
+ * (`writeGuardRejects`) is not counted either.
  */
 export function builtRecordFieldIsWritten(
     context: RecordObservationContext,
     source: ts.Type,
     property: string,
+    holding?: { readonly value: unknown },
 ): boolean {
-    return cachedFieldWrite(context, source, property, false, undefined, true);
+    return cachedFieldWrite(
+        context,
+        source,
+        property,
+        false,
+        undefined,
+        true,
+        holding,
+    );
 }
 
 /** {@link recordFieldIsWritten} or {@link builtRecordFieldIsWritten}, kept per type and question. */
@@ -221,11 +315,15 @@ function cachedFieldWrite(
     keepsPresent: boolean,
     origin: ts.Node | undefined,
     built: boolean,
+    holding?: { readonly value: unknown },
 ): boolean {
     const site = origin
         ? `${origin.getSourceFile().fileName}:${origin.pos}:${origin.end}:${origin.kind}`
         : "";
-    const key = `${property}|${keepsPresent}|${site}|${built}`;
+    const held = holding
+        ? `${typeof holding.value}:${String(holding.value)}`
+        : "";
+    const key = `${property}|${keepsPresent}|${site}|${built}|${held}`;
     let byKey = writtenFields.get(source);
     if (!byKey) writtenFields.set(source, (byKey = new Map<string, boolean>()));
     let written = byKey.get(key);
@@ -237,6 +335,7 @@ function cachedFieldWrite(
             keepsPresent,
             origin,
             built,
+            holding,
         );
         byKey.set(key, written);
     }
@@ -273,6 +372,7 @@ function fieldWriteFound(
     keepsPresent: boolean,
     origin: ts.Node | undefined,
     built: boolean,
+    holding: { readonly value: unknown } | undefined,
 ): boolean {
     const { checker } = context;
     const observations = programObservations(context.program);
@@ -301,9 +401,20 @@ function fieldWriteFound(
     // A holder instantiated over a type parameter may be any concrete
     // instantiation, which assignability cannot relate to `source`; only a
     // write that names the property is attributed to it.
+    // A record type whose properties are all optional takes only a value
+    // that shares one of them, as the checker's weak-type rule requires of
+    // every assignment; its assignability test alone admits any object.
+    const weakProperties = weakTypeProperties(checker, source);
     const viewedAsSource = (holder: ts.Type): boolean =>
-        unionMembers(holder).some((member) =>
-            checker.isTypeAssignableTo(member, source),
+        unionMembers(holder).some(
+            (member) =>
+                checker.isTypeAssignableTo(member, source) &&
+                (!weakProperties ||
+                    weakProperties.some(
+                        (property) =>
+                            checker.getPropertyOfType(member, property.name) !==
+                            undefined,
+                    )),
         );
     const mayRemove = (write: ObservedWrite): boolean => {
         const assignment = write.node.parent;
@@ -321,7 +432,16 @@ function fieldWriteFound(
         (origin === undefined ||
             write.freshObject === undefined ||
             write.freshObject === origin) &&
-        !(built && buildsFreshObject(write));
+        !(built && buildsFreshObject(write)) &&
+        !(
+            holding &&
+            writeGuardRejects(
+                checker,
+                context.program.getSourceFiles(),
+                write.node,
+                holding.value,
+            )
+        );
     return (
         writesWhere(
             observations,
@@ -363,26 +483,158 @@ export function arrayCopyObservation(
     );
 }
 
-/** Writes that may change an array's contents; identity observations do not change its size. */
+/**
+ * Writes that may change an array's contents; identity observations do not
+ * change its size. With `read`, the expression an array is read through, a
+ * write through a binding that builds its array before sharing it
+ * (`buildsUnsharedArray`) counts only when `read` names such a binding:
+ * any other expression reaches that array once it is built.
+ */
 export function arrayWriteObservation(
     context: RecordObservationContext,
     source: ts.Type,
     target: ts.Type,
+    read?: ts.Expression,
 ): string | undefined {
-    let byTarget = arrayWriteAnswers.get(source);
-    if (!byTarget) arrayWriteAnswers.set(source, (byTarget = new WeakMap()));
+    const built = read !== undefined && !buildsUnsharedArray(context, read);
+    const cached = built ? builtArrayWriteAnswers : arrayWriteAnswers;
+    let byTarget = cached.get(source);
+    if (!byTarget) cached.set(source, (byTarget = new WeakMap()));
     let answer = byTarget.get(target);
     if (answer === undefined) {
-        answer = observedArrayWrites(context, source, target) ?? null;
+        answer = observedArrayWrites(context, source, target, built) ?? null;
         byTarget.set(target, answer);
     }
     return answer ?? undefined;
 }
 
+/**
+ * Whether `array` names a binding that builds its array before any other
+ * reference can hold it: a function's `const` initialized with a new array,
+ * named in no nested function or class, where every statement writing
+ * through it ends before any reference sharing the array (one
+ * `enclosedReference` rejects) begins, and no loop holds both but one whose
+ * body declares the binding. Until then only the binding reaches that array.
+ */
+function buildsUnsharedArray(
+    context: RecordObservationContext,
+    array: ts.Expression,
+): boolean {
+    const name = unwrapExpression(array);
+    const symbol = ts.isIdentifier(name)
+        ? resolvedSymbol(context.checker, name)
+        : undefined;
+    if (!symbol) return false;
+    let unshared = unsharedArrayBindings.get(symbol);
+    if (unshared === undefined) {
+        unshared = arrayBuiltBeforeShared(context, symbol);
+        unsharedArrayBindings.set(symbol, unshared);
+    }
+    return unshared;
+}
+
+/** @unjournaled {@link buildsUnsharedArray}'s answers by binding: pure functions of the checked program. */
+const unsharedArrayBindings = new WeakMap<ts.Symbol, boolean>();
+
+/** {@link buildsUnsharedArray}, computed. */
+function arrayBuiltBeforeShared(
+    context: RecordObservationContext,
+    symbol: ts.Symbol,
+): boolean {
+    const { program, checker } = context;
+    const declaration = symbol.valueDeclaration;
+    if (
+        !declaration ||
+        !ts.isVariableDeclaration(declaration) ||
+        !declaration.initializer ||
+        variableKind(declaration) !== "const" ||
+        !newArrayExpression(checker, declaration.initializer)
+    )
+        return false;
+    const owner = activationOf(declaration.parent);
+    if (!owner || !ts.isFunctionLike(owner) || isGeneratorFunction(owner))
+        return false;
+    const written = observedWriteNodes(programObservations(program));
+    const writes: ts.Statement[] = [];
+    const shared: ts.Expression[] = [];
+    for (const site of bindingReferences(program, checker, symbol)) {
+        if (activationOf(site.parent) !== owner) return false;
+        const statement = writingStatement(site, written);
+        if (statement) writes.push(statement);
+        if (!enclosedReference(checker, site)) shared.push(site);
+    }
+    const contains = (outer: ts.Node, inner: ts.Node): boolean =>
+        outer.pos <= inner.pos && inner.end <= outer.end;
+    // A loop whose body declares the binding runs a new one each iteration.
+    const loopHolds = (statement: ts.Statement, use: ts.Expression): boolean =>
+        ts.findAncestor(statement, (node) =>
+            !ts.isIterationStatement(node, false)
+                ? false
+                : contains(node.statement, declaration)
+                  ? "quit"
+                  : contains(node, use),
+        ) !== undefined;
+    return writes.every((statement) =>
+        shared.every(
+            (use) =>
+                statement.end <= use.getStart() && !loopHolds(statement, use),
+        ),
+    );
+}
+
+/** The function or class whose activation evaluates `node`. */
+function activationOf(node: ts.Node): ts.Node | undefined {
+    return ts.findAncestor(
+        node,
+        (ancestor) => ts.isFunctionLike(ancestor) || ts.isClassLike(ancestor),
+    );
+}
+
+/**
+ * The statement holding the write a reference to an array binding makes as
+ * the receiver of an observed write (`ProgramObservations`): an element or
+ * `length` write, or a mutating method call.
+ */
+function writingStatement(
+    site: ts.Expression,
+    written: ReadonlySet<ts.Node>,
+): ts.Statement | undefined {
+    const consumer = valueConsumer(outermostWrapper(site));
+    if (consumer.kind !== "member") return undefined;
+    const call = outermostWrapper(consumer.access).parent;
+    return written.has(consumer.access) ||
+        (ts.isCallExpression(call) && written.has(call))
+        ? ts.findAncestor(consumer.access, ts.isStatement)
+        : undefined;
+}
+
+/** Every observed write's node. */
+function observedWriteNodes(
+    observations: ProgramObservations,
+): ReadonlySet<ts.Node> {
+    let nodes = writeNodes.get(observations);
+    if (!nodes) {
+        nodes = new Set(
+            [
+                ...observations.arrayWrites.values(),
+                ...observations.writes.values(),
+            ]
+                .flat()
+                .map((write) => write.node),
+        );
+        writeNodes.set(observations, nodes);
+    }
+    return nodes;
+}
+
+/** @unjournaled {@link observedWriteNodes} per program: a pure function of the checked program. */
+const writeNodes = new WeakMap<ProgramObservations, ReadonlySet<ts.Node>>();
+
 function observedArrayWrites(
     context: RecordObservationContext,
     source: ts.Type,
     target: ts.Type,
+    built: boolean,
 ): string | undefined {
     const observations = programObservations(context.program);
     const { checker } = context;
@@ -425,7 +677,7 @@ function observedArrayWrites(
     const targetShape = arrayShape(checker, target);
     const targetMutable = targetShape?.mutable === true && !targetShape.tuple;
     const writtenHolder = (holder: ts.Type): boolean =>
-        holdsArray(checker, holder, [source, target], (element) => {
+        holdsArray(context, holder, [source, target], (element) => {
             if (
                 sourceElement === undefined ||
                 assignable(element, sourceElement) ||
@@ -438,17 +690,35 @@ function observedArrayWrites(
                 assignable(targetElement, element)
             );
         });
+    const counted = (write: ObservedWrite): boolean => {
+        if (writesNewArray(checker, write)) return false;
+        if (!built) return true;
+        const place = ts.isCallExpression(write.node)
+            ? write.node.expression
+            : write.node;
+        return !(
+            (ts.isPropertyAccessExpression(place) ||
+                ts.isElementAccessExpression(place)) &&
+            buildsUnsharedArray(context, place.expression)
+        );
+    };
+    // A record write naming a key that is neither an index nor `length`
+    // changes no element and no length of an array it may reach.
+    const changesElements = (write: ObservedWrite): boolean =>
+        write.property === undefined ||
+        write.property === "length" ||
+        String(Number(write.property)) === write.property;
     if (
         writesWhere(
             observations,
             writtenHolder,
-            (write) => !writesNewArray(checker, write),
+            counted,
             observations.arrayWrites,
         ) ||
         writesWhere(
             observations,
             writtenHolder,
-            (write) => !writesNewArray(checker, write),
+            (write) => changesElements(write) && counted(write),
         )
     )
         return "the program changes the elements of such arrays";
@@ -491,7 +761,7 @@ function observedArrayIdentity(
     ];
     if (
         [...observations.identities].some((type) =>
-            holdsArray(checker, type, copyTypes, (element) =>
+            holdsArray(context, type, copyTypes, (element) =>
                 copyTypes.some((copy) => {
                     const own = arrayElementType(checker, copy);
                     return (
@@ -873,20 +1143,24 @@ function receiverWrites(initializer: ts.Expression | undefined): string[] {
  * assignable to, or an array type whose element type `related` accepts.
  */
 function holdsArray(
-    checker: ts.TypeChecker,
+    context: RecordObservationContext,
     holder: ts.Type,
     arrays: readonly ts.Type[],
     related: (element: ts.Type) => boolean,
 ): boolean {
+    const { checker } = context;
     if (holder.isUnion() || holder.isIntersection())
         return holder.types.some((member) =>
-            holdsArray(checker, member, arrays, related),
+            holdsArray(context, member, arrays, related),
         );
     const element = arrayElementType(checker, holder);
     if (element === undefined || (holder.flags & ts.TypeFlags.Object) === 0)
         return holdsRecord(checker, holder, arrays);
-    // A type parameter's array holds what its constraint admits.
+    // A type parameter's array holds what its function's calls bind it to
+    // (`typeParameterBindings`), else what its constraint admits.
     if ((element.flags & ts.TypeFlags.TypeParameter) !== 0) {
+        const bound = typeParameterBindings(context, element);
+        if (bound) return bound.some(related);
         const constraint = checker.getBaseConstraintOfType(element);
         return (
             constraint === undefined ||
@@ -904,6 +1178,86 @@ function holdsArray(
         );
     }
     return related(element);
+}
+
+/**
+ * What a function's type parameter stands for over the program: the type
+ * each call binds it to (`determinedTypeArguments`), where every reference
+ * to the function calls it, and a binding to a type parameter of the
+ * calling function stands for what that one does. Undefined where the
+ * parameter is no named function's, a reference hands the function on, or
+ * a binding is a type that mentions a type parameter.
+ */
+function typeParameterBindings(
+    context: RecordObservationContext,
+    parameter: ts.Type,
+    active: ReadonlySet<ts.Symbol> = new Set(),
+): readonly ts.Type[] | undefined {
+    const symbol = parameter.symbol;
+    if (!symbol || active.has(symbol)) return undefined;
+    let bound = typeParameterAnswers.get(symbol);
+    if (bound === undefined) {
+        bound =
+            boundTypeArguments(
+                context,
+                parameter,
+                new Set([...active, symbol]),
+            ) ?? null;
+        // An answer that leaned on an enclosing parameter being resolved
+        // is that resolution's alone.
+        if (active.size === 0) typeParameterAnswers.set(symbol, bound);
+    }
+    return bound ?? undefined;
+}
+
+/** @unjournaled {@link typeParameterBindings} by type parameter: pure functions of the checked program. */
+const typeParameterAnswers = new WeakMap<
+    ts.Symbol,
+    readonly ts.Type[] | null
+>();
+
+/** {@link typeParameterBindings}, computed. */
+function boundTypeArguments(
+    context: RecordObservationContext,
+    parameter: ts.Type,
+    active: ReadonlySet<ts.Symbol>,
+): readonly ts.Type[] | undefined {
+    const { program, checker } = context;
+    const declaration = parameter.symbol.declarations?.find(
+        ts.isTypeParameterDeclaration,
+    );
+    const owner = declaration?.parent;
+    const name =
+        owner && ts.isFunctionDeclaration(owner)
+            ? owner.name
+            : owner &&
+                (ts.isArrowFunction(owner) || ts.isFunctionExpression(owner)) &&
+                ts.isVariableDeclaration(owner.parent) &&
+                owner.parent.initializer === owner &&
+                variableKind(owner.parent) === "const" &&
+                ts.isIdentifier(owner.parent.name)
+              ? owner.parent.name
+              : undefined;
+    const binding = name && declaredSymbol(checker, name);
+    if (!owner || !binding || !ts.isFunctionLike(owner)) return undefined;
+    const types: ts.Type[] = [];
+    for (const site of bindingReferences(program, checker, binding)) {
+        const reference = outermostWrapper(site);
+        const call = reference.parent;
+        if (!ts.isCallExpression(call) || call.expression !== reference)
+            return undefined;
+        const type = determinedTypeArguments(checker, call, owner).get(
+            parameter.symbol,
+        );
+        if (!type) return undefined;
+        if ((type.flags & ts.TypeFlags.TypeParameter) !== 0) {
+            const outer = typeParameterBindings(context, type, active);
+            if (!outer) return undefined;
+            types.push(...outer);
+        } else if (mentionsTypeParameter(checker, type)) return undefined;
+        else types.push(type);
+    }
+    return types;
 }
 
 function observed(
@@ -1204,9 +1558,9 @@ function newArrayExpression(
 }
 
 /**
- * Whether `read` is the only reference to an unexported `const` local
- * initialized with a fresh object (`fresh`), read once per binding
- * (`soleBindingRead`). A copy stored there replaces the only reference.
+ * Whether `read` is the only reference to a `freshConstLocal`, read once
+ * per binding (`soleBindingRead`). A copy stored there replaces the only
+ * reference.
  */
 export function soleReadOfFreshLocal(
     program: ts.Program,
@@ -1214,18 +1568,11 @@ export function soleReadOfFreshLocal(
     read: ts.Expression,
     fresh: (initializer: ts.Expression) => boolean,
 ): boolean {
-    const unwrapped = unwrapExpression(read);
-    if (!ts.isIdentifier(unwrapped)) return false;
-    const declaration = declaredSymbol(checker, unwrapped)?.valueDeclaration;
+    const declaration = freshConstLocal(checker, read, fresh);
     return (
-        !!declaration &&
-        ts.isVariableDeclaration(declaration) &&
-        !!declaration.initializer &&
-        ts.isVariableStatement(declaration.parent.parent) &&
-        variableKind(declaration) === "const" &&
-        !hasExportModifier(declaration.parent.parent) &&
-        fresh(declaration.initializer) &&
-        soleBindingRead(program, checker, declaration) === unwrapped
+        declaration !== undefined &&
+        soleBindingRead(program, checker, declaration) ===
+            unwrapExpression(read)
     );
 }
 

@@ -1,14 +1,14 @@
-import { EmissionSet, EmissionMap } from "./emission-transaction.js";
-import type { LoweringServices } from "./lowering-services.js";
 // Shader-material descriptors retain stable creation-order IDs and declared
 // resource slots. Scene-local stages lower through typed Shader IR after their
 // reached draws establish the mesh layout; unused descriptors need no stages.
+import { EmissionSet, EmissionMap } from "./emission-transaction.js";
+import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import { sharedPinnedContext } from "../lowering/context.js";
-import { blendFactorByPin } from "../lowering/pinned-blend-table.js";
 import { depthCompareByPin } from "../lowering/pinned-depth-state.js";
 import { staticTableOption, type TableOption } from "./table-options.js";
+import { compileBlendState } from "./blend-state.js";
 import {
     pinnedErrorCode,
     pinnedErrorMessageCpp,
@@ -31,7 +31,6 @@ import {
     type ObjectValidationContext,
 } from "./option-helpers.js";
 import type {
-    CompiledShaderBlend,
     CompiledShaderDefine,
     CompiledShaderProgram,
     CompiledShaderSampler,
@@ -48,6 +47,12 @@ import {
 import { isJsonValue } from "./json-bridge.js";
 import { presenceCpp } from "./types.js";
 import { knownCondition } from "./values/model.js";
+import {
+    keepsShaderCreations,
+    shaderOptionFacts,
+    sourceTextFact,
+    type RecordFacts,
+} from "./shader-derivations.js";
 
 /** A shader material's depth comparison, which its pipeline reads at generation. */
 const shaderDepthCompare: TableOption = {
@@ -55,21 +60,6 @@ const shaderDepthCompare: TableOption = {
     refusal: (compare) => `Unsupported shader depthCompare '${compare}'.`,
     name: "shader depthCompare",
     label: "depth_compare",
-};
-
-const shaderBlendFactor: TableOption = {
-    table: blendFactorByPin,
-    refusal: (factor) =>
-        `Pinned blend uses factor '${factor}', which this runtime has no enumerator for.`,
-    name: "shader blend factor",
-    label: "blend_factor",
-};
-
-const shaderBlendOperation: TableOption = {
-    table: { add: "add" },
-    refusal: "Shader blend supports the add operation only.",
-    name: "shader blend operation",
-    label: "blend_operation",
 };
 
 /**
@@ -91,6 +81,7 @@ export interface ShaderMaterialContext
         StaticBooleanContext,
         Pick<
             LoweringServices,
+            | "checker"
             | "sceneManifest"
             | "expectObjectLiteral"
             | "expectStaticArrayLiteral"
@@ -110,6 +101,7 @@ export interface ShaderMaterialContext
             | "emit"
             | "emitDiscardedValue"
             | "probeEmission"
+            | "program"
             | "unwrap"
             | "fail"
         > {}
@@ -195,10 +187,8 @@ function validateShaderAttributes(
     }
 }
 
-export function compileShaderMaterialOptions(
-    context: ShaderMaterialContext,
-    expression: ts.Expression,
-): {
+/** The variant a `createShaderMaterial` options object compiles to. */
+export interface CompiledShaderMaterialOptions {
     name: string;
     id: number;
     /** `transmissive`: the renderable that triggers a transmission grab. */
@@ -207,7 +197,14 @@ export function compileShaderMaterialOptions(
         offset: number;
         components: string[];
     }>;
-} {
+    /** The options as read, where a material may derive from them. */
+    creation?: RecordFacts;
+}
+
+export function compileShaderMaterialOptions(
+    context: ShaderMaterialContext,
+    expression: ts.Expression,
+): CompiledShaderMaterialOptions {
     const object = context.expectObjectLiteral(expression);
     validateObjectProperties(
         context,
@@ -252,8 +249,14 @@ export function compileShaderMaterialOptions(
         );
     }
 
-    const compiledVertex = context.compileShaderSource(vertexExpression);
-    const compiledFragment = context.compileShaderSource(fragmentExpression);
+    const compiledVertex = context.compileShaderSource(
+        vertexExpression,
+        "vertex",
+    );
+    const compiledFragment = context.compileShaderSource(
+        fragmentExpression,
+        "fragment",
+    );
     const vertexSource = compiledVertex.source;
     const fragmentSource = compiledFragment.source;
     if (!vertexSource || !fragmentSource) {
@@ -313,7 +316,7 @@ export function compileShaderMaterialOptions(
     );
     const blendExpression = context.objectProperty(object, "blend");
     const blend = blendExpression
-        ? compileShaderBlend(context, blendExpression)
+        ? compileBlendState(context, blendExpression)
         : undefined;
     const needAlphaBlending = compileOptionalStaticBoolean(
         context,
@@ -442,6 +445,9 @@ export function compileShaderMaterialOptions(
         fragmentSource,
         attributes,
         uniforms,
+        ...(dynamicSourceUniforms.length > 0
+            ? { liftedUniforms: dynamicSourceUniforms.length }
+            : {}),
         uniformDefaults,
         samplers,
         samplerDeclarations,
@@ -495,9 +501,20 @@ export function compileShaderMaterialOptions(
         context.objectProperty(object, "transmissive"),
         false,
     );
+    const creation = keepsShaderCreations(context)
+        ? shaderOptionFacts(context, object, {
+              ...(staticName === undefined
+                  ? {}
+                  : { name: { json: staticName } }),
+              vertexSource: sourceTextFact(compiledVertex),
+              fragmentSource: sourceTextFact(compiledFragment),
+              attributes: { json: attributes },
+          })
+        : undefined;
     return {
         ...reached,
         transmissive,
+        ...(creation ? { creation } : {}),
         ...(dynamicInitializers.length > 0
             ? {
                   dynamicUniforms: dynamicInitializers.map(
@@ -509,44 +526,6 @@ export function compileShaderMaterialOptions(
               }
             : {}),
     };
-}
-
-/** The explicit GPUBlendState replaces both default blend components. */
-function compileShaderBlend(
-    context: ShaderMaterialContext,
-    expression: ts.Expression,
-): CompiledShaderBlend {
-    const object = context.expectObjectLiteral(expression);
-    validateObjectProperties(
-        context,
-        object,
-        ["color", "alpha"],
-        "Shader blend requires color and alpha components.",
-    );
-    const component = (side: "color" | "alpha"): [string, string] => {
-        const value = context.objectProperty(object, side);
-        if (!value) context.fail(object, `Shader blend requires ${side}.`);
-        const literal = context.expectObjectLiteral(value);
-        validateObjectProperties(
-            context,
-            literal,
-            ["operation", "srcFactor", "dstFactor"],
-            "Shader blend components accept operation, srcFactor and dstFactor.",
-        );
-        const operation = context.objectProperty(literal, "operation");
-        if (operation)
-            staticTableOption(context, shaderBlendOperation, operation);
-        const factor = (name: "srcFactor" | "dstFactor"): string => {
-            const field = context.objectProperty(literal, name);
-            return field
-                ? staticTableOption(context, shaderBlendFactor, field)
-                : name === "srcFactor"
-                  ? "one"
-                  : "zero";
-        };
-        return [factor("srcFactor"), factor("dstFactor")];
-    };
-    return [...component("color"), ...component("alpha")];
 }
 
 /**
@@ -568,80 +547,84 @@ function compileShaderSamplers(
         return [];
     }
     const samplers: CompiledShaderSampler[] = [];
-    for (const { node: element, text } of context.staticListItems(expression)) {
-        // A typed `ShaderSamplerDecl` names its own sample type, view
-        // dimension and comparison mode. Everything else goes through the
-        // same static-string resolution `attributes` and `uniforms` take, so
-        // a module constant naming a sampler works in all three.
-        const resolved =
-            text === undefined
-                ? context.resolveStaticLiteral(element)
-                : element;
-        let name: string;
-        let sampleType: CompiledShaderSampler["sampleType"] = "float";
-        let viewDimension: CompiledShaderSampler["viewDimension"] = "2d";
-        let comparison = false;
-        if (ts.isObjectLiteralExpression(resolved)) {
-            validateObjectProperties(
-                context,
-                resolved,
-                ["name", "sampleType", "viewDimension", "comparison"],
-                "Shader sampler declaration",
-            );
-            const nameExpression = context.objectProperty(resolved, "name");
-            if (!nameExpression) {
-                context.fail(
+    for (const item of context.staticListItems(expression)) {
+        item.within(() => {
+            const { node: element, text } = item;
+            // A typed `ShaderSamplerDecl` names its own sample type, view
+            // dimension and comparison mode. Everything else goes through the
+            // same static-string resolution `attributes` and `uniforms` take, so
+            // a module constant naming a sampler works in all three.
+            const resolved =
+                text === undefined
+                    ? context.resolveStaticLiteral(element)
+                    : element;
+            let name: string;
+            let sampleType: CompiledShaderSampler["sampleType"] = "float";
+            let viewDimension: CompiledShaderSampler["viewDimension"] = "2d";
+            let comparison = false;
+            if (ts.isObjectLiteralExpression(resolved)) {
+                validateObjectProperties(
+                    context,
                     resolved,
-                    "Shader sampler declaration requires a name.",
+                    ["name", "sampleType", "viewDimension", "comparison"],
+                    "Shader sampler declaration",
                 );
-            }
-            name = context.compileStaticString(nameExpression);
-            const sampleTypeExpression = context.objectProperty(
-                resolved,
-                "sampleType",
-            );
-            if (sampleTypeExpression) {
-                const candidate =
-                    context.compileStaticString(sampleTypeExpression);
-                if (
-                    candidate !== "float" &&
-                    candidate !== "unfilterable-float" &&
-                    candidate !== "depth"
-                ) {
+                const nameExpression = context.objectProperty(resolved, "name");
+                if (!nameExpression) {
                     context.fail(
-                        sampleTypeExpression,
-                        `Unsupported shader sampler sampleType '${candidate}'.`,
+                        resolved,
+                        "Shader sampler declaration requires a name.",
                     );
                 }
-                sampleType = candidate;
-            }
-            const viewExpression = context.objectProperty(
-                resolved,
-                "viewDimension",
-            );
-            if (viewExpression) {
-                const candidate = context.compileStaticString(viewExpression);
-                if (candidate !== "2d" && candidate !== "2d-array") {
-                    context.fail(
-                        viewExpression,
-                        `Unsupported shader sampler viewDimension '${candidate}'.`,
-                    );
+                name = context.compileStaticString(nameExpression);
+                const sampleTypeExpression = context.objectProperty(
+                    resolved,
+                    "sampleType",
+                );
+                if (sampleTypeExpression) {
+                    const candidate =
+                        context.compileStaticString(sampleTypeExpression);
+                    if (
+                        candidate !== "float" &&
+                        candidate !== "unfilterable-float" &&
+                        candidate !== "depth"
+                    ) {
+                        context.fail(
+                            sampleTypeExpression,
+                            `Unsupported shader sampler sampleType '${candidate}'.`,
+                        );
+                    }
+                    sampleType = candidate;
                 }
-                viewDimension = candidate;
+                const viewExpression = context.objectProperty(
+                    resolved,
+                    "viewDimension",
+                );
+                if (viewExpression) {
+                    const candidate =
+                        context.compileStaticString(viewExpression);
+                    if (candidate !== "2d" && candidate !== "2d-array") {
+                        context.fail(
+                            viewExpression,
+                            `Unsupported shader sampler viewDimension '${candidate}'.`,
+                        );
+                    }
+                    viewDimension = candidate;
+                }
+                comparison = compileOptionalStaticBoolean(
+                    context,
+                    context.objectProperty(resolved, "comparison"),
+                    false,
+                );
+                if (comparison && !sampleTypeExpression) {
+                    sampleType = "depth";
+                }
+            } else {
+                name = text ?? context.compileStaticString(element);
             }
-            comparison = compileOptionalStaticBoolean(
-                context,
-                context.objectProperty(resolved, "comparison"),
-                false,
-            );
-            if (comparison && !sampleTypeExpression) {
-                sampleType = "depth";
-            }
-        } else {
-            name = text ?? context.compileStaticString(element);
-        }
-        reserveSamplerPair(context, element, "sampler", name, used);
-        samplers.push({ name, sampleType, viewDimension, comparison });
+            reserveSamplerPair(context, element, "sampler", name, used);
+            samplers.push({ name, sampleType, viewDimension, comparison });
+        });
     }
     if (samplers.length > MAX_SHADER_SAMPLERS) {
         context.fail(
@@ -666,9 +649,9 @@ function compileShaderExternalTextures(
     samplers: number,
 ): string[] {
     if (!expression || absentShaderOption(context, expression)) return [];
-    const names = context
-        .staticListItems(expression)
-        .map(({ node: element, text }) => {
+    const names = context.staticListItems(expression).map((item) =>
+        item.within(() => {
+            const { node: element, text } = item;
             const name = text ?? context.compileStaticString(element);
             reserveSamplerPair(
                 context,
@@ -678,7 +661,8 @@ function compileShaderExternalTextures(
                 used,
             );
             return name;
-        });
+        }),
+    );
     // Each binds a texture/sampler pair after the samplers', in the same slots.
     if (samplers + names.length > MAX_SHADER_SAMPLERS) {
         context.fail(
@@ -851,92 +835,106 @@ function compileShaderUniformSignatures(
         name: string;
         components: string[];
     }> = [];
-    const signatures = context.staticListItems(expression).map((item) => {
-        if (item.text !== undefined) return item.text;
-        const resolved = context.resolveStaticLiteral(item.node);
-        if (ts.isStringLiteralLike(resolved)) {
-            return resolved.text;
-        }
-        if (!ts.isObjectLiteralExpression(resolved)) {
-            context.fail(
-                resolved,
-                "Shader uniforms must be string or typed object literals.",
-            );
-        }
-        for (const property of resolved.properties) {
-            const propertyName =
-                ts.isPropertyAssignment(property) ||
-                ts.isShorthandPropertyAssignment(property)
-                    ? context.propertyName(property.name)
-                    : undefined;
-            if (
-                !propertyName ||
-                !["name", "type", "defaultValue"].includes(propertyName)
-            ) {
+    const signatures = context.staticListItems(expression).map((item) =>
+        item.within(() => {
+            if (item.text !== undefined) return item.text;
+            const resolved = context.resolveStaticLiteral(item.node);
+            if (ts.isStringLiteralLike(resolved)) {
+                return resolved.text;
+            }
+            if (!ts.isObjectLiteralExpression(resolved)) {
                 context.fail(
-                    property,
-                    "Typed shader uniforms support name, type, and defaultValue.",
+                    resolved,
+                    "Shader uniforms must be string or typed object literals.",
                 );
             }
-        }
-        const name = context.objectProperty(resolved, "name");
-        const type = context.objectProperty(resolved, "type");
-        if (!name || !type) {
-            context.fail(
-                resolved,
-                "Typed shader uniforms require name and type.",
-            );
-        }
-        const uniformName = context.compileStaticString(name);
-        const uniformType = context.compileStaticString(type);
-        const defaultExpression = context.objectProperty(
-            resolved,
-            "defaultValue",
-        );
-        if (defaultExpression) {
-            const resolvedDefault =
-                context.resolveStaticExpression(defaultExpression);
-            const componentCount = typeComponents(uniformType);
-            if (componentCount === 0) {
+            for (const property of resolved.properties) {
+                const propertyName =
+                    ts.isPropertyAssignment(property) ||
+                    ts.isShorthandPropertyAssignment(property)
+                        ? context.propertyName(property.name)
+                        : undefined;
+                if (
+                    !propertyName ||
+                    !["name", "type", "defaultValue"].includes(propertyName)
+                ) {
+                    context.fail(
+                        property,
+                        "Typed shader uniforms support name, type, and defaultValue.",
+                    );
+                }
+            }
+            const name = context.objectProperty(resolved, "name");
+            const type = context.objectProperty(resolved, "type");
+            if (!name || !type) {
                 context.fail(
-                    type,
-                    `Shader uniform default '${uniformName}' has an unsupported type.`,
+                    resolved,
+                    "Typed shader uniforms require name and type.",
                 );
             }
-            const candidates = ts.isArrayLiteralExpression(resolvedDefault)
-                ? [...resolvedDefault.elements]
-                : [resolvedDefault];
-            // Only a literal of the uniform's own lanes can fold; a spread
-            // or another value is compiled once, below.
-            const staticValues =
-                candidates.length === componentCount &&
-                !candidates.some(ts.isSpreadElement)
-                    ? candidates.map((entry) => staticNumber(context, entry))
-                    : undefined;
+            const uniformName = context.compileStaticString(name);
+            const uniformType = context.compileStaticString(type);
+            const defaultExpression = context.objectProperty(
+                resolved,
+                "defaultValue",
+            );
+            // The pin's pipeline files a declaration under the system
+            // uniforms by its name (`_isShaderSystemUniform`), so a system
+            // matrix declared with its own type is that system uniform, as
+            // `uniformDecls` spells the ones a material declared by name.
             if (
-                staticValues?.every(
-                    (value): value is number => value !== undefined,
-                )
-            ) {
-                defaults.push({ name: uniformName, values: staticValues });
-            } else {
-                dynamicDefaults.push({
-                    name: uniformName,
-                    components: compileShaderUniformComponents(
-                        context,
-                        defaultExpression,
-                        {
-                            count: componentCount,
-                            name: uniformName,
-                            type: uniformType,
-                        },
-                        "normalizeUniformValue",
-                    ),
-                });
+                !defaultExpression &&
+                isShaderSystemMatrix(uniformName) &&
+                uniformType === "mat4x4<f32>"
+            )
+                return uniformName;
+            if (defaultExpression) {
+                const resolvedDefault =
+                    context.resolveStaticExpression(defaultExpression);
+                const componentCount = typeComponents(uniformType);
+                if (componentCount === 0) {
+                    context.fail(
+                        type,
+                        `Shader uniform default '${uniformName}' has an unsupported type.`,
+                    );
+                }
+                const candidates = ts.isArrayLiteralExpression(resolvedDefault)
+                    ? [...resolvedDefault.elements]
+                    : [resolvedDefault];
+                // Only a literal of the uniform's own lanes can fold; a spread
+                // or another value is compiled once, below.
+                const staticValues =
+                    candidates.length === componentCount &&
+                    !candidates.some(ts.isSpreadElement)
+                        ? candidates.map((entry) =>
+                              staticNumber(context, entry),
+                          )
+                        : undefined;
+                if (
+                    staticValues?.every(
+                        (value): value is number => value !== undefined,
+                    )
+                ) {
+                    defaults.push({ name: uniformName, values: staticValues });
+                } else {
+                    dynamicDefaults.push({
+                        name: uniformName,
+                        components: compileShaderUniformComponents(
+                            context,
+                            defaultExpression,
+                            {
+                                count: componentCount,
+                                name: uniformName,
+                                type: uniformType,
+                            },
+                            "normalizeUniformValue",
+                        ),
+                    });
+                }
             }
-        }
-        return `${uniformName}:${uniformType}`;
-    });
+            return `${uniformName}:${uniformType}`;
+        }),
+    );
     return { signatures, defaults, dynamicDefaults };
 }
 
@@ -1306,7 +1304,11 @@ function compileStaticStringArray(
 ): string[] {
     return context
         .staticListItems(expression)
-        .map((item) => item.text ?? context.compileStaticString(item.node));
+        .map((item) =>
+            item.within(
+                () => item.text ?? context.compileStaticString(item.node),
+            ),
+        );
 }
 
 function expectStaticNumber(

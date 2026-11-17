@@ -1,5 +1,6 @@
 import type ts from "typescript";
 import { cppIdentifierPattern, stringLiteral } from "../../cpp-literals.js";
+import { writable } from "../emission-transaction.js";
 import { isHandleKind } from "../data-types/handles.js";
 import type { DataType } from "../data-types/model.js";
 import { isUndefinedDataType } from "../data-types/operations.js";
@@ -104,6 +105,65 @@ export function hasScalarFacts(value: Value): boolean {
         value.staticNumber !== undefined ||
         value.staticBoolean !== undefined
     );
+}
+
+/**
+ * Whether generation knows all of a value: a scalar it knows, an absence,
+ * or a compile-time record of such members.
+ */
+export function knownPlainData(value: Value, depth = 0): boolean {
+    if (hasScalarFacts(value) || value.kind === "json-null") return true;
+    return (
+        depth < 4 &&
+        value.kind === "record" &&
+        value.recordProperties !== undefined &&
+        Object.keys(value.recordMethods ?? {}).length === 0 &&
+        Object.keys(value.recordGetters ?? {}).length === 0 &&
+        Object.values(value.recordProperties).every((member) =>
+            knownPlainData(member, depth + 1),
+        )
+    );
+}
+
+/** The shader variants a material may draw, when generation knows them. */
+export function shaderVariantsOf(value: Value): readonly string[] | undefined {
+    if (value.sceneShaderVariant !== undefined)
+        return [value.sceneShaderVariant];
+    return value.possibleSceneShaderVariants?.length
+        ? value.possibleSceneShaderVariants
+        : undefined;
+}
+
+/**
+ * The variant facts of a material drawing one of `variants`: the one
+ * variant it draws, or the variants it may draw.
+ */
+export function shaderVariantFacts(
+    variants: readonly string[],
+): Pick<
+    Value,
+    "shaderVariant" | "sceneShaderVariant" | "possibleSceneShaderVariants"
+> {
+    const distinct = [...new Set(variants)].sort();
+    if (distinct.length === 1)
+        return {
+            shaderVariant: distinct[0]!,
+            sceneShaderVariant: distinct[0]!,
+        };
+    return distinct.length > 1 ? { possibleSceneShaderVariants: distinct } : {};
+}
+
+/** `value` drawing one of `variants`, in place of the variants it carried. */
+export function withShaderVariants(
+    value: Value,
+    variants: readonly string[],
+): Value {
+    const updated: Value = { ...value };
+    delete writable(updated).shaderVariant;
+    delete writable(updated).sceneShaderVariant;
+    delete writable(updated).possibleSceneShaderVariants;
+    Object.assign(writable(updated), shaderVariantFacts(variants));
+    return updated;
 }
 
 /**
@@ -215,6 +275,7 @@ export function keepsStaticMember(value: Value): boolean {
         !value.parameterBinding &&
         (value.kind === "json-null" ||
             knownAbsent(value) ||
+            knownCondition(value.optionalFoundCpp) === true ||
             value.kind === "record" ||
             isHandleKind(value.kind) ||
             hasScalarFacts(value) ||
@@ -382,6 +443,22 @@ export function statedTruthinessCpp(value: Value): string | undefined {
  */
 export function objectTruthinessCpp(value: Value): string | undefined {
     return statedTruthinessCpp(value) ?? presenceFlagCpp(value);
+}
+
+/**
+ * A copy of an object generation knows present is present: one whose
+ * truthiness states "true", or one with no presence to test that is not
+ * null. The copy's own presence flag and truthiness then say so.
+ */
+export function presentCopy(copy: Value, source: Value): Value {
+    const truthy = objectTruthinessCpp(source);
+    const present =
+        truthy === undefined
+            ? isPresentValue(source)
+            : knownCondition(truthy) === true;
+    return present && presenceFlagCpp(copy) !== undefined
+        ? { ...copy, optionalFoundCpp: "true", truthinessCpp: "true" }
+        : copy;
 }
 
 /** Native data views retain shared metadata, without generation-only payloads. */

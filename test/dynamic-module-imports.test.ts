@@ -261,3 +261,61 @@ test("a lazy module's functions keep the module state they write, called destruc
         flags: ["/DBBLITE_WORKERS=1"],
     });
 });
+
+test("a reaction calling a module's function follows the module's own calls to its completion", (t) => {
+    // `report` (through the namespace) and `fail` (destructured from the lazy
+    // module) complete as `count` does: each returns what that call returns.
+    const directory = resolve("artifacts/dynamic-module-completions");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        join(directory, "tally.ts"),
+        `
+        let failures = 0;
+        export const count = (error: unknown): void => {
+            failures += error instanceof Error ? 1 : 0;
+        };
+        export function report(error: unknown): void {
+            return count(error);
+        }
+        export function failuresSoFar(): number {
+            return failures;
+        }
+    `,
+    );
+    writeFileSync(
+        join(directory, "lab.ts"),
+        `
+        import { count } from "./tally.ts";
+        export function fail(error: unknown): void {
+            return count(error);
+        }
+    `,
+    );
+    const result = compileSource(
+        `
+        import * as tally from "./tally.ts";
+        void Promise.reject(new Error("x"))
+            .catch((error) => tally.report(error))
+            .then(() => import("./lab.ts"))
+            .then(({ fail }) => fail(new Error("y")))
+            .then(() => {
+                if (tally.failuresSoFar() !== 2) throw new Error("reactions " + tally.failuresSoFar());
+                globalThis.close();
+            });
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(
+        tools,
+        "dynamic-module-completions-native",
+        result.cpp,
+        {
+            flags: ["/DBBLITE_WORKERS=1"],
+        },
+    );
+});

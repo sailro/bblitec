@@ -69,6 +69,15 @@ Rules:
 - Static composition can spread unchanged literal array fields of stored records and generation-selected fresh array branches.
   Their lengths remain known when whole-program mutation analysis rules out array writes; identity comparisons are allowed.
 - `unknown[]` fields require finite source element layouts; object/class initializers and declaration-matched aliases contribute.
+- A field typed `unknown` that an assertion reads (through an access or a `const` destructuring) or a write fills with one
+  native handle kind stores that handle, absent when a write stores none; a function typed to return `unknown` whose
+  returns are one handle kind, `undefined` or such fields returns that handle.
+- A record type reaching `unknown` members where several writes meet (a rebound binding, a function's result or
+  parameter) stores those members as documents.
+- A generic record instantiated at a type and stored as its `unknown` instantiation where a copy is observable shares
+  one layout with it: records the one holds where the other holds a dynamic value (fields, function fields' parameters
+  and results) are documents; a method one stores as a generic function's table is that table in both, a stored
+  function filling each of its signatures.
 - A record binding whose member is written by a run-time key or replaced takes native storage; its fields typed
   `Record<string, unknown>` are documents.
 - A record type a parsed document is stored as is a document, with every record type the program reads out of it
@@ -85,13 +94,19 @@ Rules:
   (two levels deep) of a record an argument names, compiles once per outcome and merges the results into native
   storage; a discarded call merges none. At most four tests split, of at most eight read; past either, the refusal
   names them. A shader material so merged resolves uniform, texture and storage-buffer names against its own variant
-  at run time.
+  at run time. An object argument that can only be one of a few module constants (through `??`, `?:` and members
+  every store sets to one) splits per constant, tested on the first string members that differ; a split left with no
+  run-time test compiles the call once.
 - Recursive groups evaluate a caller-independent default once at the root; other defaults refuse. A function a call
   passes counts as a call the callee may make: directly, as a literal in a record or array, or as a named async
   function there.
 - Sparse array growth, named array properties and a `const` alias of an array field used after it resizes refuse; a length
   write grows an array of non-nullable objects with default slots.
-- Static expansion: 4,096 iterations / 1 MiB; composition tables: 65,536 records.
+- An intersection of the pin's types of one engine object (`ShaderMaterial & MaterialView`) stores that object's handle.
+  A list with no native element type (`any[]`) refuses a handle a callback creates and pushes.
+- Static expansion: 4,096 iterations / 1 MiB; composition tables: 65,536 records. A setup `for` loop unrolled only
+  because it reaches pinned calls, whose passes need no specialization, loop control or frame yield, runs natively past
+  that allowance.
 - `import.meta.env`: `MODE="production"`, `PROD=true`, `DEV=false`, `SSR=false`, `BASE_URL` from deployment; custom
   strings via `--env NAME=value` or `CompileOptions.environment`. No dotenv or host variables.
 - Without a realm, timers and microtasks need no engine; RAF needs a Window repaint source.
@@ -112,7 +127,7 @@ Rules:
 | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | Numbers         | Math, Number predicates/coercions, `**`, BigInt (incl. `asIntN`/`asUintN`)                                                                     | BigInt mixed with Number, BigInt JSON/clone/`toLocaleString`                                                       |
 | Arrays/tuples   | ES2023 methods incl. `toSorted`/`with`/`flat`/`flatMap`, typed `Array.from`                                                                    | Callback `thisArg`; callbacks removing unvisited elements (runtime)                                                |
-| Map/Set/WeakMap | Full API, live cursors; WeakMap with record, callback or DOM keys                                                                              | `Set<object>` of Promises; other WeakMap key kinds                                                                 |
+| Map/Set/WeakMap | Full API, live cursors, copies of `scene.meshes`; WeakMap with record, callback, mesh or DOM keys                                              | `Set<object>` of Promises; other WeakMap key kinds                                                                 |
 | Iterators       | Arrays, Map/Set cursors, class generator `[Symbol.iterator]`                                                                                   | Other `[Symbol.iterator]` implementations                                                                          |
 | Strings         | UTF-16 API, URI encode/decode, `btoa`/`atob`, tagged templates, `String.raw`                                                                   | Method tags                                                                                                        |
 | RegExp          | `g`/`i`/`u`, replacement callbacks, captured `split`; unmatched captures are `undefined`; literal non-`g` `test`/`exec` fold at generation     | `replaceAll` with string replacement; under `u`: lookbehind, named groups, `i` with backreferences/word boundaries |
@@ -163,6 +178,12 @@ cancel })` is a program source; `new Response(stream, { status, statusText, head
   key ranges, cursor directions, `versionchange`/`blocked` events and event listeners refuse.
 - `createImageBitmap(blob, options)`: static options through `pal::image_bitmap_options`; WebP via libwebp. Resize/crop
   refuse; orientation metadata is not applied.
+- `createImageBitmap(new ImageData(rgba, w, h)[, sx, sy, sw, sh][, options])` (application realm): the crop over
+  transparent black, resized (`pixelated` nearest, other qualities bilinear) and `flipY`-flipped from the bytes at the
+  call; it resolves in a later task.
+- `OffscreenCanvas.getContext("2d")`, null under a WebGPU context: `drawImage` of an ImageBitmap only. `convertToBlob`
+  (`type`, `quality`) encodes its pixels on the native workers as `toDataURL` does ([UI](ui.md#canvas2d)). Other
+  members and context attributes refuse.
 - `setDracoBaseUrl`/`setKtx2DecoderUrl` must be generation-known and precede compressed loads. KTX1 selects a
   device-supported BC/ASTC candidate.
   `loadKtx2Texture2D` packages the pinned decoder's compressed mip chain for a known URL; each load selects its
@@ -191,6 +212,8 @@ cancel })` is a program source; `new Response(stream, { status, statusText, head
 - Native loops own extent refresh; `resizeEngine` runs the pin's `resizeSurface` on an application realm's DOM canvas.
 - `enableAsyncShaderPipelineCompilation` adds nothing: scene preparation compiles pipelines before the first frame.
 - `enableShaderMaterialPipelineSharing` and `enableKtx2WorkerDecoding` add nothing: frames and uploads are unchanged.
+- `prepareShaderMaterialPipelineForTask` resolves for a render task's ShaderMaterial and rejects for another task or
+  material; native pipelines are built when a draw first binds them.
 - An application realm's DOM canvas backing store is sized only by the pin's `resizeSurface` (client box, device
   pixel ratio or a getter the program defines for it on the global object, `maxDevicePixelRatio` option or write) at
   `createEngine`, `resizeEngine` and each frame head, on every
@@ -208,6 +231,8 @@ cancel })` is a program source; `new Response(stream, { status, statusText, head
 - After `stopEngine` no frame renders: the canvas keeps its last image, which a pending capture reads.
 - GPU task timing refuses TAA, screen-space and pass-less copy tasks, and on SDL_GPU colour/post-process tasks in TAA builds.
 - `setGpuTimingEnabled` times each frame's commands on the task-timing device (application realm).
+- `captureScreenshot(engine)` (application realm, scene renderer): the next frame copies its presented image before
+  native UI, and every request it serves resolves with one opaque RGBA8 `Screenshot`. An auxiliary surface refuses.
 - Compute: generation-known WGSL, f32/u32/i32 writers (no f16), uniform/storage buffers, textures and samplers. Six-layer
   storage views with cube sampling need Dawn or patched SDL D3D12/Vulkan/Metal.
 - Right-handed programs (`babylon-lite-rh`) build the pin's right-handed variant: lowered sources read its folded
@@ -322,15 +347,41 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
   `enableShaderUniformRangeUpdates`. Runtime resource replacements refresh shared GPU bindings;
   render-target colour and sampled depth textures rebind per draw. Template text and plugin `getCustomCode`
   functions run at generation with scalar or fresh literal-data arguments; reaching host/engine APIs, `this`, module
-  `let`, clock or random refuses. Retained objects stay native. `attributes` and `samplers` lists may be a local list
-  built by pushes generation settles, or a closed call (a module list mapped to names) run at generation.
+  `let`, clock or random refuses. Retained objects stay native. A stage text builder's own `toFixed(n >= 1)` or
+  `toExponential` call on a run-time number of a number, tuple or record argument reads a material uniform holding
+  the number its text denotes, where WGSL reads an f32 value in a function body or as a module-scope
+  `const NAME: f32 = <number>;`; other positions, other reads of such a number and integer spellings refuse. A stage
+  that is a function literal's call reads its known formatted numbers from uniforms too when its whole text lifts.
+  `attributes` and `samplers` lists may be a local list built by pushes generation settles, or a closed call (a module
+  list mapped to names) run at generation. A list may
+  spread a call to a local function that only returns an array literal: run-time arguments are read once and its
+  entries' run-time defaults read the callee's parameters.
   `depthBias`, `depthBiasSlopeScale` and `depthOnlyFragment` control pipeline depth behaviour. WGSL `@interpolate`
   and static `blend` overrides are supported (`add`; `zero`, `one`, `src-alpha`, `one-minus-src-alpha`, `dst`, `dst-alpha`).
   Conditional option spreads select up to 64 static variants; effectful predicates or conflicts with earlier evaluations refuse.
+  Options spreading `recipe.options`, where `recipe` is a `const` read of a `const` material-keyed `Map`/`WeakMap`
+  every store of which holds the options its key was created from (same binding, never reassigned), compile once
+  per stored source variant; the material takes the variant derived from its source's at run time, a loop's element
+  key included. A store compiled
+  after the derivation, a record the program may write, options lifting run-time numbers, transmissive options or
+  options whose evaluation has effects refuse.
   Generation-selected nullish uniform, sampler, external-texture, storage-buffer and define declarations use the pinned
   empty defaults, including absent retained fields and getters.
-  `createShaderNoColorMaterialView` shares source uniforms and resource bindings. Depth-only render tasks use each
+  `uniformDecls`, `samplerDecls` and `storageBufferDecls` of a run-time material take `.some(arrow)` and `for...of`
+  whose entry is read only through `name`; its `attributes` take `.includes(name)`, `.some(arrow)` and `for...of`
+  over the names. Other reads of `vertexSource`, `fragmentSource` and the three lists are the plain data the pinned
+  `createShaderMaterial` builds from the options of the material's generation-known variants, when every variant
+  agrees; otherwise they refuse. Reads of `_uniformValues`, `_textureSlots` and `_storageBufferSlots` refuse.
+  A typed uniform declaration of a system matrix (`mat4x4<f32>`, no default) is that system uniform.
+  `createShaderNoColorMaterialView` shares source uniforms and resource bindings; it and `createStandardNoColorMaterialView`
+  may run in a loop of run-time passes. `createMaterialView(source, { features: 0 })` over a ShaderMaterial shares
+  them too. On such a view, effect-free `Object.defineProperty`/`defineProperties` data descriptors after its `const`
+  declaration in the same block redefine its sources, `attributes`, declaration lists and pipeline state; the view
+  draws a program compiled per source variant and selected at run time. Redefinitions declaring other uniforms,
+  samplers or storage buffers, slot maps or other fields, run-time values, or a source of unknown variant refuse.
+  Depth-only render tasks use each
   material's pipeline, including custom vertex transforms and `depthOnlyFragment` discards.
+  `releaseMaterialViewGpu` drops a shader view's own packed custom uniforms; a later draw repacks them.
   `screenSize` uses the current pass dimensions. Static descriptor arrays may use closed ECMAScript calls and callbacks.
   Reads of `scene.view`, `scene.viewProjection` and `scene.vEyePosition` are supported. Fragment entry points may
   return no value; vertex entry points may return `@builtin(position) vec4<f32>` directly.
@@ -339,7 +390,7 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
   unknown material selections require a recorded shader/mesh association and validate the compiled lanes before drawing.
   Unused scene-local shader materials retain their IDs and resource slots without compiling stages; task overrides
   participate in mesh-layout discovery and retain their own texture bindings, including runtime replacements.
-  `needAlphaBlending` reads the shader factory's flag; other material families yield `undefined`.
+  `needAlphaBlending` and `depthWrite` read the shader factory's flags; other material families yield `undefined`.
   Alpha-to-coverage on Standard, PBR and shader materials; NodeMaterial refuses. Storage uploads preserve typed-array, DataView and ArrayBufferView byte ranges.
   `_shadowCasterMaterial` reads preserve the optional caster handle; writes bind an alternate shader caster during
   unconditional setup before scene registration. PCF/CSM creates cached shader no-color views and follows caster
@@ -366,8 +417,9 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
 - Sprite2D, billboards, atlases, Y-sort. Mixed transparent draws tied in depth/order or without a camera refuse.
   Capacities ≤ 4,294,967,295; buffers 32-bit sized.
 - Picking: `createPickingRay` needs no GPU picker; detailed picks skip thin instances, billboards and splats.
-  Filter/ignore predicates refuse. VAT meshes pick through their baked pose; a detailed VAT pick refuses. A stored or
-  awaited result's `pickedMesh` becomes a Mesh of the entry's engine after a run-time check that it picked there.
+  A `pickAsync` filter is the scene's predicate per mesh; `discard` and `ignore` refuse. VAT meshes pick through their
+  baked pose; a detailed VAT pick refuses. A stored or awaited result's `pickedMesh` becomes a Mesh of the entry's
+  engine after a run-time check that it picked there.
 - KHR_interactivity blocks: SceneReadyEvent, OnSelect, Sequence, Get/SetVariable, Get/SetProperty, arithmetic, Abs,
   Floor, LessThan, Clamp, Combine/ExtractVector2. Others refuse.
 - Gizmos: display, bounding boxes, rotation editing; no bounding-box/scale drags.
@@ -445,10 +497,26 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
   Explicit `depthCompare` overrides ShaderMaterial depth state. `scene.surface` reads require a known primary-surface scene.
 - `buildFrameGraphTask(getFrameGraph(scene), task)` records a render or effect render task added to a live scene, which
   refuses to execute until then, an SSAO task (settings and working resolution) or a copy task (its source resolves at
-  every execute); the private `FrameGraph._tasks` list refuses (its native indices differ), so a live task cannot be
-  removed.
+  every execute). `removeTask` unlists every registration of a task, which keeps its passes and resources. The private
+  `FrameGraph._tasks` list refuses (its native indices differ), except a `const` view whose `indexOf(task)` position
+  is only tested `>= 0` and spliced out at once (`splice(i, 1)`), which removes that registration.
+- A render target's private `_width`/`_height`, read through a cast, is the swapchain target's canvas backing store as
+  it is when read; another target's refuses when read. Its `_colorView`, read through a cast, is tested only for
+  presence: set for the swapchain, an eager target, and a target the frame graph's registration or
+  `buildFrameGraphTask` built (render, effect, copy, geometry and post-process task outputs), until it is disposed.
+  Its `_colorTexture` is that colour texture's identity: null while `_colorView` is, fixed for a fixed eager target,
+  and new at each build of another, including each registered scene's rebuild when the canvas's pixels change. The
+  swapchain's and a surface render-target texture's refuse when read.
+- A render target's `samples` may be decided at run time (1 or 4). An option written `undefined` is that option unset.
+- A `RenderTargetTextureResult` is storable data and a parameter type (`<T extends RenderTargetTextureResult>`).
+  Engine resources joined by `??` keep the engine each operand names.
+- A copy task's `ownsTargetTexture: true` takes a surface-sized target (rebuilt at each resize); a fixed one refuses
+  at run time.
 - Render and effect render task `dispose()` releases owned targets (not the swapchain's); executing a disposed task refuses.
   An effect task's `record`/`dispose` can be read, bound and replaced; the frame graph calls the replacements.
+- An effect render task's `scissor` takes a run-time `NormalizedViewport` or null; the native task copies its lanes. A
+  fresh object (a literal, or a call returning only literals or null) in a statement that only stores it always stores;
+  any other value refuses where the program writes a lane of a record that type could hold.
 - `disposeRenderTargetTexture`: a later executed task or material using the target refuses; material plugin textures
   keep the image they bound. `disposeEffectWrapper`: a registered EffectRenderer drawing a wrapper with a uniform
   binding refuses.
@@ -460,11 +528,15 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
 - Without it, a LINEAR_VELOCITY task's preload (at registration, or when a material family first reaches the task)
   loads the previous bones and morph weights for Standard views once its scene lists a skinned or morphed mesh; a
   Standard view of a deformed mesh built before that refuses, as the pin does.
+- `createDepthResolveTask` writes sample 0 of a multisampled target's depth into a single-sample target's depth
+  through the pinned module, refusing as the pin's build does. A source the multisample gate draws single-sampled, and
+  a target with stencil or more than one layer, refuse.
 - `enableRenderTaskTransmission` with `linear: false` on a single-sample, non-swapchain render task: the pass breaks
   before transmissive transparent draws (`copyCount`) to grab colour, and with `grabDepth` depth (set before recording);
   `grab.texture`/`depthTexture` read live for `setShaderTexture`. The linear arm and multisampled targets refuse.
 - Contact shadows, one-bounce GI, screen-space ambient occlusion
-  (`createScreenSpaceAmbientOcclusionPostProcessTask`), EffectWrapper/EffectRenderer with bounded layouts; custom
+  (`createScreenSpaceAmbientOcclusionPostProcessTask`), EffectWrapper/EffectRenderer with bounded layouts and an
+  add-equation blend state over `zero`, `one`, `src-alpha`, `one-minus-src-alpha`, `dst` and `dst-alpha`; custom
   vertices refuse.
   Effect textures come from solid/pixel factories or render targets, with 2D float or depth layouts;
   scene frame graphs sample depth through `textureLoad`. Effect samplers use the `filtering` binding type.
@@ -476,7 +548,10 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
   the task camera (neutral elsewhere). A setting written by a computed key needs a string-literal-typed key.
 - `setEffectTexture` takes solid, pixel or render-target textures by binding name or number, including cached pixel
   textures and live changes between these kinds. Pixel bindings preserve sampler/sRGB settings, replacement identities
-  and live region writes. Render targets bind in frame-graph effect tasks only.
+  and live region writes. Render targets bind in frame-graph effect tasks only, through the bound texture's `sampler`.
+  A `Texture2D` record `{ get view() { return rt._colorView; }, sampler, _sampleType: "float" }` (optionally a
+  `texture` getter over the same target) binds, stores and selects as that single-sample colour target through its
+  own sampler; stored, it reads back its `sampler`.
 - Image processing: exposure, contrast, toneMapping, toneMappingEnabled.
 
 ## Text

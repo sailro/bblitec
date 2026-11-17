@@ -1691,7 +1691,7 @@ export function wgslStructLayout(
  * of the text keeps its spelling. Undefined when no such declaration stands on
  * a line of its own.
  */
-export function liftWgslModuleConstant(
+function liftWgslModuleConstant(
     source: string,
     placeholder: string,
     replacement: (name: string) => string,
@@ -1732,6 +1732,223 @@ export function liftWgslModuleConstant(
             lifted.slice(reference.end - shift);
     }
     return { source: lifted, name: declaration.name };
+}
+
+/** The identifier a hole stands as while the positions reading it are read. */
+function holePlaceholder(hole: number): string {
+    return `__bbl_hole_${hole}__`;
+}
+
+const holePlaceholderPattern = /__bbl_hole_(\d+)__/;
+
+/** The hole a placeholder identifier stands for, if it is one. */
+function placeholderHole(name: string): number | undefined {
+    const match = holePlaceholderPattern.exec(name);
+    return match?.[0] === name ? Number(match[1]) : undefined;
+}
+
+/** A position no uniform read can take a hole's place in, and the hole. */
+interface WgslHoleRefusal {
+    refusal: string;
+    hole?: number;
+}
+
+/**
+ * How many times a function body reads holes as run-time values: in an
+ * expression other than a `const`, a `const_assert`, an index, a `switch`
+ * selector or a type. A hole elsewhere in it refuses.
+ */
+function bodyHoleReads(
+    statements: readonly ShaderStatement[],
+): { reads: number } | WgslHoleRefusal {
+    let reads = 0;
+    let refused: WgslHoleRefusal | undefined;
+    const holeIn = (expression: ShaderExpression): number | undefined => {
+        let found: number | undefined;
+        expressionSome(expression, (node) => {
+            found ??=
+                node.kind === "path"
+                    ? placeholderHole(node.parts[0]!)
+                    : undefined;
+            return found !== undefined;
+        });
+        return found;
+    };
+    const refuse = (
+        expressions: readonly ShaderExpression[],
+        refusal: string,
+    ): void => {
+        for (const expression of expressions) {
+            const hole = holeIn(expression);
+            if (hole !== undefined) {
+                refused ??= { refusal, hole };
+                return;
+            }
+        }
+    };
+    const visit = (expression: ShaderExpression): void => {
+        switch (expression.kind) {
+            case "path":
+                if (
+                    expression.parts.length === 1 &&
+                    placeholderHole(expression.parts[0]!) !== undefined
+                )
+                    ++reads;
+                return;
+            case "index":
+                refuse(
+                    [expression.index],
+                    "an index, which WGSL reads as an integer",
+                );
+                visit(expression.expression);
+                return;
+            case "binary":
+                visit(expression.left);
+                visit(expression.right);
+                return;
+            case "unary":
+                visit(expression.operand);
+                return;
+            case "call":
+            case "construct":
+                expression.arguments.forEach(visit);
+                return;
+            case "member":
+                visit(expression.expression);
+                return;
+            case "number":
+                return;
+        }
+    };
+    forEachShaderStatement(statements, (statement) => {
+        const expressions = statementExpressions(statement);
+        if (statement.kind === "const" || statement.kind === "assert")
+            refuse(
+                expressions,
+                "a function-scope 'const' or 'const_assert', which WGSL evaluates when it creates the shader",
+            );
+        if (statement.kind === "switch")
+            refuse(
+                expressions,
+                "a 'switch' selector, which WGSL reads as an integer",
+            );
+        const type =
+            statement.kind === "let" ||
+            statement.kind === "var" ||
+            statement.kind === "const"
+                ? statement.type
+                : undefined;
+        const typed = type && holePlaceholderPattern.exec(type);
+        if (typed) refused ??= { refusal: "a type", hole: Number(typed[1]) };
+        expressions.forEach(visit);
+    });
+    return refused ?? { reads };
+}
+
+/**
+ * A module spelled twice, each hole with a different number literal: its
+ * text with each hole read through `read(hole)` instead, and the holes the
+ * text reads. `spellings[hole]` is the literal each spelling writes there.
+ *
+ * The spellings tokenize alike except at hole literals. A hole stands where
+ * WGSL reads an f32 value at run time: an expression of a function body
+ * (`bodyHoleReads`). A module-scope `const NAME: f32 = <hole>;` on a line of
+ * its own stands for its hole at each reference (`liftWgslModuleConstant`),
+ * which must stand there too. Any other position refuses, naming the hole.
+ */
+export function liftWgslNumberHoles(
+    spelled: readonly [string, string],
+    spellings: ReadonlyArray<readonly [string, string]>,
+    read: (hole: number) => string,
+): { source: string; holes: number[] } | WgslHoleRefusal {
+    const first = lexWgsl(spelled[0]);
+    const second = lexWgsl(spelled[1]);
+    const changed: WgslHoleRefusal = {
+        refusal:
+            "changes with its run-time numbers beyond the literals that spell them",
+    };
+    if (first.length !== second.length) return changed;
+    let marked = "";
+    let at = 0;
+    for (const [index, left] of first.entries()) {
+        const right = second[index]!;
+        if (left.kind === right.kind && left.text === right.text) continue;
+        const hole =
+            left.kind === "number" && right.kind === "number"
+                ? spellings.findIndex(
+                      ([leftText, rightText]) =>
+                          leftText === left.text && rightText === right.text,
+                  )
+                : -1;
+        if (hole < 0) return changed;
+        marked += spelled[0].slice(at, left.start) + holePlaceholder(hole);
+        at = left.end;
+    }
+    marked += spelled[0].slice(at);
+    for (const [hole] of spellings.entries()) {
+        const placeholder = holePlaceholder(hole);
+        for (;;) {
+            const lifted = liftWgslModuleConstant(
+                marked,
+                placeholder,
+                () => placeholder,
+            );
+            if (!lifted) break;
+            marked = lifted.source;
+        }
+    }
+    const reads = lexWgsl(marked).filter(
+        (token) =>
+            token.kind === "identifier" &&
+            placeholderHole(token.text) !== undefined,
+    );
+    let accepted = 0;
+    for (const declaration of reflectWgslModule(marked).declarations) {
+        const inside = reads.filter(
+            (token) =>
+                token.start >= declaration.start &&
+                token.end <= declaration.end,
+        );
+        if (inside.length === 0) continue;
+        if (declaration.kind !== "fn") {
+            return {
+                refusal:
+                    declaration.kind === "const"
+                        ? "a module-scope 'const' other than 'const NAME: f32 = <number>;' on a line of its own"
+                        : `a module-scope '${declaration.kind === "assert" ? "const_assert" : declaration.kind}' declaration`,
+                hole: placeholderHole(inside[0]!.text)!,
+            };
+        }
+        const signature = inside.find(
+            (token) =>
+                token.start < declaration.body.start ||
+                token.end > declaration.body.end,
+        );
+        if (signature) {
+            return {
+                refusal: `the signature of function '${declaration.name}'`,
+                hole: placeholderHole(signature.text)!,
+            };
+        }
+        const body = bodyHoleReads(declaration.statements);
+        if ("refusal" in body) return body;
+        accepted += body.reads;
+    }
+    if (accepted !== reads.length) {
+        return {
+            refusal: "a position WGSL does not read as a run-time f32 value",
+            ...(reads[0] ? { hole: placeholderHole(reads[0].text)! } : {}),
+        };
+    }
+    let source = marked;
+    const holes = new Set<number>();
+    for (const token of [...reads].reverse()) {
+        const hole = placeholderHole(token.text)!;
+        holes.add(hole);
+        source =
+            source.slice(0, token.start) + read(hole) + source.slice(token.end);
+    }
+    return { source, holes: [...holes].sort((left, right) => left - right) };
 }
 
 // ---------------------------------------------------------------------------

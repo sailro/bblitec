@@ -1,7 +1,21 @@
 import { writable } from "./emission-transaction.js";
+import { knownCondition, presentCopy } from "./values/model.js";
+import {
+    compileShaderMaterialViewDefinitions,
+    shaderMaterialViewTarget,
+    type ShaderMaterialViewContext,
+} from "./shader-material-views.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
-import { argumentAt, propertyKey, isSupportedFunction } from "./syntax.js";
+import {
+    argumentAt,
+    propertyKey,
+    isSupportedFunction,
+    outermostWrapper,
+    statementsBeside,
+    unwrapExpression,
+} from "./syntax.js";
+import { someAnalysisNode } from "./analysis-walk.js";
 import type { LoweringServices } from "./lowering-services.js";
 import {
     booleanValue,
@@ -17,6 +31,7 @@ import {
 } from "./data-types.js";
 import { isJsonValue } from "./json-bridge.js";
 import { NativeRecordStorageRequired } from "./native-record-storage.js";
+import { ownKeyOrder, type CreatedKeys } from "./record-key-orders.js";
 import {
     heldRecord,
     storeLoweredRecordProperty,
@@ -26,6 +41,7 @@ import { pinDetached } from "./dom-listeners.js";
 import { refuseErrorReflection } from "./error-values.js";
 import {
     borrowedPrototypeMethod,
+    isLibraryStatic,
     isSymbolPropertyKey,
     resolvedSymbol,
 } from "./symbols.js";
@@ -87,6 +103,7 @@ type ObjectStaticContext = Pick<
     | "bindings"
     | "dynamicBindings"
     | "parameterObjects"
+    | "storageTakenDuringAttempt"
     | "program"
     | "evaluationOrder"
     | "refuseBorrowedPlatformEventEscape"
@@ -101,7 +118,8 @@ type ObjectStaticContext = Pick<
     | "emitUiStyleValue"
     | "registerNativeConstBinding"
     | "registerNativeBindingType"
->;
+> &
+    ShaderMaterialViewContext;
 
 /** What the own-entry walks read. */
 type OwnEntryContext = Pick<
@@ -114,13 +132,26 @@ type OwnObjectContext = OwnEntryContext &
 
 /** Raw descriptor order, with JavaScript's integer keys first. */
 export function recordPropertyKeys(owner: Value): string[] {
-    const keys = owner.recordPropertyOrder ?? [
-        ...Object.keys(owner.recordProperties ?? {}),
-        ...Object.keys(owner.recordMethods ?? {}),
-        ...Object.keys(owner.recordGetters ?? {}),
-        ...Object.keys(owner.recordSetters ?? {}),
-    ];
-    return Object.keys(Object.fromEntries(keys.map((key) => [key, undefined])));
+    return ownKeyOrder(
+        owner.recordPropertyOrder ?? [
+            ...Object.keys(owner.recordProperties ?? {}),
+            ...Object.keys(owner.recordMethods ?? {}),
+            ...Object.keys(owner.recordGetters ?? {}),
+            ...Object.keys(owner.recordSetters ?? {}),
+        ],
+    );
+}
+
+/**
+ * A compile-time record's own keys as a creation copying it makes them own
+ * (`RecordKeyOrders`): one a conditional spread wrote only maybe.
+ */
+export function recordCreatedKeys(owner: Value): CreatedKeys[] {
+    return recordPropertyKeys(owner).map((key) =>
+        owner.recordProperties?.[key]?.conditionalOwnKey
+            ? { key, maybe: true }
+            : { key },
+    );
 }
 
 /** Change a raw data property without replacing the alias-shared tables. */
@@ -173,14 +204,25 @@ export interface OwnEntry {
     slot?: Value;
 }
 
-/** Read current field storage, using proven own keys when a record snapshot names them. */
+/**
+ * Read current field storage, using proven own keys when a record snapshot
+ * names them. Without such a snapshot the walk lists the keys in the
+ * struct's field order, an enumeration `RecordKeyOrders` checks; a copy
+ * into another struct's fields (`intoStruct`) takes that struct's order.
+ */
 export function structOwnEntries(
     context: OwnEntryContext,
     owner: Value,
     dataType: DataType & { kind: "struct" },
     node: ts.Node,
-    excludedKeys?: ReadonlySet<string>,
+    options: {
+        readonly excludedKeys?: ReadonlySet<string>;
+        readonly intoStruct?: true;
+    } = {},
 ): OwnEntry[] {
+    const { excludedKeys } = options;
+    if (!owner.recordOwnKeys && !options.intoStruct)
+        context.dataTypes.keyOrders.noteEnumeration(dataType.name, node);
     refuseErrorReflection(context, owner, node);
     const access = context.dataTypes.memberAccess(dataType.name);
     const sourceFields = owner.recordOwnKeys
@@ -273,25 +315,32 @@ export function structOwnEntries(
             (original &&
                 original.kind !== "json-null" &&
                 original.dataType?.kind !== "optional");
+        const read: Value = {
+            ...(!field.accessorReceiver &&
+            definitelyPresent &&
+            field.type.kind === "optional"
+                ? context.dataLowerer.leafValue(
+                      `(*${value.cpp})`,
+                      field.type.inner,
+                  )
+                : value),
+            ...(original && !original.parameterBinding && !field.accessor
+                ? scalarFacts(original)
+                : {}),
+            ...(field.declarations
+                ? { slotDeclarations: field.declarations }
+                : {}),
+            nativeCaptures: owner.nativeCaptures ?? [],
+        };
         return {
             key,
-            value: {
-                ...(!field.accessorReceiver &&
-                definitelyPresent &&
-                field.type.kind === "optional"
-                    ? context.dataLowerer.leafValue(
-                          `(*${value.cpp})`,
-                          field.type.inner,
-                      )
-                    : value),
-                ...(original && !original.parameterBinding && !field.accessor
-                    ? scalarFacts(original)
-                    : {}),
-                ...(field.declarations
-                    ? { slotDeclarations: field.declarations }
-                    : {}),
-                nativeCaptures: owner.nativeCaptures ?? [],
-            },
+            // A member the record knows present is present in the copy.
+            value:
+                original &&
+                !field.accessor &&
+                knownCondition(original.optionalFoundCpp) === true
+                    ? presentCopy(read, original)
+                    : read,
             ...(presence ? { presence } : {}),
             ...(presence?.emptySlot === "absent"
                 ? {
@@ -321,10 +370,11 @@ export function ownEntries(
             .map(([key, member]) =>
                 context.dataLowerer.recordMemberEntry(key, member, node),
             );
-    if (owner.kind === "data" && owner.dataType?.kind === "struct")
+    if (owner.kind === "data" && owner.dataType?.kind === "struct") {
         return structOwnEntries(context, owner, owner.dataType, node).filter(
             (entry) => !isSymbolPropertyKey(entry.key),
         );
+    }
     return undefined;
 }
 
@@ -1201,7 +1251,13 @@ function compileObjectCreate(
 /** A literal descriptor's expressions, in their source evaluation order. */
 interface PropertyDefinition {
     key: string;
+    /** Where the definition is spelled: the call, or its descriptor map's member. */
+    site: ts.Node;
+    /** The descriptor expression, and the literal it is. */
     node: ts.Node;
+    descriptor: ts.ObjectLiteralExpression;
+    /** The attributes the descriptor gives, each a literal boolean. */
+    attributes: ReadonlyMap<string, boolean>;
     members: Array<
         | { name: "value"; expression: ts.Expression }
         | {
@@ -1215,17 +1271,106 @@ interface PropertyDefinition {
     accessor: boolean;
     setter: boolean;
     configurable: boolean;
+    /** A data descriptor's; an accessor descriptor has none. */
+    writable: boolean;
 }
 
 type DefinitionOperation = "defineProperty" | "defineProperties";
 
-/** `existing`: the target already has an enumerable property, which an omitted `enumerable` keeps. */
+/**
+ * The keys the statements right after a literal's declaration define on its
+ * binding, in definition order (`const item = {...row} as Row;
+ * Object.defineProperty(item, "id", ...)`): `Object.defineProperty` and
+ * `Object.defineProperties` calls on the binding whose keys are literals and
+ * whose descriptors do not name it. Nothing can read the binding before
+ * those definitions apply, so a key it lacks until then is unobserved.
+ */
+export function keysDefinedOnDeclaration(
+    checker: ts.TypeChecker,
+    literal: ts.ObjectLiteralExpression,
+): readonly string[] {
+    const initializer = outermostWrapper(literal);
+    const declaration = initializer.parent;
+    const list = declaration.parent;
+    const statement = list?.parent;
+    const following =
+        statement && ts.isVariableStatement(statement)
+            ? statementsBeside(statement, "after")
+            : undefined;
+    if (
+        !ts.isVariableDeclaration(declaration) ||
+        declaration.initializer !== initializer ||
+        !ts.isIdentifier(declaration.name) ||
+        !ts.isVariableDeclarationList(list) ||
+        list.declarations.length !== 1 ||
+        !following
+    )
+        return [];
+    const binding = resolvedSymbol(checker, declaration.name);
+    if (!binding) return [];
+    const names = (node: ts.Node): boolean =>
+        someAnalysisNode(
+            node,
+            (candidate) =>
+                ts.isIdentifier(candidate) &&
+                resolvedSymbol(checker, candidate) === binding,
+        );
+    const keys: string[] = [];
+    for (const next of following) {
+        const call = ts.isExpressionStatement(next)
+            ? unwrapExpression(next.expression)
+            : undefined;
+        if (!call || !ts.isCallExpression(call) || call.arguments.length < 2)
+            break;
+        const single = isLibraryStatic(
+            checker,
+            call.expression,
+            "Object",
+            "defineProperty",
+        );
+        const target = unwrapExpression(argumentAt(call, 0));
+        if (
+            (!single &&
+                !isLibraryStatic(
+                    checker,
+                    call.expression,
+                    "Object",
+                    "defineProperties",
+                )) ||
+            !ts.isIdentifier(target) ||
+            resolvedSymbol(checker, target) !== binding ||
+            call.arguments.slice(1).some(names)
+        )
+            break;
+        const key = unwrapExpression(argumentAt(call, 1));
+        const defined = single
+            ? [ts.isStringLiteralLike(key) ? key.text : undefined]
+            : ts.isObjectLiteralExpression(key)
+              ? key.properties.map((property) =>
+                    ts.isPropertyAssignment(property)
+                        ? propertyKey(property.name)
+                        : undefined,
+                )
+              : [undefined];
+        const named = defined.filter(
+            (name): name is string => name !== undefined,
+        );
+        if (named.length !== defined.length) break;
+        keys.push(...named);
+    }
+    return keys;
+}
+
+/**
+ * A literal descriptor, whatever its target: distinct, non-computed
+ * members, a value or literal accessors, and literal boolean attributes.
+ */
 function propertyDefinition(
     context: ObjectStaticContext,
     operation: DefinitionOperation,
     key: string,
     expression: ts.Expression,
-    existing = false,
+    site: ts.Node,
 ): PropertyDefinition {
     const refuse = (message: string): never =>
         context.fail(expression, `Object.${operation} ${message}`);
@@ -1233,8 +1378,7 @@ function propertyDefinition(
     if (!ts.isObjectLiteralExpression(literal))
         return refuse("needs literal property descriptors.");
     const members: PropertyDefinition["members"] = [];
-    const attributes = new Set<string>();
-    let configurable = true;
+    const attributes = new Map<string, boolean>();
     const names = new Set<string>();
     for (const property of literal.properties) {
         if (
@@ -1262,32 +1406,59 @@ function propertyDefinition(
                 return refuse("requires literal getter and setter functions.");
             members.push({ name, callback });
         } else if (
-            name === "configurable" &&
+            (name === "configurable" ||
+                name === "writable" ||
+                name === "enumerable") &&
             ts.isPropertyAssignment(property) &&
             (property.initializer.kind === ts.SyntaxKind.TrueKeyword ||
                 property.initializer.kind === ts.SyntaxKind.FalseKeyword)
-        ) {
-            configurable =
-                property.initializer.kind === ts.SyntaxKind.TrueKeyword;
-            attributes.add(name);
-        } else if (
-            ["writable", "enumerable", "configurable"].includes(name) &&
-            ts.isPropertyAssignment(property) &&
-            property.initializer.kind === ts.SyntaxKind.TrueKeyword
         )
-            attributes.add(name);
+            attributes.set(
+                name,
+                property.initializer.kind === ts.SyntaxKind.TrueKeyword,
+            );
         else
             return refuse(
-                `does not represent descriptor attribute '${name}' unless it is ${name === "configurable" ? "a literal boolean" : "literally true"}.`,
+                `does not represent descriptor attribute '${name}' unless it is a literal boolean.`,
             );
     }
     const accessor = names.has("get") || names.has("set");
-    if (accessor) {
-        if (names.has("value") || names.has("writable"))
-            return refuse(
-                "cannot combine data and accessor descriptor members.",
-            );
-        if (!names.has("get"))
+    if (accessor && (names.has("value") || names.has("writable")))
+        return refuse("cannot combine data and accessor descriptor members.");
+    return {
+        key,
+        site,
+        node: expression,
+        descriptor: literal,
+        attributes,
+        members,
+        accessor,
+        setter: names.has("set"),
+        configurable: attributes.get("configurable") ?? true,
+        writable: attributes.get("writable") ?? true,
+    };
+}
+
+/**
+ * `definition` as a record, a document or the realm's global object holds
+ * it. `existing`: the target already has an enumerable property, which an
+ * omitted `enumerable` keeps.
+ */
+function representedDefinition(
+    context: ObjectStaticContext,
+    operation: DefinitionOperation,
+    definition: PropertyDefinition,
+    existing: boolean,
+): PropertyDefinition {
+    const refuse = (message: string): never =>
+        context.fail(definition.node, `Object.${operation} ${message}`);
+    const { attributes } = definition;
+    if (attributes.get("enumerable") === false)
+        return refuse(
+            "does not represent descriptor attribute 'enumerable' unless it is literally true.",
+        );
+    if (definition.accessor) {
+        if (!definition.members.some((member) => member.name === "get"))
             return refuse(
                 "requires an accessor getter; setter-only descriptors are not represented.",
             );
@@ -1300,18 +1471,14 @@ function propertyDefinition(
                     ? "requires an explicit boolean configurable attribute for accessors."
                     : "requires enumerable true and an explicit boolean configurable attribute for accessors.",
             );
-    } else if (!names.has("value") || attributes.size !== 3)
+    } else if (
+        !definition.members.some((member) => member.name === "value") ||
+        attributes.size !== 3
+    )
         return refuse(
-            "represents a value with writable and enumerable true and an explicit boolean configurable attribute only.",
+            "represents a value with enumerable true, an explicit boolean writable and an explicit boolean configurable attribute only.",
         );
-    return {
-        key,
-        node: expression,
-        members,
-        accessor,
-        setter: names.has("set"),
-        configurable,
-    };
+    return definition;
 }
 
 /**
@@ -1464,6 +1631,7 @@ function applyPropertyDefinitions(
             field: DataStructField;
             cpp: string;
             configurable: boolean;
+            writable: boolean;
             preserveSetter: boolean;
         }
     >();
@@ -1483,9 +1651,15 @@ function applyPropertyDefinitions(
                 definition.node,
                 `Object.${operation} does not redefine prototype accessor fields.`,
             );
+        if (!definition.writable && field.accessorReceiver)
+            context.fail(
+                definition.node,
+                `Object.${operation} does not define a read-only property in a receiver-aware slot.`,
+            );
         if (
             definition.accessor ||
             !definition.configurable ||
+            !definition.writable ||
             field.accessorReceiver
         ) {
             if (context.dataTypes.isClassStruct(target.dataType.name))
@@ -1501,7 +1675,7 @@ function applyPropertyDefinitions(
             )
                 context.fail(
                     definition.node,
-                    `Object.${operation} requires an accessor property that is always own or a nonconfigurable data property that is always own.`,
+                    `Object.${operation} requires an accessor property that is always own or a nonconfigurable or read-only data property that is always own.`,
                 );
             if (
                 !field.accessor ||
@@ -1550,17 +1724,17 @@ function applyPropertyDefinitions(
             field,
             cpp,
             configurable: definition.configurable,
+            writable: definition.writable,
             preserveSetter: definition.accessor && !definition.setter,
         });
     }
-    // Object.keys also places integer-index keys before other string keys.
-    for (const key of Object.keys(Object.fromEntries(collected))) {
-        const { field, cpp, configurable, preserveSetter } =
+    for (const key of ownKeyOrder(collected.keys())) {
+        const { field, cpp, configurable, writable, preserveSetter } =
             collected.get(key)!;
         context.emit({
             kind: "expression",
             code: field.accessor
-                ? `${target.cpp}->${field.name}.define(${cpp}, ${configurable}, ${preserveSetter}${field.accessorReceiver ? `, ${target.cpp}` : ""});`
+                ? `${target.cpp}->${field.name}.define(${cpp}, ${configurable}, ${preserveSetter}${field.accessorReceiver ? `, ${target.cpp}` : writable ? "" : ", false"});`
                 : `${target.cpp}->${field.name} = ${cpp};`,
         });
     }
@@ -1642,9 +1816,13 @@ function applyDocumentDefinitions(
             const value = definition.members.find(
                 (member) => member.name === "value",
             );
-            if (!definition.configurable || value?.name !== "value")
+            if (
+                !definition.configurable ||
+                !definition.writable ||
+                value?.name !== "value"
+            )
                 return refuse(
-                    "defines a dynamic object's data property only as configurable.",
+                    "defines a dynamic object's data property only as writable and configurable.",
                 );
             return `${target.cpp}.define_value(${key}, ${context.dataLowerer.compileForSink(value.expression, json)});`;
         }
@@ -1676,57 +1854,41 @@ function applyDocumentDefinitions(
         : target;
 }
 
-function compileObjectDefineProperty(
+/**
+ * Each property a definition call defines, its descriptor parsed: the key
+ * `Object.defineProperty` names, or each member of the descriptor map
+ * `Object.defineProperties` takes.
+ */
+function definedProperties(
     context: ObjectStaticContext,
     call: ts.CallExpression,
-): Value {
-    context.expectArgumentCount(call, 3, 3);
-    const global = isRealmGlobalObject(context, argumentAt(call, 0));
-    const target = global
-        ? undefined
-        : definitionTarget(context, call, "defineProperty");
-    const key = context.compileValue(argumentAt(call, 1)).staticString;
-    if (key === undefined)
-        return context.fail(
-            call,
-            "Object.defineProperty needs a property key known at generation.",
-        );
-    const definitions = [
-        propertyDefinition(
-            context,
-            "defineProperty",
-            key,
-            argumentAt(call, 2),
-            global,
-        ),
-    ];
-    return applyDefinitions(
-        context,
-        call,
-        "defineProperty",
-        target,
-        definitions,
-    );
-}
-
-function compileObjectDefineProperties(
-    context: ObjectStaticContext,
-    call: ts.CallExpression,
-): Value {
-    context.expectArgumentCount(call, 2, 2);
-    const global = isRealmGlobalObject(context, argumentAt(call, 0));
-    const target = global
-        ? undefined
-        : definitionTarget(context, call, "defineProperties");
+    operation: DefinitionOperation,
+): PropertyDefinition[] {
+    if (operation === "defineProperty") {
+        const key = context.compileValue(argumentAt(call, 1)).staticString;
+        if (key === undefined)
+            return context.fail(
+                call,
+                "Object.defineProperty needs a property key known at generation.",
+            );
+        return [
+            propertyDefinition(
+                context,
+                operation,
+                key,
+                argumentAt(call, 2),
+                call,
+            ),
+        ];
+    }
     const descriptors = context.unwrap(argumentAt(call, 1));
     if (!ts.isObjectLiteralExpression(descriptors))
         return context.fail(
             descriptors,
             "Object.defineProperties needs a literal descriptor map.",
         );
-    const definitions: PropertyDefinition[] = [];
     const keys = new Set<string>();
-    for (const property of descriptors.properties) {
+    return descriptors.properties.map((property) => {
         const key = property.name && propertyKey(property.name);
         if (
             !ts.isPropertyAssignment(property) ||
@@ -1739,22 +1901,56 @@ function compileObjectDefineProperties(
                 "Object.defineProperties needs distinct literal property keys without spreads, methods or accessors.",
             );
         keys.add(key);
-        definitions.push(
-            propertyDefinition(
-                context,
-                "defineProperties",
-                key,
-                property.initializer,
-                global,
-            ),
+        return propertyDefinition(
+            context,
+            operation,
+            key,
+            property.initializer,
+            property,
         );
-    }
+    });
+}
+
+/**
+ * `Object.defineProperty` and `Object.defineProperties`: their definitions
+ * applied to a ShaderMaterial view (`shaderMaterialViewTarget`), the
+ * realm's global object, a document or a record.
+ */
+function compileObjectDefinitions(
+    context: ObjectStaticContext,
+    call: ts.CallExpression,
+    operation: DefinitionOperation,
+): Value {
+    const count = operation === "defineProperty" ? 3 : 2;
+    context.expectArgumentCount(call, count, count);
+    const global = isRealmGlobalObject(context, argumentAt(call, 0));
+    const view = global ? undefined : shaderMaterialViewTarget(context, call);
+    const target =
+        global || view ? undefined : definitionTarget(context, call, operation);
+    const definitions = definedProperties(context, call, operation);
+    if (view)
+        return compileShaderMaterialViewDefinitions(
+            context,
+            call,
+            view,
+            definitions.map(({ key, site, node, descriptor, members }) => ({
+                key,
+                site,
+                node,
+                descriptor,
+                value: members.flatMap((member) =>
+                    member.name === "value" ? [member.expression] : [],
+                )[0],
+            })),
+        );
     return applyDefinitions(
         context,
         call,
-        "defineProperties",
+        operation,
         target,
-        definitions,
+        definitions.map((definition) =>
+            representedDefinition(context, operation, definition, global),
+        ),
     );
 }
 
@@ -1796,8 +1992,16 @@ export const OBJECT_STATIC_HANDLERS: ReadonlyMap<
 > = new Map([
     ["assign", compileObjectAssign],
     ["create", compileObjectCreate],
-    ["defineProperty", compileObjectDefineProperty],
-    ["defineProperties", compileObjectDefineProperties],
+    [
+        "defineProperty",
+        (context: ObjectStaticContext, call: ts.CallExpression) =>
+            compileObjectDefinitions(context, call, "defineProperty"),
+    ],
+    [
+        "defineProperties",
+        (context: ObjectStaticContext, call: ts.CallExpression) =>
+            compileObjectDefinitions(context, call, "defineProperties"),
+    ],
     ["entries", compileObjectEntries],
     ["fromEntries", compileObjectFromEntries],
     ["getPrototypeOf", compileObjectGetPrototypeOf],

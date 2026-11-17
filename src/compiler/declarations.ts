@@ -9,6 +9,7 @@ import {
     knownCondition,
     ownKeysKnown,
     rebaseSpelling,
+    scalarFacts,
     undefinedValue,
 } from "./values/model.js";
 import { writtenOnlyInDeadFunctions } from "./string-domain.js";
@@ -50,6 +51,7 @@ import {
 import { EmissionMap, EmissionSet, writable } from "./emission-transaction.js";
 import { hasDynamicObjectSpread, isJsonValue } from "./json-bridge.js";
 import { emitReachableStatements, finalReturn } from "./loop-control.js";
+import { moduleConstantIsWritten } from "./module-container-writes.js";
 import type { LoweringServices } from "./lowering-services.js";
 import {
     captureDataFunctionBody,
@@ -58,6 +60,8 @@ import {
 import { nativeReturnTsType } from "./native-return-type.js";
 import { isNativeOwnerRecord } from "./native-owner-carrier.js";
 import { NativeRecordStorageRequired } from "./native-record-storage.js";
+import { recordPropertyKeys } from "./object-statics.js";
+import { ownKeyOrder } from "./record-key-orders.js";
 import {
     nullability,
     unionMembers,
@@ -111,6 +115,7 @@ import {
     isTypeAssertion,
     isExpressionWrapper,
     wrappersUnder,
+    objectLiteralMembers,
 } from "./syntax.js";
 import {
     commonResourceValue,
@@ -199,6 +204,7 @@ interface DeclarationContext
             | "isNativeHostUiLookup"
             | "moduleRelativeAssetUrl"
             | "nativeBindingCheckpoint"
+            | "nativeLocalSince"
             | "options"
             | "program"
             | "moduleNamespaces"
@@ -2014,10 +2020,32 @@ export class DeclarationLowerer {
                         this.context.dataTypes,
                         narrowed.dataType,
                     ));
+            // A const the initializer's own lowering already holds in a local
+            // of this block (a call's result held once for the facts its
+            // fields carry) names that local: a copy would be a second object.
+            const namesInitializerLocal =
+                variableKind(declaration) === "const" &&
+                !wrapperCopiesIdentity &&
+                passesByReference(this.context.dataTypes, narrowed.dataType) &&
+                !narrowed.readOnly &&
+                initializerCpp === narrowed.cpp &&
+                this.context.nativeLocalSince(
+                    narrowed.cpp,
+                    initializerBoundary,
+                );
             const reference =
                 stableOwnerAlias ||
                 (aliases && !wrapperCopiesIdentity) ||
-                borrowsStorage;
+                borrowsStorage ||
+                namesInitializerLocal;
+            // A document copied out of the storage its initializer names
+            // holds what that storage holds: a `JsonValue` copy shares the
+            // object, array or native view, so a write through the local
+            // reaches the object JavaScript shares.
+            const copiesDocument =
+                narrowed.dataType.kind === "json" &&
+                !reference &&
+                initializerCpp === narrowed.cpp;
             // An alias of a read-only reference parameter is a const handle,
             // through which the shared record stays writable.
             const constant =
@@ -2063,7 +2091,8 @@ export class DeclarationLowerer {
                     constructs ||
                         referenceStruct ||
                         narrowed.freshData ||
-                        ownsSharedStorage
+                        ownsSharedStorage ||
+                        copiesDocument
                         ? "owned"
                         : "copy",
                 );
@@ -2112,6 +2141,11 @@ export class DeclarationLowerer {
                                   })),
                         ...(sharedDataBinding
                             ? { sharedStorageCpp: cppName }
+                            : {}),
+                        // A const names the bag it was bound to for good.
+                        ...(narrowed.ownedQuery &&
+                        variableKind(declaration) === "const"
+                            ? { ownedQuery: true as const }
                             : {}),
                         ...(orderedText
                             ? {
@@ -2196,6 +2230,12 @@ export class DeclarationLowerer {
                             : {}),
                         ...(narrowed.preserveUncheckedLookup
                             ? { preserveUncheckedLookup: true as const }
+                            : {}),
+                        ...(narrowed.shaderRecipeLookup
+                            ? {
+                                  shaderRecipeLookup:
+                                      narrowed.shaderRecipeLookup,
+                              }
                             : {}),
                         ...(slotFoundCpp ? { slotFoundCpp } : {}),
                         ...(optionalHandle
@@ -2357,6 +2397,7 @@ export class DeclarationLowerer {
             // Rebound locals read their current native storage. Text keeps
             // its initialization fact only when no reached path replaces it.
             delete writable(stored).staticNumber;
+            delete writable(stored).formattedNumber;
             if (!keepsInitializerText) delete writable(stored).staticString;
             delete writable(stored).staticBoolean;
             delete writable(stored).packagedBodySource;
@@ -2480,7 +2521,9 @@ export class DeclarationLowerer {
             lastWrite = Math.max(lastWrite, node.end);
             if (
                 !isAssignmentExpression(node) ||
-                node.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+                (node.operatorToken.kind !== ts.SyntaxKind.EqualsToken &&
+                    node.operatorToken.kind !==
+                        ts.SyntaxKind.PlusEqualsToken) ||
                 !ts.isIdentifier(node.left) ||
                 !ts.isExpressionStatement(node.parent)
             )
@@ -3566,12 +3609,31 @@ export class DeclarationLowerer {
                             literal.properties.some(ts.isSpreadAssignment)
                           ? this.spreadRecordSnapshot(literal)
                           : undefined;
+                // A record another binding or a call holds keeps what
+                // generation knows of its members on this one.
+                const heldRecordSnapshot =
+                    type.kind === "struct" &&
+                    !arraySnapshot &&
+                    !resourceRecordSnapshot &&
+                    !resourceArraySnapshot &&
+                    !plainRecordSnapshot &&
+                    !sharedClosureStorage &&
+                    !this.context.sharedClosures.identifierIsRebound(name) &&
+                    !ts.isObjectLiteralExpression(literal)
+                        ? this.context.compileValue(declaration.initializer)
+                        : undefined;
                 const snapshot =
                     arraySnapshot ??
                     resourceRecordSnapshot ??
                     resourceArraySnapshot ??
-                    plainRecordSnapshot;
-                if (snapshot)
+                    plainRecordSnapshot ??
+                    heldRecordSnapshot;
+                // Demanded elements are the binding's own: an owner its
+                // initializer's elements carry does not replace them.
+                if (
+                    snapshot &&
+                    !(typeof storage === "object" && "elements" in storage)
+                )
                     type = this.context.dataLowerer.retainedResultType(
                         snapshot,
                         type,
@@ -3627,6 +3689,22 @@ export class DeclarationLowerer {
                     );
                     if (properties)
                         writable(bound).recordProperties = properties;
+                }
+                if (
+                    !rebound &&
+                    heldRecordSnapshot?.recordProperties &&
+                    this.context.bindings.recordPropertiesAreCurrent(
+                        heldRecordSnapshot,
+                    )
+                ) {
+                    writable(bound).recordProperties = Object.fromEntries(
+                        Object.entries(
+                            heldRecordSnapshot.recordProperties,
+                        ).filter(([, value]) => keepsStaticMember(value)),
+                    );
+                    if (heldRecordSnapshot.recordOwnKeys)
+                        writable(bound).recordOwnKeys =
+                            heldRecordSnapshot.recordOwnKeys;
                 }
                 if (
                     !rebound &&
@@ -4207,6 +4285,17 @@ export class DeclarationLowerer {
             !sharedClosureStorage &&
             !this.context.sharedClosures.identifierIsRebound(name) &&
             freshArrayBranches(initializer);
+        // A table of row literals the program never writes keeps each
+        // row's lane facts, as a list of scalars keeps its elements'.
+        const rowArrayLiteral =
+            annotated.kind === "vector" &&
+            annotated.element.kind === "vector" &&
+            !sharedClosureStorage &&
+            !this.context.sharedClosures.identifierIsRebound(name) &&
+            ts.isArrayLiteralExpression(initializer) &&
+            initializer.elements.every(ts.isArrayLiteralExpression) &&
+            !moduleConstantIsWritten(this.context, name) &&
+            !objectIsMutated();
         const conditionalArray =
             annotated.kind === "vector" &&
             ts.isConditionalExpression(initializer) &&
@@ -4243,6 +4332,7 @@ export class DeclarationLowerer {
             readonlyResourceCall ||
             recordArrayLiteral ||
             scalarArrayLiteral ||
+            rowArrayLiteral ||
             conditionalArray ||
             inferredSpreadArray ||
             (annotated.kind === "vector" &&
@@ -4584,20 +4674,14 @@ export class DeclarationLowerer {
             ts.isIdentifier(name) &&
             !mutablePlainObject &&
             ownKeysKnown(this.context, initializerSnapshot, name)
-                ? {
-                      recordOwnKeys: Object.keys(
-                          initializerSnapshot.recordProperties ?? {},
-                      ),
-                  }
+                ? { recordOwnKeys: recordPropertyKeys(initializerSnapshot) }
                 : annotated.kind === "enummap" &&
                     ts.isObjectLiteralExpression(initializer) &&
                     !this.context.sharedClosures.identifierIsRebound(name)
                   ? {
-                        recordOwnKeys: Object.keys(
-                            Object.fromEntries(
-                                this.context.dataLowerer
-                                    .literalKeyOrder(initializer)
-                                    .map((key) => [key, undefined]),
+                        recordOwnKeys: ownKeyOrder(
+                            this.context.dataLowerer.literalKeyOrder(
+                                initializer,
                             ),
                         ),
                     }
@@ -4665,6 +4749,12 @@ export class DeclarationLowerer {
             initializerSnapshot
         )
             this.context.dataLowerer.retainArrayLiteralFacts(
+                represented,
+                initializerSnapshot,
+                declaration.initializer,
+            );
+        if (rowArrayLiteral && initializerSnapshot)
+            this.context.dataLowerer.retainTableRowFacts(
                 represented,
                 initializerSnapshot,
                 declaration.initializer,
@@ -5206,6 +5296,42 @@ export class DeclarationLowerer {
                 unwrapExpression(expression, { await: true }),
             ) &&
             typeCanCarryReference(this.context.checker.getTypeAtLocation(leaf));
+        // A stored value holds an alias's object only through a part that
+        // can hold an object: a scalar read off it (`a[i] = o.flag ? 1 : 0`),
+        // or a literal of such reads (`data.set([o.x, o.y])`), holds none.
+        const storesAlias = (
+            scan: AliasedMutationScan,
+            value: ts.Node,
+        ): boolean => {
+            if (!ts.isExpression(value)) return scan.containsAlias(value);
+            const node = unwrapExpression(value);
+            if (
+                !typeCanCarryReference(
+                    this.context.checker.getTypeAtLocation(node),
+                )
+            )
+                return false;
+            const parts = ts.isArrayLiteralExpression(node)
+                ? node.elements.map((element) =>
+                      ts.isSpreadElement(element)
+                          ? element.expression
+                          : element,
+                  )
+                : ts.isObjectLiteralExpression(node)
+                  ? objectLiteralMembers(node).map((member) =>
+                        member.kind === "spread"
+                            ? member.node.expression
+                            : (member.value ?? member.node),
+                    )
+                  : undefined;
+            return parts
+                ? parts.some(
+                      (part) =>
+                          !ts.isOmittedExpression(part) &&
+                          storesAlias(scan, part),
+                  )
+                : scan.containsAlias(node);
+        };
         return aliasedMutationScan(
             identifier,
             (name) => this.context.symbols.valueSymbol(name),
@@ -5260,14 +5386,16 @@ export class DeclarationLowerer {
                             stored &&
                             (ts.isPropertyAccessExpression(target) ||
                                 ts.isElementAccessExpression(target)) &&
-                            scan.containsAlias(stored)
+                            storesAlias(scan, stored)
                         )
                             return true;
                     }
                     if (
                         (ts.isCallExpression(node) ||
                             ts.isNewExpression(node)) &&
-                        node.arguments?.some(scan.containsAlias) &&
+                        node.arguments?.some((argument) =>
+                            storesAlias(scan, argument),
+                        ) &&
                         isStoringDataCall(node, this.context.checker)
                     )
                         return true;
@@ -5683,6 +5811,14 @@ export class DeclarationLowerer {
                 cpp: temporary,
             };
             const elementType = value.dataType.element;
+            // The elements generation knows of this list (an element of
+            // another list names that list's): their facts bind with each
+            // lane, and a lane past their end is `undefined`.
+            const known =
+                value.staticElementIndex === undefined
+                    ? (value.staticElementsOwner?.staticElements ??
+                      value.staticElements)
+                    : value.staticElements;
             let defaultType: DataType | undefined;
             let defaultsWhenEmpty = false;
             bindings.forEach((element, index) => {
@@ -5750,21 +5886,29 @@ export class DeclarationLowerer {
                     );
                     return;
                 }
-                bindElement(
-                    element,
-                    this.context.dataLowerer.readVectorBindingElement(
+                if (known && index >= known.length) {
+                    bindElement(element, undefined);
+                    return;
+                }
+                const lane = known?.[index];
+                bindElement(element, {
+                    ...this.context.dataLowerer.readVectorBindingElement(
                         storedVector,
                         index,
                         source,
                         element,
                     ),
-                );
+                    ...(lane && !lane.parameterBinding
+                        ? scalarFacts(lane)
+                        : {}),
+                });
             });
             return;
         }
         // A parsed document destructures through iteration: its array
         // elements (or string code points), each another document, with
-        // undefined past the end.
+        // undefined past the end; a rest element collects the rest of them
+        // into a new array.
         if (isJsonValue(value)) {
             this.context.reachJsData();
             const temporary = this.context.allocateTemporaryCppName(
@@ -5774,14 +5918,24 @@ export class DeclarationLowerer {
                 kind: "declaration",
                 type: "const auto",
                 name: temporary,
-                initializer: `bbl::js::json_iterated(${value.cpp}, ${bindings.length})`,
+                initializer: `bbl::js::json_iterated(${value.cpp}${restName ? "" : `, ${bindings.length}`})`,
             });
             bindings.forEach((element, index) => {
                 if (ts.isOmittedExpression(element)) return;
-                if (element.dotDotDotToken || element.initializer)
+                if (index === restIndex && restName) {
+                    this.context.bindings.bindLocalValue(
+                        restName,
+                        this.context.dataLowerer.leafValue(
+                            `bbl::js::json_iterated_rest(${temporary}, ${index})`,
+                            { kind: "json" },
+                        ),
+                    );
+                    return;
+                }
+                if (element.initializer)
                     this.context.fail(
                         element,
-                        "Destructuring a parsed document binds plain elements, without rest or defaults.",
+                        "Destructuring a parsed document binds elements without defaults.",
                     );
                 bindElement(
                     element,
@@ -6475,6 +6629,9 @@ export class DeclarationLowerer {
             initializer: this.context.dataLowerer.structAggregate(type, []),
         });
         // The rest object is fresh: each field still holds its absent default.
+        this.context.dataTypes.keyOrders.noteCreation(type.name, [
+            { struct: source.dataType.name },
+        ]);
         this.context.dataLowerer.copyStructOwnProperties(
             { cpp: cppName, type },
             source,

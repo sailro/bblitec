@@ -44,7 +44,10 @@ import {
     valueDataType,
 } from "./values/model.js";
 import { isEffectTaskMethodName } from "./effect-task-methods.js";
-import { projectAssetContainer } from "./data-sinks/resources.js";
+import {
+    projectAssetContainer,
+    statesViewGetter,
+} from "./data-sinks/resources.js";
 import { arrayFunctionValue } from "./native-function-values.js";
 import { hasDynamicObjectSpread, isJsonValue } from "./json-bridge.js";
 import {
@@ -94,6 +97,7 @@ import {
     borrowedPrototypeMethod,
     forwardedCallShape,
     declaredGlobalTypeof,
+    isSymbolPropertyKey,
 } from "./symbols.js";
 import {
     CRYPTO_GET_RANDOM_VALUES,
@@ -117,6 +121,8 @@ import {
 } from "./audio-surface.js";
 import { compileLibraryPrototype } from "./prototype-values.js";
 import { compileVatMethodCall } from "./intrinsics/vat.js";
+import { compileShaderDeclarationSearch } from "./shader-declaration-lists.js";
+import { compileTaskListRemovalCall } from "./frame-graph-task-list.js";
 import { compilePhysicsMethodCall } from "./physics-surface.js";
 import { compileCustomEventConstructor } from "./custom-events.js";
 import { compileSyntheticEventConstructor } from "./synthetic-events.js";
@@ -141,7 +147,7 @@ import {
     isAsyncFunction,
     containsSuspension,
     restParameterIndex,
-    variableKind,
+    isModuleConstDeclaration,
     isMemberAccess,
     localCallback,
     propertyKey,
@@ -250,10 +256,12 @@ import {
     holdsOnly,
     isNullable,
     nullability,
+    provenPresent,
     valueKindOf,
     callSignatures,
     stringPlusOperands,
     isAnyTyped,
+    unionMembers,
 } from "./type-facts.js";
 import type { NullableResourceType, Value } from "./types.js";
 import type { UserFunctionContext } from "./user-functions.js";
@@ -276,6 +284,11 @@ import {
     recordMethodValue,
 } from "./types.js";
 import { recordAt } from "./record-access.js";
+import { isPlainRecord } from "./record-components.js";
+import {
+    argumentOnlyRead,
+    recordFieldIsWritten,
+} from "./record-observations.js";
 import { pinOperand } from "./evaluation-order.js";
 import { someAnalysisNode } from "./analysis-walk.js";
 import { renderClosure, type NativeExpression } from "./closure-captures.js";
@@ -306,6 +319,13 @@ export interface ExpressionContext
         UserFunctionContext,
         Pick<
             LoweringServices,
+            | "compileShaderSource"
+            | "intrinsicOptions"
+            | "memberLiteral"
+            | "objectProperties"
+            | "resolveStaticLiteral"
+            | "staticListItems"
+            | "staticLiteralData"
             | "isCanvasElement"
             | "noteImpureRead"
             | "expectStaticArrayElements"
@@ -313,6 +333,7 @@ export interface ExpressionContext
             | "probeStaticArrayLiteral"
             | "dynamicBindings"
             | "parameterObjects"
+            | "storageTakenDuringAttempt"
             | "conditionOverrides"
             | "valueOverrides"
             | "impureReadCount"
@@ -340,6 +361,7 @@ export interface ExpressionContext
             | "nativeFunctions"
             | "symbols"
             | "bindings"
+            | "allocateBlockPrefix"
             | "unwrap"
             | "unwrapValue"
             | "expectArgumentCount"
@@ -991,7 +1013,12 @@ export class ExpressionLowerer {
                               unwrapped,
                           )
                         : value;
-                return this.materializeBrowserPrimitive(unwrapped, narrowed);
+                return this.materializeBrowserPrimitive(
+                    unwrapped,
+                    ts.isIdentifier(unwrapped)
+                        ? this.flowPresentRead(unwrapped, narrowed)
+                        : narrowed,
+                );
             }
             if (ts.isPrivateIdentifier(unwrapped)) {
                 this.context.fail(
@@ -1195,7 +1222,13 @@ export class ExpressionLowerer {
                 return data.kind === "data" &&
                     !ts.isPropertyAccessChain(unwrapped) &&
                     !data.preserveUncheckedLookup
-                    ? this.context.dataLowerer.narrowOptional(data, unwrapped)
+                    ? this.flowPresentRead(
+                          unwrapped,
+                          this.context.dataLowerer.narrowOptional(
+                              data,
+                              unwrapped,
+                          ),
+                      )
                     : data;
             }
             return property;
@@ -1847,7 +1880,11 @@ export class ExpressionLowerer {
             // An absent null is an "object"; which absent value this is
             // follows the one rule (`absenceKind`), asked only where the
             // operand can be absent. A run-time answer reads the slot flag.
-            const absentType = (): { cpp: string; runtime: boolean } => {
+            const absentType = (): {
+                cpp: string;
+                runtime: boolean;
+                tags: readonly string[];
+            } => {
                 const absence = absenceKind(
                     this.context.checker,
                     operand,
@@ -1864,14 +1901,25 @@ export class ExpressionLowerer {
                     ? {
                           cpp: `(${absence.slotFoundCpp} ? "object" : "undefined")`,
                           runtime: true,
+                          tags: ["object", "undefined"],
                       }
                     : {
                           cpp: this.context.cppString(
                               absence === "null" ? "object" : "undefined",
                           ),
                           runtime: false,
+                          tags: [absence === "null" ? "object" : "undefined"],
                       };
             };
+            // The answers a run-time typeof can give, which a comparison
+            // with another answer folds over; none for an operand a read
+            // writes through, whose read must run.
+            const possible = (
+                tags: readonly string[],
+            ): Pick<Value, "possibleStrings"> =>
+                this.context.evaluationOrder.writesStorage(expression)
+                    ? {}
+                    : { possibleStrings: [...new Set(tags)] };
             const unionType =
                 operand.dataType?.kind === "optional"
                     ? operand.dataType.inner
@@ -1890,6 +1938,10 @@ export class ExpressionLowerer {
                     cpp: absent
                         ? `([${absent.runtime ? "&" : ""}](const auto& value) -> std::string { return value.has_value() ? ${table}[(*value).index()] : ${absent.cpp}; }(${operand.cpp}))`
                         : `std::string(${table}[(${operand.cpp}).index()])`,
+                    ...possible([
+                        ...unionType.members.map(typeofTag),
+                        ...(absent?.tags ?? []),
+                    ]),
                 };
             }
             const documentType = compileJsonTypeOf(operand);
@@ -1928,13 +1980,15 @@ export class ExpressionLowerer {
             )
                 present = undefined;
             if (present !== undefined) {
+                const absent = absentType();
                 return {
                     kind: "data",
                     cpp:
                         `(${present} ? ` +
                         `${this.context.cppString(type)} : ` +
-                        `${absentType().cpp})`,
+                        `${absent.cpp})`,
                     dataType: { kind: "string" },
+                    ...possible([type, ...absent.tags]),
                 };
             }
             // A generation-known answer still runs an operand that writes
@@ -2206,7 +2260,9 @@ export class ExpressionLowerer {
     ): Value {
         this.context.expectArgumentCount(call, 0, 1);
         const number =
-            owner.staticNumber ?? this.generationTimeNumber(callee.expression);
+            owner.staticNumber ??
+            owner.formattedNumber ??
+            this.generationTimeNumber(callee.expression);
         const digits = call.arguments[0]
             ? staticNumberValue(this.context, call.arguments[0])
             : undefined;
@@ -2600,6 +2656,60 @@ export class ExpressionLowerer {
             cpp: "",
             ...(browserValue ? { browserValue } : {}),
         });
+    }
+
+    /**
+     * A read the checker's flow proves present (`if (x)`, `o.p && ...`) of
+     * a binding, or a member of one, whose declared type admits absence:
+     * when nothing rebinds the binding and no write in the program can leave
+     * the member absent, the guard tested the value the read gets, so its
+     * presence is known there. An object's truthiness is its presence.
+     */
+    private flowPresentRead(
+        read: ts.Identifier | ts.PropertyAccessExpression,
+        value: Value,
+    ): Value {
+        const presence = presenceFlagCpp(value);
+        const object =
+            (value.dataType?.kind === "struct" &&
+                this.context.dataTypes.isReferenceStruct(
+                    value.dataType.name,
+                )) ||
+            isHandleKind(value.kind);
+        if (
+            knownCondition(presence) !== undefined ||
+            (presence === undefined && !object)
+        )
+            return value;
+        const { checker } = this.context;
+        const binding = ts.isIdentifier(read)
+            ? read
+            : this.context.unwrap(read.expression);
+        const symbol = ts.isIdentifier(read)
+            ? this.context.symbols.valueSymbol(read)
+            : resolvedSymbol(checker, read);
+        if (
+            !symbol ||
+            !ts.isIdentifier(binding) ||
+            !isNullable(checker.getTypeOfSymbol(symbol)) ||
+            !provenPresent(checker.getTypeAtLocation(read)) ||
+            this.context.sharedClosures.identifierIsRebound(binding) ||
+            (ts.isPropertyAccessExpression(read) &&
+                recordFieldIsWritten(
+                    this.context,
+                    checker.getTypeAtLocation(read.expression),
+                    read.name.text,
+                    true,
+                ))
+        )
+            return value;
+        return {
+            ...value,
+            optionalFoundCpp: "true",
+            ...(object || value.truthinessCpp === presence
+                ? { truthinessCpp: "true" }
+                : {}),
+        };
     }
 
     private materializeBrowserPrimitive(
@@ -3107,6 +3217,35 @@ export class ExpressionLowerer {
                 whenTrue = trueAsset;
                 whenFalse = falseAsset;
             }
+        }
+        // Texture2D branches of different representations, or a record
+        // over a render target's colour view (`renderTargetColorViewTexture`),
+        // select as stored Texture2D, each converted inside its own arm.
+        const texture2D = (value: Value): boolean =>
+            value.kind === "texture" ||
+            value.kind === "render-texture" ||
+            value.kind === "record";
+        const textureType =
+            texture2D(whenTrue) &&
+            texture2D(whenFalse) &&
+            (whenTrue.kind !== whenFalse.kind ||
+                [whenTrue, whenFalse].some(statesViewGetter))
+                ? this.selectedDataType(node, path)
+                : undefined;
+        if (
+            textureType?.kind === "handle" &&
+            textureType.handle === "texture"
+        ) {
+            const trueArm = this.selectedArmValue(whenTrue, textureType, node);
+            const falseArm = this.selectedArmValue(
+                whenFalse,
+                textureType,
+                node,
+            );
+            return this.context.dataLowerer.leafValue(
+                `(${condition} ? ${trueArm.cpp} : ${falseArm.cpp})`,
+                textureType,
+            );
         }
         if (
             whenTrue.kind !== whenFalse.kind &&
@@ -3772,19 +3911,8 @@ export class ExpressionLowerer {
     private isModuleConstantRecord(expression: ts.Expression): boolean {
         const owner = this.context.unwrap(expression);
         if (!ts.isIdentifier(owner)) return false;
-        const declaration = resolvedSymbol(
-            this.context.checker,
-            owner,
-        )?.valueDeclaration;
-        return (
-            declaration !== undefined &&
-            ts.isVariableDeclaration(declaration) &&
-            declaration.parent !== undefined &&
-            ts.isVariableDeclarationList(declaration.parent) &&
-            variableKind(declaration.parent) === "const" &&
-            declaration.parent.parent !== undefined &&
-            ts.isVariableStatement(declaration.parent.parent) &&
-            ts.isSourceFile(declaration.parent.parent.parent)
+        return isModuleConstDeclaration(
+            resolvedSymbol(this.context.checker, owner)?.valueDeclaration,
         );
     }
 
@@ -4540,7 +4668,20 @@ export class ExpressionLowerer {
             callee,
         );
         if (nativeFunction) {
-            return nativeFunction;
+            const declaration = tryResolveFunctionDeclaration(
+                this.context.checker,
+                callee,
+            );
+            return declaration
+                ? this.context.userFunctions.withReturnedRecordFacts(
+                      this.context,
+                      declaration,
+                      call,
+                      undefined,
+                      nativeFunction.dataType,
+                      nativeFunction,
+                  )
+                : nativeFunction;
         }
         const thinInstanceUpload = this.context.compileThinInstanceUploadHelper(
             call,
@@ -4864,6 +5005,11 @@ export class ExpressionLowerer {
             this.context.reachJsData();
             return { kind: "number", cpp, dataType: { kind: "number" } };
         };
+        // A string generation knows converts as JavaScript parses it.
+        if (isStringValue(value) && value.staticString !== undefined) {
+            this.context.emitDiscardedValue(value);
+            return numberConstantValue(Number(value.staticString));
+        }
         if (isStringValue(value))
             return number(present(value.cpp, { kind: "string" })!);
         if (value.kind === "boolean")
@@ -5626,13 +5772,21 @@ export class ExpressionLowerer {
                     indexedType.kind !== "optional" &&
                     !ownerHasOptionalProperties;
                 const valueCpp = this.context.dataTypes.cppType(valueType);
+                // A literal-union key reads only the properties it names.
+                const keyLiterals = unionMembers(keyType);
+                const keyNames = keyLiterals.every((member) =>
+                    member.isStringLiteral(),
+                )
+                    ? new Set(keyLiterals.map((member) => member.value))
+                    : undefined;
+                const selectable = Object.entries(
+                    owner.recordProperties ?? {},
+                ).filter(([name]) => !keyNames || keyNames.has(name));
                 let entries: string[] = [];
                 const { value: entryLines, nativeCaptures } =
                     this.context.captureNativeDependencies(() =>
                         this.context.captureEmittedLines(() => {
-                            entries = Object.entries(
-                                owner.recordProperties ?? {},
-                            ).map(([name, value]) => {
+                            entries = selectable.map(([name, value]) => {
                                 // The key's narrowed union need not contain every
                                 // property on its owner. Object property names stay
                                 // strings even when the index uses a finite union.
@@ -5696,9 +5850,7 @@ export class ExpressionLowerer {
                         keyExpression,
                         valueType,
                     );
-                const recordValues = Object.values(
-                    owner.recordProperties ?? {},
-                );
+                const recordValues = selectable.map(([, value]) => value);
                 const animationGroupSource =
                     recordValues.length > 0 &&
                     recordValues[0]!.animationGroupSource !== undefined &&
@@ -6425,12 +6577,18 @@ export class ExpressionLowerer {
                       this.compileStaticObjectValue(unwrapped, "run-time-keys"),
                   );
             if (record) return record;
-            const typed = this.compileTypedObjectValue(
-                unwrapped,
-                dynamicSpread,
-                optionalKeysSpread,
-                runtimeKeyed,
-            );
+            const typed =
+                dynamicSpread && !runtimeKeyed
+                    ? this.compileDocumentSpreadObject(
+                          unwrapped,
+                          optionalKeysSpread,
+                      )
+                    : this.compileTypedObjectValue(
+                          unwrapped,
+                          dynamicSpread,
+                          optionalKeysSpread,
+                          runtimeKeyed,
+                      );
             if (typed) return typed;
         }
         if (!unwrapped.properties.some(ts.isSpreadAssignment))
@@ -6546,6 +6704,71 @@ export class ExpressionLowerer {
             );
         }
         return undefined;
+    }
+
+    /**
+     * A literal spreading a document: the dictionary of its members
+     * (`compileTypedObjectValue`), or, where that dictionary refuses (a
+     * member it holds no storage for, such as a handle or a class instance),
+     * the closed record type its position names (`documentSpreadRecord`).
+     */
+    private compileDocumentSpreadObject(
+        unwrapped: ts.ObjectLiteralExpression,
+        optionalKeysSpread: boolean,
+    ): Value | undefined {
+        const dictionary = this.context.keptEmission(
+            (): { value: Value | undefined } | { refusal: CompileError } => {
+                try {
+                    return {
+                        value: this.compileTypedObjectValue(
+                            unwrapped,
+                            true,
+                            optionalKeysSpread,
+                            false,
+                        ),
+                    };
+                } catch (error) {
+                    if (!(error instanceof CompileError)) throw error;
+                    return { refusal: error };
+                }
+            },
+            (result) => "value" in result,
+        );
+        if ("value" in dictionary) return dictionary.value;
+        const record = this.documentSpreadRecord(unwrapped);
+        if (!record) throw dictionary.refusal;
+        return record;
+    }
+
+    /**
+     * A literal spreading a document as the closed record type its position
+     * names (`isPlainRecord`): each key the type declares holds its last
+     * writer in source order, a document while it holds the key. The record
+     * holds no key the type does not declare, so it is built only as an
+     * argument its callee only reads (`argumentOnlyRead`), where nothing
+     * enumerates it. Undefined where the position names no closed record
+     * type.
+     */
+    private documentSpreadRecord(
+        unwrapped: ts.ObjectLiteralExpression,
+    ): Value | undefined {
+        const checker = this.context.checker;
+        const contextual = checker.getContextualType(unwrapped);
+        const record = contextual && checker.getNonNullableType(contextual);
+        if (!record || !isPlainRecord(checker, record)) return undefined;
+        if (!argumentOnlyRead(checker, unwrapped))
+            this.context.fail(
+                unwrapped,
+                `A document spread into the closed record type '${checker.typeToString(record)}' holds only the keys it declares: it is built as an argument its callee only reads, which cannot enumerate it.`,
+            );
+        return this.compileStaticObjectValue(
+            unwrapped,
+            undefined,
+            checker
+                .getPropertiesOfType(record)
+                .map((property) => property.name)
+                .filter((key) => !isSymbolPropertyKey(key)),
+        );
     }
 
     /**
@@ -6774,11 +6997,13 @@ export class ExpressionLowerer {
      * undefined where a spread's keys are known only at run time:
      * `"dictionary"` for a dictionary, a document or a scalar, and
      * `"run-time-keys"` for those and a struct whose `?` fields decide its
-     * keys.
+     * keys. With `documentKeys`, a document spread gives the record those
+     * of these keys it holds (`documentSpreadMembers`).
      */
     private compileStaticObjectValue(
         unwrapped: ts.ObjectLiteralExpression,
         declines?: "dictionary" | "run-time-keys",
+        documentKeys?: readonly string[],
     ): Value | undefined {
         const properties: Record<string, Value> = {};
         const methods: Record<
@@ -6970,6 +7195,21 @@ export class ExpressionLowerer {
                             "Spreading a void result requires a proven undefined completion.",
                         );
                     this.context.emitDiscardedValue(spread);
+                    continue;
+                }
+                if (documentKeys && isJsonValue(spread)) {
+                    for (const [
+                        key,
+                        value,
+                    ] of this.context.dataLowerer.documentSpreadMembers(
+                        spread,
+                        documentKeys,
+                        property,
+                    )) {
+                        if (ownKeys.has(key))
+                            replaceWhileOwn(key, value, property);
+                        else storeProperty(key, value);
+                    }
                     continue;
                 }
                 if (
@@ -8058,6 +8298,8 @@ export class ExpressionLowerer {
         // probe compiles their owner. A fused `meshes.map(...).find(...)`
         // has no native intermediate array for that probe to lower.
         const found =
+            compileShaderDeclarationSearch(this.context, call, member) ??
+            compileTaskListRemovalCall(this.context, call, member) ??
             this.context.handleCollections.compileFind(call, member) ??
             this.context.handleCollections.compileSome(call, member) ??
             this.context.handleCollections.compileFilter(call, member);
@@ -8356,12 +8598,17 @@ export class ExpressionLowerer {
                     functionType,
                 );
             }
-            if (recordCallback?.kind === "data" && !optionalCall) {
-                const callableRecord =
-                    this.context.dataLowerer.compileCallableRecordCall(
-                        call,
-                        recordCallback,
-                    );
+            if (recordCallback?.kind === "data") {
+                const callableRecord = optionalCall
+                    ? this.context.dataLowerer.compileOptionalCallableRecordCall(
+                          call,
+                          recordCallback,
+                          callee.questionDotToken ? instance?.cpp : undefined,
+                      )
+                    : this.context.dataLowerer.compileCallableRecordCall(
+                          call,
+                          recordCallback,
+                      );
                 if (callableRecord) return callableRecord;
             }
             if (instance && declaration) {

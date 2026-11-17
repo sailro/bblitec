@@ -474,8 +474,10 @@ public:
                 }
                 const auto effect_timing = sdl_timed_pass(command, timing_sequence.pass());
                 SdlRenderPass render_pass{SDL_BeginGPURenderPass(command, &target, 1, nullptr)};
-                record_effect_pass(
-                    command, render_pass, engine, pass, task.effect.effect,
+                record_effect_task_pass(
+                    command, render_pass, engine, pass, task,
+                    record.swapchain ? width : output.width,
+                    record.swapchain ? height : output.height,
                     [&](const RenderTextureRef& source) -> SDL_GPUTexture* {
                         if (source.depth_only)
                             throw std::runtime_error(

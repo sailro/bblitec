@@ -236,7 +236,8 @@ function rolledBackWrites(
  * Its compiler reads frozen seed demands; new demands are applied only to a fresh
  * compiler. A demand rolls back its statement, whose written names are
  * lost to later statements, except one lowering goes on past
- * (`demandOrPlan`). Refusals and lost-binding reads end discovery. Past a
+ * (`demandOrPlan`), after which the plan collects demands of its kind and
+ * demands of a key. Refusals and lost-binding reads end discovery. Past a
  * rolled-back statement, which may have met a demand first at its own
  * site, a plan collects only demands of a key (`demandsKeyOnly`).
  */
@@ -269,9 +270,17 @@ export class StorageDemandPlanner {
     /**
      * @unjournaled The kind of demand lowering went on without
      * (`demandOrPlan`): a later demand of this attempt may follow from it,
-     * so only that kind is collected.
+     * so only that kind is collected, and demands of a key
+     * (`demandsKeyOnly`), which add no storage a compile lays out in the
+     * order it took it.
      */
     private wentOn?: StorageRequest["kind"];
+    /**
+     * @unjournaled Whether the plan collected a demand of a key past one of
+     * another kind: a demand following from it may come before a later one
+     * of `wentOn`'s kind, so that kind no longer goes on.
+     */
+    private pastKind = false;
 
     public constructor(checker: ts.TypeChecker) {
         this.collected = new ReplayStorage(checker);
@@ -279,13 +288,17 @@ export class StorageDemandPlanner {
 
     /** A demand lowering goes on without (`demandOrPlan`). */
     public planDemand(request: StorageRequest): void {
-        if (this.wentOn !== undefined && this.wentOn !== request.kind)
+        if (
+            this.wentOn !== undefined &&
+            !demandsKeyOnly(request) &&
+            (this.pastKind || this.wentOn !== request.kind)
+        )
             throw new PlanningWrite(
                 `a demand of kind ${request.kind} after lowering went on past one of kind ${this.wentOn}`,
             );
         this.requireStrictSite([request]);
-        this.wentOn = request.kind;
-        this.collect(request);
+        this.collectPast([request]);
+        this.wentOn ??= request.kind;
     }
 
     /**
@@ -307,9 +320,10 @@ export class StorageDemandPlanner {
             return work();
         } catch (error) {
             if (error instanceof StorageDemand) {
-                if (this.wentOn) return undefined;
+                if (this.wentOn && !error.requests.every(demandsKeyOnly))
+                    return undefined;
                 if (this.metAtStrictSite(error.requests))
-                    for (const request of error.requests) this.collect(request);
+                    this.collectPast(error.requests);
                 else statistics.departed++;
             } else if (error instanceof CompileError) statistics.refused++;
             else if (error instanceof PlanningDependency)
@@ -383,12 +397,12 @@ export class StorageDemandPlanner {
             context.transaction(lower);
         } catch (error) {
             if (!(error instanceof StorageDemand)) throw error;
-            if (this.wentOn)
+            if (this.wentOn && !error.requests.every(demandsKeyOnly))
                 throw new PlanningWrite(
                     `a statement's demand after lowering went on past one of kind ${this.wentOn}`,
                 );
             this.requireStrictSite(error.requests);
-            for (const request of error.requests) this.collect(request);
+            this.collectPast(error.requests);
             // An ownership change can reach what later statements read: the
             // plan ends.
             if (!independentDemand(context, statement, error))
@@ -516,6 +530,15 @@ export class StorageDemandPlanner {
         // independent: the checks keep their generation.
         for (const symbol of locals) this.lostDeclarations.delete(symbol);
         this.lostLocals.delete(body);
+    }
+
+    /** Collects `requests`, noting one of a key past a demand of another kind (`pastKind`). */
+    private collectPast(requests: readonly StorageRequest[]): void {
+        for (const request of requests) {
+            if (this.wentOn !== undefined && request.kind !== this.wentOn)
+                this.pastKind = true;
+            this.collect(request);
+        }
     }
 
     private collect(request: StorageRequest): void {

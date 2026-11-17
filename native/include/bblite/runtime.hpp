@@ -76,6 +76,7 @@ struct ComputeTextureAllocation;
 struct ComputeCommandEncoder;
 struct GpuRetirementState;
 struct GpuTaskTimingState;
+struct ScreenshotCaptures;
 class LoadedTexels;
 } // namespace pal
 
@@ -229,7 +230,10 @@ struct PlatformMouseEvent : PlatformEventFlags, PlatformModifierKeys {
     double client_y = 0.0;
     double movement_x = 0.0;
     double movement_y = 0.0;
+    double delta_x = 0.0;
     double delta_y = 0.0;
+    /** UIEvent.detail: the click count on mousedown, mouseup, click and dblclick, else 0. */
+    double detail = 0.0;
     std::string pointer_type = "mouse";
     double pointer_id = 1;
     bool is_primary = true;
@@ -337,6 +341,9 @@ struct UiClientRect {
     double scroll_top = 0.0;
     /** The element's effective CSS zoom, which client rectangles include. */
     double zoom = 1.0;
+    /** Width and height of the element's content including its overflow (scrollWidth/scrollHeight). */
+    double scroll_width = 0.0;
+    double scroll_height = 0.0;
     [[nodiscard]] bool operator==(const UiClientRect&) const = default;
     /** Extents as offset, client and scroll reads report them: without the zoom. */
     [[nodiscard]] UiClientRect unzoomed() const {
@@ -348,7 +355,9 @@ struct UiClientRect {
                 offset_height / zoom,
                 scroll_left / zoom,
                 scroll_top / zoom,
-                1.0};
+                1.0,
+                scroll_width / zoom,
+                scroll_height / zoom};
     }
 };
 
@@ -365,6 +374,7 @@ struct UiContentBox {
 struct UiComputedStyle {
     std::string display;
     std::string opacity;
+    std::string transform;
     std::string visibility;
     std::string z_index;
     /** The computed (specified, var()-substituted) values of the custom properties read, by name. */
@@ -1178,6 +1188,33 @@ struct RenderTargetOptions {
     std::optional<DepthCompare> depth_compare{};
 };
 
+enum class TextureFilter {
+    nearest,
+    linear,
+};
+
+enum class TextureMipmapMode {
+    nearest,
+    linear,
+};
+
+enum class TextureAddressMode {
+    repeat,
+    clamp,
+    mirror,
+};
+
+struct TextureSamplerState {
+    TextureFilter min_filter = TextureFilter::linear;
+    TextureFilter mag_filter = TextureFilter::linear;
+    TextureMipmapMode mipmap_mode = TextureMipmapMode::linear;
+    TextureAddressMode address_u = TextureAddressMode::repeat;
+    TextureAddressMode address_v = TextureAddressMode::repeat;
+    float max_anisotropy = 1.0f;
+    float max_lod = 1000.0f;
+    bool operator==(const TextureSamplerState&) const = default;
+};
+
 enum class RenderTextureSource {
     render_target,
     geometry,
@@ -1204,6 +1241,14 @@ struct RenderTextureRef {
     GeometryTextureType geometry_type = GeometryTextureType::irradiance;
     /** Explicit depth facade of a color/depth render target. */
     bool depth_only = false;
+    /**
+     * Set for a Texture2D record over the target's colour view
+     * (`render_target_color_view`): the record's own sampler, and that
+     * `GpuSampler`'s object. Unset for the target's own facade, which samples
+     * through the target's sampler.
+     */
+    std::optional<TextureSamplerState> record_sampler{};
+    std::uint64_t record_sampler_object = 0;
 };
 
 /** `enableRenderTaskTransmission`'s raw-mode settings, stored on the render task. */
@@ -1837,6 +1882,30 @@ enum class FrameTaskKind {
     post_process,
     effect,
     ssao,
+    depth_resolve,
+};
+
+/**
+ * `createDepthResolveTask`'s config: sample 0 of the source's multisampled
+ * depth written into the target's single-sample depth. `name` is the task's
+ * (`config.name ?? <default>`); the pin's refusals quote `config.name`.
+ */
+struct DepthResolveTaskOptions {
+    std::string name;
+    bool named = false;
+    RenderTargetHandle source{};
+    RenderTargetHandle target{};
+};
+
+/**
+ * When `buildRenderTarget` allocates a target's attachments: at each record
+ * that builds it, or eagerly (`rt._eager`) once, at a fixed size or sized
+ * from its surface.
+ */
+enum class TargetAllocation : std::uint8_t {
+    record,
+    fixed,
+    surface,
 };
 
 /** GPU attachment ownership bridges to the source-generated resize protocol. */
@@ -1847,33 +1916,6 @@ struct RenderTargetLifecycle {
     virtual void synchronize() = 0;
     virtual void dispose(std::function<void()> release) = 0;
     virtual js::Callback<void()> subscribe(std::function<void()> callback) = 0;
-};
-
-enum class TextureFilter {
-    nearest,
-    linear,
-};
-
-enum class TextureMipmapMode {
-    nearest,
-    linear,
-};
-
-enum class TextureAddressMode {
-    repeat,
-    clamp,
-    mirror,
-};
-
-struct TextureSamplerState {
-    TextureFilter min_filter = TextureFilter::linear;
-    TextureFilter mag_filter = TextureFilter::linear;
-    TextureMipmapMode mipmap_mode = TextureMipmapMode::linear;
-    TextureAddressMode address_u = TextureAddressMode::repeat;
-    TextureAddressMode address_v = TextureAddressMode::repeat;
-    float max_anisotropy = 1.0f;
-    float max_lod = 1000.0f;
-    bool operator==(const TextureSamplerState&) const = default;
 };
 
 struct RenderTargetRecord {
@@ -1932,6 +1974,23 @@ struct RenderTargetRecord {
      * default otherwise.
      */
     std::optional<TextureSamplerState> sampler{}, depth_sampler{};
+    /**
+     * The pin's `_colorView` is set: from creation for an eager target, and
+     * once a task's record built it otherwise (`record_task_color_views`).
+     */
+    bool color_view = false;
+    /**
+     * The pin's `_colorTexture` object, published with each colour
+     * allocation `buildRenderTarget` makes; read while `_colorView` is set.
+     */
+    GpuTextureIdentity color_texture{};
+    TargetAllocation allocation = TargetAllocation::record;
+    /**
+     * A shader reads the depth attachment without a sampled facade (a
+     * depth-resolve source): the pin's every depth attachment carries
+     * `TEXTURE_BINDING`.
+     */
+    bool depth_binding = false;
 };
 
 /** The pin's mixed cache tuple, named by its seven identity/value inputs. */
@@ -1969,6 +2028,8 @@ struct FrameTaskRecord {
     std::optional<bool> execution_enabled;
     /** `RenderTask.enabled`: the app's own execute gate, default on. */
     bool render_enabled = true;
+    /** `EffectRenderTask.scissor`, its lanes as written: none draws the whole target. */
+    std::optional<NormalizedViewport> effect_scissor;
     std::shared_ptr<ComputeTask> compute;
     RenderTaskOptions render;
     std::vector<RenderTaskMesh> render_meshes;
@@ -2003,6 +2064,7 @@ struct FrameTaskRecord {
     EffectTaskOptions effect;
     ScreenSpaceTaskOptions screen_space;
     SsaoTaskOptions ssao;
+    DepthResolveTaskOptions depth_resolve;
     /** The task retains the scene passed to its factory, independent of registration. */
     std::shared_ptr<SceneState> source_scene{};
     /** Allocated only for a source whose retained UBO is reached by TAA. */
@@ -2024,6 +2086,8 @@ struct RenderTargetTexture {
     RenderTargetHandle rt{};
     RenderTextureRef texture{};
     RenderTextureRef depth_texture{};
+    /** Each `createRenderTargetTexture` result owns a target of its own. */
+    [[nodiscard]] bool operator==(const RenderTargetTexture& other) const { return rt == other.rt; }
 };
 
 /**
@@ -3093,6 +3157,10 @@ struct MeshRecord {
     // default only when this field was never assigned.
     bool has_render_order = false;
     double render_order = 0.0;
+    /** `Mesh.renderOrder` as a read sees it: undefined until assigned. */
+    [[nodiscard]] std::optional<double> render_order_value() const {
+        return has_render_order ? std::optional<double>(render_order) : std::nullopt;
+    }
     // Mesh.renderOnTop: the transparent draw list keeps a flagged mesh after
     // every other, whatever its camera distance.
     bool render_on_top = false;
@@ -4633,6 +4701,8 @@ struct UiElementRecord {
     /** Read by getComputedStyle; the layout serializes it once requested. */
     UiComputedStyle computed_style{};
     bool computed_style_requested = false;
+    /** Whether a computed read named `transform`; the layout serializes it only then. */
+    bool computed_transform_requested = false;
     /** The custom properties a computed read names; the layout serializes their values. */
     std::vector<std::string> computed_custom_properties;
     std::optional<CanvasState> canvas;
@@ -4880,6 +4950,41 @@ private:
 };
 
 /** A copied or moved Engine is a fresh document identity, just like OwnerLifetime. */
+/**
+ * Weak-collection identity tokens for an engine's objects, by object id,
+ * each made on its first use as a key. A copied or moved Engine is a fresh
+ * set of objects, like `OwnerLifetime`.
+ */
+class ObjectIdentityTokens {
+public:
+    ObjectIdentityTokens() = default;
+    ObjectIdentityTokens(const ObjectIdentityTokens&) {}
+    ObjectIdentityTokens(ObjectIdentityTokens&& other) noexcept { other.clear(); }
+    ObjectIdentityTokens& operator=(const ObjectIdentityTokens& other) {
+        if (this != &other)
+            clear();
+        return *this;
+    }
+    ObjectIdentityTokens& operator=(ObjectIdentityTokens&& other) noexcept {
+        if (this != &other) {
+            clear();
+            other.clear();
+        }
+        return *this;
+    }
+    [[nodiscard]] std::weak_ptr<const void> at(std::uint64_t id) {
+        auto& token = tokens_[id];
+        if (!token)
+            token = std::make_shared<const int>(0);
+        return token;
+    }
+    [[nodiscard]] bool empty() const noexcept { return tokens_.empty(); }
+    void clear() noexcept { tokens_.clear(); }
+
+private:
+    std::unordered_map<std::uint64_t, std::shared_ptr<const int>> tokens_;
+};
+
 struct DomTargetState {
     DomTargetState() = default;
     DomTargetState(const DomTargetState&) {}
@@ -4896,7 +5001,7 @@ struct DomTargetState {
         }
         return *this;
     }
-    std::unordered_map<std::uint64_t, std::shared_ptr<const int>> identities;
+    ObjectIdentityTokens identities;
     /** Ref/Callback cells root their values until deletion or document teardown. */
     std::unordered_map<const void*, std::shared_ptr<void>> properties;
 
@@ -5008,6 +5113,8 @@ struct Engine {
     bool source_gpu_host_closed = false;
     std::shared_ptr<pal::GpuRetirementState> gpu_retirements;
     std::shared_ptr<pal::GpuTaskTimingState> gpu_task_timing;
+    /** `captureScreenshot`'s requests on the primary surface (`pal_screenshot.hpp`). */
+    std::shared_ptr<pal::ScreenshotCaptures> screenshot_captures;
     std::weak_ptr<ComputeStorageTextureRegistry> compute_storage_textures;
     std::function<void()> dispose_compute_textures;
     std::weak_ptr<UniformBufferRegistry> uniform_buffers;
@@ -5268,6 +5375,8 @@ struct Engine {
     std::vector<MeshRecord> meshes;
     /** Retired mesh slots `store_mesh_record` reuses (see there). */
     std::vector<std::uint32_t> free_mesh_slots;
+    /** Meshes used as weak-collection keys, by slot and generation (`mesh_weak_identity`). */
+    ObjectIdentityTokens mesh_identities;
     MeshCompositionRows mesh_composition_rows;
     // Every source event that changes draw-list membership: the pin's
     // setMeshVisible epoch (only when a flag actually changes), and a
@@ -5566,7 +5675,9 @@ inline FileTexture retained_render_texture(Engine& engine, RenderTextureRef refe
         const auto& previous = facade.data.render_source->reference;
         if (previous.source == reference.source && previous.task.value == reference.task.value &&
             previous.target.value == reference.target.value &&
-            previous.depth_only == reference.depth_only)
+            previous.depth_only == reference.depth_only &&
+            previous.record_sampler == reference.record_sampler &&
+            previous.record_sampler_object == reference.record_sampler_object)
             return facade;
     }
     FileTexture facade;
@@ -5583,7 +5694,10 @@ inline FileTexture retained_render_texture(Engine& engine, RenderTextureRef refe
         facade.width = size;
         facade.height = size;
     }
-    facade.data.uv_invert_y = !transmission && target.has_color && !reference.depth_only;
+    // A record over the colour view states no `invertY`; the target's own
+    // colour facade states `invertY: true`.
+    facade.data.uv_invert_y =
+        !transmission && target.has_color && !reference.depth_only && !reference.record_sampler;
     facade.data.render_source = std::make_shared<RenderTextureData>(
         RenderTextureData{&engine, engine.lifetime.token(), reference, target.lifecycle});
     engine.render_texture_facades.push_back(facade);
@@ -5755,6 +5869,114 @@ inline GpuSampler create_device_sampler(const GpuDeviceIdentity& device,
 inline GpuTextureView create_texture_view(Engine& engine, const GpuTextureIdentity& texture) {
     return {texture, ++engine.published_gpu_objects};
 }
+/**
+ * A Texture2D record whose `view` getter returns a render target's live
+ * `_colorView`, with its own sampler and `_sampleType`. The pin's
+ * `_colorView` is the colour texture's default view, so only a single-sample
+ * colour target has one a float texture binding accepts.
+ */
+inline RenderTextureRef render_target_color_view(const Engine& engine, RenderTargetHandle target,
+                                                 const GpuSampler& sampler,
+                                                 std::string_view sample_type = "float") {
+    const auto& record = handle_at(engine.render_targets, target);
+    if (!record.has_color || record.samples != 1 || sample_type != "float")
+        throw std::runtime_error("A Texture2D record over a render target's colour view requires "
+                                 "single-sample colour sampled as float.");
+    RenderTextureRef texture;
+    texture.target = target;
+    texture.record_sampler = sampler.state;
+    texture.record_sampler_object = sampler.object;
+    return texture;
+}
+/**
+ * `texture.sampler` read off a stored Texture2D: a record over a colour view
+ * answers with its own sampler. Other stored textures keep sampler state
+ * without the object the pin's read returns.
+ */
+inline GpuSampler stored_texture_gpu_sampler(Engine& engine, const StoredTexture& texture) {
+    const auto* file = std::get_if<FileTexture>(&texture);
+    const RenderTextureRef* reference =
+        file && file->data.render_source ? &file->data.render_source->reference : nullptr;
+    if (!reference || !reference->record_sampler)
+        throw std::runtime_error(
+            "Only a stored Texture2D record over a colour view keeps its sampler object.");
+    return {gpu_device_identity(engine), *reference->record_sampler,
+            reference->record_sampler_object};
+}
+/**
+ * The colour attachments a task's record builds (`buildRenderTarget`): a
+ * render task its own target and, under MSAA, its resolve target unless the
+ * target is shared; an effect task its target; a copy task its target and
+ * resolve target; a geometry task its target; a post-process task its
+ * output; a depth-resolve task its target while that has no depth texture.
+ * Each build of a target the records allocate is a new colour texture.
+ */
+inline void record_task_color_views(Engine& engine, const FrameTaskRecord& task) {
+    const auto build = [&engine](RenderTargetHandle target) {
+        auto* record = handle_find(engine.render_targets, target);
+        if (!record)
+            return;
+        record->color_view = record->has_color;
+        if (record->has_color && !record->swapchain &&
+            record->allocation == TargetAllocation::record)
+            record->color_texture = publish_gpu_texture_identity(engine);
+    };
+    switch (task.kind) {
+    case FrameTaskKind::render:
+        if (task.render.shared_target)
+            return;
+        build(task.render.target);
+        if (const auto* target = handle_find(engine.render_targets, task.render.target);
+            target && target->samples > 1)
+            build(task.render.resolve_target);
+        return;
+    case FrameTaskKind::effect:
+        build(task.effect.target);
+        return;
+    case FrameTaskKind::copy:
+        build(task.copy.target);
+        build(task.copy.resolve_target);
+        return;
+    case FrameTaskKind::geometry:
+        build(task.geometry.target);
+        return;
+    case FrameTaskKind::post_process:
+        build(task.post_process.output_target);
+        return;
+    case FrameTaskKind::depth_resolve:
+        // `!target._depthTexture`: none declared, or not yet allocated.
+        if (const auto* target = handle_find(engine.render_targets, task.depth_resolve.target);
+            target && (!target->has_depth || !target->color_view))
+            build(task.depth_resolve.target);
+        return;
+    default:
+        return;
+    }
+}
+/** `rt._colorView`'s presence: the swapchain's always, another's once built, none once disposed. */
+[[nodiscard]] inline bool render_target_color_view_set(const Engine& engine,
+                                                       RenderTargetHandle target) {
+    const auto& record = handle_at(engine.render_targets, target);
+    return !record.retired && record.has_color && (record.swapchain || record.color_view);
+}
+/**
+ * `rt._colorTexture`: null until a build allocated it and after disposal,
+ * set with `_colorView`. The swapchain's is the texture each frame acquires
+ * and a surface target's follows its resize replacements; neither is
+ * represented.
+ */
+[[nodiscard]] inline js::Nullable<GpuTextureIdentity>
+render_target_color_texture(const Engine& engine, RenderTargetHandle target) {
+    const auto& record = handle_at(engine.render_targets, target);
+    if (!record.retired && record.swapchain)
+        throw std::runtime_error("The swapchain target's _colorTexture is not represented.");
+    if (!record.retired && record.allocation == TargetAllocation::surface)
+        throw std::runtime_error(
+            "A surface render-target texture's _colorTexture is not represented.");
+    if (!render_target_color_view_set(engine, target))
+        return std::nullopt;
+    return record.color_texture;
+}
 /** `texture.sampler = sampler` on a render target's texture or depth facade. */
 inline void set_render_texture_sampler(Engine& engine, const RenderTextureRef& texture,
                                        const GpuSampler& sampler) {
@@ -5766,6 +5988,8 @@ inline void set_render_texture_sampler(Engine& engine, const RenderTextureRef& t
 /** The sampler `texture.sampler` set for a bound render texture, or none. */
 inline const TextureSamplerState* render_texture_sampler(const Engine& engine,
                                                          const RenderTextureRef& texture) {
+    if (texture.record_sampler)
+        return &*texture.record_sampler;
     const RenderTargetRecord* target = texture.source == RenderTextureSource::render_target
                                            ? handle_find(engine.render_targets, texture.target)
                                            : nullptr;
@@ -5832,6 +6056,12 @@ void register_managed_resource_disposer(Engine& engine, std::function<void()> di
  */
 inline bool mesh_handle_current(const Engine& engine, MeshHandle mesh) {
     return handle_names_record(engine.meshes, mesh);
+}
+
+/** A mesh as a weak-collection key: one token per mesh, kept past its retirement. */
+inline std::weak_ptr<const void> mesh_weak_identity(Engine& engine, MeshHandle mesh) {
+    return engine.mesh_identities.at((static_cast<std::uint64_t>(mesh.generation) << 32) |
+                                     mesh.value);
 }
 
 /**
@@ -6457,6 +6687,15 @@ inline js::Nullable<bool> shader_material_alpha_blending(const Engine& engine,
     if (!record.shader_material)
         return {};
     return {record.alpha_mode == MaterialAlphaMode::blend};
+}
+
+/** `ShaderMaterial.depthWrite` (`options.depthWrite ?? !needAlphaBlending`); none on another material. */
+inline js::Nullable<bool> shader_material_depth_write(const Engine& engine,
+                                                      MaterialHandle material) {
+    const auto& record = handle_at(engine.materials, material);
+    if (!record.shader_material)
+        return {};
+    return {record.shader_depth_write};
 }
 
 /** A tracked color element write marks the source UBO dirty; the next draw reads the array. */
@@ -7135,6 +7374,11 @@ private:
 static_assert(std::is_nothrow_copy_constructible_v<Scene>);
 static_assert(std::is_nothrow_move_constructible_v<Scene>);
 
+/** The pin's `scene._renderableVersion`, a JavaScript number ({@link SceneState::renderable_version}). */
+[[nodiscard]] inline double scene_renderable_version(const Scene& scene) {
+    return static_cast<double>(scene.state->renderable_version);
+}
+
 /**
  * scene-core.ts `addDeferredSceneRenderables` over the native scene: the
  * builder runs when the scene builds (`register_scene` drains the queue and
@@ -7208,6 +7452,44 @@ inline Scene configure_scene_render_defaults(Scene scene, bool enabled, std::uin
 }
 
 /**
+ * `setSurfaceSize`'s `_resize` on the engine's own canvas: each scene
+ * registered there rebuilds its frame graph, whose record of every task
+ * reallocates the targets those records build. A task awaiting
+ * `buildFrameGraphTask` keeps waiting.
+ */
+inline void rebuild_canvas_task_targets(Engine& engine) {
+    for (const std::shared_ptr<Scene>& scene : engine.scenes()) {
+        if (!scene || !scene_on_surface(*scene, std::nullopt))
+            continue;
+        for (const TaskHandle handle : scene->frame_passes()) {
+            const FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
+            if (task.record_state != FrameTaskRecordState::pending_build)
+                record_task_color_views(engine, task);
+        }
+    }
+}
+
+/**
+ * `createDepthResolveTask` over two existing targets. The pass reads the
+ * source's depth through a depth-only view, so its attachment carries the
+ * binding every pinned depth attachment has; targets already allocated
+ * without it are rebuilt.
+ */
+inline TaskHandle create_depth_resolve_task(Engine& engine, Scene&,
+                                            DepthResolveTaskOptions options) {
+    RenderTargetRecord& source = handle_at(engine.render_targets, options.source);
+    (void)handle_at(engine.render_targets, options.target);
+    if (source.has_depth && !source.depth_binding) {
+        source.depth_binding = true;
+        ++engine.render_targets_version;
+    }
+    FrameTaskRecord task;
+    task.kind = FrameTaskKind::depth_resolve;
+    task.depth_resolve = std::move(options);
+    return append_frame_task(engine, std::move(task));
+}
+
+/**
  * Visit the registered scenes whose pixels a frame keeps, in
  * rendering-context order, until `visit` answers false. registerScene leaves
  * a scene clearing its surface unless `createOverlayScene` made it, so each
@@ -7271,6 +7553,19 @@ struct OverlayComposition {
 [[nodiscard]] inline bool is_swapchain_target(const Engine& engine, RenderTargetHandle target) {
     const RenderTargetRecord* record = handle_find(engine.render_targets, target);
     return record && record->swapchain;
+}
+
+/**
+ * `RenderTarget._width` (`_height` when `height`) of the swapchain target: the canvas backing
+ * store, which `setSurfaceSize` and each frame's `_refreshScRT` keep it at. Another target's is
+ * its frame-graph-built attachment's, which no native record holds.
+ */
+[[nodiscard]] inline double swapchain_render_target_extent(const Engine& engine,
+                                                           RenderTargetHandle target, bool height) {
+    if (!is_swapchain_target(engine, target))
+        throw std::runtime_error(
+            "RenderTarget._width and _height are read only on the swapchain target.");
+    return static_cast<double>(height ? engine.options.height : engine.options.width);
 }
 
 /** A scene's swapchain task, and whether it resolves into the swapchain. */
@@ -8006,6 +8301,8 @@ void load_hdr_environment(Scene& scene, HdrEnvironmentOptions options);
 void load_dds_environment(Scene& scene, DdsEnvironmentOptions options);
 MaterialHandle create_standard_material(Engine& engine);
 MaterialHandle create_shader_material(Engine& engine, std::uint32_t variant);
+/** The variant's fixed-function state and system-uniform dependencies, applied to a shader record. */
+void apply_shader_material_variant(MaterialRecord& material, std::uint32_t variant);
 void initialize_shader_packet_camera_cache(const Scene& scene, const MaterialRecord& material);
 /**
  * One texture a scene handed `parseNodeMaterialFromSnippet` through its
@@ -8069,6 +8366,11 @@ void set_shader_storage_buffer(Engine& engine, MaterialHandle material, std::uin
                                StorageBufferHandle buffer);
 void set_shader_storage_buffer_by_name(Engine& engine, MaterialHandle material,
                                        const std::string& name, StorageBufferHandle buffer);
+/** A ShaderMaterial list: `uniformDecls`, `samplerDecls`, `storageBufferDecls` or `attributes`. */
+enum class ShaderDeclarationList : std::uint8_t { uniforms, samplers, storage_buffers, attributes };
+/** The names a shader material's declaration list holds, in declaration order. */
+const std::vector<std::string>& shader_declaration_names(Engine& engine, MaterialHandle material,
+                                                         ShaderDeclarationList list);
 void set_shader_render_texture(Engine& engine, MaterialHandle material, std::uint32_t slot,
                                RenderTextureRef texture);
 void set_shader_csm_texture(Engine& engine, MaterialHandle material, std::uint32_t slot,
@@ -8150,8 +8452,16 @@ MaterialHandle create_node_esm_shadow_material_view(Engine& engine, MaterialHand
                                                     ShadowGeneratorHandle generator);
 MaterialHandle create_pbr_no_color_material_view(Engine& engine, MaterialHandle source);
 MaterialHandle create_shader_no_color_material_view(Engine& engine, MaterialHandle source);
+/** `createMaterialView(source, { features: 0 })` over a ShaderMaterial: its slots stay the source's. */
+MaterialHandle create_shader_material_view(Engine& engine, MaterialHandle source);
+/** The program a shader view draws: one generation derived from its redefined properties. */
+void derive_shader_material_view(Engine& engine, MaterialHandle view, std::uint32_t variant,
+                                 bool transmissive);
+/** The shader variant a shader view draws. */
+std::uint32_t shader_material_view_variant(const Engine& engine, MaterialHandle view);
 MaterialHandle create_node_no_color_material_view(Engine& engine, MaterialHandle source);
 void mark_material_ubo_dirty(Engine& engine, MaterialHandle material);
+void release_material_view_gpu(Engine& engine, MaterialHandle view);
 void set_standard_emissive_texture(Engine& engine, MaterialHandle material,
                                    RenderTextureRef texture);
 void set_standard_emissive_file_texture(Engine& engine, MaterialHandle material,
@@ -8430,6 +8740,26 @@ RenderTargetHandle swapchain_render_target(Engine& engine);
 TaskHandle create_render_task(Engine& engine, Scene& scene, RenderTaskOptions options);
 TaskHandle create_geometry_renderer_task(Engine& engine, Scene& scene, GeometryTaskOptions options);
 TaskHandle create_copy_to_texture_task(Engine& engine, Scene& scene, CopyTaskOptions options);
+/** A render target's run-time `samples`: a render attachment's WebGPU sample counts, 1 or 4. */
+inline std::uint32_t render_target_sample_count(double samples) {
+    if (samples != 1.0 && samples != 4.0)
+        throw std::runtime_error("A render target's sample count is 1 or 4.");
+    return static_cast<std::uint32_t>(samples);
+}
+/**
+ * `ownsTargetTexture`: the pin's copy task rebuilds its target at every
+ * frame-graph build. A surface-sized target is reallocated at each resize,
+ * which is that rebuild; a fixed-size target's rebuild would clear it, which
+ * is not represented.
+ */
+inline CopyTaskOptions copy_task_owning_target(const Engine& engine, CopyTaskOptions options,
+                                               bool owns) {
+    if (owns && handle_at(engine.render_targets, options.target).width != 0)
+        throw std::runtime_error(
+            "A copy task owning a fixed-size target clears it at each frame-graph build; only "
+            "surface-sized owned targets are represented.");
+    return options;
+}
 TaskHandle create_post_process_task(Engine& engine, PostProcessTaskOptions options);
 void update_post_process_uniforms(Engine& engine, TaskHandle task);
 /**
@@ -8450,11 +8780,14 @@ void add_task_after(Scene& scene, TaskHandle task, TaskHandle after);
 void build_frame_graph_task(Scene& scene, TaskHandle task);
 /** `addTask`/`addTaskAtStart` where the scene may already be registered. */
 void add_live_task(Scene& scene, TaskHandle task, bool at_start);
+/** `removeTask`: unlists every registration of a task, which keeps its passes and resources. */
+bool remove_task(Scene& scene, TaskHandle task);
 /** Refuses an executed task that is disposed or waits for its build, as the pin fails. */
 void require_executable_task(const FrameTaskRecord& task);
 void add_task(FrameGraphContext& context, TaskHandle task);
 void add_task_at_start(FrameGraphContext& context, TaskHandle task);
 void add_task_after(FrameGraphContext& context, TaskHandle task, TaskHandle after);
+bool remove_task(FrameGraphContext& context, TaskHandle task);
 
 /**
  * `PcfSpotlightShadowGeneratorConfig`, as the reached slice resolves it.
@@ -8986,6 +9319,12 @@ EffectRendererHandle create_effect_renderer(Engine& engine, EffectWrapperHandle 
                                             EffectRendererOptions options);
 void register_effect_renderer(Engine& engine, EffectRendererHandle renderer);
 TaskHandle create_effect_render_task(Engine& engine, EffectTaskOptions options);
+/**
+ * `EffectRenderTask.execute`'s scissor over a `target_width` x `target_height` target: the
+ * rectangle its pass rasterizes, or none when the pass ends without drawing.
+ */
+std::optional<PixelViewport> effect_task_scissor(const NormalizedViewport& scissor,
+                                                 double target_width, double target_height);
 SpriteRendererHandle create_sprite_renderer(Engine& engine, SpriteRendererOptions options);
 void add_sprite_renderer_layer(Engine& engine, SpriteRendererHandle renderer,
                                Sprite2DLayerHandle layer);

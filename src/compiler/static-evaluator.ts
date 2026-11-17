@@ -134,6 +134,7 @@ import {
     writeSites,
     expressionHasEffects,
     functionKind,
+    isModuleConstDeclaration,
     isModuleScopeFunction,
     regularExpressionParts,
     variableKind,
@@ -155,16 +156,10 @@ import {
 } from "./math-intrinsics.js";
 import { knownAbsent, knownCondition } from "./values/model.js";
 
-/** Whether a symbol names a module-scope `const` declared in the program. */
+/** Whether a symbol names a module constant (`isModuleConstDeclaration`). */
 function isModuleConstant(symbol: ts.Symbol): boolean {
-    const declaration = symbol.declarations?.find(ts.isVariableDeclaration);
-    const statement = declaration?.parent.parent;
-    return (
-        statement !== undefined &&
-        ts.isVariableStatement(statement) &&
-        ts.isSourceFile(statement.parent) &&
-        !statement.parent.isDeclarationFile &&
-        variableKind(statement.declarationList) === "const"
+    return isModuleConstDeclaration(
+        symbol.declarations?.find(ts.isVariableDeclaration),
     );
 }
 
@@ -454,6 +449,8 @@ export class StaticEvaluator {
         ) => Value | undefined,
         /** `Compiler.probeEmission`: a declined compile leaves no trace. */
         private readonly probeEmission: LoweringServices["probeEmission"],
+        /** `Compiler.keptEmission`: the same, without speculating. */
+        private readonly keptEmission: LoweringServices["keptEmission"],
         /** `DataLowerer.compileKnownValueForSink`: a value as a data sink stores it. */
         private readonly valueForSink: (
             value: Value,
@@ -845,14 +842,18 @@ export class StaticEvaluator {
                     );
                 return this.castNumber(value, precision);
             }
-            // A number or a parsed document, which the numeric sink coerces.
-            const asserted = this.resolveValue(assertion);
-            if (isNumericValue(asserted))
-                return this.castNumber(asserted, precision);
-            // An optional number slot behind a type the checker cannot see
-            // through (`unknown`) reads as ToNumber reads it too.
-            const slot = castOptionalNumber(asserted, true);
-            if (slot !== undefined) return slot;
+            // A number or a parsed document, which the numeric sink coerces,
+            // or an optional number slot behind a type the checker cannot
+            // see through (`unknown`), which reads as ToNumber reads it too.
+            // Any other value is the operand's to read below: what reading
+            // it here emitted is rolled back, or the operand would run twice.
+            const asserted = this.keptEmission(() => {
+                const value = this.resolveValue(assertion);
+                return isNumericValue(value)
+                    ? this.castNumber(value, precision)
+                    : castOptionalNumber(value, true);
+            });
+            if (asserted !== undefined) return asserted;
         }
         const awaited = unwrapExpression(expression);
         if (ts.isAwaitExpression(awaited)) {
@@ -1645,19 +1646,40 @@ export class StaticEvaluator {
                 this.evaluateBrowserValue(left)?.kind === "undefined"
             )
                 return expression.right;
-            // Records are identifier-bound, so only those owners are
-            // probed: the probe is a full value compile with emit
-            // authority, and an owner shape whose compilation emits
-            // statements (a call's arguments) must not emit them here
-            // first and again on the value path.
-            const ownerNode = this.unwrap(left.expression);
+            // Records are identifier-bound, so only those owners and the
+            // compile-time records their member chains reach are probed:
+            // the probe is a full value compile with emit authority, and an
+            // owner shape whose compilation emits statements (a call's
+            // arguments) must not emit them here first and again on the
+            // value path.
+            const path: string[] = [];
+            let ownerNode = this.unwrap(left.expression);
+            while (
+                ts.isPropertyAccessExpression(ownerNode) &&
+                !ownerNode.questionDotToken
+            ) {
+                path.unshift(ownerNode.name.text);
+                ownerNode = this.unwrap(ownerNode.expression);
+            }
             if (
                 !ts.isIdentifier(ownerNode) &&
                 ownerNode.kind !== ts.SyntaxKind.ThisKeyword
             ) {
                 return undefined;
             }
-            const owner = this.resolveValue(left.expression);
+            let owner: Value | undefined =
+                path.length === 0
+                    ? this.resolveValue(left.expression)
+                    : ts.isIdentifier(ownerNode)
+                      ? this.lookupOptional(ownerNode)
+                      : undefined;
+            for (const key of path)
+                owner =
+                    owner?.kind === "record"
+                        ? owner.recordProperties?.[key]
+                        : undefined;
+            if (!owner || (path.length > 0 && owner.kind !== "record"))
+                return undefined;
             // Initializer metadata does not settle the current contents of a
             // materialized field unless whole-program observation proved that
             // field is never written.

@@ -37,6 +37,7 @@ interface FeatureMacro {
 export const featureMacros: readonly FeatureMacro[] = [
     { macro: "BBLITE_DEVICE_RECOVERY", anyOf: ["engine:device-recovery"] },
     { macro: "BBLITE_GPU_TASK_TIMING", anyOf: ["engine:gpu-task-timing"] },
+    { macro: "BBLITE_SCREENSHOT_CAPTURE", anyOf: ["engine:screenshot"] },
     { macro: "BBLITE_GPU_RETIREMENT", anyOf: ["engine:gpu-retirement"] },
     { macro: "BBLITE_THIN_INSTANCES", anyOf: ["mesh:thin-instances"] },
     { macro: "BBLITE_MESH_OPACITY", anyOf: ["mesh:opacity"] },
@@ -116,6 +117,16 @@ export const featureMacros: readonly FeatureMacro[] = [
         macro: "BBLITE_RENDER_TASK_TRANSMISSION",
         anyOf: ["frame-graph:render-task-transmission"],
     },
+    // A task resolving a multisampled depth into a single-sample one.
+    {
+        macro: "BBLITE_DEPTH_RESOLVE_TASK",
+        anyOf: ["frame-graph:depth-resolve"],
+    },
+    // A canvas resize rebuilds each registered scene's task targets.
+    {
+        macro: "BBLITE_COLOR_TEXTURE_IDENTITY",
+        anyOf: ["frame-graph:color-texture-identity"],
+    },
     // A disposed task refuses to execute.
     {
         macro: "BBLITE_TASK_DISPOSAL",
@@ -144,6 +155,7 @@ export const featureMacros: readonly FeatureMacro[] = [
         allOf: ["material:plugin-textures", "material:plugins"],
     },
     { macro: "BBLITE_HAS_EFFECT_TASK", anyOf: ["effect:task"] },
+    { macro: "BBLITE_EFFECT_TASK_SCISSOR", anyOf: ["effect:task-scissor"] },
     { macro: "BBLITE_HAS_TEXT", anyOf: ["text:renderable", "renderer:text"] },
     { macro: "BBLITE_HAS_TEXT_RENDERABLE", anyOf: ["text:renderable"] },
     { macro: "BBLITE_HAS_TEXT_RENDERER", anyOf: ["renderer:text"] },

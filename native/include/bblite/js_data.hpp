@@ -1273,6 +1273,11 @@ throw_nullish_access(const char* message = "Cannot read properties of null or un
     throw NamedError("TypeError", message);
 }
 
+/** A value asserted to a class it is no instance of: TypeError, as a private member read throws. */
+template <typename T = void> [[noreturn]] T throw_not_an_instance() {
+    throw NamedError("TypeError", "Value is not an instance of the asserted class");
+}
+
 template <typename T> inline constexpr bool is_ref_v = false;
 template <typename T> inline constexpr bool is_ref_v<Ref<T>> = true;
 
@@ -2073,13 +2078,19 @@ template <typename T> inline constexpr bool is_tagged_v<Tagged<T>> = true;
 }
 
 /**
- * SameValueZero, the key equality of JavaScript Map and Set: NaN is NaN
- * and -0 is +0. A short string -- a chunk coordinate, an id -- compares
- * inline; the library's variable-length compare is a call that costs more
- * than such a key's bytes.
+ * SameValue, with `SignedZeros`, or SameValueZero, the key equality of
+ * JavaScript Map and Set: NaN is NaN, and -0 is +0 only under SameValueZero.
+ * A short string -- a chunk coordinate, an id -- compares inline; the
+ * library's variable-length compare is a call that costs more than such a
+ * key's bytes.
  */
-template <typename T> [[nodiscard]] bool same_value_zero(const T& left, const T& right) {
+template <bool SignedZeros, typename T>
+[[nodiscard]] bool same_value_as(const T& left, const T& right) {
     if constexpr (std::is_floating_point_v<T>) {
+        if constexpr (SignedZeros) {
+            if (left == T{} && right == T{})
+                return std::signbit(left) == std::signbit(right);
+        }
         return left == right || (std::isnan(left) && std::isnan(right));
     } else if constexpr (std::is_same_v<T, std::string>) {
         const std::size_t size = left.size();
@@ -2095,25 +2106,30 @@ template <typename T> [[nodiscard]] bool same_value_zero(const T& left, const T&
         return true;
     } else if constexpr (IsNullable<T>::value) {
         return left.has_value() == right.has_value() &&
-               (!left.has_value() || same_value_zero(*left, *right));
+               (!left.has_value() || same_value_as<SignedZeros>(*left, *right));
     } else if constexpr (is_tagged_v<T>) {
         return left.defined() == right.defined() &&
-               (!left.defined() || same_value_zero(left.value(), right.value()));
+               (!left.defined() || same_value_as<SignedZeros>(left.value(), right.value()));
     } else if constexpr (is_variant_v<T>) {
         return left.index() == right.index() &&
                std::visit(
                    [](const auto& first, const auto& second) {
                        if constexpr (std::is_same_v<decltype(first), decltype(second)>)
-                           return same_value_zero(first, second);
+                           return same_value_as<SignedZeros>(first, second);
                        else
                            return false;
                    },
                    left, right);
     } else if constexpr (is_pair_v<T>) {
-        return same_value_zero(left.first, right.first) &&
-               same_value_zero(left.second, right.second);
+        return same_value_as<SignedZeros>(left.first, right.first) &&
+               same_value_as<SignedZeros>(left.second, right.second);
     } else if constexpr (requires { left.same_value_zero(right); }) {
-        // A value carrying several kinds (a parsed document) owns its rule.
+        // A value carrying several kinds (a parsed document) owns its rule;
+        // its numbers keep their signed zeros apart under SameValue.
+        if constexpr (SignedZeros && requires { left.to_number(); }) {
+            if (left.is_number() && right.is_number())
+                return same_value_as<true>(left.to_number(), right.to_number());
+        }
         return left.same_value_zero(right);
     } else if constexpr (
         !requires { left == right; } &&
@@ -2121,10 +2137,14 @@ template <typename T> [[nodiscard]] bool same_value_zero(const T& left, const T&
             left.value;
             right.value;
         }) {
-        return same_value_zero(left.value, right.value);
+        return same_value_as<SignedZeros>(left.value, right.value);
     } else {
         return std::equal_to<T>{}(left, right);
     }
+}
+
+template <typename T> [[nodiscard]] bool same_value_zero(const T& left, const T& right) {
+    return same_value_as<false>(left, right);
 }
 
 /** The key Map.prototype.set and Set.prototype.add store: -0 becomes +0. */
@@ -3072,11 +3092,7 @@ template <typename Slot>
 
 /** JavaScript SameValue over numbers: NaN equals NaN and the signed zeros differ. */
 [[nodiscard]] inline bool same_value(double left, double right) {
-    if (std::isnan(left) || std::isnan(right))
-        return std::isnan(left) && std::isnan(right);
-    if (left == 0.0 && right == 0.0)
-        return std::signbit(left) == std::signbit(right);
-    return left == right;
+    return detail::same_value_as<true>(left, right);
 }
 
 /** Immediate snapshot of JavaScript Array.prototype.keys: 0 through length - 1. */
@@ -3824,14 +3840,50 @@ private:
     std::size_t next_ = 0;
 };
 
+// The fraction digits toFixed and toExponential take: ToIntegerOrInfinity of
+// the argument, which must lie in [0, 100].
+[[nodiscard]] inline int number_fraction_digits(double precision, const char* method) {
+    const double integer = std::isnan(precision) ? 0.0 : std::trunc(precision);
+    if (integer < 0 || integer > 100)
+        throw std::range_error(std::string("Number.") + method +
+                               " precision must be between 0 and 100");
+    return static_cast<int>(integer);
+}
+
+// Whether to_chars's ties-to-even rounding of the finite nonzero `value` at
+// `digits` decimals (a negative count rounds to a multiple of 10^-digits)
+// took the smaller of two equally near candidates, where ECMAScript takes the
+// larger magnitude. The test reads the exact binary fraction, not a rounded
+// multiplication by 10^digits.
+[[nodiscard]] inline bool number_tie_rounded_down(double value, int digits) {
+    const auto bits = std::bit_cast<std::uint64_t>(std::abs(value));
+    const auto encoded_exponent = static_cast<int>((bits >> 52u) & 0x7ffu);
+    const std::uint64_t significand =
+        (bits & 0x000fffffffffffffull) | (encoded_exponent ? 0x0010000000000000ull : 0);
+    assert(significand != 0);
+    const int trailing = std::countr_zero(significand);
+    const int exponent = encoded_exponent ? encoded_exponent - 1075 : -1074;
+    // |value| * 10^digits is odd * 5^digits * 2^(exponent + trailing + digits):
+    // a tie is an odd count of halves.
+    if (exponent + trailing + digits != -1)
+        return false;
+    std::uint64_t halves = significand >> trailing;
+    // A negative count divides by 5^-digits, which the odd significand must hold.
+    for (int power = digits; power < 0; ++power) {
+        if (halves % 5 != 0)
+            return false;
+        halves /= 5;
+    }
+    // The candidates are (halves - 1) / 2 and (halves + 1) / 2, and 5^digits is
+    // 1 modulo 4: ties-to-even took the smaller when halves is 1 modulo 4.
+    return (halves & 3u) == 1u;
+}
+
 // Runtime Number.prototype.toFixed for retained UI values. JavaScript falls
 // back to its ordinary number spelling at 1e21, preserves the exceptional
 // spellings, and prints positive or negative zero without a minus sign.
 [[nodiscard]] inline std::string number_to_fixed(double value, double precision) {
-    const double integer = std::isnan(precision) ? 0.0 : std::trunc(precision);
-    if (integer < 0 || integer > 100)
-        throw std::range_error("Number.toFixed precision must be between 0 and 100");
-    const int digits = static_cast<int>(integer);
+    const int digits = number_fraction_digits(precision, "toFixed");
     if (std::isnan(value))
         return "NaN";
     if (value == std::numeric_limits<double>::infinity())
@@ -3848,17 +3900,48 @@ private:
     const auto converted = number_chars::to_chars(buffer.data(), buffer.data() + buffer.size(),
                                                   value, number_chars::chars_format::fixed, digits);
     assert(converted.ec == std::errc{});
-    // to_chars uses ties-to-even; ECMAScript chooses the larger magnitude.
-    // Test the exact binary fraction, not a rounded multiplication by 10^digits.
-    const auto bits = std::bit_cast<std::uint64_t>(std::abs(value));
-    const auto encoded_exponent = static_cast<int>((bits >> 52u) & 0x7ffu);
-    const std::uint64_t significand =
-        (bits & 0x000fffffffffffffull) | (encoded_exponent ? 0x0010000000000000ull : 0);
-    const int trailing = std::countr_zero(significand);
-    const int exponent = encoded_exponent ? encoded_exponent - 1075 : -1074;
-    if (exponent + trailing + digits == -1 && ((significand >> trailing) & 3u) == 1u)
+    // The last digit a rounded-down tie kept is even, so the increment never carries.
+    if (number_tie_rounded_down(value, digits))
         ++converted.ptr[-1];
     return std::string(buffer.data(), converted.ptr);
+}
+
+// Runtime Number.prototype.toExponential: the significand to_chars rounds to
+// `digits` decimals, a tie taking the larger magnitude as for toFixed.
+[[nodiscard]] inline std::string number_to_exponential(double value, double precision) {
+    if (!std::isfinite(value))
+        return number_to_string(value);
+    const int digits = number_fraction_digits(precision, "toExponential");
+    std::string result = value < 0.0 ? "-" : "";
+    int exponent = 0;
+    if (value == 0.0) {
+        result += '0';
+        if (digits > 0) {
+            result += '.';
+            result.append(static_cast<std::size_t>(digits), '0');
+        }
+    } else {
+        std::array<char, 128> buffer{};
+        const auto converted =
+            number_chars::to_chars(buffer.data(), buffer.data() + buffer.size(), std::abs(value),
+                                   number_chars::chars_format::scientific, digits);
+        assert(converted.ec == std::errc{});
+        const std::string_view text(buffer.data(),
+                                    static_cast<std::size_t>(converted.ptr - buffer.data()));
+        const auto marker = text.find('e');
+        [[maybe_unused]] const auto parsed =
+            std::from_chars(text.data() + marker + 2, converted.ptr, exponent);
+        assert(parsed.ec == std::errc{});
+        if (text[marker + 1] == '-')
+            exponent = -exponent;
+        // The printed exponent: a carry that raised it leaves no tie there.
+        if (number_tie_rounded_down(value, digits - exponent))
+            ++buffer[marker - 1];
+        result.append(buffer.data(), marker);
+    }
+    result += exponent < 0 ? "e-" : "e+";
+    result += std::to_string(exponent < 0 ? -exponent : exponent);
+    return result;
 }
 
 [[nodiscard]] inline double math_sign(double value) {
@@ -5331,8 +5414,9 @@ template <typename T> [[nodiscard]] inline Array<T> array_filled(double count, c
 }
 
 // `array.splice(index, 1)` — remove one element and shift the tail down,
-// the removal form the reached subset compiles (the particle sweep).
-template <typename T> inline void array_splice_one(Array<T>& values, double index) {
+// the removal form the reached subset compiles (the particle sweep, a
+// graph's native task list).
+template <typename Values> inline void array_splice_one(Values& values, double index) {
     const auto position = array_index(index);
     if (position >= values.size()) [[unlikely]] {
         throw std::runtime_error("Array splice index out of range.");
@@ -5745,6 +5829,20 @@ template <typename Lane>
 /** An absent number is `undefined`, which converts as NaN: `~~undefined` is 0. */
 [[nodiscard]] inline std::uint32_t to_uint32(const Nullable<double>& value) {
     return value ? to_uint32(*value) : 0u;
+}
+
+/**
+ * WebIDL [EnforceRange] onto the unsigned `Integer`: the value truncated, or none when it is not
+ * finite or outside `Integer`'s range, checked before any floating-to-integer conversion.
+ */
+template <std::unsigned_integral Integer>
+[[nodiscard]] inline std::optional<Integer> enforce_range(double value) {
+    const double integer = std::trunc(value);
+    // One past the largest value: a power of two a double holds exactly.
+    constexpr double end = static_cast<double>(std::numeric_limits<Integer>::max()) + 1.0;
+    if (!std::isfinite(integer) || integer < 0.0 || integer >= end)
+        return std::nullopt;
+    return static_cast<Integer>(integer);
 }
 
 // ECMAScript Math.imul: multiply the two ToUint32 values modulo 2^32,

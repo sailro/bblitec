@@ -5,6 +5,16 @@
 
 namespace bbl::pal {
 
+/** The sampler the pin's bind group takes from a slot's texture (`texture.sampler`). */
+inline TextureSamplerState effect_slot_sampler(const Engine& engine, const EffectTextureSlot& slot) {
+    if (slot.pixels_texture)
+        return slot.pixels_texture->sampler;
+    if (slot.render_texture)
+        if (const TextureSamplerState* sampler = render_texture_sampler(engine, *slot.render_texture))
+            return *sampler;
+    return effect_texture_sampler();
+}
+
 /** Images owned by one effect pass; render targets remain borrowed at draw time. */
 template <typename Image> class EffectTextureImages {
     enum class Kind { solid, pixels, render };
@@ -14,6 +24,7 @@ template <typename Image> class EffectTextureImages {
         Kind kind = Kind::solid;
         std::uint64_t identity = 0;
         std::array<std::uint8_t, 4> solid{};
+        TextureSamplerState sampler{};
         std::shared_ptr<Image> image;
     };
     std::vector<Binding> bindings_;
@@ -38,21 +49,28 @@ template <typename Image> class EffectTextureImages {
 
 public:
     template <typename Upload>
-    std::shared_ptr<Image> add(const EffectTextureSlot& slot, std::size_t position, Upload upload) {
-        Binding binding{slot.binding,       position,
-                        kind(slot),         slot.pixels_texture ? slot.pixels_texture->identity : 0,
-                        slot.texture.texel, acquire(slot, upload)};
+    std::shared_ptr<Image> add(const Engine& engine, const EffectTextureSlot& slot,
+                               std::size_t position, Upload upload) {
+        Binding binding{slot.binding,
+                        position,
+                        kind(slot),
+                        slot.pixels_texture ? slot.pixels_texture->identity : 0,
+                        slot.texture.texel,
+                        effect_slot_sampler(engine, slot),
+                        acquire(slot, upload)};
         bindings_.push_back(binding);
         return binding.image;
     }
 
     template <typename Upload, typename Rebind>
-    void refresh(const EffectWrapperRecord& wrapper, Upload upload, Rebind rebind) {
+    void refresh(const Engine& engine, const EffectWrapperRecord& wrapper, Upload upload,
+                 Rebind rebind) {
         for (auto& binding : bindings_) {
             const auto& slot = effect_texture_slot(wrapper, binding.binding);
             const Kind current = kind(slot);
             const auto identity = slot.pixels_texture ? slot.pixels_texture->identity : 0;
-            if (current == binding.kind &&
+            const TextureSamplerState sampler = effect_slot_sampler(engine, slot);
+            if (current == binding.kind && sampler == binding.sampler &&
                 (current == Kind::render ||
                  (current == Kind::pixels && identity == binding.identity) ||
                  (current == Kind::solid && slot.texture.texel == binding.solid)))
@@ -63,6 +81,7 @@ public:
             binding.kind = current;
             binding.identity = identity;
             binding.solid = slot.texture.texel;
+            binding.sampler = sampler;
         }
     }
 

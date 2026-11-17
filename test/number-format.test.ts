@@ -10,7 +10,7 @@ import {
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
 
-test("native numeric strings, concatenation and JSON match JavaScript across binary64 values", (t) => {
+test("native numeric strings, concatenation, JSON and exponential spellings match JavaScript across binary64 values", (t) => {
     const tools = optionalNativeFixtureTools();
     const unixCompiler =
         process.platform !== "win32"
@@ -76,7 +76,10 @@ test("native numeric strings, concatenation and JSON match JavaScript across bin
         const fixed = [0, 1, 2, 3, 20, 50, 100].map((digits) =>
             value.toFixed(digits),
         );
-        return `${raw.toString(16)}\t${String(value)}\t${JSON.stringify(value)}\t${fixed.join("\t")}`;
+        const exponential = [0, 1, 2, 3, 6, 20, 50, 100].map((digits) =>
+            value.toExponential(digits),
+        );
+        return `${raw.toString(16)}\t${String(value)}\t${JSON.stringify(value)}\t${[...fixed, ...exponential].join("\t")}`;
     });
     const input = join(directory, "cases.tsv"),
         executable = join(directory, "check.exe");

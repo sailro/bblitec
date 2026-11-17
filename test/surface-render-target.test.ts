@@ -343,7 +343,7 @@ globalThis.close();
 `);
     assert.match(
         result.cpp,
-        /std::optional<bbl::RenderTargetTexture> v_sampled\{\};/,
+        /std::optional<std::pair<bbl::StoredEngine, bbl::RenderTargetTexture>> v_sampled\{\};/,
     );
     const tools = optionalNativeFixtureTools(false);
     if (!tools) {

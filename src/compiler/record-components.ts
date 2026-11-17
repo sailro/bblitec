@@ -222,7 +222,12 @@ export interface RecordJoin {
      * layout of the component's other shapes.
      */
     readonly targetInstantiation?: InstantiatedRecord;
-    readonly kind: "value" | "element" | "assertion" | "spread";
+    /**
+     * `construction`: a fresh object literal's records, read only as the
+     * target type, are built in the target's layout (the source is no shape).
+     */
+    readonly kind:
+        "value" | "element" | "assertion" | "spread" | "construction";
 }
 
 /** What a record component keys its members by. */
@@ -361,7 +366,8 @@ export function recordComponents(
                 sourceInstantiation ?? recordIdentity(checker, source),
             );
         else if (
-            (kind === "assertion" && lacks(source, target)) ||
+            ((kind === "assertion" || kind === "construction") &&
+                lacks(source, target)) ||
             kind === "spread"
         )
             holdsNarrower.add(
@@ -380,13 +386,37 @@ export function recordComponents(
     const components = new Map<RecordComponentKey, RecordComponent>();
     const instantiated = (identity: RecordComponentKey): boolean =>
         "generic" in identity;
+    // A record type only constructed as another lends the layout no shape.
+    const shaping = new Set<RecordComponentKey>();
+    for (const {
+        source,
+        target,
+        sourceInstantiation,
+        targetInstantiation,
+        kind,
+    } of joins) {
+        shaping.add(targetInstantiation ?? recordIdentity(checker, target));
+        if (kind !== "construction")
+            shaping.add(sourceInstantiation ?? recordIdentity(checker, source));
+    }
+    const constructedOnly = (identity: RecordComponentKey): boolean =>
+        !shaping.has(identity) &&
+        joins.some(
+            ({ source, sourceInstantiation, kind }) =>
+                kind === "construction" &&
+                (sourceInstantiation ?? recordIdentity(checker, source)) ===
+                    identity,
+        );
     let next = 0;
     for (const group of groups.values()) {
         if (group.length < 2) continue;
         const members = group.map(({ type }) => type);
         // An instantiation stands for the concrete shapes it joined.
         const concrete = group
-            .filter(({ identity }) => !instantiated(identity))
+            .filter(
+                ({ identity }) =>
+                    !instantiated(identity) && !constructedOnly(identity),
+            )
             .map(({ type }) => type);
         const unions = concrete.filter((member): member is ts.UnionType =>
             member.isUnion(),

@@ -242,6 +242,21 @@ function valueJson(
         );
         if (demand) throw new NativeRecordStorageRequired(demand);
     }
+    // A class instance built as a compile-time record is one object a
+    // document holds boxed: the store replays with the class shared from
+    // its first construction.
+    const shared =
+        value.kind === "record" && value.classDeclaration !== undefined
+            ? lowerer.context.dataTypes.sharedClassDemand(
+                  value.classDeclaration,
+              )
+            : undefined;
+    if (shared)
+        lowerer.context.refuseWithDemand(
+            node,
+            "A class instance built as a compile-time record is stored in a document once its class is shared from its first construction.",
+            shared,
+        );
     const errorExpression =
         value.dataType?.kind === "error"
             ? lowerer.convertedExpression(node)
@@ -379,6 +394,7 @@ function valuePromise(
         value.promiseResult?.kind === "void" &&
         result &&
         (result.kind === "optional" ||
+            result.kind === "tagged" ||
             result.kind === "function" ||
             result.kind === "json" ||
             (result.kind === "struct" && types.isReferenceStruct(result.name)))
@@ -400,6 +416,7 @@ function valuePromise(
         return rejectionOnlyPromiseCpp(value.cpp, expected);
     const payload = value.promiseResult;
     const source =
+        payload?.absenceTagType ??
         payload?.dataType ??
         (payload?.kind === "number" ||
         payload?.kind === "string" ||
@@ -601,6 +618,7 @@ export const scalarsSinks: DataSinkOperations<
     | "request-init"
     | "url"
     | "image-bitmap"
+    | "offscreen-canvas-2d"
     | "dom-rect"
     | "gpu-adapter"
     | "gpu"
@@ -669,6 +687,8 @@ export const scalarsSinks: DataSinkOperations<
                 lowerer.context.dataTypes.markStoredObjectReferences(type);
                 return `(${value.cpp}).weak_identity()`;
             }
+            if (value.kind === "mesh")
+                return `bbl::mesh_weak_identity(${lowerer.context.requireEngine(value, node)}, ${value.cpp})`;
             const global = ts.isExpression(node)
                 ? lowerer.context.libraryGlobal(node)
                 : undefined;
@@ -685,7 +705,7 @@ export const scalarsSinks: DataSinkOperations<
             }
             return lowerer.context.fail(
                 node,
-                "A weak object key requires an owned record or represented DOM target.",
+                "A weak object key requires an owned record, a mesh or a represented DOM target.",
             );
         },
     },
@@ -729,6 +749,7 @@ export const scalarsSinks: DataSinkOperations<
     "request-init": opaqueSink,
     url: opaqueSink,
     "image-bitmap": opaqueSink,
+    "offscreen-canvas-2d": opaqueSink,
     "dom-rect": opaqueSink,
     gpu: sameKindSink("gpu"),
     file: opaqueSink,

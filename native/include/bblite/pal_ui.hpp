@@ -5,6 +5,7 @@
 
 #include <bblite/js_data.hpp>
 #include <bblite/runtime.hpp>
+#include <bblite/pal_canvas_pixels.hpp>
 #if BBLITE_WORKERS
 #include <bblite/js_promise.hpp>
 #endif
@@ -16,6 +17,7 @@
 #include <initializer_list>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -181,6 +183,9 @@ void ui_set_declared_attribute(Engine& engine, UiElementHandle element,
                                std::string_view property, std::string name, std::string value);
 void ui_set_style_property(Engine& engine, UiElementHandle element, std::string name,
                            std::string value);
+/** CSSOM setProperty with the important priority: an empty value removes the declaration. */
+void ui_set_important_style_property(Engine& engine, UiElementHandle element, std::string name,
+                                     std::string value);
 /** What a run-time `background` shorthand gives a longhand: its CSS-wide keyword, else `initial`. */
 std::string ui_background_longhand(std::string_view shorthand, std::string_view initial);
 /** The background shorthand's value, after its reset longhands: a colour or plain gradient layers. */
@@ -223,6 +228,9 @@ UiElementHandle ui_remove_child(Engine& engine, UiElementHandle parent, UiElemen
 /** ChildNode.replaceWith(nodes...): a parentless node is left unchanged. */
 void ui_replace_with(Engine& engine, UiElementHandle node,
                      std::initializer_list<UiElementHandle> nodes);
+/** ChildNode.after(nodes...) (`after`) or before(nodes...): a parentless node inserts nothing. */
+void ui_insert_siblings(Engine& engine, UiElementHandle node,
+                        std::initializer_list<UiElementHandle> nodes, bool after);
 /** Element.insertAdjacentElement: null when beforebegin/afterend find no parent. */
 js::Nullable<UiElementHandle> ui_insert_adjacent_element(Engine& engine, UiElementHandle target,
                                                          std::string_view where,
@@ -299,8 +307,25 @@ void ui_canvas_stroke_rect(Engine&, UiElementHandle, double, double, double, dou
 void ui_canvas_set_image_smoothing(Engine&, UiElementHandle, bool);
 /** An ImageSmoothingQuality enum value; any other string is ignored. */
 void ui_canvas_set_image_smoothing_quality(Engine&, UiElementHandle, std::string);
-void ui_canvas_put_image_data(Engine&, UiElementHandle, const js::U8Array&, double, double, double,
-                              double);
+/** `putImageData(new ImageData(rgba, width, height), dx, dy)` over the RGBA bytes of `rgba`. */
+void ui_canvas_put_image_data(Engine&, UiElementHandle, std::span<const std::uint8_t>, double,
+                              double, double, double);
+/** The same over a Uint8Array's bytes in place. */
+inline void ui_canvas_put_image_data(Engine& engine, UiElementHandle element,
+                                     const js::U8Array& rgba, double width, double height,
+                                     double destination_x, double destination_y) {
+    ui_canvas_put_image_data(engine, element,
+                             std::span<const std::uint8_t>(rgba.data(), rgba.size()), width, height,
+                             destination_x, destination_y);
+}
+/** The same over a Uint8ClampedArray's bytes in place. */
+inline void ui_canvas_put_image_data(Engine& engine, UiElementHandle element,
+                                     const js::U8CArray& rgba, double width, double height,
+                                     double destination_x, double destination_y) {
+    ui_canvas_put_image_data(engine, element,
+                             std::span<const std::uint8_t>(js::typed_array_bytes(rgba)), width,
+                             height, destination_x, destination_y);
+}
 /**
  * `drawImage(source, dx, dy[, dw, dh])` and `drawImage(source, sx, sy, sw, sh, dx, dy, dw, dh)`
  * from a canvas or img source: an image still loading draws nothing, a broken one throws.
@@ -311,11 +336,13 @@ void ui_canvas_draw_image(Engine&, UiElementHandle, UiElementHandle, double, dou
 void ui_canvas_draw_image(Engine&, UiElementHandle, UiElementHandle, double, double, double, double,
                           double, double, double, double);
 /** `getImageData`'s result: the rectangle's unpremultiplied RGBA rows. */
-struct UiCanvasImageData {
-    double width = 0.0;
-    double height = 0.0;
-    js::U8Array data;
-};
+using UiCanvasImageData = pal::CanvasImageData;
+/**
+ * `canvas.toDataURL(type, quality)`: the whole canvas as `getImageData` composes it, encoded
+ * by `pal::encode_image_data_url`; a path, stroke or text draw throws.
+ */
+std::string ui_canvas_to_data_url(Engine&, UiElementHandle, std::optional<std::string>,
+                                  std::optional<double>);
 /**
  * `getImageData(sx, sy, sw, sh)` rasterized from what the canvas holds: putImageData pixels,
  * filled rectangles and image blits. A path, stroke or text draw refuses.

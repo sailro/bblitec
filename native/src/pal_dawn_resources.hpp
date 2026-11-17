@@ -247,6 +247,17 @@ create_dawn_texture_view(WGPUTexture texture, const WGPUTextureViewDescriptor* d
     return require_dawn_resource(wgpuTextureCreateView(texture, descriptor), label, site);
 }
 
+/** Narrows a pass's rasterization to `resolved` (`setScissorRect`), or leaves the whole target. */
+inline void set_pass_scissor(WGPURenderPassEncoder pass,
+                             const std::optional<PixelViewport>& resolved) {
+    if (!resolved.has_value())
+        return;
+    const PixelViewport& rect = *resolved;
+    wgpuRenderPassEncoderSetScissorRect(
+        pass, static_cast<std::uint32_t>(rect.x), static_cast<std::uint32_t>(rect.y),
+        static_cast<std::uint32_t>(rect.width), static_cast<std::uint32_t>(rect.height));
+}
+
 /**
  * Narrows a pass to `resolved`, its viewport and scissor, or leaves it at the whole target (the
  * SDL backend's `set_pass_viewport`): a camera's viewport (`_applyCameraViewport`), or the page
@@ -260,9 +271,7 @@ inline void set_pass_viewport(WGPURenderPassEncoder pass,
     wgpuRenderPassEncoderSetViewport(pass, static_cast<float>(rect.x), static_cast<float>(rect.y),
                                      static_cast<float>(rect.width),
                                      static_cast<float>(rect.height), 0.0f, 1.0f);
-    wgpuRenderPassEncoderSetScissorRect(
-        pass, static_cast<std::uint32_t>(rect.x), static_cast<std::uint32_t>(rect.y),
-        static_cast<std::uint32_t>(rect.width), static_cast<std::uint32_t>(rect.height));
+    set_pass_scissor(pass, rect);
 }
 
 /**

@@ -74,6 +74,7 @@ import {
 import { metadataFieldsForKind } from "./values/metadata.js";
 import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
 import { isNativeOwnerRecord } from "./native-owner-carrier.js";
+import { recordPropertyKeys } from "./object-statics.js";
 import { parameterProjectionIsReadOnly } from "./parameter-projection-effects.js";
 import { recordFieldIsWritten } from "./record-observations.js";
 import { loopBoundMayChange, walkReachedLoopNodes } from "./resource-loops.js";
@@ -81,6 +82,7 @@ import { calledFunction } from "./symbols.js";
 import {
     handleFoundCpp,
     knownCondition,
+    presentCopy,
     rebaseSpelling,
 } from "./values/model.js";
 
@@ -1427,18 +1429,23 @@ export class BindingScopes {
                 const properties = this.recordPropertiesAreCurrent(narrowed)
                     ? narrowed.recordProperties
                     : undefined;
-                const ownKeys = narrowed.recordOwnKeys;
-                narrowed = this.pinValueToTemporary(
-                    this.context.dataLowerer.leafValue(
-                        this.context.dataLowerer.compileKnownValueForSink(
-                            narrowed,
+                // Methods and accessors are own keys as data properties are.
+                const ownKeys =
+                    narrowed.recordOwnKeys ?? recordPropertyKeys(narrowed);
+                narrowed = presentCopy(
+                    this.pinValueToTemporary(
+                        this.context.dataLowerer.leafValue(
+                            this.context.dataLowerer.compileKnownValueForSink(
+                                narrowed,
+                                represented,
+                                argument ?? identifier,
+                            ),
                             represented,
-                            argument ?? identifier,
                         ),
-                        represented,
+                        "parameter_object",
+                        identifier,
                     ),
-                    "parameter_object",
-                    identifier,
+                    narrowed,
                 );
                 if (properties) {
                     writable(narrowed).recordProperties = Object.fromEntries(
@@ -1446,8 +1453,7 @@ export class BindingScopes {
                             keepsStaticMember(propertyValue),
                         ),
                     );
-                    writable(narrowed).recordOwnKeys =
-                        ownKeys ?? Object.keys(properties);
+                    writable(narrowed).recordOwnKeys = ownKeys;
                 }
             }
         }
@@ -1640,7 +1646,7 @@ export class BindingScopes {
                     (member.kind === "number" ||
                         member.kind === "boolean" ||
                         member.staticString !== undefined) &&
-                    parameterProjectionIsReadOnly(
+                    (parameterProjectionIsReadOnly(
                         this.context.checker,
                         parameterDeclaration.parent,
                         parameterDeclaration.parent.parameters.indexOf(
@@ -1653,7 +1659,19 @@ export class BindingScopes {
                         member.staticString !== undefined ||
                             member.staticNumber !== undefined ||
                             member.staticBoolean !== undefined,
-                    ),
+                    ) ||
+                        // An own scalar no write in the program replaces
+                        // keeps its value however the object's other
+                        // fields change.
+                        ((independentFields || separateScalars) &&
+                            path.length === 1 &&
+                            !recordFieldIsWritten(
+                                this.context,
+                                this.context.checker.getTypeAtLocation(
+                                    identifier,
+                                ),
+                                path[0]!,
+                            ))),
                 true,
             );
         }
@@ -1884,6 +1902,7 @@ export class BindingScopes {
         };
         if ((parameter && !readOnlyParameter) || reboundLocal) {
             delete writable(stored).staticNumber;
+            delete writable(stored).formattedNumber;
             delete writable(stored).staticString;
             delete writable(stored).staticBoolean;
         }
@@ -1948,6 +1967,43 @@ export class BindingScopes {
         for (const scope of this.variableScopes) {
             for (const binding of scope.values()) visit(binding.value);
         }
+    }
+
+    /**
+     * The bindings in scope holding, as itself or as a record member, a
+     * collection that shares `value`'s generation facts (its size or its
+     * elements), each with the scope holding it.
+     */
+    public collectionHolders(value: Value): {
+        readonly symbol: ts.Symbol;
+        readonly scope: ReadonlyMap<ts.Symbol, VariableBinding>;
+    }[] {
+        const owner = value.staticElementsOwner ?? value;
+        const state =
+            owner.collectionCardinality ?? value.collectionCardinality;
+        const elements = owner.staticElements ?? value.staticElements;
+        const holders: {
+            symbol: ts.Symbol;
+            scope: ReadonlyMap<ts.Symbol, VariableBinding>;
+        }[] = [];
+        for (const scope of this.variableScopes)
+            for (const [symbol, binding] of scope)
+                if (
+                    heldCollections(binding.value).some((held) => {
+                        const heldOwner = held.staticElementsOwner ?? held;
+                        return (
+                            heldOwner === owner ||
+                            (state !== undefined &&
+                                (heldOwner.collectionCardinality ??
+                                    held.collectionCardinality) === state) ||
+                            (elements !== undefined &&
+                                (heldOwner.staticElements ??
+                                    held.staticElements) === elements)
+                        );
+                    })
+                )
+                    holders.push({ symbol, scope });
+        return holders;
     }
 
     /** Collections whose carried facts can change between body executions. */

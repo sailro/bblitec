@@ -1,11 +1,20 @@
 #pragma once
 
+#include <bblite/js_error.hpp>
+#include <bblite/js_file.hpp>
+#include <bblite/js_promise.hpp>
 #include <bblite/js_structured_clone.hpp>
+#include <bblite/pal_canvas_pixels.hpp>
+#include <bblite/pal_image.hpp>
+#include <bblite/pal_native_job.hpp>
 #include <bblite/pal_offscreen.hpp>
 #include <bblite/pal_host_services.hpp>
 
 #include <thread>
-#include <cmath>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace bbl::pal {
 
@@ -54,14 +63,12 @@ public:
         require_owner();
         return detached_;
     }
+    /** A width or height as WebIDL [EnforceRange] unsigned long long converts it. */
     static std::uint64_t dimension(double value) {
-        // WebIDL [EnforceRange] unsigned long long: truncate before checking
-        // the range, and check before any floating-to-integer conversion.
-        const double integer = std::trunc(value);
-        if (!std::isfinite(integer) || integer < 0 || integer >= 0x1p64) {
+        const auto integer = js::enforce_range<std::uint64_t>(value);
+        if (!integer)
             throw CanvasRangeError("Canvas dimension is outside the unsigned long long range.");
-        }
-        return static_cast<std::uint64_t>(integer);
+        return *integer;
     }
     void set_width(double value) {
         const auto width = dimension(value);
@@ -76,10 +83,19 @@ public:
         height_ = height;
     }
 
+    /** A dimension native rendering and encoding admit: [1, 16384]. */
+    static std::uint32_t rendering_dimension(std::uint64_t value) {
+        if (value == 0 || value > maximum_native_extent)
+            throw InvalidCanvasState("Native rendering requires canvas dimensions in [1, 16384].");
+        return static_cast<std::uint32_t>(value);
+    }
+
     std::shared_ptr<OffscreenRun> rendering_context() {
         require_attached();
         if (run_)
             return run_;
+        if (context_2d_)
+            throw InvalidCanvasState("An OffscreenCanvas with a 2d context has no WebGPU context.");
         if (!endpoint_ || !endpoint_->device || !endpoint_->surface) {
             throw InvalidCanvasState("Canvas has no native graphics provider.");
         }
@@ -90,11 +106,36 @@ public:
         return run_;
     }
 
+    /**
+     * `getContext("2d")`'s bitmap and drawing state: made at the canvas's size on the first
+     * request, the same one after; null while a WebGPU context owns the canvas.
+     */
+    UiElementRecord::CanvasState* context_2d() {
+        require_attached();
+        if (run_)
+            return nullptr;
+        if (!context_2d_) {
+            context_2d_.emplace();
+            reset_canvas(*context_2d_, static_cast<double>(width_), static_cast<double>(height_));
+        }
+        return &*context_2d_;
+    }
+    /** The 2D context's state, when `getContext("2d")` made one. */
+    [[nodiscard]] const UiElementRecord::CanvasState* bitmap_2d() const {
+        require_owner();
+        return context_2d_ ? &*context_2d_ : nullptr;
+    }
+    /** Whether a WebGPU context owns the canvas. */
+    [[nodiscard]] bool has_rendering_context() const {
+        require_owner();
+        return static_cast<bool>(run_);
+    }
+
     std::unique_ptr<TransferredResource> transfer() override {
         require_owner();
         if (detached_)
             throw DataCloneError("OffscreenCanvas is already detached.");
-        if (run_)
+        if (run_ || context_2d_)
             throw InvalidCanvasState(
                 "An OffscreenCanvas with a rendering context cannot be transferred.");
         // Allocate before mutating the sender. The payload contains only
@@ -120,22 +161,89 @@ private:
         if (detached_)
             throw InvalidCanvasState("OffscreenCanvas is detached.");
     }
-    static std::uint32_t rendering_dimension(std::uint64_t value) {
-        if (value == 0 || value > 16384)
-            throw InvalidCanvasState("Native rendering requires canvas dimensions in [1, 16384].");
-        return static_cast<std::uint32_t>(value);
-    }
     void resize_context(std::uint64_t width, std::uint64_t height) {
         if (run_)
             endpoint_->surface->resize(rendering_dimension(width), rendering_dimension(height));
+        // A 2D context resets to its default state over a cleared bitmap of the new size.
+        if (context_2d_)
+            reset_canvas(*context_2d_, static_cast<double>(width), static_cast<double>(height));
     }
     std::thread::id owner_ = std::this_thread::get_id();
     std::uint64_t width_;
     std::uint64_t height_;
     std::shared_ptr<CanvasEndpoint> endpoint_;
     std::shared_ptr<OffscreenRun> run_;
+    std::optional<UiElementRecord::CanvasState> context_2d_;
     bool detached_ = false;
 };
+
+/**
+ * `canvas.getContext("2d")`: the 2D context, held as its canvas (each canvas has at most one);
+ * null while a WebGPU context owns the canvas. A detached canvas throws InvalidStateError.
+ */
+inline js::Nullable<std::shared_ptr<OffscreenCanvas>>
+offscreen_canvas_context_2d(const std::shared_ptr<OffscreenCanvas>& canvas) {
+    try {
+        if (canvas->context_2d())
+            return canvas;
+        return std::nullopt;
+    } catch (const InvalidCanvasState& error) {
+        throw js::make_dom_exception(error.what(), "InvalidStateError");
+    }
+}
+
+/**
+ * `canvas.convertToBlob({ type, quality })`: a copy of the canvas's bitmap now (a 2D context's
+ * pixels as `getImageData` composes them, else transparent black) encoded by `encode_image` on
+ * the native workers, resolving to a Blob of the encoded type. A detached canvas rejects with
+ * InvalidStateError, one without pixels with IndexSizeError, a failed encode with EncodingError;
+ * a WebGPU context's pixels are not read back and reject with NotSupportedError.
+ */
+inline js::Promise<js::Blob>
+offscreen_canvas_convert_to_blob(const std::shared_ptr<OffscreenCanvas>& canvas,
+                                 std::optional<std::string> type, std::optional<double> quality) {
+    try {
+        if (canvas->detached())
+            throw js::make_dom_exception("The OffscreenCanvas is detached.", "InvalidStateError");
+        const auto width = canvas->width();
+        const auto height = canvas->height();
+        if (width == 0 || height == 0)
+            throw js::make_dom_exception("The OffscreenCanvas has no pixels.", "IndexSizeError");
+        if (canvas->has_rendering_context())
+            throw js::make_dom_exception(
+                "Encoding a WebGPU OffscreenCanvas is not represented natively.",
+                "NotSupportedError");
+        const auto columns = static_cast<int>(OffscreenCanvas::rendering_dimension(width));
+        const auto rows = static_cast<int>(OffscreenCanvas::rendering_dimension(height));
+        std::vector<std::uint8_t> pixels;
+        if (const auto* bitmap = canvas->bitmap_2d()) {
+            const auto composed =
+                compose_canvas_image_data(*bitmap, no_canvas_source, 0.0, 0.0, columns, rows);
+            pixels.assign(composed.data.data(), composed.data.data() + composed.data.size());
+        } else {
+            pixels.assign(static_cast<std::size_t>(columns) * rows * 4, 0);
+        }
+        return run_native_job<js::Blob>(
+            [pixels = std::move(pixels), columns, rows, type = type.value_or("image/png"),
+             quality]() -> std::optional<EncodedImage> {
+                try {
+                    return encode_image(pixels, columns, rows, type, quality);
+                } catch (const std::exception&) {
+                    return std::nullopt;
+                }
+            },
+            [](std::optional<EncodedImage> encoded) {
+                if (!encoded)
+                    throw js::make_dom_exception("The canvas could not be encoded.",
+                                                 "EncodingError");
+                return js::Blob::from_bytes(std::move(encoded->bytes), std::move(encoded->type));
+            });
+    } catch (...) {
+        js::Promise<js::Blob> rejected;
+        rejected.reject(std::current_exception());
+        return rejected;
+    }
+}
 
 /** Main-realm canvas control: creating a placeholder is distinct from transfer. */
 class CanvasElement {

@@ -133,3 +133,114 @@ test("optional-chain callback results retain intrinsic absence and identity", as
         );
     });
 });
+
+test("a read the checker's flow proves present carries its presence into a record it builds", () => {
+    // Inside `if (look)` and `if (opts.look && distinct)` the binding,
+    // which nothing rebinds, and the member, which no write makes absent,
+    // hold the object the guard saw: `!!opts.look` in the callee is known,
+    // so the stylesheet text is.
+    for (const source of [
+        `
+        import { createEngine } from "@babylonjs/lite";
+        interface Look { readonly bold: boolean }
+        interface SheetOptions { readonly name: string; readonly look?: Look }
+        function sheetFor(opts: SheetOptions): string {
+            const width = (wide: boolean): string => ".panel { width: " + (wide ? "2" : "1") + "px; }";
+            return width(!!opts.look);
+        }
+        function apply(look?: Look): void {
+            if (look) {
+                const sheet = document.createElement("style");
+                sheet.textContent = sheetFor({ name: "a", look });
+                document.head.appendChild(sheet);
+            }
+        }
+        async function main() {
+            await createEngine({});
+            apply(Math.random() > 0.5 ? { bold: true } : undefined);
+        }
+        void main();
+`,
+        `
+        import { createEngine } from "@babylonjs/lite";
+        interface Look { readonly bold: boolean }
+        interface SheetOptions { readonly name: string; readonly look?: Look }
+        interface LoadOptions { readonly name?: string; readonly look?: Look }
+        function sheetFor(opts: SheetOptions): string {
+            const width = (wide: boolean): string => ".panel { width: " + (wide ? "2" : "1") + "px; }";
+            return width(!!opts.look);
+        }
+        function apply(opts: LoadOptions, distinct: boolean): void {
+            if (opts.look && distinct) {
+                const style = document.createElement("style");
+                style.textContent = sheetFor({ name: "a", look: opts.look });
+                document.head.appendChild(style);
+            }
+        }
+        async function main() {
+            await createEngine({});
+            apply(Math.random() > 0.5 ? { name: "a", look: { bold: true } } : { name: "b" }, Math.random() > 0.5);
+        }
+        void main();
+`,
+    ]) {
+        const result = compileSource(source);
+        assert.match(result.cpp, /width:2px/);
+        assert.doesNotMatch(result.cpp, /width:1px/);
+    }
+});
+
+test("a guarded read stays run-time where the binding is rebound or the member may be written absent", () => {
+    // `clear()` rebinds `look` under the guard, and `clearLook` writes the
+    // member absent: what the guard saw is not what the read gets.
+    for (const source of [
+        `
+        import { createEngine } from "@babylonjs/lite";
+        interface Look { readonly bold: boolean }
+        interface SheetOptions { readonly name: string; readonly look?: Look }
+        function sheetFor(opts: SheetOptions): string {
+            const width = (wide: boolean): string => ".panel { width: " + (wide ? "2" : "1") + "px; }";
+            return width(!!opts.look);
+        }
+        function apply(initial?: Look): void {
+            let look = initial;
+            const clear = (): void => { look = undefined; };
+            if (look) {
+                clear();
+                const sheet = document.createElement("style");
+                sheet.textContent = sheetFor({ name: "a", look });
+                document.head.appendChild(sheet);
+            }
+        }
+        async function main() {
+            await createEngine({});
+            apply(Math.random() > 0.5 ? { bold: true } : undefined);
+        }
+        void main();
+`,
+        `
+        import { createEngine } from "@babylonjs/lite";
+        interface Look { readonly bold: boolean }
+        interface SheetOptions { readonly name: string; readonly look?: Look }
+        interface LoadOptions { readonly name?: string; look?: Look }
+        function sheetFor(opts: SheetOptions): string {
+            const width = (wide: boolean): string => ".panel { width: " + (wide ? "2" : "1") + "px; }";
+            return width(!!opts.look);
+        }
+        function apply(opts: LoadOptions, distinct: boolean): void {
+            if (opts.look && distinct) {
+                const style = document.createElement("style");
+                style.textContent = sheetFor({ name: "a", look: opts.look });
+                document.head.appendChild(style);
+            }
+        }
+        function clearLook(opts: { look?: Look }): void { opts.look = undefined; }
+        async function main() {
+            await createEngine({});
+            apply(Math.random() > 0.5 ? { name: "a", look: { bold: true } } : { name: "b" }, Math.random() > 0.5);
+        }
+        void main();
+`,
+    ])
+        assert.throws(() => compileSource(source), /Expected a string literal/);
+});

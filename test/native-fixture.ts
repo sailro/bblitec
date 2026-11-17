@@ -657,6 +657,21 @@ export function runGeneratedProgram(
     return output;
 }
 
+/**
+ * Writes the headers a fixture includes from its generated folder,
+ * `artifacts/<name>`, each by file name; returns that folder.
+ */
+export function writeFixtureHeaders(
+    name: string,
+    headers: Readonly<Record<string, string>>,
+): string {
+    const directory = resolve("artifacts", name);
+    mkdirSync(directory, { recursive: true });
+    for (const [file, text] of Object.entries(headers))
+        writeFileSync(join(directory, file), text);
+    return directory;
+}
+
 /** An application realm on the native event loop, without a display. */
 export function headlessRealmHost(): string {
     return `
@@ -770,7 +785,8 @@ export function runRmlUiFixture(
         "native/src",
         ...(options.includeDirectories ?? []).flatMap((path) => ["/I", path]),
         `test/fixtures/${name}-check.cpp`,
-        ...(options.imageDecoder ? ["native/src/pal_image.cpp"] : []),
+        // The UI unit links the image unit, as `ui:rml` does.
+        "native/src/pal_image.cpp",
         ...shared,
         "/link",
         join(rml, "lib/rmlui.lib"),

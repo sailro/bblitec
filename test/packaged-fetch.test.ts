@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
+import fs, { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
@@ -174,6 +175,47 @@ test("a generation-time fetch of a runtime-selected file reads its text and JSON
     assert.equal(result.manifest.assets.length, 2);
     assert.match(result.cpp, /bbl::js::decode_utf8_removing_bom\(/);
     assert.match(result.cpp, /bbl::js::json_parse\(/);
+    runPackagedProgram(t, directory, result);
+});
+
+test("a URL a run-time key selects from a table finds its packaged files without reading them", (t) => {
+    const directory = resolve("artifacts/packaged-fetch-candidates");
+    const publicDir = join(directory, "public");
+    mkdirSync(join(publicDir, "data"), { recursive: true });
+    writeFileSync(join(publicDir, "data", "a.bin"), Buffer.from([1, 2]));
+    writeFileSync(join(publicDir, "data", "b.bin"), Buffer.from([3, 4, 5]));
+    // A candidate is packaged where its file is; generation needs none of
+    // its bytes, so no candidate is read while the entry compiles.
+    const reads = t.mock.method(fs, "readFileSync");
+    syncBuiltinESMExports();
+    let result: CompileResult;
+    try {
+        result = compileSource(
+            `
+            const FILES = { a: "a.bin", b: "b.bin" } as const;
+            async function load(base: string, key: keyof typeof FILES): Promise<number> {
+                const response = await fetch(\`\${base}/data/\${FILES[key]}\`);
+                return new Uint8Array(await response.arrayBuffer()).length;
+            }
+            const key: keyof typeof FILES = Date.now() > 0 ? "a" : "b";
+            if ((await load("", key)) !== 2) throw new Error("bytes");
+        `,
+            { fileName: join(directory, "entry.ts"), publicDir },
+        );
+    } finally {
+        reads.mock.restore();
+        syncBuiltinESMExports();
+    }
+    assert.deepEqual(
+        result.manifest.assets.map(({ source }) => source.split(/[\\/]/).pop()),
+        ["a.bin", "b.bin"],
+    );
+    assert.deepEqual(
+        reads.mock.calls
+            .map(({ arguments: [path] }) => String(path))
+            .filter((path) => path.endsWith(".bin")),
+        [],
+    );
     runPackagedProgram(t, directory, result);
 });
 
@@ -561,14 +603,22 @@ void main();
             },
         );
     };
-    assert.deepEqual(
-        compile("2.5").manifest.customShaderPrograms.map((program) =>
-            /position \* ([0-9.]+) \* ([0-9.]+), 1\.0\)/
-                .exec(program.vertexSource)
-                ?.slice(1),
-        ),
-        [["2.50", "0.25"]],
-    );
+    // A write that runs only while the member holds another value, and one
+    // through an assertion on another record, leave the member as built.
+    for (const after of [
+        "",
+        "const repair = (value: unknown): void => { const record = value as Record<string, unknown>; for (const key of Object.keys(record)) { const child = record[key]; if (typeof child === 'number') { if (!Number.isFinite(child)) record[key] = 0; continue; } } }; repair(config.look);",
+        "const keep = (save: { rows: number[] }, key: string, kept: number[]): void => { (save as unknown as Record<string, unknown>)[key] = kept; }; keep({ rows: [] }, String(Math.random()), [1]);",
+    ])
+        assert.deepEqual(
+            compile("2.5", after).manifest.customShaderPrograms.map((program) =>
+                /position \* ([0-9.]+) \* ([0-9.]+), 1\.0\)/
+                    .exec(program.vertexSource)
+                    ?.slice(1),
+            ),
+            [["2.50", "0.25"]],
+            after,
+        );
     for (const [scale, after] of [
         ["3", ""],
         ['"2.5"', ""],
@@ -576,12 +626,105 @@ void main();
             "2.5",
             "const bump = (record: Record<string, unknown>): void => { for (const key of Object.keys(record)) record[key] = 3; }; if (Date.now() < 0) bump(config.look as unknown as Record<string, unknown>);",
         ],
+        [
+            "2.5",
+            "const clamp = (value: unknown): void => { const record = value as Record<string, unknown>; for (const key of Object.keys(record)) { const child = record[key]; if (typeof child === 'number' && Number.isFinite(child)) record[key] = 3; } }; clamp(config.look);",
+        ],
     ])
         assert.throws(
             () => compile(scale!, after),
             /'vertex' is bound as data without a static string/,
             `${scale} ${after}`,
         );
+});
+
+test("a packaged number read through records a repair writes only while they hold numbers folds", () => {
+    // `repair` may reach `config.look` (its records hold any record), but it
+    // writes a slot only while that slot holds a number, never the record
+    // `config.look.shade` holds; a write that may replace that record
+    // leaves the read at run time.
+    const compile = (after: string): CompileResult => {
+        const directory = resolve(
+            `artifacts/packaged-fetch-held-record-${after.length}`,
+        );
+        mkdirSync(join(directory, "public"), { recursive: true });
+        writeFileSync(
+            join(directory, "public", "config.json"),
+            `{"look":{"shade":{"scale":2.5,"tone":0.25}}}`,
+        );
+        writeFileSync(join(directory, "noop-worker.ts"), "self.close();\n");
+        return compileSource(
+            `import { createEngine, createSceneContext, createShaderMaterial, wgsl } from "@babylonjs/lite";
+interface Config { look: { shade: { scale: number; tone: number } } }
+const DEFAULTS: Config = { look: { shade: { scale: 2.5, tone: 0.25 } } };
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function deepMerge<T>(base: T, source: unknown): T {
+    if (!isPlainObject(base) || !isPlainObject(source)) return source === undefined ? base : (source as T);
+    const out: Record<string, unknown> = { ...(base as unknown as Record<string, unknown>) };
+    for (const key of Object.keys(source)) out[key] = isPlainObject(out[key]) ? deepMerge(out[key], source[key]) : source[key];
+    return out as unknown as T;
+}
+async function loadConfig(): Promise<Config> {
+    try {
+        const response = await fetch("/config.json");
+        if (!response.ok) return DEFAULTS;
+        const parsed = (await response.json()) as unknown;
+        return deepMerge(DEFAULTS, parsed);
+    } catch {
+        return DEFAULTS;
+    }
+}
+function repair(value: unknown, depth = 0): void {
+    if (depth > 4 || value === null || typeof value !== "object") return;
+    const record = value as Record<string, unknown>;
+    for (const key of Object.keys(record)) {
+        const child = record[key];
+        if (typeof child === "number") {
+            if (!Number.isFinite(child)) record[key] = 0;
+            continue;
+        }
+        repair(child, depth + 1);
+    }
+}
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*S*/ * /*T*/, 1.0); return out; }\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+const worker = new Worker(new URL("./noop-worker.ts", import.meta.url), { type: "module" });
+worker.terminate();
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    const config = await loadConfig();
+    repair(config);
+    ${after}
+    const vertex = VERTEX.replace("/*S*/", config.look.shade.scale.toFixed(2)).replace("/*T*/", config.look.shade.tone.toFixed(2));
+    createShaderMaterial({ name: "m", vertexSource: wgsl\`\${vertex}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+void main();
+`,
+            {
+                fileName: join(directory, "entry.ts"),
+                publicDir: join(directory, "public"),
+            },
+        );
+    };
+    assert.deepEqual(
+        compile("").manifest.customShaderPrograms.map((program) =>
+            /position \* ([0-9.]+) \* ([0-9.]+), 1\.0\)/
+                .exec(program.vertexSource)
+                ?.slice(1),
+        ),
+        [["2.50", "0.25"]],
+    );
+    assert.throws(
+        () =>
+            compile(
+                "const wipe = (value: unknown): void => { const record = value as Record<string, unknown>; for (const key of Object.keys(record)) { const child = record[key]; if (typeof child === 'object') record[key] = { scale: 3, tone: 3 }; } }; if (Date.now() < 0) wipe(config.look);",
+            ),
+        /'vertex' is bound as data without a static string/,
+    );
 });
 
 test("a packaged URL read from a packaged response's JSON keeps the document's values", (t) => {

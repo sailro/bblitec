@@ -206,8 +206,8 @@ export class SceneMaterialRecorder {
      * plugins a signature holds (`plugins.includes`) and the signature a list
      * takes with one more plugin (`plugins = [...plugins, plugin]`).
      */
-    public pbrPluginFunctionsCpp(): string {
-        if (this.pbrPlugins.length === 0) return "";
+    public pbrPluginFunctionsCpp(): string[] {
+        if (this.pbrPlugins.length === 0) return [];
         const growth = this.closePbrPluginSignatures();
         const lists = [[], ...this.pbrPluginSignatures];
         const contains = lists.flatMap((list, signature) =>
@@ -222,8 +222,6 @@ export class SceneMaterialRecorder {
                 `        case ${signature * 256 + plugin}u: return ${grown};`,
         );
         return [
-            "namespace bblscene {",
-            "",
             "// Whether the PBR plugin list `signature` holds plugin `plugin`.",
             "[[maybe_unused]] inline bool pbr_plugin_signature_contains(std::uint32_t signature, std::uint32_t plugin) {",
             "    switch (signature * 256u + plugin) {",
@@ -239,9 +237,7 @@ export class SceneMaterialRecorder {
             '        default: throw std::runtime_error("A PBR plugin list grew past the signatures generation composed.");',
             "    }",
             "}",
-            "",
-            "}  // namespace bblscene",
-        ].join("\n");
+        ];
     }
 
     /**

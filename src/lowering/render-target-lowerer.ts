@@ -17,16 +17,27 @@ export class RenderTargetLowerer {
 
     private readonly surface: boolean;
     private readonly disposal: boolean;
+    private readonly colorView: boolean;
+    private readonly colorTexture: boolean;
 
     public constructor(
         private readonly context: LoweringContext,
         {
             surface = false,
             disposal = false,
-        }: { surface?: boolean; disposal?: boolean } = {},
+            colorView = false,
+            colorTexture = false,
+        }: {
+            surface?: boolean;
+            disposal?: boolean;
+            colorView?: boolean;
+            colorTexture?: boolean;
+        } = {},
     ) {
         this.surface = surface;
         this.disposal = disposal;
+        this.colorView = colorView;
+        this.colorTexture = colorTexture;
         this.context.functionDeclaration(
             renderTargetModule,
             "createRenderTarget",
@@ -214,7 +225,21 @@ RenderTargetTexture create_render_target_texture(
     }
     const RenderTargetHandle target =
         create_render_target(engine, options);
-${this.surface ? `    if (surface_sized) ${recordAt("engine.render_targets", "target")}.lifecycle = make_render_target_lifecycle(engine, true);` : ""}
+${this.surface ? `    if (surface_sized) ${recordAt("engine.render_targets", "target")}.lifecycle = make_render_target_lifecycle(engine, true);` : ""}${
+                this.colorView
+                    ? `
+    // Eager: buildRenderTarget allocated the colour view.
+    ${recordAt("engine.render_targets", "target")}.color_view = options.has_color;`
+                    : ""
+            }${
+                this.colorTexture
+                    ? `
+    // \`rt._eager\`: this allocation is the target's until disposal or,
+    // sized from its surface, a resize.
+    ${recordAt("engine.render_targets", "target")}.allocation = surface_sized ? TargetAllocation::surface : TargetAllocation::fixed;
+    if (options.has_color) ${recordAt("engine.render_targets", "target")}.color_texture = publish_gpu_texture_identity(engine);`
+                    : ""
+            }
     RenderTextureRef depth;
     if (options.sampled_depth) {
         depth = render_target_texture(target);

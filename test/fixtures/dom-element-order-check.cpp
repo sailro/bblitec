@@ -33,7 +33,7 @@ int main() {
         std::string order;
         for (const auto child : ui_element(engine, ui_get_element_by_id(engine, "list")).children)
             order += ui_get_attribute(engine, child, "id") + ";";
-        assert(order == "f;d;a;e;c;x;kept;g;");
+        assert(order == "f;d;p;q;a;e;c;kept;y;x;g;");
         const auto first = ui_get_element_by_id(engine, "first");
         const auto panel = ui_get_element_by_id(engine, "panel");
         const auto skipped = ui_get_element_by_id(engine, "skipped");

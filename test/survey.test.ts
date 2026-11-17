@@ -304,6 +304,124 @@ test("roots a pass's demand leaves stale lower again in that pass, unless a limi
     assert.deepEqual(rounds({ passLimit: 1 }), []);
 });
 
+test("arrays a pass built before it gave a literal union string storage read as the strings it stores", () => {
+    // The record (line 5) stores both unions' members as tags before either
+    // demand. The first read meets A's demand, then the record's A array
+    // reads as strings and the read goes on to B's demand: one pass takes
+    // both, and the second read converts nothing a compile with both
+    // demands would not.
+    const source = `
+        type A = "a1" | "a2";
+        type B = "b1" | "b2";
+        interface Plate { a: A[]; b: B[] }
+        const plate: Plate = { a: ["a1"], b: ["b1"] };
+        plate.a.push("a2");
+        plate.b.push("b2");
+        const pick = Math.random() < 0.5;
+        const first: readonly string[] = pick ? plate.a : plate.b;
+        const second: readonly string[] = pick ? plate.a : plate.b;
+        console.log(first.length + second.length);
+    `;
+    const survey = (passLimit?: number): SurveyReport =>
+        surveySource(
+            source,
+            { fileName: resolve("survey-late-union-storage.ts") },
+            passLimit === undefined ? {} : { passLimit },
+        ).report;
+    const first = survey(1);
+    assert.deepEqual(first.refusals, [], listed(first));
+    assert.equal(first.statements.demanded, 0);
+    const settled = survey();
+    assert.equal(settled.complete, true);
+    assert.equal(settled.passes, 2);
+    assert.deepEqual(settled.refusals, [], listed(settled));
+});
+
+test("a store into a layout built before the pass took its field's engine owner is that demand's", () => {
+    // `first` takes the engine owner of `panel`; `second` stores into the
+    // layout the pass built before it, which the pass a limit ends at rolls
+    // back for the demand: the next pass lowers both with it.
+    const source = `
+        interface Layer { readonly panel: HTMLElement; readonly count: number }
+        const layers: Layer[] = [];
+        export function first(panel: HTMLElement): void { layers.push({ panel, count: 1 }); }
+        export function second(panel: HTMLElement): void { layers.push({ panel, count: 2 }); }
+        console.log(layers.length);
+    `;
+    const fileName = resolve("survey-stale-owner.ts");
+    const limited = surveySource(source, { fileName }, { passLimit: 1 }).report;
+    assert.deepEqual(limited.refusals, [], listed(limited));
+    assert.deepEqual(
+        limited.demands.map((demand) => [
+            demand.demand,
+            demand.rolledBackAt.map((site) => site.split(":").at(-1)),
+        ]),
+        [["engine-owner", ["4", "5"]]],
+    );
+    const { report } = surveySource(source, { fileName });
+    assert.deepEqual(report.refusals, [], listed(report));
+    assert.deepEqual(report.demands, []);
+});
+
+test("a read of a record bound before the pass took its storage is that demand's", () => {
+    // The module binds `B` as a record; the third pass's `layout` root
+    // takes its storage, and `capacity`, lowered later in that pass, reads
+    // the record bound before it: the pass a limit ends at rolls it back
+    // for the demand, as the next pass lowers both with it.
+    const source = `
+        type Kind = "a" | "b";
+        const A = { capacity: 2, slots: [1, 2] } as const;
+        const B = { capacity: 3, slots: [1, 2, 3] } as const;
+        const LAYOUTS = { a: A, b: B };
+        export function layout(kind: Kind) { return LAYOUTS[kind]; }
+        export function capacity(kind: Kind): number { return layout(kind).capacity; }
+        console.log(LAYOUTS.a.capacity);
+    `;
+    const fileName = resolve("survey-stale-record.ts");
+    const limited = surveySource(source, { fileName }, { passLimit: 3 }).report;
+    assert.deepEqual(limited.refusals, [], listed(limited));
+    assert.deepEqual(
+        limited.demands.map((demand) => [
+            demand.demand,
+            demand.rolledBackAt.map((site) => site.split(":").at(-1)),
+        ]),
+        [["dynamic", ["7"]]],
+    );
+    const { report } = surveySource(source, { fileName });
+    assert.deepEqual(report.refusals, [], listed(report));
+    assert.deepEqual(report.demands, []);
+});
+
+test("a retained record result demands every field's engine owner in one replay", (t) => {
+    // `measure` lays out `Parts` before `build` returns one: once the
+    // first pass shares the record, the next meets its three meshes'
+    // owners as one demand, not one pass each.
+    const directory = mkdtempSync(join(tmpdir(), "bblite-retained-owners-"));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    writeFileSync(join(directory, "worker.ts"), "self.close();");
+    const source = `
+        const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" }); worker.terminate();
+        import { createBox, type EngineContext, type Mesh } from "@babylonjs/lite";
+        interface Parts { readonly a: Mesh; readonly b: Mesh; readonly c: Mesh; readonly size: number }
+        let total = 0;
+        export function measure(parts: Parts): void { total += parts.size; }
+        export async function build(engine: EngineContext): Promise<Parts> {
+            await Promise.resolve(engine);
+            return { a: createBox(engine), b: createBox(engine), c: createBox(engine), size: 1 };
+        }
+        localStorage.setItem("total", String(total));
+    `;
+    const fileName = join(directory, "entry.ts");
+    const limited = surveySource(source, { fileName }, { passLimit: 2 }).report;
+    assert.deepEqual(
+        limited.demands.map((demand) => demand.demand),
+        ["engine-owner x3"],
+    );
+    const { report } = surveySource(source, { fileName });
+    assert.deepEqual(report.refusals, [], listed(report));
+    assert.deepEqual(report.demands, []);
+});
+
 test("a refused value return is the calling statement's refusal", () => {
     // `pick` refuses inside its return; the survey must not hand `chosen` a
     // hole, so its declaration refuses at the one site inside `pick`. Its
@@ -1045,14 +1163,15 @@ test("a root of a generic function no call binds lowers at its constraints", () 
 });
 
 test("a root's capture with no storage of its type stays unbound", () => {
-    // `track` is a generic function or nothing, which no storage holds: the
-    // inner root lowers its other statements, the one reading `track`
-    // cascades from it, and the reason rolls back no statement.
+    // `track` is a generic function or nothing, which no storage holds, and
+    // a `let` the root does not bind by its initializer: the inner root
+    // lowers its other statements, the one reading `track` cascades from
+    // it, and the reason rolls back no statement.
     const { report } = surveySource(
         `
         interface Options { track?: <T>(label: string, work: () => T) => T }
         export function outer(opts: Options): () => number {
-            const track = opts.track ? <T>(label: string, work: () => T): T => opts.track!(label, work) : undefined;
+            let track = opts.track ? <T>(label: string, work: () => T): T => opts.track!(label, work) : undefined;
             let total = 0;
             return () => {
                 total += 1;
@@ -1075,6 +1194,63 @@ test("a root's capture with no storage of its type stays unbound", () => {
     assert.equal(reason.statements, 0);
     assert.equal(read.statement.line, 8);
     assert.deepEqual(read.cascade, reason.site);
+});
+
+test("a root's capture holding a function or nothing binds what its initializer makes", () => {
+    // `perfTrack` reads a debug hook the program writes only under `?debug`,
+    // so it holds nothing natively: the roots capturing `trackAppWork` bind
+    // `perfTrack` to that and `trackAppWork` to the arrow it selects.
+    const { report } = surveySource(
+        `
+        interface World { captureUndoState(): number }
+        async function buildScene(): Promise<World> {
+            const params = new URLSearchParams(location.search);
+            const rows = params.has("debug") ? new Map<string, number>() : null;
+            const trackWork = <T>(_label: string, work: () => T): T => work();
+            if (rows) {
+                (window as unknown as Record<string, unknown>).ccPerf = { track: trackWork };
+            }
+            let undo = 0;
+            const report = (): number => (rows ? rows.size : 0) + (params.has("verbose") ? 1 : 0);
+            (window as unknown as Record<string, unknown>).ccReport = report;
+            return { captureUndoState: () => ++undo };
+        }
+        async function main(): Promise<void> {
+            let world = await buildScene();
+            const perfTrack = ((window as unknown as Record<string, unknown>).ccPerf as {
+                track?: <T>(label: string, work: () => T) => T;
+            } | undefined)?.track;
+            const trackAppWork = perfTrack
+                ? <T>(label: string, work: () => T): T => perfTrack(label, work)
+                : <T>(_label: string, work: () => T): T => work();
+            const captureUndo = (): number => {
+                return trackAppWork("undo", () => world.captureUndoState());
+            };
+            const unused = (): void => { console.log(captureUndo()); };
+            void unused;
+            world = await buildScene();
+        }
+        void main();
+    `,
+        { fileName: resolve("survey-optional-function-capture.ts") },
+    );
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
+test("a survey root's value typed any is a document, as an untyped module's parameter is", () => {
+    const { report } = surveySource(
+        `
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        export function projectClips(raw: any): number {
+            if (!raw || typeof raw !== "object") return 0;
+            const clips = raw.clips;
+            return Array.isArray(clips) ? clips.length : 0;
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-root-any.ts") },
+    );
+    assert.deepEqual(report.refusals, [], listed(report));
 });
 
 test("a root's engine object no storage holds stands as its pinned base's handle", () => {

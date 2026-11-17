@@ -319,18 +319,13 @@ function valueVector(
         lowerer.markEscaped(value);
         return `bbl::js::Array<double>{(${value.cpp}).retained_storage()}`;
     }
-    if (
-        value.kind === "handle-collection" &&
-        value.handleCollection &&
-        dataType.element.kind === "handle" &&
-        value.handleCollection.elementKind === dataType.element.handle
-    ) {
-        lowerer.context.reachJsData();
-        return (
-            `bbl::js::array_from_iterable<${lowerer.context.dataTypes.cppType(dataType.element)}>(` +
-            `${value.handleCollection.containerCpp})`
-        );
-    }
+    const collection = handleCollectionElements(
+        lowerer,
+        value,
+        dataType.element,
+        node,
+    );
+    if (collection) return collection;
     if (value.kind === "tuple") {
         lowerer.context.reachJsData();
         const elements = value.tupleElements ?? [];
@@ -491,6 +486,9 @@ export function plainLane(type: DataType): boolean {
  * reads it and nothing the call runs changes it, a destructuring reads it
  * where it is produced, or its lanes are plain values and no change or
  * identity use in the program reaches an array that may be either one.
+ * Elements stored alike but for literal unions whose string storage the
+ * compile took while it lowered (`storedAlikeSinceStart`) are one array in
+ * the storage it now holds: the copy stands only for what it built before.
  */
 function convertedElementsCopy(
     dataType: DataType<"vector">,
@@ -516,7 +514,14 @@ function convertedElementsCopy(
         array !== undefined &&
         (arrayLentForCall(lowerer.context, array) ||
             arrayDestructuredAtOnce(array));
-    if (!unaliased && !lent) {
+    if (
+        !unaliased &&
+        !lent &&
+        !lowerer.context.dataTypes.storedAlikeSinceStart(
+            element,
+            dataType.element,
+        )
+    ) {
         const checker = lowerer.context.checker;
         const target = array && checker.getContextualType(array);
         const observed =
@@ -624,6 +629,8 @@ function requireGrowableTuple(
         throw new DynamicBindingStorageRequired(declaration, "array");
     // A record property's tuples take growable array storage likewise.
     requireTupleArraySlot(lowerer.context.tupleArraySlots, value);
+    // Nothing grows an array through a field declared as a read-only view.
+    if (value.readonlyArraySlot) return;
     lowerer.context.fail(
         node,
         "A fixed-length tuple stored as a number array could grow through that array, which its native storage cannot follow; give it number[] storage or store a copy ([...tuple]).",
@@ -704,24 +711,46 @@ function valueMap(
     return undefined;
 }
 
+/**
+ * A live engine collection's handles, in their current order, as `element`
+ * storage: each paired with the collection's engine when the storage owns
+ * one. Undefined for any other value.
+ */
+function handleCollectionElements(
+    lowerer: DataSinkHost,
+    value: Value,
+    element: DataType,
+    node: ts.Node,
+): string | undefined {
+    if (
+        value.kind !== "handle-collection" ||
+        !value.handleCollection ||
+        element.kind !== "handle" ||
+        value.handleCollection.elementKind !== element.handle
+    )
+        return undefined;
+    lowerer.context.reachJsData();
+    const cpp = lowerer.context.dataTypes.cppType(element);
+    const container = value.handleCollection.containerCpp;
+    if (!element.ownedEngine)
+        return `bbl::js::array_from_iterable<${cpp}>(${container})`;
+    const engine = lowerer.context.storedResourceEngine(value, node);
+    return `bbl::js::array_from_iterable<${cpp}>(${container}, [&](const auto& handle) { return ${cpp}{${engine}, handle}; })`;
+}
+
 function valueSpan(
     dataType: DataType<"span">,
     lowerer: DataSinkHost,
     value: Value,
     node: ts.Node,
 ): string | undefined {
-    if (
-        value.kind === "handle-collection" &&
-        value.handleCollection &&
-        dataType.element.kind === "handle" &&
-        value.handleCollection.elementKind === dataType.element.handle
-    ) {
-        lowerer.context.reachJsData();
-        return (
-            `bbl::js::array_from_iterable<${lowerer.context.dataTypes.cppType(dataType.element)}>(` +
-            `${value.handleCollection.containerCpp})`
-        );
-    }
+    const collection = handleCollectionElements(
+        lowerer,
+        value,
+        dataType.element,
+        node,
+    );
+    if (collection) return collection;
     if (value.kind === "tuple") {
         lowerer.context.reachJsData();
         if ((value.tupleElements?.length ?? 0) === 0)

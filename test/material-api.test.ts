@@ -324,3 +324,116 @@ test("a PBR material's doubleSided reads its own property: a glTF material's, na
         /bbl::handle_at\(v_engine\.materials, \(\(\*v_source\)\)\.second\)\.source_double_sided\)/,
     );
 });
+
+test("a loop over a run-time selection creates a shader or standard material's no-color view per pass", () => {
+    const { cpp } = compileSource(`import {createEngine,createShaderMaterial,createShaderNoColorMaterialView,createStandardMaterial,createStandardNoColorMaterialView,type Material,type ShaderMaterial,type StandardMaterial} from "@babylonjs/lite";
+async function main(){
+await createEngine({});
+const shader=createShaderMaterial({
+vertexSource:"struct VertexOutput{@builtin(position) position:vec4f};@vertex fn mainVertex(input:VertexInput)->VertexOutput{var out:VertexOutput;out.position=vec4f(input.position,1.0);return out;}",
+fragmentSource:"@fragment fn mainFragment()->@location(0) vec4f{return vec4f(1.0);}",
+attributes:["position"],uniforms:["worldViewProjection"]});
+const standard=createStandardMaterial();
+const shaders:ShaderMaterial[]=[shader,shader].filter(()=>Math.random()<0.5);
+const standards:StandardMaterial[]=[standard,standard].filter(()=>Math.random()<0.5);
+const views:Material[]=[];
+for(const source of shaders)views.push(createShaderNoColorMaterialView(source));
+for(const source of standards)views.push(createStandardNoColorMaterialView(source));
+console.log(views.length);
+}
+main();`);
+    assert.match(
+        cpp,
+        /for \([^{]*\{[^}]*bbl::create_shader_no_color_material_view\(/,
+    );
+    assert.match(
+        cpp,
+        /for \([^{]*\{[^}]*bbl::create_standard_no_color_material_view\(/,
+    );
+});
+
+test("releaseMaterialViewGpu drops only a shader view's own packed uniforms, which a later draw repacks", (t) => {
+    const program = `import {createEngine,createShaderMaterial,createShaderNoColorMaterialView,releaseMaterialViewGpu,type MaterialView,type ShaderMaterial} from "babylon-lite";
+type ShaderMaterialView=ShaderMaterial&MaterialView;
+async function main(){
+const engine=await createEngine({});
+const source=createShaderMaterial({
+vertexSource:"struct VertexOutput{@builtin(position) position:vec4f};@vertex fn mainVertex(input:VertexInput)->VertexOutput{var out:VertexOutput;out.position=vec4f(input.position,1.0);return out;}",
+fragmentSource:"@fragment fn mainFragment()->@location(0) vec4f{return shaderUniforms.uColor;}",
+attributes:["position"],uniforms:["worldViewProjection",{name:"uColor",type:"vec4<f32>",defaultValue:[1,2,3,4]}]});
+const views:ShaderMaterialView[]=[];
+const register=():void=>{views.push(createShaderNoColorMaterialView(source) as ShaderMaterialView);};
+register();register();register();
+const removed=views[1]!;
+const index=views.indexOf(removed);
+views.splice(index,1);
+releaseMaterialViewGpu(engine,removed);
+if(views.length!==2||views.indexOf(removed)!==-1)throw new Error("spliced");
+const dispose=():void=>{for(const view of views)releaseMaterialViewGpu(engine,view);views.length=0;};
+dispose();
+if(views.length!==0)throw new Error("cleared");
+}
+main();`;
+    const { compiled, cpp } = compileShaderMaterialFixture(program);
+    assert.ok(compiled.manifest.features.includes("material:view-gpu-release"));
+    assert.match(compiled.cpp, /bbl::js::Array<bbl::MaterialHandle> v_views/);
+    const views = new FactoryLowerer(
+        new LoweringContext(),
+    ).lowerNoColorMaterialViews(false, false, false, true).source;
+    assert.doesNotMatch(
+        new FactoryLowerer(new LoweringContext()).lowerNoColorMaterialViews()
+            .source,
+        /release_material_view_gpu/,
+    );
+    assert.throws(
+        () =>
+            new FactoryLowerer(
+                doctoredContext(
+                    "src/material/shader/shader-material-view-gpu.ts",
+                    "view._shaderCustomVersion = -1;",
+                    "view._shaderCustomVersion = 0;",
+                ),
+            ).lowerNoColorMaterialViews(false, false, false, true),
+        /Shader material view custom buffer retirement statement 7 changed/,
+    );
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native compiler required.");
+        return;
+    }
+    runGeneratedProgram(
+        native,
+        "material-api/view-gpu-release",
+        `${cpp}
+namespace bbl {
+${cppFunction(views, "MaterialHandle create_no_color_material_view(")}
+${cppFunction(views, "MaterialHandle create_shader_no_color_material_view(")}
+${cppFunction(views, "void release_material_view_gpu(")}
+}
+#define main generated_main
+${compiled.cpp}
+#undef main
+int main(){assert(generated_main()==0);
+bbl::Engine engine;const auto source=bbl::create_shader_material(engine,0);
+const auto own=bbl::create_shader_no_color_material_view(engine,source);
+const std::vector<float> packed=bbl::shader_uniform_render_values(engine.materials[own.value]);
+assert(engine.materials[own.value].shader_uniform_upload&&!engine.materials[source.value].shader_uniform_upload);
+engine.materials[own.value].shader_uniform_values.assign(packed.size(),-7.0f);
+bbl::release_material_view_gpu(engine,own);
+assert(!engine.materials[own.value].shader_uniform_upload);
+assert(bbl::shader_uniform_render_values(engine.materials[own.value])==packed);
+static_cast<void>(bbl::shader_uniform_render_values(engine.materials[source.value]));
+const auto shared=bbl::create_shader_no_color_material_view(engine,source);
+bbl::release_material_view_gpu(engine,shared);
+assert(engine.materials[shared.value].shader_uniform_upload==engine.materials[source.value].shader_uniform_upload);
+bbl::release_material_view_gpu(engine,source);
+assert(engine.materials[source.value].shader_uniform_upload);
+engine.materials.emplace_back();engine.materials.back().source_material=source;
+engine.materials.back().shader_uniform_upload=std::make_shared<bbl::ShaderUniformUploadState>();
+const bbl::MaterialHandle other{static_cast<std::uint32_t>(engine.materials.size()-1)};
+bbl::release_material_view_gpu(engine,other);
+assert(engine.materials[other.value].shader_uniform_upload);
+}`,
+        { expectedOutput: "" },
+    );
+});

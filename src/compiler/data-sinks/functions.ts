@@ -443,6 +443,31 @@ function renderSignatureAdapter(
     return `bbl::js::adapt_callback<${cppType(sink)}>(${cpp}, [](auto& callback${parameters}) -> ${result} { ${body} })`;
 }
 
+/**
+ * A concrete function stored as a generic function's table: the function at
+ * each signature the table holds, under the function's own identity; an
+ * empty function is an empty table.
+ */
+function genericFunctionTable(
+    lowerer: DataSinkHost,
+    value: Value,
+    dataType: DataType<"function">,
+    node: ts.Node,
+): string {
+    const source = lowerer.context.bindings.pinValueToTemporary(
+        value,
+        "generic_source",
+    );
+    const table = { kind: "struct" as const, name: dataType.generic! };
+    const parts = lowerer.context.dataTypes
+        .genericFunctionFields(table.name)
+        .map((field) =>
+            lowerer.compileKnownValueForSink(source, field.type, node),
+        );
+    const storage = lowerer.context.dataTypes.cppType(dataType);
+    return `(${source.cpp} ? ${storage}{${source.cpp}.identity(), ${lowerer.structAggregate(table, parts)}} : ${storage}{})`;
+}
+
 function valueFunction(
     dataType: DataType<"function">,
     lowerer: DataSinkHost,
@@ -523,6 +548,8 @@ function valueFunction(
             )
         )
             return value.cpp;
+        if (dataType.generic && !stored.generic)
+            return genericFunctionTable(lowerer, value, dataType, node);
         if (stored.generic || dataType.generic)
             lowerer.context.fail(
                 node,

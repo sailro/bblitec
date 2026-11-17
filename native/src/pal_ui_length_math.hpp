@@ -1,9 +1,11 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cerrno>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <numbers>
 #include <optional>
@@ -57,6 +59,13 @@ inline std::optional<double> css_decimal(std::string_view source, std::size_t& o
         return std::nullopt;
     offset = end;
     return number;
+}
+
+/** A CSS number as Chromium serializes one: six significant digits, negative zero as 0. */
+inline std::string css_serialized_number(double number) {
+    std::array<char, 32> text{};
+    std::snprintf(text.data(), text.size(), "%.6g", number == 0 ? 0.0 : number);
+    return text.data();
 }
 
 /**

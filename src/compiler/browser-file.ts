@@ -300,6 +300,23 @@ export function compileBrowserFileConstructor(
     };
 }
 
+/**
+ * The engine holding a call's object URLs: window downloads and their URLs
+ * share the document's lifetime, including calls before a rendering engine
+ * or in a retained helper; a synchronous scene or rendering worker keeps its
+ * engine registry.
+ */
+function objectUrlEngine(
+    context: BrowserFileContext,
+    call: ts.CallExpression,
+): string {
+    const engine = context.options.workers?.namespace
+        ? context.requireDefaultEngine(call)
+        : documentEngine(context, call);
+    if (!engine) throw new ApplicationRealmRequired();
+    return engine;
+}
+
 /** Calls on URL, File, and FileList owned by the browser file bridge. */
 export function compileBrowserFileCall(
     context: BrowserFileContext,
@@ -328,13 +345,7 @@ export function compileBrowserFileCall(
                     argumentAt(call, 0),
                     "Object URLs require a represented Blob.",
                 );
-            // Window downloads and their URLs share the document's lifetime,
-            // including calls before a rendering engine or in a retained helper.
-            // A synchronous scene or rendering worker keeps its engine registry.
-            const engine = context.options.workers?.namespace
-                ? context.requireDefaultEngine(call)
-                : documentEngine(context, call);
-            if (!engine) throw new ApplicationRealmRequired();
+            const engine = objectUrlEngine(context, call);
             return {
                 kind: "object-url",
                 cpp: `bbl::js::create_object_url(${engine}, ${argument.cpp})`,
@@ -343,6 +354,12 @@ export function compileBrowserFileCall(
                 impure: true,
             };
         }
+        // A URL kept as a string revokes the object URL it names, if any.
+        if (isStringValue(argument))
+            return {
+                kind: "void",
+                cpp: `bbl::js::revoke_object_url(${objectUrlEngine(context, call)}, std::string_view(${argument.cpp}))`,
+            };
         context.expectKind(argument, "object-url", argumentAt(call, 0));
         const engine = context.requireEngine(argument, call);
         return {

@@ -5,6 +5,7 @@
 #include <bblite/features/has_browser_file.hpp>
 #include <bblite/features/has_gamepad.hpp>
 #include <bblite/features/workers.hpp>
+#include <bblite/features/color_texture_identity.hpp>
 
 #include <bblite/runtime.hpp>
 #include <bblite/pal_offscreen.hpp>
@@ -905,7 +906,7 @@ inline bool update_engine_canvas_metrics(Engine& engine, int width, int height,
  * on macOS. Neither universally equals CSS pixels: those follow the window's
  * display scale, just like the retained UI's density-independent pixels.
  */
-inline bool sync_engine_canvas_size(SDL_Window* window, Engine& engine) {
+inline bool sync_engine_canvas_extent(SDL_Window* window, Engine& engine) {
     if (const auto* offscreen = OffscreenRun::current()) {
         // The pin's render loop resizes each surface at the head of every frame.
         if (engine.update_surface_layout)
@@ -942,6 +943,22 @@ inline bool sync_engine_canvas_size(SDL_Window* window, Engine& engine) {
         return changed;
     }
     return false;
+}
+
+/**
+ * `sync_engine_canvas_extent`, and `setSurfaceSize`'s rebuild of the
+ * registered scenes' frame graphs when the drawing buffer's pixels changed.
+ */
+inline bool sync_engine_canvas_size(SDL_Window* window, Engine& engine) {
+#if BBLITE_COLOR_TEXTURE_IDENTITY
+    const std::pair pixels{engine.options.width, engine.options.height};
+    const bool changed = sync_engine_canvas_extent(window, engine);
+    if (pixels != std::pair{engine.options.width, engine.options.height})
+        rebuild_canvas_task_targets(engine);
+    return changed;
+#else
+    return sync_engine_canvas_extent(window, engine);
+#endif
 }
 
 /** Translate SDL's button masks to PointerEvent.buttons. */
@@ -1020,12 +1037,21 @@ inline void end_withheld_ui_press(Engine& engine, const SDL_Event& event) {
  * that pixel value directly, so forwarding SDL's raw increment makes native
  * wheel controls roughly one hundred times less sensitive.
  */
-inline double dom_wheel_delta_y(const SDL_MouseWheelEvent& event) {
-    constexpr double browser_pixels_per_scroll_increment = 100.0;
-    const double increment = event.direction == SDL_MOUSEWHEEL_FLIPPED
-                                 ? static_cast<double>(event.y)
-                                 : -static_cast<double>(event.y);
-    return increment * browser_pixels_per_scroll_increment;
+inline constexpr double browser_pixels_per_scroll_increment = 100.0;
+
+/** The axis of a `WheelEvent` delta. */
+enum class DomWheelAxis { x, y };
+
+/**
+ * `WheelEvent.deltaX` or `deltaY` in that pixel mode: SDL's and the browser's horizontal axes
+ * both point right, while SDL's vertical increment is positive away from the user and the
+ * browser's delta positive toward the page's end.
+ */
+inline double dom_wheel_delta(const SDL_MouseWheelEvent& event, DomWheelAxis axis) {
+    const double increment =
+        axis == DomWheelAxis::x ? static_cast<double>(event.x) : -static_cast<double>(event.y);
+    return (event.direction == SDL_MOUSEWHEEL_FLIPPED ? -increment : increment) *
+           browser_pixels_per_scroll_increment;
 }
 
 inline void apply_pointer_lock_cursor(bool locked) {
@@ -1300,7 +1326,7 @@ inline void handle_platform_event(const SDL_Event& event, Engine& engine, bool i
     if (event.type == SDL_EVENT_MOUSE_WHEEL) {
         // DOM deltaY is positive when scrolling down. SDL's normalized Y is
         // positive away from the user; natural-scroll devices mark FLIPPED.
-        const double delta_y = dom_wheel_delta_y(event.wheel);
+        const double delta_y = dom_wheel_delta(event.wheel, DomWheelAxis::y);
         dispatch_platform_wheel_event(engine, delta_y,
                                       event.wheel.mouse_x * engine.canvas_window_to_client_scale,
                                       event.wheel.mouse_y * engine.canvas_window_to_client_scale,
@@ -1509,7 +1535,9 @@ inline std::shared_ptr<DomEventBatch> prepare_dom_platform_input(Engine& engine,
                         engine.canvas_window_to_client_scale,
             .movement_x = move ? static_cast<double>(event.motion.xrel) : 0,
             .movement_y = move ? static_cast<double>(event.motion.yrel) : 0,
-            .delta_y = wheel ? dom_wheel_delta_y(event.wheel) : 0,
+            .delta_x = wheel ? dom_wheel_delta(event.wheel, DomWheelAxis::x) : 0,
+            .delta_y = wheel ? dom_wheel_delta(event.wheel, DomWheelAxis::y) : 0,
+            .detail = move || wheel ? 0.0 : static_cast<double>(event.button.clicks),
             .pressure = tracked_mouse_buttons() == 0 ? 0.0 : 0.5,
         };
         if (move && engine.pointer_lock_canvas)

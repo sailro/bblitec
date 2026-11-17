@@ -179,6 +179,28 @@ check(
 );
 
 check(
+    "an-asserted-number-runs-its-operand-once",
+    `
+    // A call whose result is asserted a number, in a compound assignment,
+    // an argument and an operand: each read runs the call once.
+    let calls = 0;
+    function pick(flag: boolean): number | string {
+        calls++;
+        for (let i = 0; i < 1; i++) if (flag) return 1;
+        return 2;
+    }
+    const flags = JSON.parse("[true,false]") as boolean[];
+    let total = 0;
+    for (const flag of flags) total += pick(flag) as number;
+    let largest = 0;
+    for (const flag of flags) largest = Math.max(largest, pick(flag) as number);
+    const scaled = (pick(true) as number) * 3;
+    if (total !== 3 || largest !== 2 || scaled !== 3 || calls !== 5)
+        throw new Error("calls " + calls + " " + total + " " + largest + " " + scaled);
+`,
+);
+
+check(
     "split-evaluates-its-separator-once-and-keeps-a-limit",
     `
     const log: string[] = [];
@@ -388,6 +410,30 @@ check(
     if (order.join(",") !== "read,argument,plus,read,fallback,argument,minus") throw new Error("lazy target fallback");
     const gate = new Float32Array([0]);
     if ((gate[0] ? plus : minus)(9) !== 8) throw new Error("conditional function target");
+`,
+);
+
+check(
+    "nullish-coalesce-over-a-returned-callback",
+    `
+    interface Hooks { suspend?: () => () => void; }
+    const order: string[] = [];
+    function fallback(): (() => void) | null { order.push("fallback"); return null; }
+    function visit(hooks: Hooks): { show(): void; hide(): void } {
+        let resume: (() => void) | null = null;
+        return {
+            show(): void { resume = hooks.suspend?.() ?? fallback(); },
+            hide(): void { const run = resume; resume = null; run?.(); },
+        };
+    }
+    const suspended = visit({ suspend: () => { order.push("suspend"); return () => { order.push("resume"); }; } });
+    suspended.show();
+    suspended.hide();
+    suspended.hide();
+    const plain = visit({});
+    plain.show();
+    plain.hide();
+    if (order.join(",") !== "suspend,resume,fallback") throw new Error(order.join(","));
 `,
 );
 
@@ -3647,6 +3693,106 @@ check(
 );
 
 check(
+    "phantom-brand-capabilities-store-their-issuing-class",
+    `
+    declare const slitIdBrand: unique symbol;
+    type SlitId = Readonly<{ readonly [slitIdBrand]: true }>;
+    const capability = (() => {
+        const constructorToken = {};
+        let issue!: (value: number) => SlitId;
+        let value!: (id: SlitId) => number;
+        class Capability {
+            readonly #value: number;
+            constructor(token: object, durableValue: number) {
+                if (token !== constructorToken) throw new TypeError("private constructor token");
+                this.#value = durableValue;
+                Object.freeze(this);
+            }
+            static {
+                issue = (durableValue) => new Capability(constructorToken, durableValue) as unknown as SlitId;
+                value = (id) => (id as unknown as Capability).#value;
+            }
+        }
+        void Capability;
+        return { issue, value } as const;
+    })();
+    function keyOf(id: unknown): number | null {
+        if ((typeof id !== "object" && typeof id !== "function") || id === null) return null;
+        try { return capability.value(id as SlitId); } catch { return null; }
+    }
+    function same(a: unknown, b: unknown): boolean { return a === b && keyOf(a) !== null; }
+    function serialize(id: SlitId): number {
+        const key = keyOf(id);
+        if (key === null) throw new TypeError("invalid live slit identity");
+        return key;
+    }
+    const first = capability.issue(7);
+    const second = capability.issue(8);
+    if (keyOf(first) !== 7 || keyOf(second) !== 8) throw new Error("issued keys");
+    if (keyOf({}) !== null || keyOf(7) !== null || keyOf(null) !== null) throw new Error("forged keys");
+    if (!same(first, first) || same(first, second) || same({}, {})) throw new Error("identity");
+    const rows: { readonly id: SlitId; height: number }[] = [{ id: first, height: 1 }, { id: second, height: 2 }];
+    rows.push({ id: capability.issue(9), height: 3 });
+    const byId = new Map<SlitId, number>(rows.map((row) => [row.id, row.height]));
+    if (byId.get(second) !== 2 || byId.get(capability.issue(8)) !== undefined) throw new Error("identity keys");
+    const found = rows.findIndex((row) => same(row.id, second));
+    if (found !== 1 || serialize(rows[2]!.id) !== 9) throw new Error("collection identity");
+    let forged = "";
+    try { serialize({} as SlitId); } catch (error) { forged = error instanceof TypeError ? "TypeError" : "other"; }
+    if (forged !== "TypeError") throw new Error("forged serialize");
+    let direct = "";
+    try { capability.value({} as SlitId); } catch (error) { direct = error instanceof TypeError ? "TypeError" : "other"; }
+    if (direct !== "TypeError") throw new Error("forged private read");
+`,
+);
+
+check(
+    "private-names-read-only-the-instances-documents-hold",
+    `
+    class Key {
+        readonly #value: number;
+        readonly label: string;
+        constructor(value: number) { this.#value = value; this.label = "k" + value; }
+        static read(candidate: unknown): number { return (candidate as Key).#value; }
+    }
+    const held: unknown[] = [];
+    for (let index = 1; index <= 3; index++) held.push(index === 2 ? { "#value": 5 } : new Key(index * 10));
+    let reads = "";
+    for (const candidate of held) {
+        try { reads += Key.read(candidate) + ","; } catch (error) { reads += error instanceof TypeError ? "T," : "E,"; }
+    }
+    if (reads !== "10,T,30,") throw new Error("reads " + reads);
+    if (Object.keys(held[0] as object).join(",") !== "label") throw new Error("keys " + Object.keys(held[0] as object).join(","));
+    if (JSON.stringify(held[2]) !== '{"label":"k30"}') throw new Error("json " + JSON.stringify(held[2]));
+    let forged = "";
+    try { Key.read({}); } catch (error) { forged = error instanceof TypeError ? "T" : "E"; }
+    if (forged !== "T") throw new Error("forged read");
+    class Tally {
+        #total = 1;
+        static read(candidate: unknown): number { return (candidate as Tally).#total; }
+    }
+    let counted = 0;
+    try { counted = Tally.read({}); } catch (error) { counted = error instanceof TypeError ? -1 : -2; }
+    if (counted !== -1 || Tally.read(new Tally()) !== 1) throw new Error("initialized private read");
+`,
+);
+
+test("a phantom brand asserted from two classes keeps its refusal", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+    declare const brand: unique symbol;
+    type Token = Readonly<{ readonly [brand]: true }>;
+    class A { readonly #a = 1; static read(t: Token): number { return (t as unknown as A).#a; } }
+    class B { readonly #b = 2; }
+    const tokens: Token[] = [new A() as unknown as Token, new B() as unknown as Token];
+    if (A.read(tokens[0]!) !== 1) throw new Error("two classes");
+`),
+        /Compile-time record is missing required field/,
+    );
+});
+
+check(
     "closed-record-own-keys-and-keyed-literals",
     `
     const KINDS = ["deer", "rabbit", "fox"] as const;
@@ -4438,6 +4584,26 @@ check(
 );
 
 check(
+    "a class method called through a document runs on the instance the document holds",
+    `
+    class Counter { total = 0; add(v: number): number { this.total += v; return this.total; } }
+    interface Holder { counter?: Counter; label: string }
+    const counter = new Counter();
+    const doc = JSON.parse('{"label":"x"}') as Holder;
+    const holder: Holder = { ...doc, counter };
+    const first = holder.counter?.add(2);
+    const second = holder.counter!.add(3);
+    if (first !== 2 || second !== 5 || counter.total !== 5) throw new Error("method " + first + " " + second + " " + counter.total);
+    const forged = JSON.parse('{"counter":{"total":1},"label":"y"}') as Holder;
+    let threw = "none";
+    try { forged.counter!.add(1); } catch (error) { threw = error instanceof TypeError ? "TypeError" : "other"; }
+    if (threw !== "TypeError") throw new Error("forged " + threw);
+    const missing = JSON.parse('{"label":"z"}') as Holder;
+    if (missing.counter?.add(1) !== undefined) throw new Error("absent");
+`,
+);
+
+check(
     "null-fields-absent-reads-and-typed-parsed-views",
     `
     interface Wall { centreline: readonly number[]; halfThickness: number; }
@@ -4494,6 +4660,31 @@ check(
     const active = (Object.keys(DEFAULTS) as Feature[]).filter((key) => custom[key]);
     custom.dof = false;
     if (active.join() !== "dof" || custom.bloom || custom.antialiasing || custom.dof) throw new Error("typed view of a parsed record");
+`,
+);
+
+check(
+    "a document spread beside a class instance keeps each last writer and the instance its callee calls",
+    `
+    interface Base { a: number; b: string }
+    class Sink { total = 0; add(v: number): void { this.total += v; } }
+    interface Opts { a?: number; b?: string; c?: number; d?: [number, number]; sink?: Sink; e?: number }
+    function run(o: Opts = {}): string {
+        o.sink?.add(o.a ?? -1);
+        return String(o.a ?? "none") + "|" + (o.b ?? "none") + "|" + String(o.c ?? 7) + "|" + String(o.d?.[1] ?? 0) + "|" + String(o.e ?? 5);
+    }
+    const plain: Opts = { a: 1 };
+    if (Object.keys(plain).join() !== "a") throw new Error("plain keys");
+    const doc = JSON.parse('{"a":1,"b":"x","c":3,"z":9}') as Base & { c: number };
+    const base: Base = doc;
+    const sink = new Sink();
+    const copied = run({ ...base, d: [1, 2], sink, e: (doc.c = 50) });
+    if (copied !== "1|x|3|2|50" || sink.total !== 1) throw new Error("copied where spread " + copied + " " + sink.total);
+    const missing = JSON.parse('{"b":"y"}') as Base;
+    const kept = run({ a: 4, c: 8, ...missing, sink });
+    if (kept !== "4|y|8|0|5" || sink.total !== 5) throw new Error("earlier writer kept " + kept + " " + sink.total);
+    const replaced = run({ ...base, a: 10, sink });
+    if (replaced !== "10|x|50|0|5" || sink.total !== 15) throw new Error("later writer " + replaced + " " + sink.total);
 `,
 );
 
@@ -6069,6 +6260,50 @@ test("a global-object member only a host page could install reads absent", () =>
     assert.doesNotMatch(result.cpp, /bbl::dom_window_property</);
 });
 
+test("a global-object member nothing declares reads absent through an index signature", () => {
+    const result = compileSource(
+        `const params = new URLSearchParams(location.search);
+        const rows = params.has("debug") ? new Map<string, number>() : null;
+        if (rows) (window as unknown as Record<string, unknown>).hook = { calls: rows.size };
+        const hook = (window as unknown as Record<string, unknown>).hook as { calls: number } | undefined;
+        if (hook) throw new Error("installed hook");`,
+    );
+    assert.doesNotMatch(result.cpp, /installed hook|bbl::dom_window_property</);
+});
+
+test("a global-object member another function writes under a ?debug flag reads absent", () => {
+    // The flag is the builder's own const, which deciding the write reads
+    // outside the builder's scope.
+    const result = compileSource(
+        `async function build(): Promise<number> {
+            const params = new URLSearchParams(location.search);
+            const rows = params.has("debug") ? new Map<string, number>() : null;
+            if (rows) (window as unknown as Record<string, unknown>).hook = { calls: rows.size };
+            return 1;
+        }
+        async function main(): Promise<void> {
+            const built = await build();
+            const hook = (window as unknown as Record<string, unknown>).hook as { calls: number } | undefined;
+            if (hook) throw new Error("installed hook");
+            console.log(built);
+        }
+        void main();`,
+    );
+    assert.doesNotMatch(result.cpp, /installed hook|bbl::dom_window_property</);
+});
+
+test("a global-object member a library declares never reads absent through an index signature", () => {
+    for (const name of ["document", "Promise"])
+        assert.throws(
+            () =>
+                compileSource(
+                    `const member = (window as unknown as Record<string, unknown>).${name};
+                    if (member === undefined) throw new Error("absent member");`,
+                ),
+            /Browser-dependent condition cannot be determined/,
+        );
+});
+
 test("Object.create, defineProperty and getPrototypeOf refuse unrepresented forms", () => {
     for (const [source, message] of [
         [
@@ -6077,7 +6312,7 @@ test("Object.create, defineProperty and getPrototypeOf refuse unrepresented form
         ],
         [
             "const o: { x?: number } = {}; Object.defineProperty(o, 'x', { value: 3 });",
-            /Object\.defineProperty represents a value with writable and enumerable true and an explicit boolean configurable attribute only/,
+            /Object\.defineProperty represents a value with enumerable true, an explicit boolean writable and an explicit boolean configurable attribute only/,
         ],
         [
             "const o: { x?: number } = {}; Object.defineProperty(o, 'x', { get: () => 3, enumerable: true, configurable: true });",
@@ -7524,6 +7759,23 @@ test("constant numeric tables support runtime indexing and static string project
     assert.ok(result.cpp.includes("first=xyz;second=yxz;third=zyx;"));
 });
 
+test("a constant numeric table of frozen rows supports runtime indexing", () => {
+    // `Object.freeze(row)` is the row itself, so the table's rows are the
+    // literals its shape test reads.
+    const result = compileSource(`
+        const CELLS: readonly (readonly [number, number, number, number])[] = Object.freeze([
+            Object.freeze([0, 0, 0.5, 0.5] as const),
+            Object.freeze([0.5, 0, 0.5, 0.5] as const),
+        ]);
+        const cell = CELLS[Math.random() < 0.5 ? 0 : 1]!;
+        if (cell[2] !== 0.5) throw new Error("frozen table row");
+    `);
+    assert.match(
+        result.cpp,
+        /\{\{\{0\.0, 0\.0, 0\.5, 0\.5\}, \{0\.5, 0\.0, 0\.5, 0\.5\}\}\}/,
+    );
+});
+
 test("static early returns preserve shader composition records", () => {
     const result = compileSource(`
         import type { EngineContext, ShaderMaterial, ShaderUniformDecl } from "@babylonjs/lite";
@@ -8234,6 +8486,39 @@ check(
 );
 
 check(
+    "typeof-answers-a-value-cannot-give-fold-its-guard",
+    `
+    class Capability {
+        readonly #value: number;
+        constructor(value: number) { this.#value = value; }
+        static read(id: Capability): number { return id.#value; }
+    }
+    function keyOf(value: unknown): number | null {
+        if ((typeof value !== "object" && typeof value !== "function") || value === null) return null;
+        try {
+            const key = Capability.read(value as unknown as Capability);
+            return key > 0 ? key : null;
+        } catch {
+            return null;
+        }
+    }
+    function keys<T extends { readonly id?: unknown }>(input: readonly T[]): number[] {
+        return input.map((_, index) => {
+            const source = input[index]?.id;
+            return keyOf(source) ?? -1;
+        });
+    }
+    const plain = keys([{ id: 4, tower: 0 }, { id: 5, tower: 1 }]);
+    if (plain.join() !== "-1,-1") throw new Error("a number is no capability");
+    function tag(value: number | string | undefined): number {
+        return typeof value === "function" ? 1 : typeof value === "string" ? 2 : 3;
+    }
+    const tags = [tag(1), tag("a"), tag(undefined)];
+    if (tags.join() !== "3,2,3") throw new Error("typeof tags " + tags.join());
+`,
+);
+
+check(
     "void-callback-result-compared-with-true",
     `
     let seen = 0;
@@ -8402,6 +8687,25 @@ check(
     if (walked !== "a1a3") throw new Error("live " + walked);
 `,
 );
+
+test("a query bag the program owns changes alone: the deployment query still folds", () => {
+    // A URL's own `searchParams` and a constructed URLSearchParams are not
+    // the deployment query's, so mutating them leaves `?debug` folded.
+    for (const mutation of [
+        'const url = new URL(href); url.searchParams.delete("quality"); return url.href;',
+        'const query = new URLSearchParams(href.split("?")[1] ?? ""); query.set("quality", "normal"); return query.toString();',
+    ]) {
+        const cpp = compileSource(
+            `const params = new URLSearchParams(location.search);
+            function reload(href: string): string { ${mutation} }
+            const button = document.createElement("button");
+            document.body.appendChild(button);
+            button.addEventListener("click", () => { button.textContent = reload(location.href); });
+            if (params.has("debug")) throw new Error("debug only");`,
+        ).cpp;
+        assert.doesNotMatch(cpp, /debug only/, mutation);
+    }
+});
 
 check(
     "query-record-initializer-appends-own-properties-in-order",
@@ -9625,6 +9929,66 @@ test("dense arrays refuse sparse length growth", { skip: !native }, () => {
     );
 });
 
+// `ShaderMaterial & MaterialView` is one engine material: a list of them is a
+// native array of handles, which closures read and truncate.
+check(
+    "pinned-intersection-lists-hold-native-handles",
+    `
+    type ShaderMaterialView = import("@babylonjs/lite").ShaderMaterial &
+        import("@babylonjs/lite").MaterialView;
+    const views: ShaderMaterialView[] = [];
+    const seen: number[] = [];
+    const observe = (): void => {
+        seen.push(views.length);
+        for (const view of views) seen.push(view ? -1 : -2);
+    };
+    const clear = (): void => {
+        views.length = 0;
+        observe();
+    };
+    observe();
+    clear();
+    if (seen.join(",") !== "0,0" || views.length !== 0) throw new Error("views");
+`,
+);
+
+test("a compile-time handle list holds only pushes that run where it was bound", () => {
+    const program = (calls: string): string => `
+        import { createBox, createEngine, createSceneContext, createShaderMaterial, createShaderNoColorMaterialView, onSceneDispose } from "@babylonjs/lite";
+        const engine = await createEngine({});
+        const scene = createSceneContext(engine);
+        const views: any[] = [];
+        const material = createShaderMaterial({
+            vertexSource: "struct VertexOutput{@builtin(position) position:vec4<f32>,};@vertex fn mainVertex(input:VertexInput)->VertexOutput{var out:VertexOutput;out.position=shaderSystem.worldViewProjection*vec4<f32>(input.position,1.0);return out;}",
+            fragmentSource: "@fragment fn mainFragment()->@location(0) vec4<f32>{return vec4<f32>(1.0);}",
+            attributes: ["position"], uniforms: ["worldViewProjection"],
+        });
+        const box = createBox(engine);
+        const register = (): void => { views.push(createShaderNoColorMaterialView(material)); };
+        ${calls}
+        onSceneDispose(scene, () => { for (const view of views) box.material = view; });
+    `;
+    // Each call's view is made at its call, where the dispose callback's
+    // capture of it can name it.
+    const { cpp } = compileSource(program("register(); register();"));
+    const entry = cpp.slice(cpp.indexOf("int main()"));
+    assert.equal(
+        entry.match(
+            /auto v_bblite_pushed_element_\d+ = bbl::create_shader_no_color_material_view/g,
+        )?.length,
+        2,
+    );
+    assert.doesNotMatch(
+        cpp.slice(0, cpp.indexOf("int main()")),
+        /auto v_bblite_pushed_element_/,
+    );
+    // A timer pushes at run time, which no generation-known list holds.
+    assert.throws(
+        () => compileSource(program("setTimeout(() => register(), 10);")),
+        /A runtime-grown handle list requires native array storage/,
+    );
+});
+
 check(
     "a generic call binds its type parameter through a discriminated union alias",
     `
@@ -10498,6 +10862,127 @@ test("numeric tuple parameters refuse array parameters that may grow them", () =
 });
 
 check(
+    "fresh-literal-built-in-the-one-record-type-it-reaches",
+    `
+    interface Sight { point: ArrayLike<number>; body: object | null }
+    interface Hit { point: [number, number, number]; distance: number }
+    interface PhotographerDeps { sight(u: number, v: number): Sight | null }
+    function total(sight: Sight | null): number {
+        if (!sight) return -1;
+        let sum = 0;
+        for (let i = 0; i < sight.point.length; i++) sum += sight.point[i]!;
+        return sum;
+    }
+    function createPhotographer(deps: PhotographerDeps) {
+        const bodies = new Map<object, number>();
+        return {
+            shoot(u: number, v: number): number {
+                const seen = deps.sight(u, v);
+                if (seen?.body) bodies.set(seen.body, 1);
+                return total(seen) + bodies.size;
+            },
+        };
+    }
+    interface Picking { pick(x: number, y: number): Hit | null }
+    function createGlade(picking: Picking) {
+        return createPhotographer({
+            sight(u, v) {
+                const hit = picking.pick(u, v);
+                return hit ? { point: hit.point, body: null } : null;
+            },
+        });
+    }
+    const hits: Hit[] = [{ point: [1, 2, 3], distance: 1 }];
+    const photographer = createGlade({ pick: (x) => hits[x] ?? null });
+    hits[0]!.point[2] = 4;
+    const first = photographer.shoot(0, 0);
+    const missed = photographer.shoot(1, 0);
+    if (first !== 7 || missed !== -1) throw new Error("shots " + first + " " + missed);
+`,
+);
+
+check(
+    "tuple-stored-through-a-readonly-array-field",
+    `
+    interface Sight { point: ArrayLike<number>; label: string }
+    function ray(x: number): [number, number, number] { return [x, x + 1, x + 2]; }
+    function aim(x: number) {
+        const sight = { point: ray(x), label: "aim" };
+        return sight;
+    }
+    function total(s: Sight): number {
+        let t = 0;
+        for (let i = 0; i < s.point.length; i++) t += s.point[i]!;
+        return t;
+    }
+    const seen: Sight = aim(Math.random() < 2 ? 1 : 0);
+    const shots: Sight[] = [seen];
+    if (total(shots[0]!) !== 6) throw new Error("total");
+`,
+);
+
+test("a literal read through its own type and a growable field keep their refusals", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+    interface Sight { point: ArrayLike<number>; body: object | null }
+    interface Hit { point: [number, number, number]; distance: number }
+    interface PhotographerDeps { sight(u: number, v: number): Sight | null }
+    function total(sight: Sight | null): number {
+        if (!sight) return -1;
+        let sum = 0;
+        for (let i = 0; i < sight.point.length; i++) sum += sight.point[i]!;
+        return sum;
+    }
+    function createPhotographer(deps: PhotographerDeps) {
+        const bodies = new Map<object, number>();
+        return {
+            shoot(u: number, v: number): number {
+                const seen = deps.sight(u, v);
+                if (seen?.body) bodies.set(seen.body, 1);
+                return total(seen) + bodies.size;
+            },
+        };
+    }
+    interface Picking { pick(x: number, y: number): Hit | null }
+    function createGlade(picking: Picking) {
+        return createPhotographer({
+            sight(u, v) {
+                const hit = picking.pick(u, v);
+                if (!hit) return null;
+                const own = { point: hit.point, body: null };
+                return own.point.length === 3 ? own : null;
+            },
+        });
+    }
+    const hits: Hit[] = [{ point: [1, 2, 3], distance: 1 }];
+    const photographer = createGlade({ pick: (x) => hits[x] ?? null });
+    hits[0]!.point[2] = 4;
+    const first = photographer.shoot(0, 0);
+    const missed = photographer.shoot(1, 0);
+    if (first !== 7 || missed !== -1) throw new Error("shots " + first + " " + missed);
+            `),
+        /record stored as 'Sight' would be a copy of the one object JavaScript keeps/,
+    );
+    assert.throws(
+        () =>
+            compileSource(`
+    interface Sight { point: number[]; label: string }
+    function ray(x: number): [number, number, number] { return [x, x + 1, x + 2]; }
+    function aim(x: number) {
+        const sight = { point: ray(x), label: "aim" };
+        return sight;
+    }
+    const seen: Sight = aim(Math.random() < 2 ? 1 : 0);
+    const shots: Sight[] = [seen];
+    shots[0]!.point.push(4);
+    if (shots[0]!.point.length !== 4) throw new Error("grown");
+            `),
+        /A fixed-length tuple stored as a number array could grow through that array/,
+    );
+});
+
+check(
     "parsed-document-array-destructuring",
     `
     interface RawNode { translation?: number[]; rotation?: number[] }
@@ -10527,6 +11012,21 @@ check(
     }
     const parsed = parse(JSON.parse("[1,2,3]"));
     if (!parsed || parsed[2] !== 3 || parse(JSON.parse('[1,"2",3]')) !== null) throw new Error("unknown lanes");
+`,
+);
+
+// A rest element collects the values the document iterates past it into a
+// new array: an array's elements, a string's code points, none past the end.
+check(
+    "parsed-document-array-rest-destructuring",
+    `
+    const doc = JSON.parse('{"stories":[{"no":1},{"no":2},{"no":3}]}') as { stories: { no: number }[] };
+    const [lead, ...rest] = doc.stories;
+    if (lead!.no !== 1 || rest.length !== 2 || rest[0]!.no !== 2 || rest[1]!.no !== 3) throw new Error("document rest");
+    const [first, ...others] = JSON.parse('"a😀b"') as unknown as string[];
+    if (first !== "a" || others.length !== 2 || others.join("") !== "😀b") throw new Error("document string rest");
+    const [, , ...tail] = JSON.parse("[1]") as number[];
+    if (tail.length !== 0) throw new Error("document rest past the end");
 `,
 );
 
@@ -13565,6 +14065,129 @@ check(
         throw new Error("stored records " + JSON.stringify(rows));
 `,
 );
+
+check(
+    "declared-record-key-order-follows-creation",
+    `
+    interface Plain { a: number; b: string }
+    interface Range { local: number; count: number; first: number }
+    interface Retained extends Range { first: number; local: number; datum?: string }
+    const values = [1, 2, 3];
+    const forIn = (row: Retained): string => { const keys: string[] = []; for (const key in row) keys.push(key); return keys.join(); };
+    const plain: Plain[] = [];
+    plain.push({ b: "x" + values[0], a: values[1]! });
+    plain.push({ b: "y", a: values[0]! });
+    if (plain.map((row) => Object.keys(row).join()).join("|") !== "b,a|b,a") throw new Error("plain keys");
+    if (JSON.stringify(plain) !== '[{"b":"x1","a":2},{"b":"y","a":1}]') throw new Error("plain json");
+    if (Object.entries(plain[values[0]!]!).map(([key, value]) => key + "=" + value).join() !== "b=y,a=1") throw new Error("plain entries");
+    const range: Omit<Range, "local"> = { count: values[0]!, first: values[1]! };
+    const local = values[2]!, datum = "d" + values[0];
+    const retained: Retained[] = [{ ...range, local, datum }];
+    if (Object.keys(retained[0]!).join() !== "count,first,local,datum" || forIn(retained[0]!) !== "count,first,local,datum") throw new Error("spread then members");
+    if (JSON.stringify(retained[0]) !== '{"count":1,"first":2,"local":3,"datum":"d1"}') throw new Error("spread then members json");
+    const ranges: Range[] = [];
+    ranges.push({ local, ...range });
+    ranges.push({ local: values[0]!, ...range, count: values[2]! });
+    if (ranges.map((row) => Object.keys(row).join()).join("|") !== "local,count,first|local,count,first") throw new Error("members then spread");
+    if (JSON.stringify(ranges) !== '[{"local":3,"count":1,"first":2},{"local":1,"count":3,"first":2}]') throw new Error("members then spread json");
+`,
+);
+
+check(
+    "declared-record-key-order-indices-conversions-and-copies",
+    `
+    interface Indexed { b: number; 2: string; a: number; 1: string }
+    interface Pair { a: number; b: number }
+    const values = [1, 2, 3];
+    const indexed: Indexed[] = [];
+    indexed.push({ b: values[0]!, 2: "two", a: values[1]!, 1: "one" });
+    if (Object.keys(indexed[0]!).join() !== "1,2,b,a") throw new Error("index keys");
+    if (JSON.stringify(indexed[0]) !== '{"1":"one","2":"two","b":1,"a":2}') throw new Error("index json");
+    const literal = { b: values[0]!, a: values[1]! };
+    const converted: Pair = literal;
+    const pairs: Pair[] = [converted];
+    const source = pairs[0]!;
+    if (Object.keys(source).join() !== "b,a") throw new Error("converted keys");
+    const copy = { ...source, extra: values[2]! };
+    if (Object.keys(copy).join() !== "b,a,extra") throw new Error("copy keys");
+    const before = { extra: values[2]!, ...source };
+    if (JSON.stringify(before) !== '{"extra":3,"b":1,"a":2}') throw new Error("copy json");
+    const dictionary: Record<string, number> = { ...source };
+    if (Object.keys(dictionary).join() !== "b,a") throw new Error("dictionary keys");
+    if (JSON.stringify({ pairs }) !== '{"pairs":[{"b":1,"a":2}]}') throw new Error("nested json");
+    interface Kept { a: number; b: string; c?: number }
+    let state: Kept = { b: "x", a: values[0]! };
+    const kept: Kept[] = [state];
+    state = { ...state, a: values[1]! };
+    kept.push(state);
+    state = { ...state, c: values[2]! };
+    kept.push(state);
+    if (kept.map((row) => Object.keys(row).join()).join("|") !== "b,a|b,a|b,a,c") throw new Error("respread keys");
+    if (JSON.stringify(kept) !== '[{"b":"x","a":1},{"b":"x","a":2},{"b":"x","a":2,"c":3}]') throw new Error("respread json");
+`,
+);
+
+check(
+    "declared-record-key-order-per-record-where-creations-disagree",
+    `
+    interface Pair { a: number; b: string }
+    interface State { a: number; b: string; c?: number }
+    interface Flagged { c: number; b?: number; a: number }
+    const values = [1, 2, 3];
+    const first: Pair = { a: values[0]!, b: "x" };
+    const second: Pair = { b: "y", a: values[1]! };
+    const pairs: Pair[] = [first, second];
+    if (pairs.map((row) => Object.keys(row).join()).join("|") !== "a,b|b,a") throw new Error("two literal orders");
+    if (JSON.stringify(pairs) !== '[{"a":1,"b":"x"},{"b":"y","a":2}]') throw new Error("two literal orders json");
+    let state: State = { b: "x", a: values[0]! };
+    const states: State[] = [state];
+    state = { ...state, c: values[2]! };
+    states.push(state, { c: values[1]!, b: "y", a: values[0]! });
+    if (states.map((row) => Object.keys(row).join()).join("|") !== "b,a|b,a,c|c,b,a") throw new Error("a key created later");
+    const flag = values.length > 1;
+    const flagged: Flagged[] = [];
+    flagged.push({ a: values[0]!, ...(flag ? { b: values[1]! } : {}), c: values[2]! });
+    flagged.push({ a: values[1]!, c: values[0]! });
+    if (flagged.map((row) => Object.keys(row).join()).join("|") !== "a,b,c|a,c") throw new Error("conditional spread");
+    if (JSON.stringify(flagged) !== '[{"a":1,"b":2,"c":3},{"a":2,"c":1}]') throw new Error("conditional spread json");
+`,
+);
+
+check(
+    "declared-record-key-order-through-definitions-and-copies-of-each-other",
+    `
+    interface Token { readonly key: number }
+    interface Row { height: number; tower: number }
+    const values = [1, 2, 3];
+    function attach<T extends object>(row: T, id: Token): T & { readonly id: Token } {
+        const item = { ...row } as T & { readonly id: Token };
+        Object.defineProperty(item, "id", { value: id, enumerable: true, writable: false, configurable: false });
+        return item;
+    }
+    const row: Row = { tower: values[0]!, height: values[1]! };
+    const tagged = [attach(row, { key: values[2]! })];
+    const { id: _id, ...rest } = tagged[0]!;
+    if (Object.keys(rest).join() !== "tower,height") throw new Error("rest keys");
+    tagged.push(attach(rest, { key: values[0]! }));
+    if (tagged.map((item) => Object.keys(item).join()).join("|") !== "tower,height,id|tower,height,id") throw new Error("defined and copied keys");
+    if (JSON.stringify(tagged) !== '[{"tower":1,"height":2,"id":{"key":3}},{"tower":1,"height":2,"id":{"key":1}}]') throw new Error("defined and copied json");
+`,
+);
+
+test("records no document holds refuse an enumeration their creations order apart", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            interface Pair { a: number; readonly b: number }
+            const values = [1, 2];
+            const pairs: Pair[] = [];
+            pairs.push({ a: values[0]!, get b() { return 2; } });
+            pairs.push({ get b() { return 3; }, a: values[1]! });
+            console.log(Object.keys(pairs[0]!).join());
+            `),
+        /'Pair' records create their own keys in different orders; enumerating them requires each record's own order/,
+    );
+});
 
 test("dynamic object and built-in boundaries refuse explicitly", () => {
     const refusals: Array<[string, RegExp]> = [
@@ -18521,6 +19144,67 @@ check(
 `,
 );
 
+// Meshes are native handles the Node run has no engine for: the generated
+// program runs the same assertions over two engines whose first meshes
+// share a slot, so only the engine tells them apart.
+test(
+    "an object parameter compares the mesh it is passed by identity through a stored method",
+    { skip: !native },
+    () => {
+        const { cpp } = compileSource(`
+        import { createBox, type EngineContext, type Mesh } from "@babylonjs/lite";
+        interface Fence { mesh: Mesh; elementAt(pickedMesh: object | null, faceId: number): number | null }
+        function createFence(engine: EngineContext): Fence {
+            const mesh = createBox(engine);
+            const hits: number[] = [7, 8, 9];
+            const elementAt = (pickedMesh: object | null, faceId: number): number | null => {
+                if (pickedMesh !== mesh) return null;
+                return hits[faceId] ?? null;
+            };
+            return { mesh, elementAt };
+        }
+        function inspect(first: EngineContext, second: EngineContext): number {
+            const fence = createFence(first);
+            const other = createFence(second);
+            if (fence.elementAt(fence.mesh, 1) !== 8) throw new Error("its own mesh");
+            if (fence.elementAt(null, 1) !== null) throw new Error("no mesh");
+            if (fence.elementAt(other.mesh, 1) !== null) throw new Error("another engine's mesh");
+            if (other.elementAt(other.mesh, 2) !== 9) throw new Error("the other fence");
+            return 1;
+        }
+        const inspections: Array<typeof inspect> = [inspect];
+    `);
+        const entry =
+            /double (\w+)\(\[\[maybe_unused\]\] bblscene::(\w+)& \w+, \[\[maybe_unused\]\] bbl::StoredEngine \w+, \[\[maybe_unused\]\] bbl::StoredEngine \w+\);/.exec(
+                cpp,
+            );
+        assert.ok(entry, "two-engine inspection");
+        runGeneratedProgram(
+            native!,
+            "language-constructs/object-parameter-mesh-identity",
+            `
+            #define main generated_main
+            ${cpp}
+            #undef main
+            #include <cassert>
+            namespace bbl {
+                MeshHandle create_box(Engine& engine, BoxOptions) {
+                    engine.meshes.emplace_back();
+                    return {0, 0};
+                }
+            }
+            int main() {
+                const bbl::js::RealmScope realm;
+                auto first = std::make_shared<bbl::Engine>();
+                auto second = std::make_shared<bbl::Engine>();
+                bblscene::${entry[2]} environment{};
+                assert(bblscene::${entry[1]}(environment, bbl::StoredEngine{first}, bbl::StoredEngine{second}) == 1);
+            }
+        `,
+        );
+    },
+);
+
 check(
     "a-local-record-stored-as-a-closed-key-record-is-that-record",
     `
@@ -19245,6 +19929,211 @@ test("a promise reaction refuses a dispatched method override that completes wit
             }
             const voices: Voice[] = [new Voice(), new Echo()];
             void (async () => { await voices[1]!.play(Promise.resolve(2)); globalThis.close(); })();
+        `),
+        /Promise reaction with a void result requires a proven undefined completion/,
+    );
+});
+// An optional member holding a function with properties is called only
+// while present, through an optional owner too.
+checkInRealm(
+    "an optional callable record member calls only when present",
+    `
+    type Source = (() => number) & { onResize?: (callback: () => void) => () => void };
+    const listeners: (() => void)[] = [];
+    function makeSource(value: number): Source {
+        return Object.assign(() => value, {
+            onResize: (callback: () => void): (() => void) => {
+                listeners.push(callback);
+                return () => listeners.splice(listeners.indexOf(callback), 1);
+            },
+        });
+    }
+    function bind(sources: readonly (readonly [number, Source])[]): number {
+        let total = 0;
+        for (const [slot, source] of sources) {
+            total += slot * source();
+            source.onResize?.(() => {});
+        }
+        return total;
+    }
+    function outline(opts?: { sceneDepth?: Source }): number {
+        return bind([
+            [1, makeSource(2)],
+            [2, Object.assign(() => opts?.sceneDepth?.() ?? 7, { onResize: opts?.sceneDepth?.onResize })],
+        ]);
+    }
+    const withDepth = outline({ sceneDepth: makeSource(Math.random() < 2 ? 0.25 : 1) });
+    const without = outline();
+    if (withDepth !== 2.5 || without !== 16 || listeners.length !== 3) throw new Error("sources " + withDepth + " " + without + " " + listeners.length);
+    globalThis.close();
+    `,
+);
+// A program that declares no `then` member holds only native promises
+// where it types a PromiseLike: a shared closure awaits one as a promise.
+checkInRealm(
+    "a PromiseLike only promises implement awaits as a promise",
+    `
+    interface Readiness {
+        readonly worldReady: PromiseLike<void>;
+        readonly postReady?: PromiseLike<void> | null;
+        readonly renderReady?: PromiseLike<void> | null;
+        readonly waitForGpuIdle: () => PromiseLike<void>;
+        readonly onMilestone?: (milestone: string) => void;
+    }
+    async function waitFor(options: Readiness): Promise<void> {
+        const observe = async (milestone: string, promise: PromiseLike<void> | null | undefined): Promise<void> => {
+            if (promise) await promise;
+            options.onMilestone?.(milestone);
+        };
+        await Promise.all([observe("world", options.worldReady), observe("post", options.postReady), observe("render", options.renderReady)]);
+        await options.waitForGpuIdle();
+        options.onMilestone?.("gpu");
+    }
+    const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+    let order = "";
+    void waitFor({
+        worldReady: delay(4),
+        postReady: Math.random() < 2 ? delay(1) : null,
+        waitForGpuIdle: () => delay(1),
+        onMilestone: (milestone) => {
+            order += milestone + " ";
+        },
+    }).then(() => {
+        if (order !== "render post world gpu ") throw new Error("order " + order);
+        globalThis.close();
+    });
+    `,
+);
+test("a PromiseLike a declared thenable may implement refuses its assimilation", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            interface Readiness {
+                readonly worldReady: PromiseLike<void>;
+                readonly postReady?: PromiseLike<void> | null;
+                readonly renderReady?: PromiseLike<void> | null;
+                readonly waitForGpuIdle: () => PromiseLike<void>;
+                readonly onMilestone?: (milestone: string) => void;
+            }
+            async function waitFor(options: Readiness): Promise<void> {
+                const observe = async (milestone: string, promise: PromiseLike<void> | null | undefined): Promise<void> => {
+                    if (promise) await promise;
+                    options.onMilestone?.(milestone);
+                };
+                await Promise.all([observe("world", options.worldReady), observe("post", options.postReady), observe("render", options.renderReady)]);
+                await options.waitForGpuIdle();
+                options.onMilestone?.("gpu");
+            }
+            const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+            let order = "";
+            void waitFor({
+                worldReady: delay(4),
+                postReady: Math.random() < 2 ? delay(1) : null,
+                waitForGpuIdle: () => delay(1),
+                onMilestone: (milestone) => {
+                    order += milestone + " ";
+                },
+            }).then(() => {
+                if (order !== "render post world gpu ") throw new Error("order " + order);
+                globalThis.close();
+            });
+            const custom = { then(resolve: (value: void) => void): void { resolve(); } };
+            void waitFor({ worldReady: custom, waitForGpuIdle: () => custom });
+        `),
+        /Custom thenable assimilation requires an owned promise resolution protocol/,
+    );
+});
+// A result that may be absent, a boolean or a promise is a promise only
+// while present and holding its promise member.
+checkInRealm(
+    "an optional value-or-promise union is an instance of Promise in its promise member",
+    `
+    interface Action {
+        readonly id: string;
+        run: () => void | boolean | Promise<void | boolean>;
+    }
+    const actions: Action[] = [
+        { id: "wave", run: () => {} },
+        { id: "pick", run: () => true },
+        {
+            id: "save",
+            run: async () => {
+                await Promise.resolve();
+                throw new Error("disk");
+            },
+        },
+    ];
+    let caught = "";
+    let promises = 0;
+    for (const action of actions) {
+        const result = action.run();
+        if (result instanceof Promise) {
+            promises++;
+            void result.catch((error: unknown) => {
+                caught = action.id + ":" + (error as Error).message;
+            });
+        }
+    }
+    setTimeout(() => {
+        if (promises !== 1 || caught !== "save:disk") throw new Error("instances " + promises + " " + caught);
+        globalThis.close();
+    }, 0);
+    `,
+);
+// A void reaction completes as the functions its completion calls do:
+// a callback parameter the caller fills, a chain of named arrows, a
+// record's method and member, a dispatched method and an arrow called
+// at once, each followed to a body that returns nothing.
+checkInRealm(
+    "a promise reaction follows the functions its completion calls",
+    `
+    let failures = 0;
+    const count = (error: unknown): void => {
+        failures += error instanceof Error ? 1 : 0;
+    };
+    const tally = (error: unknown): void => count(error);
+    const report = (error: unknown): void => tally(error);
+    type Hooks = { failed(error: unknown): void };
+    function mount(hooks: Hooks, task: Promise<void>): Promise<void> {
+        return task.catch(hooks.failed);
+    }
+    function ring(onError?: (error: unknown) => void): (task: Promise<void>) => Promise<void> {
+        return (task) => mount({ failed: (error) => onError?.(error) }, task);
+    }
+    const handlers = {
+        method(error: unknown): void {
+            return tally(error);
+        },
+        member: (error: unknown): void => tally(error),
+    };
+    class Voice {
+        fail(error: unknown): void {
+            return tally(error);
+        }
+        play(task: Promise<void>): Promise<void> {
+            return task.catch((error) => this.fail(error));
+        }
+    }
+    const rejected = (): Promise<void> => Promise.reject(new Error("x"));
+    void (async () => {
+        await ring((error) => tally(error))(rejected());
+        await rejected().catch(report);
+        await rejected().catch((error) => handlers.method(error));
+        await rejected().catch((error) => handlers.member(error));
+        await new Voice().play(rejected());
+        await rejected().catch((error) => ((inner: unknown) => tally(inner))(error));
+        if (failures !== 6) throw new Error("reactions " + failures);
+        globalThis.close();
+    })();
+    `,
+);
+test("a promise reaction refuses a chain that completes with a value", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            const measure: (error: unknown) => void = (error) => String(error).length;
+            const tally = (error: unknown): void => measure(error);
+            void Promise.reject(new Error("x")).catch((error) => tally(error)).finally(() => globalThis.close());
         `),
         /Promise reaction with a void result requires a proven undefined completion/,
     );

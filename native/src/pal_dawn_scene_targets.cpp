@@ -15,6 +15,7 @@
 #include <bblite/features/live_task_add.hpp>
 #include <bblite/features/render_target_disposal.hpp>
 #include <bblite/features/render_task_transmission.hpp>
+#include <bblite/features/depth_resolve_task.hpp>
 
 #include "pal_dawn_scene.hpp"
 
@@ -129,7 +130,7 @@ void create_frame_graph_textures(DawnState& state, const Engine& engine, std::ui
             // invariant is that it is at least one.
             const std::uint32_t depth_layers = record.depth_layers;
             WGPUTextureUsage depth_usage =
-                record.sampled_depth
+                record.sampled_depth || record.depth_binding
                     ? WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding
                     : WGPUTextureUsage_RenderAttachment;
 #if BBLITE_CSM_STATIC_CACHE
@@ -155,7 +156,7 @@ void create_frame_graph_textures(DawnState& state, const Engine& engine, std::ui
                     create_dawn_texture_view(target.depth, &layer_descriptor,
                                              "wgpuTextureCreateView frame graph depth layer");
             }
-            if (record.sampled_depth) {
+            if (record.sampled_depth || record.depth_binding) {
                 WGPUTextureViewDescriptor depth_view_descriptor = WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
                 depth_view_descriptor.aspect = WGPUTextureAspect_DepthOnly;
                 // The cascaded receiver declares `texture_depth_2d_array`,
@@ -175,7 +176,7 @@ void create_frame_graph_textures(DawnState& state, const Engine& engine, std::ui
                 // -- is read as a Standard emissive slot, which needs the
                 // r32float copy so it decodes like SDL's D3D12 depth SRV;
                 // `dawn_render_target_texture` hands out nothing else.
-                if (!record.shadow_map && !record.has_color) {
+                if (record.sampled_depth && !record.shadow_map && !record.has_color) {
                     target.depth_copy = create_frame_texture(
                         state, WGPUTextureFormat_R32Float, 1, target.width, target.height,
                         WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding);
@@ -291,23 +292,36 @@ dawn_render_target_texture(DawnState& state, const Engine& engine, RenderTargetH
 }
 
 namespace {
-/** A pinned utility module's single-sample pipeline: one fullscreen triangle, one target. */
+/**
+ * A pinned utility module's single-sample pipeline, one fullscreen triangle: into one colour
+ * target of `format`, or with `depth` into a depth target of `format` alone, written under
+ * `always`.
+ */
 WGPURenderPipeline fullscreen_grab_pipeline(DawnState& state, const char* stem,
-                                            WGPUTextureFormat format) {
+                                            WGPUTextureFormat format, bool depth = false) {
     DawnShaderModule module{load_wgsl_module(state, stem)};
     WGPURenderPipelineDescriptor descriptor = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
     descriptor.vertex.module = module;
     descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
     WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
     color_target.format = format;
+    WGPUDepthStencilState depth_stencil = WGPU_DEPTH_STENCIL_STATE_INIT;
+    depth_stencil.format = format;
+    depth_stencil.depthWriteEnabled = WGPUOptionalBool_True;
+    depth_stencil.depthCompare = WGPUCompareFunction_Always;
     WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
     fragment.module = module;
-    fragment.targetCount = 1;
-    fragment.targets = &color_target;
+    if (depth) {
+        descriptor.depthStencil = &depth_stencil;
+    } else {
+        fragment.targetCount = 1;
+        fragment.targets = &color_target;
+    }
     descriptor.fragment = &fragment;
     WGPURenderPipeline pipeline = wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
     if (!pipeline)
-        dawn_error("transmission grab pipeline creation failed.");
+        dawn_error(depth ? "depth resolve pipeline creation failed."
+                         : "transmission grab pipeline creation failed.");
     return pipeline;
 }
 
@@ -345,6 +359,51 @@ void encode_grab_pass(WGPUCommandEncoder encoder, WGPURenderPipeline pipeline,
     wgpuRenderPassEncoderEnd(pass);
 }
 } // namespace
+
+#if BBLITE_DEPTH_RESOLVE_TASK
+void encode_depth_resolve(DawnState& state, const Engine& engine, WGPUCommandEncoder encoder,
+                          const FrameTaskRecord& task, const WGPUPassTimestampWrites* timestamps) {
+    const TargetUser user = task_target_user(task);
+    const DepthResolveTaskOptions& options = task.depth_resolve;
+    const RenderTargetRecord& source_record = resolve_render_target(engine, options.source, user);
+    const RenderTargetRecord& target_record = resolve_render_target(engine, options.target, user);
+    const DawnRenderTarget& source = handle_at(state.render_targets, options.source);
+    const DawnRenderTarget& target = handle_at(state.render_targets, options.target);
+    require_depth_resolve(options, source_record, target_record, {source.width, source.height},
+                          {target.width, target.height},
+                          target_sample_count(state, source_record) > 1);
+    auto cached =
+        std::find_if(state.depth_resolve_pipelines.begin(), state.depth_resolve_pipelines.end(),
+                     [&](const auto& entry) { return entry.first == target.depth_format; });
+    if (cached == state.depth_resolve_pipelines.end()) {
+        // The pin's pipeline: no colour target, the target's depth written
+        // under `always`.
+        DawnRenderPipeline pipeline{
+            fullscreen_grab_pipeline(state, "depth-resolve.frag", target.depth_format, true)};
+        state.depth_resolve_pipelines.emplace_back(target.depth_format, std::move(pipeline));
+        cached = std::prev(state.depth_resolve_pipelines.end());
+    }
+    // The source's depth aspect, as the pin's `createView({ aspect: "depth-only" })`.
+    std::array<WGPUBindGroupEntry, 1> entries{};
+    entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
+    entries[0].binding = 0;
+    entries[0].textureView = source.depth_sampled_view;
+    DawnBindGroup group{create_grab_group(state, cached->second, entries)};
+    WGPURenderPassDepthStencilAttachment depth = WGPU_RENDER_PASS_DEPTH_STENCIL_ATTACHMENT_INIT;
+    depth.view = target.depth_layer_views.at(0);
+    depth.depthLoadOp = WGPULoadOp_Clear;
+    depth.depthClearValue = upstream::depth_resolve_clear_depth;
+    depth.depthStoreOp = WGPUStoreOp_Store;
+    WGPURenderPassDescriptor pass_descriptor = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
+    pass_descriptor.depthStencilAttachment = &depth;
+    pass_descriptor.timestampWrites = timestamps;
+    DawnRenderPass pass{wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor)};
+    wgpuRenderPassEncoderSetPipeline(pass, cached->second);
+    wgpuRenderPassEncoderSetBindGroup(pass, 0, group, 0, nullptr);
+    count_gpu_draw(wgpuRenderPassEncoderDraw, pass, 3, 1, 0, 0);
+    wgpuRenderPassEncoderEnd(pass);
+}
+#endif
 
 void encode_transmission_grab(DawnState& state, WGPUCommandEncoder encoder) {
     if (!state.transmission_grab_pipeline)
@@ -558,7 +617,7 @@ void save_dawn_texture_file(DawnState& state, WGPUTexture texture, WGPUTextureFo
     const auto bytes_per_pixel =
         static_cast<std::uint32_t>(webgpu_texel_layout(dawn_webgpu_format_name(format)).bytes);
     const std::uint32_t source_row_bytes = width * bytes_per_pixel;
-    const std::uint32_t aligned_row_bytes = (source_row_bytes + 255u) & ~255u;
+    const std::uint32_t aligned_row_bytes = readback_bytes_per_row(source_row_bytes);
     WGPUBufferDescriptor readback_descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
     readback_descriptor.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
     readback_descriptor.size = static_cast<std::uint64_t>(aligned_row_bytes) * height;

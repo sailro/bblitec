@@ -11,6 +11,12 @@
 
 namespace bbl::js {
 
+namespace detail {
+/** SameValue (`SignedZeros`) or SameValueZero over a stored value (`js_data.hpp`). */
+template <bool SignedZeros, typename T>
+[[nodiscard]] bool same_value_as(const T& left, const T& right);
+} // namespace detail
+
 /** A getter and setter not yet wrapped as callbacks. A record field
  * initialized from them allocates its callbacks in place, so the record owns
  * them from their allocation; the static analyzer loses a returned accessor
@@ -22,7 +28,8 @@ template <typename Getter, typename Setter> struct AccessorClosures {
 
 /** A JavaScript property of a native record that a getter can define: a read
  * runs the getter, a write the setter, and a record that stores plain data in
- * such a field keeps it inline (one branch per access, no allocation). */
+ * such a field keeps it inline (one branch per access, no allocation). A
+ * definition can make that data read-only, and the property nonconfigurable. */
 template <typename T> class Accessor {
 public:
     Accessor() = default;
@@ -40,17 +47,27 @@ public:
         else if (getter_)
             std::rethrow_exception(
                 make_error("TypeError", "Cannot set a property which has only a getter"));
+        else if (!writable_)
+            std::rethrow_exception(
+                make_error("TypeError", "Cannot assign to a read-only property"));
         else
             value_ = std::move(value);
     }
-    void define(Accessor replacement, bool configurable, bool preserve_setter = false) {
+    /** `writable` applies to a data replacement: a nonconfigurable read-only
+     * value stays read-only and keeps its SameValue. */
+    void define(Accessor replacement, bool configurable, bool preserve_setter = false,
+                bool writable = true) {
         if (preserve_setter)
             replacement.setter_ = setter_;
+        const bool data = !replacement.getter_ && !replacement.setter_;
         if (!configurable_ &&
-            (configurable || getter_ != replacement.getter_ || setter_ != replacement.setter_))
+            (configurable || getter_ != replacement.getter_ || setter_ != replacement.setter_ ||
+             (data && !writable_ &&
+              (writable || !detail::same_value_as<true>(value_, replacement.value_)))))
             std::rethrow_exception(
                 make_error("TypeError", "Cannot redefine a nonconfigurable property"));
         replacement.configurable_ = configurable;
+        replacement.writable_ = !data || writable;
         *this = std::move(replacement);
     }
     void gc_trace(const TraceVisitor& visitor) const {
@@ -65,6 +82,7 @@ private:
     Callback<T()> getter_;
     Callback<void(T)> setter_;
     bool configurable_ = true;
+    bool writable_ = true;
 };
 
 /** A finite record slot whose authored accessor observes the supplied receiver. */

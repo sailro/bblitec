@@ -1516,7 +1516,7 @@ inline JsonValue json_value(const U8Array& value) { return JsonValue::from_nativ
  */
 template <typename T> const T& JsonValue::asserted_instance() const {
     if (!instance_of<T>())
-        throw NamedError("TypeError", "Value is not an instance of the asserted class");
+        throw_not_an_instance();
     return static_cast<const JsonNativeBox<T>&>(*native_).value;
 }
 
@@ -1884,11 +1884,12 @@ template <typename Variant>
 }
 
 /**
- * The first `count` values array destructuring iterates: an array (its
- * elements are shared), a string's code points; any other parsed value is
- * not iterable.
+ * The first `count` values array destructuring iterates (all of them for a
+ * rest element): an array (its elements are shared), a string's code
+ * points; any other parsed value is not iterable.
  */
-[[nodiscard]] inline JsonValue json_iterated(const JsonValue& value, std::size_t count) {
+[[nodiscard]] inline JsonValue
+json_iterated(const JsonValue& value, std::size_t count = std::numeric_limits<std::size_t>::max()) {
     if (value.is_array())
         return value;
     if (!value.is_string())
@@ -1901,6 +1902,15 @@ template <typename Variant>
         offset += size;
     }
     return JsonValue::from_array(std::move(points));
+}
+
+/** What array destructuring's rest element collects of `json_iterated` values: a new array of those past `from`. */
+[[nodiscard]] inline JsonValue json_iterated_rest(const JsonValue& iterated, std::size_t from) {
+    JsonValue::Array rest;
+    const auto length = static_cast<std::size_t>(iterated.length());
+    for (std::size_t index = from; index < length; ++index)
+        rest.push_back(iterated.at(static_cast<double>(index)));
+    return JsonValue::from_array(std::move(rest));
 }
 
 template <typename T> struct JsonEntryNullable;

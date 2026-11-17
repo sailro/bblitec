@@ -94,3 +94,36 @@ test("reads a parsed config array into a uniform default after the length check"
     );
     assert.match(cpp, /\.size\(\) != 3u\) throw std::runtime_error/);
 });
+
+test("spreads the uniform declarations a helper returns for a runtime argument", () => {
+    // `pebbleDecls` only returns its list; its parameters are the runtime
+    // value the call passes, read once where the list spreads it, and a
+    // flag generation knows, which selects the list.
+    const declared = source
+        .replace(
+            "async function main() {",
+            `interface Pebbles { scale: number; density: number }
+    function pebbleDecls(peb: Pebbles, door: boolean) {
+        return door
+            ? [{ name: "uPeb", type: "vec2<f32>", defaultValue: [peb.scale, peb.density] }, { name: "uDoor", type: "f32", defaultValue: 1 }]
+            : [{ name: "uPeb", type: "vec2<f32>", defaultValue: [peb.scale, peb.density] }];
+    }
+    async function main() {
+        const peb: Pebbles = { scale: Math.random(), density: Math.random() * 2 };`,
+        )
+        .replace(
+            '{ name: "uTint", type: "vec4<f32>", defaultValue: [0.25, 0.5, 0.75, 1] }',
+            '{ name: "uTint", type: "vec4<f32>", defaultValue: [0.25, 0.5, 0.75, 1] }, ...pebbleDecls(peb, true)',
+        );
+    const { cpp, manifest } = compileSource(declared);
+    assert.deepEqual(manifest.customShaderPrograms[0]?.uniforms, [
+        "worldViewProjection",
+        "uTint:vec4<f32>",
+        "uPeb:vec2<f32>",
+        "uDoor:f32",
+    ]);
+    assert.match(
+        cpp,
+        /std::array<float, 2> values\{static_cast<float>\([^}]*scale[^}]*\), static_cast<float>\([^}]*density[^}]*\)\}; bbl::initialize_shader_uniform_values/,
+    );
+});

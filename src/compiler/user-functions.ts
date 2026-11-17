@@ -8,7 +8,7 @@ import {
     valueForKind,
     withNativeMetadata,
 } from "./types.js";
-import { fixedByCaseSplit } from "./runtime-case-split.js";
+import { armSpecializesCall, fixedByCaseSplit } from "./runtime-case-split.js";
 import { metadataFieldsForKind } from "./values/metadata.js";
 import { isJsonValue } from "./json-bridge.js";
 import { activeSurvey } from "./survey.js";
@@ -32,6 +32,7 @@ import {
     absenceOf,
     knownCondition,
     ownKeysKnown,
+    presenceFlagCpp,
     undefinedValue,
     valueDataType,
 } from "./values/model.js";
@@ -140,11 +141,13 @@ import {
     sourceFunctionName,
     unwrapExpression,
     yieldedOperands,
+    valueOperands,
     argumentAt,
     writeSites,
     referenceSite,
     accessKey,
     bindingNameIdentifiers,
+    objectLiteralMembers,
     plainDataMembers,
     positionalParameter,
     isAsyncFunction,
@@ -1727,6 +1730,14 @@ function nullFallbackTryShape(
     };
 }
 
+/** The primitives generation knows of a record's fields, by source name. */
+type KnownPrimitives = Readonly<
+    Record<
+        string,
+        Pick<Value, "staticNumber" | "staticBoolean" | "staticString">
+    >
+>;
+
 export class UserFunctionLowerer {
     /**
      * Whether a recursive node parameter takes the runtime SceneNode slot.
@@ -1920,6 +1931,188 @@ export class UserFunctionLowerer {
     >();
 
     public constructor(private readonly checker: ts.TypeChecker) {}
+
+    /**
+     * A call's native result with the fields generation knows of the record
+     * literal the body returns: a probe of the body's inline lowering with
+     * the call's arguments, captured at the return expression's evaluation,
+     * before mutable storage erases them. Only primitives are copied, of the
+     * record and of a current record one of its fields holds, and a field
+     * holding one is present, as is the result; every read still uses the
+     * call's own result, held once. Unchanged where the body can return
+     * early or writes storage, its record has accessors, or the probe knows
+     * nothing.
+     */
+    public withReturnedRecordFacts(
+        context: UserFunctionContext,
+        ir: UserFunctionIr | SupportedFunction,
+        call: ts.Node,
+        argumentValues: readonly Value[] | undefined,
+        returnType: DataType | undefined,
+        result: Value,
+    ): Value {
+        if (!("statements" in ir)) {
+            const name =
+                ir.name && ts.isIdentifier(ir.name) ? ir.name.text : "";
+            ir = this.irFor(ir, name, (node, message) =>
+                context.fail(node, message),
+            );
+        }
+        const recordReturn =
+            ir.returnExpression && context.unwrap(ir.returnExpression);
+        if (
+            returnType?.kind !== "struct" ||
+            !recordReturn ||
+            !ts.isObjectLiteralExpression(recordReturn) ||
+            firstReturn(ir.statements) ||
+            [...ir.statements, recordReturn].some((node) =>
+                context.evaluationOrder.writesStorage(node),
+            )
+        )
+            return result;
+        const fields = context.dataTypes.structFields(
+            returnType.name,
+            call,
+            "accessors",
+        );
+        if (fields.some((field) => field.accessor)) return result;
+        const declared = ir;
+        const primitivesOf = (record: Value): KnownPrimitives =>
+            Object.fromEntries(
+                Object.entries(record.recordProperties ?? {})
+                    .filter(([, field]) => !field.parameterBinding)
+                    .map(([name, field]) => [name, scalarFacts(field)]),
+            );
+        let facts: KnownPrimitives | undefined;
+        // The primitives of a current record a field holds, by field.
+        let nestedFacts: Readonly<Record<string, KnownPrimitives>> = {};
+        let ownKeys: readonly string[] | undefined;
+        try {
+            context.probeEmission(() => {
+                const values =
+                    argumentValues ??
+                    (ts.isCallExpression(call)
+                        ? call.arguments.map((argument) =>
+                              context.compileValue(argument),
+                          )
+                        : []);
+                this.lower(
+                    context,
+                    declared,
+                    values,
+                    call,
+                    false,
+                    undefined,
+                    (value) => {
+                        if (!context.bindings.recordPropertiesAreCurrent(value))
+                            return;
+                        ownKeys = Object.keys(value.recordProperties ?? {});
+                        facts = primitivesOf(value);
+                        nestedFacts = Object.fromEntries(
+                            Object.entries(value.recordProperties ?? {})
+                                .filter(
+                                    ([, field]) =>
+                                        field.recordProperties !== undefined &&
+                                        !field.parameterBinding &&
+                                        context.bindings.recordPropertiesAreCurrent(
+                                            field,
+                                        ),
+                                )
+                                .map(([name, field]) => [
+                                    name,
+                                    primitivesOf(field),
+                                ]),
+                        );
+                    },
+                );
+                return undefined;
+            });
+        } catch (error) {
+            if (!(error instanceof CompileError)) throw error;
+            return result;
+        }
+        const captured = facts;
+        // A key the literal states with a value that cannot be absent is
+        // present, as is a field holding a known primitive.
+        const stated = new Set(presentLiteralKeys(this.checker, recordReturn));
+        const knownPresent = (name: string): boolean =>
+            stated.has(name) || Object.keys(captured?.[name] ?? {}).length > 0;
+        if (!captured || !ownKeys || !ownKeys.some(knownPresent)) return result;
+        const present = new Set(ownKeys);
+        // The result is read once per field: a call expression is held.
+        const held = cppIdentifierPattern.test(result.cpp)
+            ? result
+            : context.bindings.pinValueToTemporary(
+                  result,
+                  "function_result",
+                  ts.isExpression(call) ? call : undefined,
+              );
+        // The body's one return is its literal, so the result holds an object.
+        if (presenceFlagCpp(held) !== undefined)
+            writable(held).optionalFoundCpp = "true";
+        // A record a field holds knows the fields holding a primitive, each
+        // present.
+        const knownLeaves = (
+            cpp: string,
+            struct: string,
+            known: KnownPrimitives,
+        ): Record<string, Value> => {
+            const fieldAccess = context.dataTypes.memberAccess(struct);
+            return Object.fromEntries(
+                context.dataTypes
+                    .structFields(struct, call, "accessors")
+                    .filter(
+                        (field) =>
+                            !field.accessor &&
+                            Object.keys(known[field.sourceName] ?? {}).length >
+                                0,
+                    )
+                    .map((field) => [
+                        field.sourceName,
+                        {
+                            ...context.dataLowerer.leafValue(
+                                `${cpp}${fieldAccess}${field.name}`,
+                                field.type,
+                            ),
+                            ...known[field.sourceName],
+                            optionalFoundCpp: "true",
+                        },
+                    ]),
+            );
+        };
+        const access = context.dataTypes.memberAccess(returnType.name);
+        writable(held).recordProperties = Object.fromEntries(
+            fields
+                .filter((field) => present.has(field.sourceName))
+                .map((field) => {
+                    const cpp = `${held.cpp}${access}${field.name}`;
+                    const value: Value = {
+                        ...context.dataLowerer.leafValue(cpp, field.type),
+                        ...captured[field.sourceName],
+                        ...(knownPresent(field.sourceName)
+                            ? { optionalFoundCpp: "true" }
+                            : {}),
+                    };
+                    const nested = nestedFacts[field.sourceName];
+                    if (nested && field.type.kind === "struct")
+                        writable(value).recordProperties = knownLeaves(
+                            cpp,
+                            field.type.name,
+                            nested,
+                        );
+                    return [field.sourceName, value];
+                }),
+        );
+        // The literal's keys are the record's whole key set only where no
+        // spread or prototype member may add one or leave one out.
+        if (
+            objectLiteralMembers(recordReturn).every(
+                (member) => member.kind !== "spread" && member.kind !== "proto",
+            )
+        )
+            writable(held).recordOwnKeys = ownKeys;
+        return held;
+    }
 
     /** Preserve closed scalar results before hoisting would discard their value. */
     public tryCompileStaticResult(
@@ -2506,15 +2699,23 @@ export class UserFunctionLowerer {
         if (
             ir.parameters.some((parameter, index) => {
                 const value = argumentValues[index];
-                return (
+                const kind =
                     value &&
                     (value.staticString !== undefined ||
                         value.staticNumber !== undefined ||
-                        value.staticBoolean !== undefined) &&
-                    context.dataTypes.fromTsType(
-                        this.checker.getTypeAtLocation(parameter.name),
-                        parameter.name,
-                    )?.kind === "union"
+                        value.staticBoolean !== undefined)
+                        ? context.dataTypes.fromTsType(
+                              this.checker.getTypeAtLocation(parameter.name),
+                              parameter.name,
+                          )?.kind
+                        : undefined;
+                // In a run-time case split's arm, a key a string union's
+                // enum takes specializes the body too.
+                return (
+                    kind === "union" ||
+                    (kind === "enum" &&
+                        (context.valueOverrides.size > 0 ||
+                            context.conditionOverrides.size > 0))
                 );
             })
         )
@@ -2548,6 +2749,15 @@ export class UserFunctionLowerer {
         if (returnType && context.dataTypes.carriesOpaqueIterator(returnType))
             return undefined;
         if (
+            armSpecializesCall(
+                context,
+                returnType,
+                ir.declaration,
+                argumentValues,
+            )
+        )
+            return undefined;
+        if (
             !returned ||
             (returnType && !context.dataTypes.carriesFunction(returnType))
         ) {
@@ -2576,111 +2786,15 @@ export class UserFunctionLowerer {
                     : undefined;
             const recordReturn =
                 ir.returnExpression && context.unwrap(ir.returnExpression);
-            if (
-                !group &&
-                returnType?.kind === "struct" &&
-                recordReturn &&
-                ts.isObjectLiteralExpression(recordReturn) &&
-                plainDataMembers(recordReturn) !== undefined &&
-                ir.statements.length === 0 &&
-                !context.evaluationOrder.writesStorage(recordReturn) &&
-                argumentValues.every(generationKnownStringArgument)
-            ) {
-                const fields = context.dataTypes.structFields(
-                    returnType.name,
+            if (!group)
+                result = this.withReturnedRecordFacts(
+                    context,
+                    ir,
                     call,
-                    "accessors",
+                    argumentValues,
+                    returnType,
+                    result,
                 );
-                if (
-                    fields.every(
-                        (field) =>
-                            !field.accessor &&
-                            ["number", "boolean", "string"].includes(
-                                field.type.kind,
-                            ),
-                    )
-                ) {
-                    let facts:
-                        | Record<
-                              string,
-                              Pick<
-                                  Value,
-                                  | "staticNumber"
-                                  | "staticBoolean"
-                                  | "staticString"
-                              >
-                          >
-                        | undefined;
-                    let ownKeys: readonly string[] | undefined;
-                    try {
-                        context.probeEmission(() => {
-                            this.lower(
-                                context,
-                                ir,
-                                argumentValues,
-                                call,
-                                false,
-                                undefined,
-                                (value) => {
-                                    if (
-                                        !context.bindings.recordPropertiesAreCurrent(
-                                            value,
-                                        )
-                                    )
-                                        return;
-                                    ownKeys = Object.keys(
-                                        value.recordProperties ?? {},
-                                    );
-                                    facts = Object.fromEntries(
-                                        Object.entries(
-                                            value.recordProperties ?? {},
-                                        )
-                                            .filter(
-                                                ([, field]) =>
-                                                    !field.parameterBinding,
-                                            )
-                                            .map(([name, field]) => [
-                                                name,
-                                                scalarFacts(field),
-                                            ]),
-                                    );
-                                },
-                            );
-                            return undefined;
-                        });
-                    } catch (error) {
-                        if (!(error instanceof CompileError)) throw error;
-                        facts = undefined;
-                    }
-                    if (facts && ownKeys) {
-                        const captured = facts;
-                        const present = new Set(ownKeys);
-                        // Capture at the return expression's evaluation, before
-                        // mutable storage erases the facts. Only primitives are
-                        // copied; every read still uses the real call's owner.
-                        const access = context.dataTypes.memberAccess(
-                            returnType.name,
-                        );
-                        writable(result).recordProperties = Object.fromEntries(
-                            fields
-                                .filter((field) =>
-                                    present.has(field.sourceName),
-                                )
-                                .map((field) => [
-                                    field.sourceName,
-                                    {
-                                        ...context.dataLowerer.leafValue(
-                                            `${result.cpp}${access}${field.name}`,
-                                            field.type,
-                                        ),
-                                        ...captured[field.sourceName],
-                                    },
-                                ]),
-                        );
-                        writable(result).recordOwnKeys = ownKeys;
-                    }
-                }
-            }
             if (
                 !group &&
                 returnType?.kind === "struct" &&
@@ -2758,10 +2872,15 @@ export class UserFunctionLowerer {
                     }
                 }
             }
+            // An argument JavaScript formats is known to a body formatting it.
             if (
                 returnType &&
                 ["number", "boolean", "string"].includes(returnType.kind) &&
-                argumentValues.every(generationKnownStringArgument)
+                argumentValues.every(
+                    (value) =>
+                        generationKnownStringArgument(value) ||
+                        value.formattedNumber !== undefined,
+                )
             ) {
                 const key = this.scalarResults.key(
                     context.functionEmissionScope(),
@@ -6064,6 +6183,20 @@ export class UserFunctionLowerer {
                             continue;
                         }
                         const { type, cppName: name } = supplied;
+                        // The parameter of the signature its callers pass
+                        // through to, which stores what this one demands.
+                        const signatureIndex = runtimeIndex - 1;
+                        const signatureParameter = () =>
+                            context.dataTypes.signatureParameterDeclaration(
+                                signatureType,
+                                signatureIndex,
+                            ) ??
+                            (site &&
+                                storedSignatureParameter(
+                                    this.checker,
+                                    site,
+                                    ir.parameters.indexOf(parameter),
+                                ));
                         if (
                             !dataTypesEqual(
                                 type,
@@ -6074,16 +6207,7 @@ export class UserFunctionLowerer {
                             )
                         )
                             context.dataTypes.requireEngineParameterStorage(
-                                context.dataTypes.signatureParameterDeclaration(
-                                    signatureType,
-                                    runtimeIndex - 1,
-                                ) ??
-                                    (site &&
-                                        storedSignatureParameter(
-                                            this.checker,
-                                            site,
-                                            ir.parameters.indexOf(parameter),
-                                        )),
+                                signatureParameter(),
                             );
                         // A parameter that tells null from undefined needs
                         // the signature its callers pass through to as well.
@@ -6093,17 +6217,22 @@ export class UserFunctionLowerer {
                         )
                             requireDeclarationAbsenceTag(
                                 context.absenceTags,
-                                context.dataTypes.signatureParameterDeclaration(
-                                    signatureType,
-                                    runtimeIndex - 1,
-                                ) ??
-                                    (site &&
-                                        storedSignatureParameter(
-                                            this.checker,
-                                            site,
-                                            ir.parameters.indexOf(parameter),
-                                        )),
+                                signatureParameter(),
                             );
+                        // So does an erased parameter a native handle settled.
+                        const asserted =
+                            context.dataTypes.assertedParameterStorage(
+                                parameter.declaration,
+                            );
+                        if (asserted && !dataTypesEqual(type, asserted)) {
+                            const declared = signatureParameter();
+                            if (declared)
+                                context.dataTypes.requireWrittenHandleFieldStorage(
+                                    declared,
+                                    asserted,
+                                    parameter.declaration,
+                                );
+                        }
                         // Stored callbacks receive owned parameters by value.
                         // Their separate source bindings can borrow that stable
                         // storage until a source assignment requires a copy.
@@ -7415,7 +7544,11 @@ export class UserFunctionLowerer {
         if (
             ir.returnNeedsSnapshot ||
             value.kind !== "record" ||
-            !ts.isObjectLiteralExpression(context.unwrap(expression)) ||
+            // Every object it can yield is a literal: a selection of
+            // literals returns a fresh one too.
+            !valueOperands(expression, (node) => context.unwrap(node)).every(
+                ts.isObjectLiteralExpression,
+            ) ||
             Object.keys(value.recordMethods ?? {}).length > 0 ||
             Object.keys(value.recordGetters ?? {}).length > 0 ||
             Object.keys(value.recordSetters ?? {}).length > 0
@@ -7853,11 +7986,27 @@ export class UserFunctionLowerer {
             // guards and return expressions determine its storage together.
             let inferred: DataType | undefined;
             let incompatible = false;
+            // `undefined` makes the handle optional; a read of an erased
+            // field holds what the program writes there, which the field
+            // then stores as the handle (a storage demand).
+            let absent = false;
+            const erasedReads: ts.Expression[] = [];
             context.probeEmission(
                 () => {
                     context.beginNativeFunctionBody({ kind: "number" }, false, {
                         compileReturn: (expression) => {
                             const value = context.compileValue(expression);
+                            if (absenceOf(value) === "undefined") {
+                                absent = true;
+                                return "0.0";
+                            }
+                            if (
+                                value.dataType?.kind === "json" &&
+                                context.dataTypes.isErasedFieldRead(expression)
+                            ) {
+                                erasedReads.push(expression);
+                                return "0.0";
+                            }
                             const represented =
                                 value.dataType ??
                                 (isHandleKind(value.kind)
@@ -7876,14 +8025,26 @@ export class UserFunctionLowerer {
                                     : inferred;
                             if (
                                 inner?.kind !== "handle" ||
-                                (previous && !dataTypesEqual(previous, inner))
+                                (previous &&
+                                    (previous.kind !== "handle" ||
+                                        previous.handle !== inner.handle))
                             )
                                 incompatible = true;
-                            else
+                            else {
+                                // A handle stored with its engine (an erased
+                                // field's) makes the result store it so.
+                                const handle =
+                                    previous?.kind === "handle" &&
+                                    previous.ownedEngine &&
+                                    !inner.ownedEngine
+                                        ? previous
+                                        : inner;
                                 inferred =
-                                    inferred?.kind === "optional"
-                                        ? inferred
-                                        : represented;
+                                    inferred?.kind === "optional" ||
+                                    represented?.kind === "optional"
+                                        ? { kind: "optional", inner: handle }
+                                        : handle;
+                            }
                             return "0.0";
                         },
                     });
@@ -7895,7 +8056,23 @@ export class UserFunctionLowerer {
                 },
                 () => false,
             );
-            if (!incompatible) type = inferred;
+            if (!incompatible && inferred) {
+                type =
+                    absent || erasedReads.length > 0
+                        ? {
+                              kind: "optional",
+                              inner:
+                                  inferred.kind === "optional"
+                                      ? inferred.inner
+                                      : inferred,
+                          }
+                        : inferred;
+                for (const read of erasedReads)
+                    context.dataTypes.requireAssertedHandleFieldStorage(
+                        read,
+                        type,
+                    );
+            }
         }
         type ??= expectedResult;
         // Every return writes the one result: a record type reaching

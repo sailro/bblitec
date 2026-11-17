@@ -21,7 +21,7 @@ import { requireHeldRecordStorage } from "../dynamic-binding-storage.js";
 import { NativeRecordStorageRequired } from "../native-record-storage.js";
 import { nativeStructuralViewType } from "../native-owner-carrier.js";
 import { callableRecordValue } from "../callable-records.js";
-import { recordPropertyKeys } from "../object-statics.js";
+import { recordCreatedKeys, recordPropertyKeys } from "../object-statics.js";
 import {
     completeLiteralSelf,
     homeReceiver,
@@ -45,6 +45,7 @@ import {
     unionMembers,
 } from "../type-facts.js";
 import { knownCondition } from "../values/model.js";
+import { declaredPrivateNames } from "../classes.js";
 
 function expressionEnum(
     dataType: DataType<"enum">,
@@ -139,6 +140,17 @@ function expressionStruct(
     ) {
         return `${lowerer.context.dataTypes.cppType(dataType)}{}`;
     }
+    const sharedClass = lowerer.context.dataTypes.classStruct(dataType.name);
+    if (
+        ts.isObjectLiteralExpression(unwrapped) &&
+        sharedClass &&
+        storesOnlyInstances(lowerer, sharedClass.declaration, expression)
+    )
+        return assertedNonInstance(
+            lowerer,
+            dataType,
+            lowerer.context.compileValue(unwrapped),
+        );
     if (ts.isObjectLiteralExpression(unwrapped)) {
         refuseForeignClassView(lowerer, expression);
         if (
@@ -480,20 +492,32 @@ function valueStruct(
         return value.ownedCpp ?? value.cpp;
     }
     const sharedClass = lowerer.context.dataTypes.classStruct(dataType.name);
+    if (
+        sharedClass &&
+        value.kind === "record" &&
+        !(
+            value.classDeclaration !== undefined &&
+            lowerer.context.dataTypes.sharesClassStruct(
+                value.classDeclaration,
+                sharedClass.declaration,
+            )
+        ) &&
+        storesOnlyInstances(lowerer, sharedClass.declaration, node)
+    )
+        return assertedNonInstance(lowerer, dataType, value);
     if (sharedClass && value.kind === "record") {
         refuseForeignClassView(lowerer, node, value.classDeclaration);
-        // A probe declines on the refusal; a committed store replays shared.
-        if (!lowerer.context.speculating)
-            lowerer.context.dataTypes.requireSharedClass(
-                sharedClass.declaration,
-            );
-        lowerer.context.fail(
-            node,
+        const message =
             `An instance of '${dataType.name}' constructed before ` +
-                "anything stored one is a compile-time record; " +
-                "storing it here would mint a second object with " +
-                "the same fields rather than share this one.",
+            "anything stored one is a compile-time record; " +
+            "storing it here would mint a second object with " +
+            "the same fields rather than share this one.";
+        // The store replays with the class shared from its first construction.
+        const demand = lowerer.context.dataTypes.sharedClassDemand(
+            sharedClass.declaration,
         );
+        if (demand) lowerer.context.refuseWithDemand(node, message, demand);
+        lowerer.context.fail(node, message);
     }
     if (
         (value.kind === "json-null" || value.dataType?.kind === "null") &&
@@ -557,6 +581,12 @@ function valueStruct(
                 (property) => !stored.has(property),
             ),
         );
+        // A class instance seen as a record lists the record type's members.
+        if (value.classDeclaration === undefined)
+            lowerer.context.dataTypes.keyOrders.noteCreation(
+                dataType.name,
+                recordCreatedKeys(value),
+            );
         // The members lowered into function slots, and the accessors of
         // slots without a receiver, may read `this` as the object the
         // literal creates.
@@ -652,12 +682,7 @@ function valueStruct(
                       property.dataType?.kind === "optional" &&
                       field.type.kind !== "optional"
                         ? armFieldOrDefault(lowerer, property, field, node)
-                        : lowerer.compileMemberForSink(
-                              property,
-                              field.type,
-                              node,
-                              field.sourceName,
-                          )
+                        : storeFieldMember(lowerer, property, field, node)
                     : field.defaultWhenMissing ||
                         (field.accessorReceiver &&
                             field.type.kind === "optional")
@@ -750,6 +775,9 @@ function valueStruct(
             ),
             sourceType,
         );
+        lowerer.context.dataTypes.keyOrders.noteCreation(dataType.name, [
+            { struct: sourceType.name },
+        ]);
         lowerer.context.dataTypes.requireEngineFieldsStorage(
             fields.flatMap((field) => {
                 const source = sourceFields.get(field.sourceName);
@@ -790,16 +818,16 @@ function valueStruct(
                 if (copyDataSlots && field.accessorReceiver) {
                     let stored = "";
                     const lines = lowerer.context.captureEmittedLines(() => {
-                        stored = lowerer.compileMemberForSink(
+                        stored = storeFieldMember(
+                            lowerer,
                             lowerer.leafValue(
                                 source.accessorReceiver
                                     ? `${sourceCpp}.get()`
                                     : sourceCpp,
                                 source.type,
                             ),
-                            field.type,
+                            field,
                             node,
-                            field.sourceName,
                         );
                     });
                     const slot =
@@ -827,11 +855,11 @@ function valueStruct(
                         );
                     return sourceCpp;
                 }
-                return lowerer.compileMemberForSink(
+                return storeFieldMember(
+                    lowerer,
                     lowerer.leafValue(sourceCpp, source.type),
-                    field.type,
+                    field,
                     node,
-                    field.sourceName,
                 );
             },
         ).join(", ")}}`;
@@ -944,12 +972,7 @@ function conditionalOwnFieldInitializer(
             held.dataType?.kind === "optional" &&
             field.type.kind !== "optional"
                 ? armFieldOrDefault(lowerer, held, field, node)
-                : lowerer.compileMemberForSink(
-                      held,
-                      field.type,
-                      node,
-                      field.sourceName,
-                  );
+                : storeFieldMember(lowerer, held, field, node);
     });
     const slot = lowerer.context.dataTypes.structFieldCppType(field);
     const initialized = lowerer.context.dataTypes.structFieldInitializerCpp(
@@ -960,6 +983,26 @@ function conditionalOwnFieldInitializer(
         `([&]() -> ${slot} { ${snapshots.join(" ")} ` +
         `if (!(${own})) return {}; ${conversion.join(" ")} ` +
         `return ${initialized}; }())`
+    );
+}
+
+/**
+ * A member stored as a struct field, marked when the field is declared only
+ * as a read-only array view (`readonlyArrayField`).
+ */
+function storeFieldMember(
+    lowerer: DataSinkHost,
+    member: Value,
+    field: DataStructField,
+    node: ts.Node,
+): string {
+    return lowerer.compileMemberForSink(
+        lowerer.context.dataTypes.readonlyArrayField(field)
+            ? { ...member, readonlyArraySlot: true }
+            : member,
+        field.type,
+        node,
+        field.sourceName,
     );
 }
 
@@ -977,20 +1020,15 @@ function armFieldOrDefault(
 ): string {
     const type = property.dataType;
     if (type?.kind !== "optional")
-        return lowerer.compileMemberForSink(
-            property,
-            field.type,
-            node,
-            field.sourceName,
-        );
+        return storeFieldMember(lowerer, property, field, node);
     const slot = lowerer.context.allocateTemporaryCppName("arm_field");
     let converted = "";
     const lines = lowerer.context.captureEmittedLines(() => {
-        converted = lowerer.compileMemberForSink(
+        converted = storeFieldMember(
+            lowerer,
             lowerer.leafValue(optionalValueCpp(slot), type.inner),
-            field.type,
+            field,
             node,
-            field.sourceName,
         );
     });
     const cppType = lowerer.context.dataTypes.cppType(field.type);
@@ -1109,6 +1147,42 @@ function refuseClassRecordCopy(
         node,
         `A '${symbol.name}' instance stored as '${target ? checker.typeToString(target) : dataType.name}' would be a copy of the one object JavaScript keeps, and ${observed}.`,
     );
+}
+
+/**
+ * Whether only an instance of `declaration` has the type stored at `node`
+ * without an assertion: a phantom brand, which no object has, or a class
+ * of the stored struct that keys a private member (`#name`).
+ */
+function storesOnlyInstances(
+    lowerer: DataSinkHost,
+    declaration: ts.ClassLikeDeclaration,
+    node: ts.Node,
+): boolean {
+    const checker = lowerer.context.checker;
+    const dataTypes = lowerer.context.dataTypes;
+    const type = checker.getNonNullableType(checker.getTypeAtLocation(node));
+    if (dataTypes.isPhantomBrand(type)) return true;
+    const instance = classInstanceDeclaration(type);
+    return (
+        instance !== undefined &&
+        dataTypes.sharesClassStruct(instance, declaration) &&
+        declaredPrivateNames(instance).size > 0
+    );
+}
+
+/**
+ * A value that is no instance stored as one, which only an assertion
+ * stores: it throws TypeError where it is made (docs/fidelity.md).
+ */
+function assertedNonInstance(
+    lowerer: DataSinkHost,
+    dataType: DataType<"struct">,
+    value: Value,
+): string {
+    lowerer.context.emitDiscardedValue(value);
+    lowerer.context.reachJsData();
+    return `bbl::js::throw_not_an_instance<${lowerer.context.dataTypes.cppType(dataType)}>()`;
 }
 
 /**

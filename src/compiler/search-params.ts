@@ -44,6 +44,7 @@ function searchParamsValue(lowerer: DataLowerer, input: string): Value {
             type,
         ),
         impure: true,
+        ownedQuery: true,
     };
 }
 
@@ -116,6 +117,7 @@ function recordSearchParams(
                 type,
             ),
             impure: true,
+            ownedQuery: true,
         };
     };
     if (built) return params(built.cpp);
@@ -151,9 +153,12 @@ export function compileSearchParamsMethod(
                 context.checker.getTypeAtLocation(callee.expression),
             ),
         ) === "FormData";
+    // A bag the program owns changes alone; another may be the deployment
+    // query's, which every fold reads.
     if (
         searchParamsMutators.has(method) &&
         !formData &&
+        !owner.ownedQuery &&
         !context.options.runtimeSearchParams
     )
         throw new RuntimeSearchParamsRequired();

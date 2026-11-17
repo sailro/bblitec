@@ -208,6 +208,7 @@ export type WebPlatformCallContext = Pick<
     | "bindings"
     | "callbacks"
     | "checker"
+    | "compileNumber"
     | "compileStringLiteral"
     | "compileValue"
     | "conditions"

@@ -141,20 +141,31 @@ export function hasUndefinedCallbackCompletion(
     value: Value | undefined,
     awaited = false,
 ): boolean {
-    if (value?.kind !== "callback" || value.cpp) return false;
+    return hasUndefinedCompletion(
+        checker,
+        callbackSource(checker, value),
+        awaited,
+    );
+}
+
+/** The function a source-specialized callback runs: its literal, or the declaration its immutable alias names. */
+function callbackSource(
+    checker: ts.TypeChecker,
+    value: Value | undefined,
+): ts.SignatureDeclaration | undefined {
+    if (value?.kind !== "callback" || value.cpp) return undefined;
     const declaration = value.callbackDeclaration;
-    if (!declaration) return false;
+    if (!declaration) return undefined;
     const source = ts.isIdentifier(declaration)
         ? resolvedSymbol(checker, declaration)?.valueDeclaration
         : declaration;
-    return (
-        !!source &&
+    return source &&
         (ts.isFunctionDeclaration(source) ||
             ts.isFunctionExpression(source) ||
             ts.isArrowFunction(source) ||
-            ts.isMethodDeclaration(source)) &&
-        hasUndefinedCompletion(checker, source, awaited)
-    );
+            ts.isMethodDeclaration(source))
+        ? source
+        : undefined;
 }
 
 interface UndefinedContext {
@@ -213,12 +224,30 @@ function provenUndefinedValue(
         requireFieldProofs,
     }: ProvenUndefinedOptions = {},
 ): boolean {
-    const seen = new Set<ts.Node>();
+    // Each expression's answer, awaited or not, once proven: false while
+    // its own proof is under way, so a cycle proves nothing.
+    const proven = [new Map<ts.Node, boolean>(), new Map<ts.Node, boolean>()];
     const visit = (source: ts.Node, awaited = false): boolean => {
         if (!ts.isExpression(source)) return false;
         const expression = unwrapExpression(source);
-        if (seen.has(expression)) return false;
-        seen.add(expression);
+        const answers = proven[awaited ? 1 : 0]!;
+        const known = answers.get(expression);
+        if (known !== undefined) return known;
+        answers.set(expression, false);
+        const answer = prove(expression, awaited);
+        answers.set(expression, answer);
+        return answer;
+    };
+    // A function a call runs completes as its own completions do, each
+    // followed with this proof.
+    const runs = (
+        body: ts.SignatureDeclaration | undefined,
+        awaited: boolean,
+    ): boolean =>
+        everyCompletion(body, awaited, (completion) =>
+            visit(completion, awaited),
+        );
+    const prove = (expression: ts.Expression, awaited: boolean): boolean => {
         // A type parameter answers through the substitution in force.
         if (
             ts.isVoidExpression(expression) ||
@@ -276,7 +305,7 @@ function provenUndefinedValue(
                 return false;
             // A name bound at generation to one function literal or
             // declaration (a specialized callback parameter) calls it.
-            if (hasUndefinedCallbackCompletion(context.checker, bound, awaited))
+            if (runs(callbackSource(context.checker, bound), awaited))
                 return true;
             const binding = resolvedSymbol(
                 context.checker,
@@ -299,12 +328,7 @@ function provenUndefinedValue(
                               .getProperty(key),
                       )
                     : undefined;
-            if (destructured)
-                return hasUndefinedCompletion(
-                    context.checker,
-                    destructured,
-                    awaited,
-                );
+            if (destructured) return runs(destructured, awaited);
             if (
                 !binding ||
                 !(
@@ -318,12 +342,7 @@ function provenUndefinedValue(
             const literal = ts.isVariableDeclaration(binding)
                 ? functionOfDeclaration(binding)
                 : undefined;
-            if (literal)
-                return hasUndefinedCompletion(
-                    context.checker,
-                    literal,
-                    awaited,
-                );
+            if (literal) return runs(literal, awaited);
         } else if (accessed && ts.isIdentifier(accessed.expression)) {
             // A member of a record known at generation calls the function it
             // holds; an absent one called optionally yields `undefined`.
@@ -333,12 +352,7 @@ function provenUndefinedValue(
                 context,
                 declaredSymbol(context.checker, accessed.key),
             );
-            if (exported)
-                return hasUndefinedCompletion(
-                    context.checker,
-                    exported,
-                    awaited,
-                );
+            if (exported) return runs(exported, awaited);
             const owner = context.bindings.lookupOptional(receiver);
             // A struct's function field stores only functions proven to
             // complete as its type requires; an absent optional struct
@@ -384,11 +398,7 @@ function provenUndefinedValue(
                     context.bindings.isImmutableVariable(named)
                         ? functionOfDeclaration(named)
                         : named;
-                return (
-                    !!body &&
-                    ts.isFunctionLike(body) &&
-                    hasUndefinedCompletion(context.checker, body, awaited)
-                );
+                return !!body && ts.isFunctionLike(body) && runs(body, awaited);
             }
             if (member === undefined)
                 return (
@@ -396,11 +406,7 @@ function provenUndefinedValue(
                     owner.recordGetters?.[name] === undefined &&
                     ownKeysKnown(context, owner, callee)
                 );
-            return hasUndefinedCallbackCompletion(
-                context.checker,
-                member,
-                awaited,
-            );
+            return runs(callbackSource(context.checker, member), awaited);
         } else if (
             declaration &&
             ts.isMethodDeclaration(declaration) &&
@@ -409,18 +415,13 @@ function provenUndefinedValue(
             // A class method call runs one of the bodies its dispatch reaches.
             const bodies =
                 context.dataTypes.classHierarchy.dispatchBodies(declaration);
-            return (
-                !!bodies &&
-                bodies.every((body) =>
-                    hasUndefinedCompletion(context.checker, body, awaited),
-                )
-            );
+            return !!bodies && bodies.every((body) => runs(body, awaited));
         } else if (
             !ts.isArrowFunction(callee) &&
             !ts.isFunctionExpression(callee)
         )
             return false;
-        return hasUndefinedCompletion(context.checker, declaration, awaited);
+        return runs(declaration, awaited);
     };
     return visit(node, awaitedNode);
 }

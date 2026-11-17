@@ -7,7 +7,9 @@
 #include <bblite/features/has_post_process.hpp>
 #include <bblite/features/has_screen_space.hpp>
 #include <bblite/features/effect_wrapper_disposal.hpp>
+#include <bblite/features/effect_task_scissor.hpp>
 #include <bblite/features/render_task_transmission.hpp>
+#include <bblite/features/depth_resolve_task.hpp>
 
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
@@ -21,6 +23,10 @@
 #include <bblite/upstream/pinned_texture.hpp>
 #if BBLITE_RENDER_TASK_TRANSMISSION
 #include <bblite/upstream/pinned_task_transmission.hpp>
+#endif
+#if BBLITE_DEPTH_RESOLVE_TASK
+#include <string>
+#include <bblite/upstream/pinned_depth_resolve.hpp>
 #endif
 #if BBLITE_HAS_SCREEN_SPACE
 #include <bblite/upstream/frame_graph_screen_space.hpp>
@@ -232,6 +238,34 @@ inline void prepare_effect_task(const Engine& engine, const FrameTaskRecord& tas
 #endif
 }
 
+/** What an effect task's pass draws: nothing, or its triangle under an optional scissor. */
+struct EffectTaskDraw {
+    bool draws = true;
+    std::optional<PixelViewport> scissor;
+};
+
+/**
+ * `EffectRenderTask.execute`'s draw over its `target_width` x `target_height` target, after the
+ * pass began (and cleared): its scissor's rectangle (`effect_task_scissor`), none that covers no
+ * pixel, or the whole target without one.
+ */
+[[nodiscard]] inline EffectTaskDraw effect_task_draw(const FrameTaskRecord& task,
+                                                     std::uint32_t target_width,
+                                                     std::uint32_t target_height) {
+#if BBLITE_EFFECT_TASK_SCISSOR
+    if (task.effect_scissor) {
+        const std::optional<PixelViewport> scissor =
+            effect_task_scissor(*task.effect_scissor, target_width, target_height);
+        return EffectTaskDraw{scissor.has_value(), scissor};
+    }
+#else
+    (void)task;
+    (void)target_width;
+    (void)target_height;
+#endif
+    return {};
+}
+
 /**
  * The pixels a target scaled from another occupies, by the pin's own rule:
  * `max(1, floor(extent * ratio))`, evaluated against whatever the source
@@ -423,5 +457,47 @@ TextureFormatClass geometry_format_class(const GeometryTextureDescription& descr
 inline float geometry_clear_component(GeometryTextureType type) {
     return type == GeometryTextureType::normalized_view_depth ? 1.0f : 0.0f;
 }
+
+#if BBLITE_DEPTH_RESOLVE_TASK
+/** The extent a backend allocated a target's attachments at. */
+struct AllocatedExtent {
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+};
+
+/**
+ * `createDepthResolveTask`'s build over a backend's allocations: the pin's
+ * refusals in its build's order. Every native target is allocated at its
+ * descriptor's extent before a pass runs, which is where the pin's rebuild
+ * of a missing or mis-sized target leaves it. A source the multisample gate
+ * draws single-sampled has no multisampled depth for the module to read,
+ * and the pinned pass attaches the target's whole default view with no
+ * stencil operations, so a layered or stencilled target refuses too.
+ */
+inline void require_depth_resolve(const DepthResolveTaskOptions& options,
+                                  const RenderTargetRecord& source,
+                                  const RenderTargetRecord& target, AllocatedExtent source_extent,
+                                  AllocatedExtent target_extent, bool source_multisampled) {
+    // The pin's template literal quotes `config.name` as written.
+    const std::string name = options.named ? options.name : "undefined";
+    if (!source.has_depth)
+        throw std::runtime_error(upstream::depth_resolve_source_without_depth(name));
+    if (source.samples < 2)
+        throw std::runtime_error(upstream::depth_resolve_single_sample_source(name));
+    if (target_extent.width != source_extent.width || target_extent.height != source_extent.height)
+        throw std::runtime_error(
+            upstream::depth_resolve_size_mismatch(name, target_extent.width, target_extent.height,
+                                                  source_extent.width, source_extent.height));
+    if (!target.has_depth)
+        throw std::runtime_error(upstream::depth_resolve_target_without_depth(name));
+    if (!source_multisampled)
+        throw std::runtime_error("A depth-resolve source the multisample gate draws "
+                                 "single-sampled is not lowered.");
+    if (target.depth_layers != 1 ||
+        target.depth_format == DepthTextureFormat::depth24_plus_stencil8)
+        throw std::runtime_error(
+            "A depth-resolve target with stencil or more than one layer is not lowered.");
+}
+#endif
 
 } // namespace bbl::pal

@@ -154,12 +154,17 @@ import {
     compileGpuTaskTimingIntrinsic,
     type GpuTaskTimingIntrinsicContext,
 } from "./gpu-task-timing.js";
+import {
+    compileScreenshotIntrinsic,
+    type ScreenshotIntrinsicContext,
+} from "./screenshot.js";
 import { knownCondition } from "../values/model.js";
 
 export interface EngineIntrinsicContext
     extends
         IntrinsicCallContext,
         GpuTaskTimingIntrinsicContext,
+        ScreenshotIntrinsicContext,
         EngineOptionContext,
         Pick<
             LoweringServices,
@@ -342,6 +347,8 @@ export function compileEngineIntrinsic(
 ): Value | undefined {
     const timing = compileGpuTaskTimingIntrinsic(context, importedName, call);
     if (timing) return timing;
+    const screenshot = compileScreenshotIntrinsic(context, importedName, call);
+    if (screenshot) return screenshot;
     switch (importedName) {
         case "waitForGpuIdle":
         case "waitForGpuResourceRetirements": {
@@ -844,6 +851,28 @@ export function compileEngineIntrinsic(
                     `${engine.cpp}, ${scene.cpp}, ${options})`,
                 engineCpp: engine.engineCpp ?? engine.cpp,
                 copyTask: true,
+            };
+        }
+
+        case "createDepthResolveTask": {
+            context.expectArgumentCount(call, 3, 3);
+            const engine = context.compileValue(argumentAt(call, 1));
+            const scene = context.compileValue(argumentAt(call, 2));
+            context.expectKind(engine, "engine", argumentAt(call, 1));
+            context.expectKind(scene, "scene", argumentAt(call, 2));
+            context.expectSameEngine(engine, scene, call);
+            const options =
+                context.intrinsicOptions.compileDepthResolveTaskOptions(
+                    argumentAt(call, 0),
+                );
+            reachRenderer(context, call);
+            context.reachFeature("frame-graph:depth-resolve", call);
+            return {
+                kind: "task",
+                cpp:
+                    `bbl::create_depth_resolve_task(` +
+                    `${engine.cpp}, ${scene.cpp}, ${options})`,
+                engineCpp: engine.engineCpp ?? engine.cpp,
             };
         }
 

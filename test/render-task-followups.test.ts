@@ -257,6 +257,39 @@ test("refreshed task overrides lower where refresh and an override are both reac
     );
 });
 
+test("options a condition selects add the mesh as the selected arm does", () => {
+    const source = (
+        options: string,
+    ): string => `import {createEngine,createSceneContext,createFreeCamera,createSphere,addToScene,registerScene,
+        createRenderTask,addTask,addMeshToTask,createRenderTargetTexture,createStandardMaterial} from "@babylonjs/lite";
+        const engine=await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+        const scene=createSceneContext(engine);
+        scene.camera=createFreeCamera([0,0,-5],[0,0,0]);
+        const sphere=createSphere(engine,{diameter:1});
+        sphere.material=createStandardMaterial();
+        addToScene(scene,sphere);
+        const target=createRenderTargetTexture(engine,{lbl:"t",format:"rgba8unorm",dFormat:"depth24plus",samples:1,size:{width:8,height:8}});
+        const task=createRenderTask({name:"mask",rt:target.rt,autoMirror:false},engine,scene);
+        const view=Math.random()>0.5?createStandardMaterial():undefined;
+        addMeshToTask(task,sphere,${options});
+        addTask(scene,task);
+        await registerScene(scene);`;
+    // A run-time choice keeps both arms: the override where it holds, the
+    // mesh's own material (the pin's `opts?.material ?? mesh.material`) else.
+    const chosen = compileSource(
+        source("view ? { material: view } : undefined"),
+    ).cpp;
+    assert.match(
+        chosen,
+        /if \([^\n]*\) \{\s*bbl::add_render_task_mesh\([^;]*, true\);\s*\} else \{\s*bbl::add_render_task_mesh\([^;]*\.material, false\);\s*\}/,
+    );
+    // An absent options bag is no override.
+    assert.match(
+        compileSource(source("undefined")).cpp,
+        /bbl::add_render_task_mesh\([^;]*\.material, false\);/,
+    );
+});
+
 const nullableTaskPrefix = `import {createEngine,createSceneContext,createFreeCamera,createSphere,addToScene,registerScene,
 createRenderTask,enableRenderTaskMeshRefresh,addTask,addMeshToTask,removeMeshFromTask,createRenderTarget,
 createStandardMaterial,type Mesh,type Material,type RenderTask,type EngineContext,type SceneContext,

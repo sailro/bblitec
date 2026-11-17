@@ -8,7 +8,7 @@ import {
     someAnalysisNode,
 } from "../src/compiler/analysis-walk.js";
 import { isNeverResized } from "../src/compiler/data-lowering.js";
-import { foldMathCall } from "../src/compiler/math-intrinsics.js";
+import { foldMathCall, MATH_MEMBERS } from "../src/compiler/math-intrinsics.js";
 import {
     enclosingLoopControl,
     firstReturn,
@@ -270,6 +270,17 @@ test("a Math call folds only where every engine agrees", () => {
     assert.equal(foldMathCall("pow", [2, 3]), undefined);
     assert.equal(foldMathCall("sin", [0], true), 0);
     assert.equal(foldMathCall("floor", [1, 2]), undefined);
+    // Into source text every pure member folds as JavaScript computes it.
+    for (const [name, member] of MATH_MEMBERS) {
+        const values = [0.3, 0.7].slice(0, Math.max(member.arity, 1));
+        const own: unknown = Reflect.get(Math, name);
+        assert.ok(typeof own === "function", name);
+        assert.equal(
+            foldMathCall(name, values, true),
+            member.impure ? undefined : Reflect.apply(own, Math, values),
+            name,
+        );
+    }
 });
 
 test("a tuple an options literal hands to a callee that only reads its elements keeps no identity", () => {

@@ -21,7 +21,8 @@ import { isJsonValue } from "./json-bridge.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { declaredInDomLibrary } from "./symbols.js";
 import { equalityOperator, unwrapExpression } from "./syntax.js";
-import type { Value } from "./types.js";
+import { staticStringValue, type Value } from "./types.js";
+import { stringLiteral } from "../cpp-literals.js";
 import { valueKinds } from "./type-facts.js";
 
 const STRICT_EQUALITY = new Map<ts.SyntaxKind, ts.SyntaxKind>([
@@ -242,17 +243,21 @@ export function foldBooleanComparison(
         return undefined;
     const settled = (
         side: ts.Expression,
-    ): boolean | "nullish" | "object" | undefined => {
+    ): boolean | "nullish" | "object" | "primitive" | undefined => {
         const resolved = context.evaluator.resolveStaticExpression(side);
         if (resolved.kind === ts.SyntaxKind.TrueKeyword) return true;
         if (resolved.kind === ts.SyntaxKind.FalseKeyword) return false;
-        const value = ts.isIdentifier(resolved)
-            ? context.bindings.lookupOptional(resolved)
-            : ts.isPropertyAccessExpression(resolved)
-              ? context.propertyAccess.compilePropertyAccess(resolved)
-              : undefined;
+        const value = settledRead(context, resolved);
         if (value?.kind === "json-null") return "nullish";
         if (value?.kind === "record" && !value.cpp) return "object";
+        // A string or a number generation knows is no boolean.
+        if (
+            value?.staticString !== undefined ||
+            value?.staticNumber !== undefined
+        )
+            return "primitive";
+        // A boolean member generation knows, optional or not.
+        if (value?.staticBoolean !== undefined) return value.staticBoolean;
         if (value?.kind !== "boolean") return undefined;
         return staticBooleanOf(value);
     };
@@ -260,12 +265,67 @@ export function foldBooleanComparison(
         const left = settled(expression.left);
         const right = settled(expression.right);
         if (left === undefined || right === undefined) return undefined;
-        // Object identity and null versus undefined remain undecided;
-        // only their inequality with a concrete boolean is established.
+        // Object identity, null versus undefined and two other primitives
+        // remain undecided; only their inequality with a concrete boolean
+        // is established.
         if (typeof left !== "boolean" && typeof right !== "boolean")
             return undefined;
         return String((left === right) === equals);
     });
+}
+
+/**
+ * `a === b` and `a !== b` over two strings generation knows, read without
+ * evaluating code (a literal, a binding, a property of one), folded ahead
+ * of the data equality that would compare their storage at run time.
+ */
+export function foldStringComparison(
+    context: ComparisonContext,
+    expression: ts.BinaryExpression,
+): string | undefined {
+    const kind = expression.operatorToken.kind;
+    if (
+        kind !== ts.SyntaxKind.EqualsEqualsEqualsToken &&
+        kind !== ts.SyntaxKind.ExclamationEqualsEqualsToken
+    )
+        return undefined;
+    const stringTyped = (side: ts.Expression): boolean =>
+        valueKinds(context.checker.getTypeAtLocation(side)).has("string");
+    if (!stringTyped(expression.left) || !stringTyped(expression.right))
+        return undefined;
+    const text = (side: ts.Expression): Value | undefined => {
+        const resolved = context.evaluator.resolveStaticExpression(side);
+        const value = ts.isStringLiteralLike(resolved)
+            ? staticStringValue(resolved.text, stringLiteral)
+            : unlessRefused(() => settledRead(context, resolved));
+        return value?.staticString !== undefined && !value.parameterBinding
+            ? value
+            : undefined;
+    };
+    // The right side is read only once the left one is known.
+    return context.probeEmission(() => {
+        const left = text(expression.left);
+        if (!left) return undefined;
+        const right = text(expression.right);
+        const folded = right && foldSettledComparison(kind, left, right);
+        return folded === undefined ? undefined : String(folded);
+    });
+}
+
+/**
+ * What generation holds for an operand read without evaluating code: a
+ * binding, or a property of one as the program's own read lowers it (a
+ * field of an object other references may write reads at run time).
+ */
+function settledRead(
+    context: ComparisonContext,
+    resolved: ts.Expression,
+): Value | undefined {
+    return ts.isIdentifier(resolved)
+        ? context.bindings.lookupOptional(resolved)
+        : ts.isPropertyAccessExpression(resolved)
+          ? context.compileValue(resolved)
+          : undefined;
 }
 
 /**

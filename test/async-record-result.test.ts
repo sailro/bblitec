@@ -320,3 +320,93 @@ test("async records own arrays of opaque material handles", () => {
     `);
     assert.match(result.cpp, /Array<bbl::MaterialHandle> all/);
 });
+
+test("an async record result of a type the program keeps as a document settles as one", () => {
+    // `kept` holds a parsed document and `make`'s record as one type, so
+    // that type's records are documents: the settled record is one too,
+    // its method a native value of the document.
+    const result = compileSource(`
+        interface Rect { u: number }
+        interface Assets { cells: Rect[]; read(): number }
+        async function make(n: number): Promise<Assets> {
+            await Promise.resolve();
+            return { cells: [{ u: n }], read: () => n };
+        }
+        async function main(): Promise<void> {
+            const kept: Assets[] = [JSON.parse('{"cells":[{"u":1}]}') as Assets];
+            kept.push(await make(2));
+            if (kept[0]!.cells.length !== 1 || kept[1]!.cells[0]!.u !== 2 || kept[1]!.read() !== 2)
+                throw new Error("assets");
+        }
+        void main();
+    `);
+    assert.match(
+        result.cpp,
+        /bbl::js::Promise<bbl::js::JsonValue> v_bblite_async_body_\d+\(/,
+    );
+    assert.match(
+        result.cpp,
+        /co_return \(\[&\]\(\) \{ bbl::js::JsonValue::Object own; own\.emplace_back\("cells", [^;]+\); own\.emplace_back\("read", bbl::js::JsonValue::from_native\(/,
+    );
+});
+
+test("a record type with methods keeps its layout and stores a field documents share as a document", (t) => {
+    // `cells` holds the manifest's own array or a fresh one: `Assets` stays
+    // a native record (its method is no document's), its `cells` the one
+    // array both paths write.
+    const result = compileSource(`
+        interface Rect { u: number }
+        interface Manifest { cells?: Rect[] }
+        interface Assets { cells: Rect[]; read(): number }
+        const manifests: Manifest[] = [];
+        async function make(text: string): Promise<Assets> {
+            await Promise.resolve();
+            const manifest = JSON.parse(text) as Manifest;
+            manifests.push(manifest);
+            const cells: Rect[] = manifest.cells ? manifest.cells : [{ u: 0 }];
+            return { cells, read() { return cells.length; } };
+        }
+        async function main(): Promise<void> {
+            const first = await make('{"cells":[{"u":1}]}');
+            const kept: Assets[] = [first];
+            first.cells.push({ u: 2 });
+            manifests[0]!.cells!.push({ u: 3 });
+            if (kept[0] !== first || manifests[0]!.cells!.length !== 3 || first.read() !== 3 || kept[0]!.cells[2]!.u !== 3)
+                throw new Error("cells");
+            const second = await make("{}");
+            if (second.read() !== 1 || second.cells[0]!.u !== 0) throw new Error("default cells");
+            globalThis.close();
+        }
+        void main();
+    `);
+    assert.match(
+        result.cpp,
+        /struct AssetsData \{\s+bbl::js::JsonValue cells;\s+bbl::js::Callback<double\(\)> read;/,
+    );
+    const tools = optionalNativeFixtureTools();
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(
+        tools,
+        "async-record-document-field",
+        result.cpp +
+            `
+namespace bbl::pal {
+int run_window_application(WorkerEntry initialize, EngineOptions) {
+    const js::RealmScope scope;
+    EventLoop loop;
+    WorkerRealm realm(loop);
+    loop.run([&] { initialize(realm); });
+    return 0;
+}
+}
+`,
+        {
+            flags: ["/DBBLITE_WORKERS=1", "/DBBLITE_HAS_UI=1"],
+            timeoutMs: 10000,
+            expectedOutput: "",
+        },
+    );
+});

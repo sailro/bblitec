@@ -193,3 +193,41 @@ test("a projected record callback captures only the field its body reads", () =>
         /\[\[maybe_unused\]\] auto& \w+ = v_bblite_environment_/,
     );
 });
+
+test("a shared body captures the record a spread literal built for its call", () => {
+    // The literal spreads a parsed document, so it is a map declared at the
+    // call; a handle field keeps the callee from taking a document, so its
+    // shared body reads the map through its environment.
+    const result = compileSource(`
+        import { createEngine, type ShadowGenerator } from "@babylonjs/lite";
+        interface Surface { maxDepth: number; slopeFalloff: number }
+        interface Shell { sunDir?: [number, number, number]; shadow?: ShadowGenerator; maxDepth?: number; slopeFalloff?: number; sparkle?: number; shadeBlue?: number }
+        function createShell(opts: Shell): number {
+            const params: [number, number, number] = [opts.maxDepth ?? 0.6, opts.slopeFalloff ?? 0.45, opts.sparkle ?? 0.7];
+            console.log(params[0], params[1], params[2], opts.shadeBlue ?? 0.5, opts.shadow !== undefined, opts.sunDir?.[1] ?? -1);
+            return params[0];
+        }
+        async function main() {
+            await createEngine({});
+            const config = JSON.parse(localStorage.getItem("cfg") ?? '{"snow":{"maxDepth":0.5,"slopeFalloff":0.4,"shadeBlue":0.3,"sparkle":0.9}}') as { snow: Surface & { shadeBlue: number; sparkle: number } };
+            const cfgSnow = config.snow;
+            const surface: Surface = cfgSnow;
+            createShell({ ...surface, sunDir: [-0.55, -1, -0.42], shadeBlue: cfgSnow.shadeBlue, sparkle: cfgSnow.sparkle });
+        }
+        void main();
+    `);
+    const captured =
+        /auto& (v_bblite_record_spread_\d+) = v_bblite_environment_\d+\.capture\d+;/.exec(
+            result.cpp,
+        );
+    assert.ok(
+        captured,
+        "the shared body reads the map through its environment",
+    );
+    assert.match(
+        result.cpp,
+        new RegExp(
+            String.raw`make_closure\(bblscene::bbl_environment_\w+\{${captured[1]}\}`,
+        ),
+    );
+});

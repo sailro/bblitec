@@ -321,6 +321,40 @@ test("selects a material per outcome of a named record's members", (t) => {
     );
 });
 
+test("selects a material per outcome of a parsed document member's presence", () => {
+    // Each arm finds `settings.light` an object or absent, so the callee's
+    // `opts.light !== undefined` and `opts.light ?` settle in both.
+    const compiled = compileSource(`
+        import { createEngine, createSceneContext, createShaderMaterial, wgsl } from "@babylonjs/lite";
+        interface Settings { light?: { strength: number } }
+        const VERTEX = \`${POSITION_VERTEX_WGSL}\`;
+        function material(opts: { light?: { strength: number } }) {
+            const prelude = opts.light !== undefined ? "fn lit() -> f32 { return 1.0; }" : "fn lit() -> f32 { return 0.0; }";
+            const gain = opts.light ? "2.0" : "3.0";
+            return createShaderMaterial({ name: "m", vertexSource: wgsl\`\${VERTEX}\`, fragmentSource: wgsl\`\${prelude}
+@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(lit() * \${gain}); }\`, attributes: ["position"], uniforms: ["worldViewProjection"] });
+        }
+        async function main(): Promise<void> {
+            const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+            createSceneContext(engine);
+            const settings = JSON.parse(String(Date.now())) as Settings;
+            console.log(material({ light: settings.light }) !== undefined);
+        }
+        void main();
+    `);
+    assert.deepEqual(
+        compiled.manifest.customShaderPrograms
+            .map((program) =>
+                /return ([01])\.0; \}[^]*lit\(\) \* ([23])\.0/
+                    .exec(program.fragmentSource)
+                    ?.slice(1)
+                    .join(" "),
+            )
+            .sort(),
+        ["0 3", "1 2"],
+    );
+});
+
 test("names the run-time tests a call compiles too many outcomes of", () => {
     assert.match(
         refusal(
@@ -367,6 +401,95 @@ void main();
     assert.match(
         refusal(source, "test/executed-arms-entry.ts"),
         /compiles once per outcome of run-time tests in at most 81 arms; its tests make 100: tone, tint\./,
+    );
+});
+
+test("a call whose outcome refuses names the arm's refusal, then the call's", () => {
+    // Compiled once, the builder reads a run-time stage; per outcome, the
+    // arm holding a gain stops at its own unsupported read.
+    const message = refusal(
+        `import { createEngine, createShaderMaterial, wgsl, type ShaderMaterial } from "@babylonjs/lite";
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*S*/, 1.0); return out; }\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+interface Gain { readonly amount: number }
+function surface(gain?: Gain): ShaderMaterial {
+    const vertex = VERTEX.replace("/*S*/", gain ? "2.0" : "1.0");
+    const projection = (): string => vertex;
+    const material = createShaderMaterial({ vertexSource: wgsl\`\${projection()}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+    if (gain && material.attributes.indexOf("uv") < 0) throw new Error("uv");
+    return material;
+}
+async function main(): Promise<void> {
+    await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    const gained = Math.random() < 2;
+    surface(gained ? { amount: 1 } : undefined);
+}
+void main();
+`,
+        "test/executed-arm-refusal-entry.ts",
+    );
+    assert.match(
+        message,
+        /^test\/executed-arm-refusal-entry\.ts:10:\d+: Unsupported property value 'material\.attributes\.indexOf'/,
+    );
+    assert.match(
+        message,
+        /\(An arm of a call compiled once per outcome of gained refuses so; compiled once, the call refuses at test\/executed-arm-refusal-entry\.ts:8:\d+: Builder 'projection' closes over 'vertex', whose value generation does not know\.\)$/,
+    );
+});
+
+test("an outcome whose call always throws stores no result", (t) => {
+    // The facade material is built only where the spread wrote a base, but
+    // the call splits on the base's presence: the arm without one, which no
+    // run reaches, throws in the helper and assigns nothing.
+    const { compiled, cpp } = compileShaderMaterialFixture(`
+    import { createEngine, createShaderMaterial, wgsl, type ShaderMaterial } from "babylon-lite";
+    const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*S*/, 1.0); return out; }\`;
+    const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+    interface Base { readonly id: number }
+    interface Facade { readonly bold: boolean }
+    interface SurfaceOptions { readonly name: string; readonly base?: Base; readonly facade?: Facade }
+    function surface(opts: SurfaceOptions): ShaderMaterial {
+        if (opts.facade && !opts.base) throw new Error("a facade requires a base");
+        const vertex = VERTEX.replace("/*S*/", opts.base ? "2.0" : "1.0");
+        const projection = (facade: boolean): string => vertex.replace("/*F*/", facade ? "f" : "");
+        return createShaderMaterial({ name: opts.name, vertexSource: wgsl\`\${projection(!!opts.facade)}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+    }
+    function facadeOf(base: Base, other: Base | undefined, facade?: Facade): ShaderMaterial | undefined {
+        const chosen = other ?? base;
+        const distinct = chosen !== base;
+        const options = { name: "body", ...(distinct ? { base: chosen } : {}) };
+        return facade && distinct ? surface({ ...options, name: "facade", facade }) : undefined;
+    }
+    async function main() {
+        await createEngine({});
+        const paired = Math.random() < 2;
+        if (!facadeOf({ id: 1 }, paired ? { id: 2 } : undefined, paired ? { bold: true } : undefined)) throw new Error("facade");
+    }
+    main();`);
+    assert.deepEqual(
+        compiled.manifest.customShaderPrograms.map(
+            (program) =>
+                /position \* ([0-9.]+)/.exec(program.vertexSource)?.[1],
+        ),
+        ["2.0"],
+    );
+    assert.match(
+        compiled.cpp,
+        /\} else \{\s+std::rethrow_exception\(bbl::js::make_error\("Error", "a facade requires a base"/,
+    );
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native compiler required.");
+        return;
+    }
+    runGeneratedProgram(
+        native,
+        "executed-application-function/throwing-outcome",
+        `${cpp}\n#define main generated_main\n${compiled.cpp}\n#undef main\nint main(){assert(generated_main()==0);}`,
+        { expectedOutput: "" },
     );
 });
 

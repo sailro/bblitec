@@ -14,6 +14,7 @@
 // compile-time metadata rather than from a native field, and
 // `camera.target` synthesizes a three-component record. Those differ in
 // what they *do*, not in which field they name.
+import { readShaderMaterialFact } from "./shader-material-views.js";
 import { EVENT_TYPE_MEMBER, foreignEventTypes } from "./dom-listeners.js";
 import { AbsentRecordProperties } from "./absent-record-properties.js";
 import { readEngineRenderFunction } from "./engine-render-function.js";
@@ -150,6 +151,7 @@ import {
     isDocumentVisibilityRead,
 } from "./window-events.js";
 import type { WindowProperties } from "./window-properties.js";
+import { taskListRemoval } from "./frame-graph-task-list.js";
 
 /** A property the compiled surface deliberately does not serve. */
 interface RefusedProperty {
@@ -987,6 +989,34 @@ export const propertyRules: readonly PropertyRule[] = [
         helper: "bbl::swapchain_render_target",
         feature: "frame-graph:resources",
     },
+    // A render target's `_width`/`_height`, read through a cast: the
+    // swapchain target's is the canvas backing store, as it is now.
+    ...(["_width", "_height"] as const).map((property): PropertyRead => ({
+        owner: "render-target",
+        property,
+        value: "number",
+        helper: "bbl::swapchain_render_target_extent",
+        helperTakesEngine: true,
+        helperArgument: String(property === "_height"),
+        impure: true,
+    })),
+    // A render target's `_colorTexture`, read through a cast: null until a
+    // build allocated it and after disposal, and a new object at each
+    // allocation `buildRenderTarget` makes.
+    {
+        owner: "render-target",
+        property: "_colorTexture",
+        value: "data",
+        dataType: {
+            kind: "optional",
+            inner: { kind: "handle", handle: "gpu-texture" },
+        },
+        helper: "bbl::render_target_color_texture",
+        helperTakesEngine: true,
+        helperReturnsFreshData: true,
+        impure: true,
+        feature: "frame-graph:color-texture-identity",
+    },
     {
         owner: "camera",
         property: "alpha",
@@ -1200,11 +1230,33 @@ export const propertyRules: readonly PropertyRule[] = [
         record: ["meshes", "render_on_top"],
     },
     {
+        // The pin's optional field: undefined until a program assigns it.
+        owner: "mesh",
+        property: "renderOrder",
+        value: "data",
+        dataType: { kind: "optional", inner: { kind: "number" } },
+        record: ["meshes", "render_order_value()"],
+        nativeOptionalScalar: "double",
+    },
+    {
         owner: "texture",
         property: "texture",
         value: "texture",
         retag: true,
         alwaysTruthy: true,
+    },
+    {
+        owner: "texture",
+        property: "sampler",
+        value: "gpu-sampler",
+        dataType: { kind: "handle", handle: "gpu-sampler" },
+        helper: "bbl::stored_texture_gpu_sampler",
+        helperTakesEngine: true,
+        reject: (owner) =>
+            owner.dataType?.kind === "handle" &&
+            owner.dataType.handle === "texture"
+                ? undefined
+                : "Texture2D.sampler is read off a stored texture handle.",
     },
     {
         owner: "mesh",
@@ -1258,6 +1310,17 @@ export const propertyRules: readonly PropertyRule[] = [
         value: "data",
         dataType: { kind: "optional", inner: { kind: "boolean" } },
         helper: "bbl::shader_material_alpha_blending",
+        helperTakesEngine: true,
+        helperReturnsFreshData: true,
+        knownPresent: (owner: Value) => owner.shaderVariant !== undefined,
+    },
+    {
+        // `ShaderMaterial.depthWrite`, fixed at creation; another material has none.
+        owner: "material",
+        property: "depthWrite",
+        value: "data",
+        dataType: { kind: "optional", inner: { kind: "boolean" } },
+        helper: "bbl::shader_material_depth_write",
         helperTakesEngine: true,
         helperReturnsFreshData: true,
         knownPresent: (owner: Value) => owner.shaderVariant !== undefined,
@@ -1814,6 +1877,15 @@ export const propertyRules: readonly PropertyRule[] = [
         optionalHandle: true,
     },
     {
+        // How many times the scene has built and published its renderables.
+        owner: "scene",
+        property: "_renderableVersion",
+        value: "number",
+        dataType: { kind: "number" },
+        helper: "bbl::scene_renderable_version",
+        impure: true,
+    },
+    {
         // The pin exposes this only as an internal lifecycle sentinel: removal
         // arms it and a successful registration/rebuild clears it. Native's
         // topology version applies the rebuild synchronously at the next frame,
@@ -2300,6 +2372,7 @@ interface PropertyAccessContext
             | "handleCollections"
             | "optionalChainStop"
             | "platformDocumentHidden"
+            | "program"
             | "sharedClosures"
             | "useNativeValue"
         > {
@@ -2399,7 +2472,9 @@ const MOUSE_EVENT_NUMBERS: ReadonlyMap<string, string> = new Map([
     ["offsetY", "client_y"],
     ["movementX", "movement_x"],
     ["movementY", "movement_y"],
+    ["deltaX", "delta_x"],
     ["deltaY", "delta_y"],
+    ["detail", "detail"],
     ["screenX", "screen_x"],
     ["screenY", "screen_y"],
 ]);
@@ -2409,11 +2484,14 @@ const UI_LAYOUT_EXTENTS: ReadonlyMap<string, string> = new Map([
     ["offsetHeight", "offset_height"],
     ["clientWidth", "width"],
     ["clientHeight", "height"],
+    ["scrollWidth", "scroll_width"],
+    ["scrollHeight", "scroll_height"],
 ]);
 /** Computed style reads and the CSS properties they name. */
 const UI_COMPUTED_STYLES: ReadonlyMap<string, string> = new Map([
     ["display", "display"],
     ["opacity", "opacity"],
+    ["transform", "transform"],
     ["visibility", "visibility"],
     ["zIndex", "z-index"],
 ]);
@@ -3133,7 +3211,7 @@ export class PropertyAccessLowerer {
                     dataType: { kind: "number" },
                 };
             }
-            // A wheel delta is in CSS pixels (`dom_wheel_delta_y`):
+            // A wheel delta is in CSS pixels (`dom_wheel_delta`):
             // `WheelEvent.DOM_DELTA_PIXEL`, read off a checked payload.
             if (property === "deltaMode")
                 return {
@@ -3701,7 +3779,7 @@ export class PropertyAccessLowerer {
             if (!read)
                 this.context.fail(
                     expression.name,
-                    `Computed style '${property}' is not represented; display, opacity, visibility, zIndex and custom properties are.`,
+                    `Computed style '${property}' is not represented; display, opacity, transform, visibility, zIndex and custom properties are.`,
                 );
             return read;
         }
@@ -4093,7 +4171,8 @@ export class PropertyAccessLowerer {
         // collection concept resolves the owner itself.
         if (
             owner.kind === "asset" ||
-            owner.kind === "hierarchy-instance-pool"
+            owner.kind === "hierarchy-instance-pool" ||
+            owner.kind === "scene"
         ) {
             const collection =
                 this.context.handleCollections.resolveCollectionRead(
@@ -4180,6 +4259,12 @@ export class PropertyAccessLowerer {
         const presentRead =
             presentHandle && this.readOwnerProperty(presentHandle, expression);
         if (presentRead) return presentRead;
+        const shaderFact = readShaderMaterialFact(
+            this.context,
+            owner,
+            expression,
+        );
+        if (shaderFact) return shaderFact;
         return this.context.fail(
             expression,
             `Unsupported property value '${this.propertyPathForDiagnostic(expression)}' (owner ${owner.kind} ${owner.dataType ? JSON.stringify(owner.dataType) : "without data type"}).`,
@@ -4639,7 +4724,15 @@ export class PropertyAccessLowerer {
         }
         // The native list holds the pin's tasks only, but the pin's also
         // holds its shadow task and its transmission image-processing task,
-        // which native passes replace, so its indices still differ.
+        // which native passes replace, so its indices still differ. A
+        // removal by the position it finds names the same task in both.
+        if (
+            (owner.kind === "frame-graph" ||
+                owner.kind === "frame-graph-context") &&
+            expression.name.text === "_tasks" &&
+            taskListRemoval(this.context, expression)
+        )
+            return owner;
         if (owner.kind === "frame-graph" && expression.name.text === "_tasks")
             this.context.fail(
                 expression,

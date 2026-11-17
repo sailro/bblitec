@@ -4,6 +4,7 @@
 #include <bblite/features/workers.hpp>
 
 #include <bblite/pal_offscreen.hpp>
+#include <bblite/pal_projection.hpp>
 #include <bblite/runtime.hpp>
 #include <bblite/js_promise.hpp>
 
@@ -36,12 +37,8 @@ Result project_gpu_task_timing_snapshot(const std::shared_ptr<GpuTaskTimingSnaps
                                         Project&& project) {
     if (!snapshot)
         throw std::logic_error("GPU timing snapshot is missing.");
-    if (!snapshot->projection.has_value())
-        snapshot->projection = std::forward<Project>(project)(*snapshot);
-    const auto* result = std::any_cast<Result>(&snapshot->projection);
-    if (!result)
-        throw std::logic_error("GPU timing snapshot has an incompatible projection.");
-    return *result;
+    return project_once<Result>(snapshot->projection,
+                                [&] { return std::forward<Project>(project)(*snapshot); });
 }
 
 struct GpuTaskTimingRecord {
@@ -215,6 +212,8 @@ inline const std::string& gpu_timing_task_name(const FrameTaskRecord& task) {
         return task.effect.name;
     case FrameTaskKind::ssao:
         return task.ssao.name;
+    case FrameTaskKind::depth_resolve:
+        return task.depth_resolve.name;
     case FrameTaskKind::compute:
         throw std::logic_error("Compute timing is recorded with its source command list.");
     }

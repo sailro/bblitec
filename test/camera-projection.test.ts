@@ -432,3 +432,41 @@ test("a program with no camera keeps camera projection output absent", () => {
     );
     assert.doesNotMatch(result.cpp, /camera_math\.hpp|renderer_plan\.hpp/);
 });
+
+test("getEffectiveAspectRatio scales the target ratio by the camera's viewport, and no camera keeps the raw ratio", () => {
+    const result = compileSource(`
+        import {
+            createArcRotateCamera,
+            createEngine,
+            createSceneContext,
+            getEffectiveAspectRatio,
+            getViewProjectionMatrix,
+            onBeforeRender,
+        } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            const scene = createSceneContext(engine);
+            scene.camera = createArcRotateCamera(0, 1, 3, { x: 0, y: 0, z: 0 });
+            scene.camera.viewport = { x: 0, y: 0, width: 0.5, height: 1 };
+            onBeforeRender(scene, () => {
+                const camera = scene.camera;
+                const width = canvas.width;
+                const aspect = getEffectiveAspectRatio(camera, width, 400);
+                if (camera) console.log(getViewProjectionMatrix(camera, aspect)[0]);
+            });
+        }
+        void main();
+    `);
+    // The extents are read once, in order (the const width where it is
+    // bound, the literal into a constant), and an absent camera divides them.
+    assert.match(
+        result.cpp,
+        /const double (v_bblite_aspect_extent_\d+) = 400\.0;/,
+    );
+    assert.match(
+        result.cpp,
+        /\? bbl::upstream::effective_aspect_ratio\([^;]*cameras[^;]*, (v_block0_width), (v_bblite_aspect_extent_\d+)\) : \(\1 \/ \2\)\)/,
+    );
+});

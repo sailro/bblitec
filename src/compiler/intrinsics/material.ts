@@ -13,6 +13,7 @@ import {
 import { sharedPinnedContext } from "../../lowering/context.js";
 import { lowerMaterialPredicate } from "../../lowering/material-predicate.js";
 import { lowerMaterialTracking } from "../../lowering/material-tracking.js";
+import { lowerShaderPipelinePreparation } from "../../lowering/shader-pipeline-preparation.js";
 import { shaderMatrixWriteProvenance } from "../../lowering/shader-matrix-write.js";
 import {
     compileCreateStorageBuffer,
@@ -69,8 +70,16 @@ import {
 } from "../pbr-texture-slots.js";
 import { shaderUniformSlots } from "../../shader-material-programs.js";
 import { shadowCasterMaterialWrite } from "../shadow-caster-material.js";
-import { knownCondition } from "../values/model.js";
+import { knownCondition, shaderVariantFacts } from "../values/model.js";
 import { namedMember } from "../symbols.js";
+import type { CompiledShaderMaterialOptions } from "../shader-material.js";
+import {
+    compileDerivedShaderMaterial,
+    derivedRecipeSpread,
+    optionsBinding,
+    type ShaderDerivationContext,
+} from "../shader-derivations.js";
+import { compileCreateMaterialView } from "../shader-material-views.js";
 
 export interface MaterialIntrinsicContext
     extends
@@ -81,6 +90,7 @@ export interface MaterialIntrinsicContext
         ObjectValidationContext,
         PositiveIntegerContext,
         MaterialPluginResourceContext,
+        ShaderDerivationContext,
         Pick<
             LoweringServices,
             | "engineLifecycle"
@@ -102,6 +112,7 @@ export interface MaterialIntrinsicContext
             | "intrinsicOptions"
             | "allocateTemporaryCppName"
             | "emit"
+            | "emitDiscardedValue"
             | "isRuntimeResourceConstruction"
             | "isRuntimeCallback"
             | "expectObjectLiteral"
@@ -1105,6 +1116,24 @@ function compileMarkMaterialUboDirty(
     };
 }
 
+function compileReleaseMaterialViewGpu(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
+    context.expectArgumentCount(call, 2, 2);
+    const engine = context.compileValue(argumentAt(call, 0));
+    context.expectKind(engine, "engine", argumentAt(call, 0));
+    const view = context.compileValue(argumentAt(call, 1));
+    context.expectKind(view, "material", argumentAt(call, 1));
+    context.expectSameEngine(engine, view, call);
+    // Defined beside the material views (`material_views.cpp`).
+    context.reachFeature("material:view-gpu-release", call);
+    return {
+        kind: "void",
+        cpp: `bbl::release_material_view_gpu(${context.requireEngine(view, call)}, ${view.cpp})`,
+    };
+}
+
 function compileCreateShaderMaterial(
     context: MaterialIntrinsicContext,
     call: ts.CallExpression,
@@ -1156,39 +1185,54 @@ function compileCreateShaderMaterial(
             cpp: `(${condition} ? ${whenTrue.cpp} : ${whenFalse.cpp})`,
         };
     };
-    return compile(context.expectObjectLiteral(argumentAt(call, 0)));
+    const object = context.expectObjectLiteral(argumentAt(call, 0));
+    return derivedRecipeSpread(context, object)
+        ? compileDerivedShaderMaterialCreation(context, call, object)
+        : compile(object);
 }
 
-function compileShaderMaterialCreation(
+/**
+ * A shader material created from programs `compile` reaches: its scene
+ * slot, taken before them, the features they declare, and the creation
+ * `compile` spells, kept in the slot outside run-time construction.
+ */
+function shaderMaterialValue(
     context: MaterialIntrinsicContext,
     call: ts.CallExpression,
-    options: ts.ObjectLiteralExpression,
+    compile: (engine: string) => {
+        creation: string;
+        programs: readonly number[];
+        dynamicUniforms?: CompiledShaderMaterialOptions["dynamicUniforms"];
+        facts: Pick<
+            Value,
+            | "shaderVariant"
+            | "sceneShaderVariant"
+            | "possibleSceneShaderVariants"
+            | "shaderCreation"
+        >;
+    },
 ): Value {
     const materialSlot = context.sceneManifest.recordSceneMaterialSlot();
     const runtimeProfile = context.isRuntimeResourceConstruction();
     const engine = context.requireDefaultEngine(call);
-    const variant =
-        context.intrinsicOptions.compileShaderMaterialOptions(options);
+    const { creation, programs, dynamicUniforms, facts } = compile(engine);
     context.reachFeature("material:shader", call);
     context.reachFeature("renderer:scene", call);
     // A declared slot binds through the pin's checks whether or not
     // anything fills it.
     if (
-        context.sceneManifest.reachedShaderPrograms[variant.id]!
-            .externalTextures
+        programs.some(
+            (id) =>
+                context.sceneManifest.reachedShaderPrograms[id]!
+                    .externalTextures,
+        )
     ) {
         context.reachFeature("material:shader-external-texture", call);
     }
-    const created = `bbl::create_shader_material(${engine}, ${variant.id}u)`;
-    // The pin's `transmissive` option marks the renderables it builds, which a
-    // transmission grab then waits for.
-    const creation = variant.transmissive
-        ? `bbl::mark_shader_material_transmissive(${engine}, ${created})`
-        : created;
     let materialCpp = runtimeProfile
         ? creation
         : `bbl::remember_scene_material(${engine}, ${materialSlot}u, ${creation})`;
-    if (variant.dynamicUniforms?.length) {
+    if (dynamicUniforms?.length) {
         const material = context.allocateTemporaryCppName("shader_material");
         context.emit({
             kind: "declaration",
@@ -1196,7 +1240,7 @@ function compileShaderMaterialCreation(
             name: material,
             initializer: materialCpp,
         });
-        for (const uniform of variant.dynamicUniforms) {
+        for (const uniform of dynamicUniforms) {
             context.emit({
                 kind: "expression",
                 code: `([&]() { const std::array<float, ${uniform.components.length}> values{${uniform.components.join(", ")}}; bbl::initialize_shader_uniform_values(${engine}, ${material}, ${uniform.offset}u, ${uniform.components.length}u, values.data()); }());`,
@@ -1208,10 +1252,73 @@ function compileShaderMaterialCreation(
         kind: "material",
         cpp: materialCpp,
         engineCpp: engine,
-        shaderVariant: variant.name,
-        sceneShaderVariant: variant.name,
+        ...facts,
         ...(runtimeProfile ? {} : { sceneMaterialSlot: materialSlot }),
     };
+}
+
+function compileShaderMaterialCreation(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+    options: ts.ObjectLiteralExpression,
+): Value {
+    return shaderMaterialValue(context, call, (engine) => {
+        const variant =
+            context.intrinsicOptions.compileShaderMaterialOptions(options);
+        const binding = optionsBinding(context, argumentAt(call, 0));
+        if (variant.creation)
+            context.sceneManifest.shaderDerivations.recordCreation(
+                variant.name,
+                variant.creation,
+            );
+        const created = `bbl::create_shader_material(${engine}, ${variant.id}u)`;
+        return {
+            // The pin's `transmissive` option marks the renderables it
+            // builds, which a transmission grab then waits for.
+            creation: variant.transmissive
+                ? `bbl::mark_shader_material_transmissive(${engine}, ${created})`
+                : created,
+            programs: [variant.id],
+            ...(variant.dynamicUniforms
+                ? { dynamicUniforms: variant.dynamicUniforms }
+                : {}),
+            facts: {
+                ...shaderVariantFacts([variant.name]),
+                ...(variant.creation
+                    ? {
+                          shaderCreation: {
+                              options: variant.creation,
+                              ...(binding ? { binding } : {}),
+                          },
+                      }
+                    : {}),
+            },
+        };
+    });
+}
+
+/**
+ * A material derived from a recipe's options: one program per source
+ * variant, the one created selected at run time from the source material's.
+ */
+function compileDerivedShaderMaterialCreation(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+    object: ts.ObjectLiteralExpression,
+): Value {
+    return shaderMaterialValue(context, call, (engine) => {
+        const { variants, variantCpp } = compileDerivedShaderMaterial(
+            context,
+            object,
+        );
+        return {
+            creation: `bbl::create_shader_material(${engine}, ${variantCpp})`,
+            programs: [...variants.values()].map(({ id }) => id),
+            facts: shaderVariantFacts(
+                [...variants.values()].map(({ name }) => name),
+            ),
+        };
+    });
 }
 
 function compileUpdateStorageBuffer(
@@ -2130,6 +2237,43 @@ function compileInstallPbrTracking(
     return { kind: "void", cpp: "" };
 }
 
+/**
+ * `prepareShaderMaterialPipelineForTask(task, material, layout, mesh?)`:
+ * its arguments in order, then the native preparation's promise.
+ */
+function compilePrepareShaderMaterialPipelineForTask(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value {
+    context.expectArgumentCount(call, 3, 4);
+    const argument = (index: number): Value =>
+        context.bindings.pinValueToTemporary(
+            context.compileValue(argumentAt(call, index)),
+            "prepared_pipeline_argument",
+            argumentAt(call, index),
+        );
+    const task = argument(0);
+    const material = argument(1);
+    // The layout and mesh select a vertex layout no native pipeline keys.
+    for (const index of call.arguments.length === 4 ? [2, 3] : [2])
+        context.emitDiscardedValue(
+            context.compileValue(argumentAt(call, index)),
+        );
+    context.expectKind(task, "task", argumentAt(call, 0));
+    context.expectKind(material, "material", argumentAt(call, 1));
+    context.expectSameEngine(task, material, call);
+    const prepare = context.nativeEmission.lowerOnce(
+        "prepare_shader_material_pipeline_for_task",
+        (name) => lowerShaderPipelinePreparation(sharedPinnedContext(), name),
+    );
+    return {
+        kind: "promise",
+        cpp: `${prepare}(${context.requireEngine(task, call)}, ${task.cpp}, ${material.cpp})`,
+        promiseType: "bbl::js::PromiseVoid",
+        promiseResult: { kind: "void", cpp: "" },
+    };
+}
+
 /** The pin's async family selection; resolves after its module hop. */
 function compileEnableMaterialTracking(
     context: MaterialIntrinsicContext,
@@ -2509,6 +2653,8 @@ const materialIntrinsicHandlers = new EmissionMap<
         (context, call) => compileSetParallaxOcclusion(context, call, "pbr"),
     ],
     ["markMaterialUboDirty", compileMarkMaterialUboDirty],
+    ["releaseMaterialViewGpu", compileReleaseMaterialViewGpu],
+    ["createMaterialView", compileCreateMaterialView],
     ["createShaderMaterial", compileCreateShaderMaterial],
     ["createStorageBuffer", compileCreateStorageBuffer],
     ["updateStorageBuffer", compileUpdateStorageBuffer],
@@ -2543,6 +2689,10 @@ const materialIntrinsicHandlers = new EmissionMap<
     ["installPbrTracking", compileInstallPbrTracking],
     ["installStdTracking", compileInstallPbrTracking],
     ["enableMaterialTracking", compileEnableMaterialTracking],
+    [
+        "prepareShaderMaterialPipelineForTask",
+        compilePrepareShaderMaterialPipelineForTask,
+    ],
     ["setPbrSheen", compileSetPbrSheen],
     ["setAlphaToCoverage", compileSetAlphaToCoverage],
     ["createStandardMaterial", compileCreateStandardMaterial],

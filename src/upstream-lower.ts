@@ -86,6 +86,7 @@ import {
     thinInstanceHeader,
 } from "./lowering/thin-instance-lowerer.js";
 import { lowerGpuTaskTiming } from "./lowering/gpu-task-timing-lowerer.js";
+import { lowerScreenshotReadback } from "./lowering/screenshot-readback-lowerer.js";
 import { lowerComputeTexture } from "./lowering/compute-texture-lowerer.js";
 import { lowerComputeTextureMipmaps } from "./lowering/compute-texture-mipmaps-lowerer.js";
 import { lowerStorageBuffer } from "./lowering/storage-buffer-lowerer.js";
@@ -146,6 +147,10 @@ import {
     pinnedTaskTransmissionHeader,
     pinnedTextureHeader,
 } from "./lowering/pinned-texture.js";
+import {
+    pinnedDepthResolveHeader,
+    pinnedDepthResolveModule,
+} from "./lowering/pinned-depth-resolve.js";
 import { pinnedRgbdHeader } from "./lowering/pinned-rgbd.js";
 import { pinnedMatrixHeader } from "./lowering/pinned-matrix.js";
 import { pinnedMat4InvertHeader } from "./lowering/pinned-mat4-invert.js";
@@ -1047,6 +1052,11 @@ class GeneratedSourceWriter {
             options.nodeParticleRegistrations ?? [],
         );
         const transmission = options.transmission;
+        // `buildRenderTarget` allocates `_colorTexture` where it sets
+        // `_colorView`, so an identity read records both.
+        const colorViewState =
+            features.includes("frame-graph:color-view-state") ||
+            features.includes("frame-graph:color-texture-identity");
         // Every binding-derived material capability -- a composed Standard
         // variant binding the pin's 2D reflection pair (`rT`) or bump pair
         // (`bT`), a PBR variant binding a lightmap or metallic-reflectance
@@ -1140,6 +1150,11 @@ class GeneratedSourceWriter {
             this.tree.write(
                 "upstream/include/bblite/upstream/pinned_task_transmission.hpp",
                 pinnedTaskTransmissionHeader(context),
+            );
+        if (features.includes("frame-graph:depth-resolve"))
+            this.tree.write(
+                "upstream/include/bblite/upstream/pinned_depth_resolve.hpp",
+                pinnedDepthResolveHeader(context),
             );
         this.tree.write(
             "upstream/include/bblite/upstream/pinned_rgbd.hpp",
@@ -1257,6 +1272,15 @@ class GeneratedSourceWriter {
         emitReached("upstream/src/gpu_task_timing.cpp", () =>
             lowerGpuTaskTiming(context),
         );
+        emitReached("upstream/src/screenshot_readback.cpp", () => {
+            // The scene renderer services the queue; no other renderer would.
+            if (!features.includes("renderer:scene"))
+                refuseGeneration(
+                    "engine:screenshot",
+                    "captureScreenshot is serviced by the scene renderer; this program renders without one.",
+                );
+            return lowerScreenshotReadback(context);
+        });
         emitReached("upstream/src/gpu_retirement.cpp", () =>
             lowerGpuRetirement(context),
         );
@@ -1446,6 +1470,8 @@ ${lowerThinInstanceSync(context)}
                 ssaoTasks: features.includes("renderer:ssao"),
                 effectTasks: features.includes("effect:task"),
                 liveTaskAdd: features.includes("frame-graph:live-task-add"),
+                colorViewState,
+                taskRemoval: features.includes("frame-graph:task-removal"),
                 taskDisposal: features.includes("frame-graph:task-disposal"),
                 taskMethodSlots: features.includes(
                     "frame-graph:task-method-slots",
@@ -1475,6 +1501,10 @@ ${lowerThinInstanceSync(context)}
             new RenderTargetLowerer(context, {
                 surface: features.includes("frame-graph:surface-target"),
                 disposal: features.includes("frame-graph:target-disposal"),
+                colorView: colorViewState,
+                colorTexture: features.includes(
+                    "frame-graph:color-texture-identity",
+                ),
             }).lower(),
         );
         emitReached("upstream/src/frame_graph_context.cpp", () =>
@@ -1750,6 +1780,7 @@ ${lowerThinInstanceSync(context)}
             taskBuild: features.includes("frame-graph:task-build"),
             taskDisposal: features.includes("frame-graph:task-disposal"),
             taskMethodSlots: features.includes("frame-graph:task-method-slots"),
+            taskScissor: features.includes("effect:task-scissor"),
         });
         this.emitLoaderSplat(
             features,
@@ -1866,6 +1897,9 @@ ${lowerThinInstanceSync(context)}
                 rangeUpdates: features.includes(
                     "material:shader-uniform-ranges",
                 ),
+                declarationLists: features.includes(
+                    "material:shader-declaration-lists",
+                ),
             }),
         );
         emitReached("upstream/src/material_shader_external.cpp", () =>
@@ -1923,6 +1957,8 @@ ${lowerThinInstanceSync(context)}
                 features.includes("shadow:esm"),
                 nodeEsmCasters,
                 nodePcfCasters,
+                features.includes("material:view-gpu-release"),
+                features.includes("material:shader-view"),
             ),
         );
         this.emitMeshFactories(features, factories, generated);
@@ -3255,6 +3291,9 @@ ${wgsl}`,
                         "camera:view-projection",
                     ),
                     shaderPrograms: options.shaderPrograms,
+                    shaderDeclarationLists: features.includes(
+                        "material:shader-declaration-lists",
+                    ),
                 }),
                 generated,
                 "upstream/include/bblite/upstream/renderer_plan.hpp",
@@ -3290,6 +3329,8 @@ ${wgsl}`,
             if (features.includes("frame-graph:render-task-transmission"))
                 for (const module of pinnedTaskTransmissionModules())
                     deployUtility(module);
+            if (features.includes("frame-graph:depth-resolve"))
+                deployUtility(pinnedDepthResolveModule());
             if (options.shaderPrograms.length > 0) {
                 this.tree.write(
                     "upstream/shaders/shader-material-reflection.json",
@@ -3363,6 +3404,9 @@ ${wgsl}`,
                     ),
                     orthographicCamera: features.includes(
                         "camera:orthographic",
+                    ),
+                    shaderDeclarationLists: features.includes(
+                        "material:shader-declaration-lists",
                     ),
                 }),
                 generated,
