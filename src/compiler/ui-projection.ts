@@ -2682,8 +2682,9 @@ export class UiProjection {
      * only the static property names are policed here.
      */
     /**
-     * The runtime holes of the style template being lowered that hold
-     * numbers (`compileUiStyleString`), by index.
+     * @unjournaled The runtime holes of the style template being lowered
+     * that hold numbers (`compileUiStyleString`), by index: set for that one
+     * lowering and restored when it ends.
      */
     private numericStyleHoles: ReadonlySet<number> = new Set();
 
