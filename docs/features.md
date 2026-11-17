@@ -363,7 +363,8 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
   `uniformDecls`, `samplerDecls` and `storageBufferDecls` of a run-time material take `.some(arrow)` and `for...of`
   whose entry is read only through `name`; its `attributes` take `.includes(name)`, `.some(arrow)` and `for...of`
   over the names; other uses of an entry or the list refuse.
-  `createShaderNoColorMaterialView` shares source uniforms and resource bindings. Depth-only render tasks use each
+  `createShaderNoColorMaterialView` shares source uniforms and resource bindings; it and `createStandardNoColorMaterialView`
+  may run in a loop of run-time passes. Depth-only render tasks use each
   material's pipeline, including custom vertex transforms and `depthOnlyFragment` discards.
   `releaseMaterialViewGpu` drops a shader view's own packed custom uniforms; a later draw repacks them.
   `screenSize` uses the current pass dimensions. Static descriptor arrays may use closed ECMAScript calls and callbacks.

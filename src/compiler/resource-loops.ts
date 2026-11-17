@@ -1155,6 +1155,10 @@ export const runtimeProfileConstructionIntrinsics: ReadonlySet<string> =
         "createStandardMaterial",
         "createPbrMaterial",
         "createShaderMaterial",
+        // A shader or standard material's no-color view is created from its
+        // source alone; a PBR view keeps a generation-known record.
+        "createShaderNoColorMaterialView",
+        "createStandardNoColorMaterialView",
         "parseNodeMaterialFromSnippet",
     ]);
 
