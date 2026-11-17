@@ -171,6 +171,6 @@ test("unrepresented class membership and weak keys refuse", () => {
             compileSource(`
         const values=new WeakMap<object,number>();const key:number[]=[];values.set(key,1);
     `),
-        /weak object key requires an owned record or represented DOM target/,
+        /weak object key requires an owned record, a mesh or a represented DOM target/,
     );
 });

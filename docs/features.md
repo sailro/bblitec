@@ -125,7 +125,7 @@ Rules:
 | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | Numbers         | Math, Number predicates/coercions, `**`, BigInt (incl. `asIntN`/`asUintN`)                                                                     | BigInt mixed with Number, BigInt JSON/clone/`toLocaleString`                                                       |
 | Arrays/tuples   | ES2023 methods incl. `toSorted`/`with`/`flat`/`flatMap`, typed `Array.from`                                                                    | Callback `thisArg`; callbacks removing unvisited elements (runtime)                                                |
-| Map/Set/WeakMap | Full API, live cursors; WeakMap with record, callback or DOM keys                                                                              | `Set<object>` of Promises; other WeakMap key kinds                                                                 |
+| Map/Set/WeakMap | Full API, live cursors; WeakMap with record, callback, mesh or DOM keys                                                                        | `Set<object>` of Promises; other WeakMap key kinds                                                                 |
 | Iterators       | Arrays, Map/Set cursors, class generator `[Symbol.iterator]`                                                                                   | Other `[Symbol.iterator]` implementations                                                                          |
 | Strings         | UTF-16 API, URI encode/decode, `btoa`/`atob`, tagged templates, `String.raw`                                                                   | Method tags                                                                                                        |
 | RegExp          | `g`/`i`/`u`, replacement callbacks, captured `split`; unmatched captures are `undefined`; literal non-`g` `test`/`exec` fold at generation     | `replaceAll` with string replacement; under `u`: lookbehind, named groups, `i` with backreferences/word boundaries |
@@ -517,7 +517,10 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
   the task camera (neutral elsewhere). A setting written by a computed key needs a string-literal-typed key.
 - `setEffectTexture` takes solid, pixel or render-target textures by binding name or number, including cached pixel
   textures and live changes between these kinds. Pixel bindings preserve sampler/sRGB settings, replacement identities
-  and live region writes. Render targets bind in frame-graph effect tasks only.
+  and live region writes. Render targets bind in frame-graph effect tasks only, through the bound texture's `sampler`.
+  A `Texture2D` record `{ get view() { return rt._colorView; }, sampler, _sampleType: "float" }` (optionally a
+  `texture` getter over the same target) binds, stores and selects as that single-sample colour target through its
+  own sampler; stored, it reads back its `sampler`.
 - Image processing: exposure, contrast, toneMapping, toneMappingEnabled.
 
 ## Text

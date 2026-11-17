@@ -3944,6 +3944,20 @@ export class PropertyAccessLowerer {
         if (fetchedProperty) return fetchedProperty;
         if (
             owner.kind === "texture" &&
+            property === "sampler" &&
+            owner.dataType?.kind === "handle" &&
+            owner.dataType.handle === "texture"
+        ) {
+            const engine = this.context.requireEngine(owner, expression);
+            return {
+                kind: "gpu-sampler",
+                cpp: `bbl::stored_texture_gpu_sampler(${engine}, ${owner.cpp})`,
+                engineCpp: engine,
+                dataType: { kind: "handle", handle: "gpu-sampler" },
+            };
+        }
+        if (
+            owner.kind === "texture" &&
             (property === "width" || property === "height")
         ) {
             const storedTexture =

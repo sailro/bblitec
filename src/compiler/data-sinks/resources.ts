@@ -9,6 +9,7 @@ import {
 } from "../data-types.js";
 import { convertsToSceneNode } from "../data-types/handles.js";
 import {
+    isStringValue,
     representedStorage,
     withNativeMetadata,
     type Value,
@@ -76,6 +77,134 @@ export function texture2DFromParts(
         engineCpp: engine,
         textureStorage: "stored",
         dataType: { kind: "handle", handle: "texture" },
+    };
+}
+
+/**
+ * The receiver of a getter whose whole body is `return x.<member>` (behind
+ * `!`, parentheses or casts) and whose `x` is a plain name; undefined for
+ * any other getter.
+ */
+function memberGetterReceiver(
+    context: Pick<LoweringServices, "unwrap">,
+    accessor: ts.GetAccessorDeclaration,
+    member: string,
+): ts.Identifier | undefined {
+    const statements = accessor.body?.statements;
+    const only = statements?.length === 1 ? statements[0] : undefined;
+    if (!only || !ts.isReturnStatement(only) || !only.expression)
+        return undefined;
+    const read = context.unwrap(only.expression);
+    if (
+        !ts.isPropertyAccessExpression(read) ||
+        read.questionDotToken ||
+        read.name.text !== member
+    )
+        return undefined;
+    const receiver = context.unwrap(read.expression);
+    return ts.isIdentifier(receiver) ? receiver : undefined;
+}
+
+/**
+ * A `Texture2D` record over a render target's live colour attachment --
+ * a `view` getter returning one render target's `_colorView`, an optional
+ * `texture` getter returning the same target's `_colorTexture`, a GPU
+ * `sampler`, and at most `_sampleType: "float"` -- as that target's colour
+ * sampled through the record's sampler. The pin's bindings read `view` and
+ * `sampler` when they build a bind group; the native binding resolves the
+ * target's current colour at that point. Undefined for any other record.
+ */
+export function renderTargetColorViewTexture(
+    context: Pick<
+        LoweringServices,
+        | "compileValue"
+        | "withRecordScopes"
+        | "unwrap"
+        | "requireEngine"
+        | "expectSameEngine"
+        | "fail"
+    >,
+    value: Value,
+    node: ts.Node,
+): Value | undefined {
+    const getters = value.kind === "record" ? value.recordGetters : undefined;
+    const view = getters?.view;
+    if (
+        !view ||
+        value.cpp ||
+        value.classDeclaration ||
+        Object.keys(value.recordMethods ?? {}).length > 0 ||
+        Object.keys(value.recordSetters ?? {}).length > 0
+    )
+        return undefined;
+    const viewReceiver = memberGetterReceiver(context, view, "_colorView");
+    if (!viewReceiver) return undefined;
+    const target = context.withRecordScopes(value, () =>
+        context.compileValue(viewReceiver),
+    );
+    if (target.kind !== "render-target") return undefined;
+    const properties = value.recordProperties ?? {};
+    const stated = [...Object.keys(getters), ...Object.keys(properties)];
+    const texture = getters.texture;
+    const textureReceiver = texture
+        ? memberGetterReceiver(context, texture, "_colorTexture")
+        : undefined;
+    if (
+        Object.keys(getters).some(
+            (name) => !["view", "texture"].includes(name),
+        ) ||
+        Object.keys(properties).some(
+            (name) => !["sampler", "_sampleType"].includes(name),
+        ) ||
+        (texture &&
+            (!textureReceiver ||
+                context.withRecordScopes(value, () =>
+                    context.compileValue(textureReceiver),
+                ).cpp !== target.cpp))
+    )
+        context.fail(
+            node,
+            "A Texture2D record over a render target's colour view states " +
+                "getters `view` (its `_colorView`) and optionally `texture` " +
+                "(the same target's `_colorTexture`), a `sampler` and at most " +
+                `\`_sampleType: "float"\`; this one states ${stated.join(", ")}.`,
+        );
+    const { sampler, _sampleType: sampleType } = properties;
+    if (sampler?.kind !== "gpu-sampler")
+        context.fail(
+            node,
+            "A Texture2D record over a render target's colour view binds " +
+                "through its own GPU sampler.",
+        );
+    // An escaping record holds `_sampleType` as a run-time string, which
+    // the native constructor checks instead.
+    const runtimeSampleType =
+        sampleType?.staticString === undefined ? sampleType : undefined;
+    if (
+        sampleType &&
+        (runtimeSampleType
+            ? !isStringValue(runtimeSampleType)
+            : sampleType.staticString !== "float")
+    )
+        context.fail(
+            node,
+            "A render target's colour view samples as float; this record " +
+                "states another `_sampleType`.",
+        );
+    const signature = target.renderTargetSignature;
+    if (signature && (!signature.hasColor || signature.samples > 1))
+        context.fail(
+            node,
+            "A Texture2D record binds a render target's colour view only " +
+                "when the target has single-sample colour: the pin's view is " +
+                "that colour texture's default view.",
+        );
+    context.expectSameEngine(target, sampler, node);
+    const engine = context.requireEngine(target, node);
+    return {
+        kind: "render-texture",
+        cpp: `bbl::render_target_color_view(${engine}, ${target.cpp}, ${sampler.cpp}${runtimeSampleType ? `, ${runtimeSampleType.cpp}` : ""})`,
+        engineCpp: engine,
     };
 }
 
@@ -443,7 +572,12 @@ function valueResource(
             ? texture2DFromParts(lowerer.context, value, node)
             : undefined;
     if (parts) return parts.cpp;
+    const colorView =
+        dataType.kind === "handle" && dataType.handle === "texture"
+            ? renderTargetColorViewTexture(lowerer.context, value, node)
+            : undefined;
     if (
+        !colorView &&
         dataType.kind === "handle" &&
         dataType.handle === "texture" &&
         value.kind === "record" &&
@@ -458,21 +592,22 @@ function valueResource(
             `A Texture2D record states texture, view, sampler, width and height as GPU parts; this one states ${stated.join(", ") || "none"}.`,
         );
     }
+    const renderTexture = colorView ?? value;
     if (
         dataType.kind === "handle" &&
         dataType.handle === "texture" &&
-        value.kind === "render-texture"
+        renderTexture.kind === "render-texture"
     ) {
         if (
-            value.renderTextureSource !== undefined &&
-            value.renderTextureSource !== "render-target"
+            renderTexture.renderTextureSource !== undefined &&
+            renderTexture.renderTextureSource !== "render-target"
         ) {
             lowerer.context.fail(
                 node,
                 "Stored render textures require a createRenderTargetTexture owner.",
             );
         }
-        return `bbl::StoredTexture{bbl::retained_render_texture(${lowerer.context.requireEngine(value, node)}, ${value.cpp})}`;
+        return `bbl::StoredTexture{bbl::retained_render_texture(${lowerer.context.requireEngine(renderTexture, node)}, ${renderTexture.cpp})}`;
     }
     if (dataType.kind === "handle" && value.kind === dataType.handle) {
         if (dataType.handle === "texture") {

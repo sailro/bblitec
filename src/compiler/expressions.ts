@@ -3187,6 +3187,37 @@ export class ExpressionLowerer {
                 whenFalse = falseAsset;
             }
         }
+        // Texture2D branches of different representations, or a record
+        // over a render target's colour view (`renderTargetColorViewTexture`),
+        // select as stored Texture2D, each converted inside its own arm.
+        const texture2D = (value: Value): boolean =>
+            value.kind === "texture" ||
+            value.kind === "render-texture" ||
+            value.kind === "record";
+        const textureType =
+            texture2D(whenTrue) &&
+            texture2D(whenFalse) &&
+            (whenTrue.kind !== whenFalse.kind ||
+                [whenTrue, whenFalse].some(
+                    (arm) => arm.recordGetters?.view !== undefined,
+                ))
+                ? this.selectedDataType(node, path)
+                : undefined;
+        if (
+            textureType?.kind === "handle" &&
+            textureType.handle === "texture"
+        ) {
+            const trueArm = this.selectedArmValue(whenTrue, textureType, node);
+            const falseArm = this.selectedArmValue(
+                whenFalse,
+                textureType,
+                node,
+            );
+            return this.context.dataLowerer.leafValue(
+                `(${condition} ? ${trueArm.cpp} : ${falseArm.cpp})`,
+                textureType,
+            );
+        }
         if (
             whenTrue.kind !== whenFalse.kind &&
             ((whenTrue.kind === "record" &&

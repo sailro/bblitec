@@ -102,7 +102,7 @@ inline DawnEffectPass create_dawn_effect_pass(DawnDevice& device_state, const En
             continue;
         const EffectTextureSlot& slot = effect_texture_slot(wrapper, binding.binding);
         const auto image = pass.texture_images.add(
-            slot, pass.textures.size(), [&](const EffectTextureSlot& current) {
+            engine, slot, pass.textures.size(), [&](const EffectTextureSlot& current) {
                 return upload_dawn_effect_image(device_state.device, device_state.queue, current);
             });
         DawnSampledTexture sampled;
@@ -110,9 +110,8 @@ inline DawnEffectPass create_dawn_effect_pass(DawnDevice& device_state, const En
             sampled.texture = image->retain();
             sampled.view = create_dawn_texture_view(sampled.texture, nullptr);
         }
-        sampled.sampler = create_texture_sampler(device_state.device,
-                                                 slot.pixels_texture ? slot.pixels_texture->sampler
-                                                                     : effect_texture_sampler());
+        sampled.sampler =
+            create_texture_sampler(device_state.device, effect_slot_sampler(engine, slot));
         pass.textures.push_back(std::move(sampled));
         if (slot.render_texture)
             render_bindings.push_back(binding.binding);
@@ -227,7 +226,7 @@ inline void upload_dawn_effect_pass(DawnDevice& device, Engine& engine, DawnEffe
                                     EffectWrapperHandle handle) {
     EffectWrapperRecord& wrapper = handle_at(engine.effect_wrappers, handle);
     pass.texture_images.refresh(
-        wrapper,
+        engine, wrapper,
         [&](const EffectTextureSlot& slot) {
             return upload_dawn_effect_image(device.device, device.queue, slot);
         },
@@ -237,9 +236,7 @@ inline void upload_dawn_effect_pass(DawnDevice& device, Engine& engine, DawnEffe
             sampled.texture = image ? image->retain() : DawnTexture{};
             sampled.view =
                 image ? create_dawn_texture_view(sampled.texture, nullptr) : DawnTextureView{};
-            sampled.sampler = create_texture_sampler(
-                device.device,
-                slot.pixels_texture ? slot.pixels_texture->sampler : effect_texture_sampler());
+            sampled.sampler = create_texture_sampler(device.device, effect_slot_sampler(engine, slot));
             const auto& variant = upstream::effect_variants.at(wrapper.variant);
             std::size_t texture_position = 0;
             for (std::size_t index = 0; index < variant.binding_count; ++index) {

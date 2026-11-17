@@ -21,6 +21,7 @@ import {
     type Value,
 } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
+import { renderTargetColorViewTexture } from "../data-sinks/resources.js";
 import { compileBlendState, type BlendStateContext } from "../blend-state.js";
 import {
     compileStaticNumber,
@@ -53,6 +54,7 @@ export interface EffectIntrinsicContext
             | "dataLowerer"
             | "dataTypes"
             | "checker"
+            | "withRecordScopes"
         > {}
 
 /**
@@ -495,7 +497,13 @@ export function compileEffectIntrinsic(
                             argumentAt(call, 1),
                             "An effect texture binding is a name or a binding number.",
                         ));
-            const texture = context.compileValue(argumentAt(call, 2));
+            const given = context.compileValue(argumentAt(call, 2));
+            const texture =
+                renderTargetColorViewTexture(
+                    context,
+                    given,
+                    argumentAt(call, 2),
+                ) ?? given;
             if (texture.kind !== "render-texture") {
                 context.expectKind(texture, "texture", argumentAt(call, 2));
                 if (

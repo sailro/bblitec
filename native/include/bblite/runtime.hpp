@@ -1188,6 +1188,33 @@ struct RenderTargetOptions {
     std::optional<DepthCompare> depth_compare{};
 };
 
+enum class TextureFilter {
+    nearest,
+    linear,
+};
+
+enum class TextureMipmapMode {
+    nearest,
+    linear,
+};
+
+enum class TextureAddressMode {
+    repeat,
+    clamp,
+    mirror,
+};
+
+struct TextureSamplerState {
+    TextureFilter min_filter = TextureFilter::linear;
+    TextureFilter mag_filter = TextureFilter::linear;
+    TextureMipmapMode mipmap_mode = TextureMipmapMode::linear;
+    TextureAddressMode address_u = TextureAddressMode::repeat;
+    TextureAddressMode address_v = TextureAddressMode::repeat;
+    float max_anisotropy = 1.0f;
+    float max_lod = 1000.0f;
+    bool operator==(const TextureSamplerState&) const = default;
+};
+
 enum class RenderTextureSource {
     render_target,
     geometry,
@@ -1214,6 +1241,14 @@ struct RenderTextureRef {
     GeometryTextureType geometry_type = GeometryTextureType::irradiance;
     /** Explicit depth facade of a color/depth render target. */
     bool depth_only = false;
+    /**
+     * Set for a Texture2D record over the target's colour view
+     * (`render_target_color_view`): the record's own sampler, and that
+     * `GpuSampler`'s object. Unset for the target's own facade, which samples
+     * through the target's sampler.
+     */
+    std::optional<TextureSamplerState> record_sampler{};
+    std::uint64_t record_sampler_object = 0;
 };
 
 /** `enableRenderTaskTransmission`'s raw-mode settings, stored on the render task. */
@@ -1857,33 +1892,6 @@ struct RenderTargetLifecycle {
     virtual void synchronize() = 0;
     virtual void dispose(std::function<void()> release) = 0;
     virtual js::Callback<void()> subscribe(std::function<void()> callback) = 0;
-};
-
-enum class TextureFilter {
-    nearest,
-    linear,
-};
-
-enum class TextureMipmapMode {
-    nearest,
-    linear,
-};
-
-enum class TextureAddressMode {
-    repeat,
-    clamp,
-    mirror,
-};
-
-struct TextureSamplerState {
-    TextureFilter min_filter = TextureFilter::linear;
-    TextureFilter mag_filter = TextureFilter::linear;
-    TextureMipmapMode mipmap_mode = TextureMipmapMode::linear;
-    TextureAddressMode address_u = TextureAddressMode::repeat;
-    TextureAddressMode address_v = TextureAddressMode::repeat;
-    float max_anisotropy = 1.0f;
-    float max_lod = 1000.0f;
-    bool operator==(const TextureSamplerState&) const = default;
 };
 
 struct RenderTargetRecord {
@@ -4896,6 +4904,41 @@ private:
 };
 
 /** A copied or moved Engine is a fresh document identity, just like OwnerLifetime. */
+/**
+ * Weak-collection identity tokens for an engine's objects, by object id,
+ * each made on its first use as a key. A copied or moved Engine is a fresh
+ * set of objects, like `OwnerLifetime`.
+ */
+class ObjectIdentityTokens {
+public:
+    ObjectIdentityTokens() = default;
+    ObjectIdentityTokens(const ObjectIdentityTokens&) {}
+    ObjectIdentityTokens(ObjectIdentityTokens&& other) noexcept { other.clear(); }
+    ObjectIdentityTokens& operator=(const ObjectIdentityTokens& other) {
+        if (this != &other)
+            clear();
+        return *this;
+    }
+    ObjectIdentityTokens& operator=(ObjectIdentityTokens&& other) noexcept {
+        if (this != &other) {
+            clear();
+            other.clear();
+        }
+        return *this;
+    }
+    [[nodiscard]] std::weak_ptr<const void> at(std::uint64_t id) {
+        auto& token = tokens_[id];
+        if (!token)
+            token = std::make_shared<const int>(0);
+        return token;
+    }
+    [[nodiscard]] bool empty() const noexcept { return tokens_.empty(); }
+    void clear() noexcept { tokens_.clear(); }
+
+private:
+    std::unordered_map<std::uint64_t, std::shared_ptr<const int>> tokens_;
+};
+
 struct DomTargetState {
     DomTargetState() = default;
     DomTargetState(const DomTargetState&) {}
@@ -4912,7 +4955,7 @@ struct DomTargetState {
         }
         return *this;
     }
-    std::unordered_map<std::uint64_t, std::shared_ptr<const int>> identities;
+    ObjectIdentityTokens identities;
     /** Ref/Callback cells root their values until deletion or document teardown. */
     std::unordered_map<const void*, std::shared_ptr<void>> properties;
 
@@ -5286,6 +5329,8 @@ struct Engine {
     std::vector<MeshRecord> meshes;
     /** Retired mesh slots `store_mesh_record` reuses (see there). */
     std::vector<std::uint32_t> free_mesh_slots;
+    /** Meshes used as weak-collection keys, by slot and generation (`mesh_weak_identity`). */
+    ObjectIdentityTokens mesh_identities;
     MeshCompositionRows mesh_composition_rows;
     // Every source event that changes draw-list membership: the pin's
     // setMeshVisible epoch (only when a flag actually changes), and a
@@ -5584,7 +5629,9 @@ inline FileTexture retained_render_texture(Engine& engine, RenderTextureRef refe
         const auto& previous = facade.data.render_source->reference;
         if (previous.source == reference.source && previous.task.value == reference.task.value &&
             previous.target.value == reference.target.value &&
-            previous.depth_only == reference.depth_only)
+            previous.depth_only == reference.depth_only &&
+            previous.record_sampler == reference.record_sampler &&
+            previous.record_sampler_object == reference.record_sampler_object)
             return facade;
     }
     FileTexture facade;
@@ -5601,7 +5648,10 @@ inline FileTexture retained_render_texture(Engine& engine, RenderTextureRef refe
         facade.width = size;
         facade.height = size;
     }
-    facade.data.uv_invert_y = !transmission && target.has_color && !reference.depth_only;
+    // A record over the colour view states no `invertY`; the target's own
+    // colour facade states `invertY: true`.
+    facade.data.uv_invert_y =
+        !transmission && target.has_color && !reference.depth_only && !reference.record_sampler;
     facade.data.render_source = std::make_shared<RenderTextureData>(
         RenderTextureData{&engine, engine.lifetime.token(), reference, target.lifecycle});
     engine.render_texture_facades.push_back(facade);
@@ -5773,6 +5823,40 @@ inline GpuSampler create_device_sampler(const GpuDeviceIdentity& device,
 inline GpuTextureView create_texture_view(Engine& engine, const GpuTextureIdentity& texture) {
     return {texture, ++engine.published_gpu_objects};
 }
+/**
+ * A Texture2D record whose `view` getter returns a render target's live
+ * `_colorView`, with its own sampler and `_sampleType`. The pin's
+ * `_colorView` is the colour texture's default view, so only a single-sample
+ * colour target has one a float texture binding accepts.
+ */
+inline RenderTextureRef render_target_color_view(const Engine& engine, RenderTargetHandle target,
+                                                 const GpuSampler& sampler,
+                                                 std::string_view sample_type = "float") {
+    const auto& record = handle_at(engine.render_targets, target);
+    if (!record.has_color || record.samples != 1 || sample_type != "float")
+        throw std::runtime_error("A Texture2D record over a render target's colour view requires "
+                                 "single-sample colour sampled as float.");
+    RenderTextureRef texture;
+    texture.target = target;
+    texture.record_sampler = sampler.state;
+    texture.record_sampler_object = sampler.object;
+    return texture;
+}
+/**
+ * `texture.sampler` read off a stored Texture2D: a record over a colour view
+ * answers with its own sampler. Other stored textures keep sampler state
+ * without the object the pin's read returns.
+ */
+inline GpuSampler stored_texture_gpu_sampler(Engine& engine, const StoredTexture& texture) {
+    const auto* file = std::get_if<FileTexture>(&texture);
+    const RenderTextureRef* reference =
+        file && file->data.render_source ? &file->data.render_source->reference : nullptr;
+    if (!reference || !reference->record_sampler)
+        throw std::runtime_error(
+            "Only a stored Texture2D record over a colour view keeps its sampler object.");
+    return {gpu_device_identity(engine), *reference->record_sampler,
+            reference->record_sampler_object};
+}
 /** `texture.sampler = sampler` on a render target's texture or depth facade. */
 inline void set_render_texture_sampler(Engine& engine, const RenderTextureRef& texture,
                                        const GpuSampler& sampler) {
@@ -5784,6 +5868,8 @@ inline void set_render_texture_sampler(Engine& engine, const RenderTextureRef& t
 /** The sampler `texture.sampler` set for a bound render texture, or none. */
 inline const TextureSamplerState* render_texture_sampler(const Engine& engine,
                                                          const RenderTextureRef& texture) {
+    if (texture.record_sampler)
+        return &*texture.record_sampler;
     const RenderTargetRecord* target = texture.source == RenderTextureSource::render_target
                                            ? handle_find(engine.render_targets, texture.target)
                                            : nullptr;
@@ -5850,6 +5936,12 @@ void register_managed_resource_disposer(Engine& engine, std::function<void()> di
  */
 inline bool mesh_handle_current(const Engine& engine, MeshHandle mesh) {
     return handle_names_record(engine.meshes, mesh);
+}
+
+/** A mesh as a weak-collection key: one token per mesh, kept past its retirement. */
+inline std::weak_ptr<const void> mesh_weak_identity(Engine& engine, MeshHandle mesh) {
+    return engine.mesh_identities.at((static_cast<std::uint64_t>(mesh.generation) << 32) |
+                                     mesh.value);
 }
 
 /**

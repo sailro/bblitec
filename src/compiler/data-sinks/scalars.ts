@@ -687,6 +687,8 @@ export const scalarsSinks: DataSinkOperations<
                 lowerer.context.dataTypes.markStoredObjectReferences(type);
                 return `(${value.cpp}).weak_identity()`;
             }
+            if (value.kind === "mesh")
+                return `bbl::mesh_weak_identity(${lowerer.context.requireEngine(value, node)}, ${value.cpp})`;
             const global = ts.isExpression(node)
                 ? lowerer.context.libraryGlobal(node)
                 : undefined;
@@ -703,7 +705,7 @@ export const scalarsSinks: DataSinkOperations<
             }
             return lowerer.context.fail(
                 node,
-                "A weak object key requires an owned record or represented DOM target.",
+                "A weak object key requires an owned record, a mesh or a represented DOM target.",
             );
         },
     },

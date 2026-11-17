@@ -715,6 +715,7 @@ interface DataLoweringContext extends Pick<
     | "captureManagedClosureLines"
     | "withRecordScopes"
     | "withCallbackScopes"
+    | "expectSameEngine"
     | "compilePredicateWithValues"
     | "compileStoredDataFunction"
     | "compileStoredAccessor"

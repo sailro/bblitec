@@ -164,12 +164,10 @@ inline EffectPass create_effect_pass(SDL_GPUDevice* device, const Engine& engine
             throw std::runtime_error("Effect texture '" + name + "' has no declared binding.");
         const EffectTextureSlot& slot = effect_texture_slot(wrapper, declared->binding);
         const auto image = pass.texture_images.add(
-            slot, pass.textures.size(),
+            engine, slot, pass.textures.size(),
             [&](const EffectTextureSlot& current) { return upload_effect_image(device, current); });
-        pass.textures.push_back(
-            {image ? image->get() : nullptr,
-             create_texture_sampler(device, slot.pixels_texture ? slot.pixels_texture->sampler
-                                                                : effect_texture_sampler())});
+        pass.textures.push_back({image ? image->get() : nullptr,
+                                 create_texture_sampler(device, effect_slot_sampler(engine, slot))});
         if (slot.render_texture)
             pass.render_textures.emplace_back(pass.textures.size() - 1, slot.binding);
     }
@@ -194,13 +192,12 @@ inline void upload_effect_pixels(SDL_GPUDevice* device, const Engine& engine, Ef
                                  EffectWrapperHandle handle) {
     const auto& wrapper = handle_at(engine.effect_wrappers, handle);
     pass.texture_images.refresh(
-        wrapper, [&](const EffectTextureSlot& slot) { return upload_effect_image(device, slot); },
+        engine, wrapper,
+        [&](const EffectTextureSlot& slot) { return upload_effect_image(device, slot); },
         [&](std::size_t position, const EffectTextureSlot& slot,
             const std::shared_ptr<OwnedSdlTexture>& image) {
             auto& binding = pass.textures.at(position);
-            const auto sampler =
-                create_texture_sampler(device, slot.pixels_texture ? slot.pixels_texture->sampler
-                                                                   : effect_texture_sampler());
+            const auto sampler = create_texture_sampler(device, effect_slot_sampler(engine, slot));
             SDL_ReleaseGPUSampler(device, binding.sampler);
             binding = {image ? image->get() : nullptr, sampler};
             std::erase_if(pass.render_textures,
