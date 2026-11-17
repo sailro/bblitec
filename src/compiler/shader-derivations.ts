@@ -49,7 +49,7 @@ import { isPinnedType } from "./data-types.js";
 import { arrayShape, callSignatures, presentMembers } from "./type-facts.js";
 import type { CompiledShaderMaterialOptions } from "./shader-material.js";
 import type { ShaderStage } from "../shader-ir.js";
-import type { Value } from "./types.js";
+import type { CompiledShaderProgram, Value } from "./types.js";
 import { absenceOf, undefinedValue, valueForKind } from "./values/model.js";
 
 /**
@@ -84,6 +84,26 @@ interface RecipeStore {
     readonly options: RecordFacts;
     /** The record's other own keys. */
     readonly members: RecordFacts;
+}
+
+/**
+ * The programs `createShaderMaterial` created in a compile attempt, with the
+ * options each was read from: what the next attempt's run-time variant
+ * splits take as the whole program's creations.
+ */
+export type ShaderCreationLedger = readonly {
+    readonly program: CompiledShaderProgram;
+    readonly creations: readonly (readonly [string, RecordFact])[][];
+}[];
+
+/**
+ * A run-time variant split compiled before some of the program's shader
+ * material creations: lowering restarts with all of them known.
+ */
+export class ShaderCreationsRequired extends Error {
+    constructor(readonly ledger: ShaderCreationLedger) {
+        super("A run-time shader variant split requires every creation.");
+    }
 }
 
 export type ShaderDerivationContext = Pick<
@@ -169,13 +189,57 @@ export class ShaderDerivationRecorder {
         return true;
     }
 
-    /** Records the options a variant compiled from, once per distinct reading. */
-    public recordCreation(variant: string, options: RecordFacts): void {
+    /** The variants `createShaderMaterial` created, as opposed to derived ones. */
+    private readonly created = new EmissionSet<string>();
+    /** The created variants each run-time variant split compiled arms for. */
+    private readonly splits = emissionArray<ReadonlySet<string>>();
+
+    /**
+     * Records the options a variant compiled from, once per distinct
+     * reading; `created` when `createShaderMaterial` created it.
+     */
+    public recordCreation(
+        variant: string,
+        options: RecordFacts,
+        created = false,
+    ): void {
+        if (created) this.created.add(variant);
         if (!this.firstReading(variant, JSON.stringify([...options]))) return;
         this.creations.set(variant, [
             ...(this.creations.get(variant) ?? []),
             options,
         ]);
+    }
+
+    /** The variants `createShaderMaterial` created, in reach order of their records. */
+    public createdVariants(): readonly string[] {
+        return [...this.created];
+    }
+
+    /** Records the created variants a run-time variant split compiled arms for. */
+    public recordSplit(variants: readonly string[]): void {
+        this.splits.push(new Set(variants));
+    }
+
+    /**
+     * The whole program's created variants, when a run-time variant split
+     * compiled before some of them were created: the next attempt splits on
+     * all of them (`ShaderCreationsRequired`).
+     */
+    public splitLedger(
+        programs: readonly CompiledShaderProgram[],
+    ): ShaderCreationLedger | undefined {
+        const created = this.createdVariants();
+        if (
+            !this.splits.some((split) =>
+                created.some((variant) => !split.has(variant)),
+            )
+        )
+            return undefined;
+        return created.map((variant) => ({
+            program: programs.find((program) => program.name === variant)!,
+            creations: this.creationsOf(variant).map((facts) => [...facts]),
+        }));
     }
 
     /** The options a variant compiled from: one entry per distinct reading. */

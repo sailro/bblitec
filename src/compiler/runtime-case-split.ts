@@ -19,6 +19,8 @@ import {
 } from "./type-facts.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { isStringValue, type Value } from "./types.js";
+import { isShaderMaterialType } from "./shader-derivations.js";
+import { runtimeShaderVariants } from "./shader-material-views.js";
 import {
     functionOfDeclaration,
     isModuleScopeFunction,
@@ -35,6 +37,7 @@ import {
     nullValue,
     presenceCpp,
     undefinedValue,
+    withShaderVariants,
 } from "./values/model.js";
 
 export type CaseSplitContext = Pick<
@@ -58,6 +61,9 @@ export type CaseSplitContext = Pick<
     | "leaveRuntimeControlFlow"
     | "probeEmission"
     | "program"
+    | "reachShaderCreations"
+    | "requireEngine"
+    | "sceneManifest"
     | "userFunctions"
 >;
 
@@ -126,7 +132,10 @@ export function armSpecializesCall(
  * runtime test (`f({...(c ? a : {})})`), or pass a value of a few outcomes (a
  * boolean, an optional object present or absent), itself or as a member of a
  * record an argument names (`f(options)`), or an object that is one of a few
- * module constants (`f(entry.lane ?? DEFAULT_LANE)`), once per outcome when
+ * module constants (`f(entry.lane ?? DEFAULT_LANE)`), or a ShaderMaterial
+ * whose shader variant only the run time knows (one outcome per variant the
+ * program creates, `runtimeShaderVariants`, the arm read from a generated
+ * variant table), once per outcome when
  * the single compilation refuses: a callee that specializes on its argument
  * (a shader composed from options) then sees each outcome as a constant. The
  * test is read once, before the call, which is where JavaScript reads it
@@ -295,7 +304,13 @@ type Outcome =
     | "falsy"
     | "absent"
     | { readonly literal: string }
-    | ConstantOutcome;
+    | ConstantOutcome
+    | VariantOutcome;
+
+/** One shader variant a run-time ShaderMaterial may be, by its program's name. */
+interface VariantOutcome {
+    readonly variant: string;
+}
 
 /**
  * The module constant an object is in one arm: a reference to it, and,
@@ -328,7 +343,8 @@ interface Selector {
         | "presence"
         | "optional-boolean"
         | "literal"
-        | "constant";
+        | "constant"
+        | "variant";
     test: ts.Expression;
     nodes: readonly ts.Expression[];
     outcomes: readonly Outcome[];
@@ -367,7 +383,7 @@ interface SelectorTests {
 /** Every outcome a test of `kind` can take. */
 const KIND_OUTCOMES: Readonly<
     Record<
-        Exclude<Selector["kind"], "literal" | "constant">,
+        Exclude<Selector["kind"], "literal" | "constant" | "variant">,
         readonly Outcome[]
     >
 > = {
@@ -389,7 +405,7 @@ function kindOutcomes(
         ? [...(stringLiteralValues(type) ?? [])].map((literal) => ({
               literal,
           }))
-        : kind === "constant"
+        : kind === "constant" || kind === "variant"
           ? []
           : KIND_OUTCOMES[kind];
 }
@@ -497,7 +513,9 @@ function forcedValue(
                   cpp: context.cppString(outcome.literal),
                   staticString: outcome.literal,
               }
-            : constantValue(read(), outcome);
+            : "variant" in outcome
+              ? withShaderVariants(read(), [outcome.variant])
+              : constantValue(read(), outcome);
     // A present object is truthy and present wherever the arm reads it.
     if (selector.kind === "presence")
         return outcome === "truthy"
@@ -744,6 +762,9 @@ function selectorTests(
         const kind = selectorKind(type);
         if (kind) {
             if (!containsSelection(node)) addGroup(kind, node);
+        } else if (isShaderMaterialType(type) && !containsSelection(node)) {
+            // A ShaderMaterial's variant, when the run time decides it.
+            addGroup("variant", node);
         } else if (ts.isIdentifier(node) && heldRecord(context, node)) {
             const record = records.find((candidate) =>
                 sameExpression(context.checker, candidate.nodes[0]!, node),
@@ -983,6 +1004,27 @@ function runtimeSelectors(
                 variable.push(group);
             continue;
         }
+        if (group.kind === "variant") {
+            if (
+                !value ||
+                !(
+                    value.kind === "material" ||
+                    (value.dataType?.kind === "handle" &&
+                        value.dataType.handle === "material")
+                ) ||
+                value.sceneShaderVariant !== undefined
+            )
+                continue;
+            const variants =
+                value.possibleSceneShaderVariants ??
+                runtimeShaderVariants(context);
+            if (variants.length > 0)
+                variable.push({
+                    ...group,
+                    outcomes: variants.map((variant) => ({ variant })),
+                });
+            continue;
+        }
         if (group.kind === "constant") {
             const resolved =
                 value && !staticArgument(value)
@@ -1138,8 +1180,43 @@ function splitCall(
                   presence?: string;
                   literal?: (text: string) => string;
                   constant?: (outcome: ConstantOutcome) => string;
+                  variant?: (outcome: VariantOutcome) => string;
               }
             | undefined => {
+            if (selector.kind === "variant") {
+                // The arm a variant takes, from the generated table of
+                // the variants the split compiled (`derived_shader_variant_<site>`).
+                const value = selectorValue(context, selector);
+                if (!value) return undefined;
+                const arms = selector.outcomes.map((outcome) =>
+                    typeof outcome === "object" && "variant" in outcome
+                        ? outcome.variant
+                        : "",
+                );
+                const name = context.allocateTemporaryCppName("case_arm");
+                context.emit({
+                    kind: "declaration",
+                    type: "const std::uint32_t",
+                    name,
+                    initializer:
+                        context.sceneManifest.shaderDerivations.derivedVariantCpp(
+                            undefined,
+                            new Map(
+                                arms.map((variant, arm) => [
+                                    context.sceneManifest.reachedShaderPrograms.findIndex(
+                                        (program) => program.name === variant,
+                                    ),
+                                    arm,
+                                ]),
+                            ),
+                            `bbl::shader_material_variant(${context.requireEngine(value, selector.test)}, ${value.cpp})`,
+                        ),
+                });
+                return {
+                    variant: (outcome) =>
+                        `${name} == ${arms.indexOf(outcome.variant)}u`,
+                };
+            }
             if (selector.kind === "literal") {
                 const value = selectorValue(context, selector);
                 if (!value || !literalStorage(value)) return undefined;
@@ -1283,7 +1360,9 @@ function splitCall(
             typeof outcome === "object"
                 ? "literal" in outcome
                     ? test.literal!(outcome.literal)
-                    : test.constant!(outcome)
+                    : "variant" in outcome
+                      ? test.variant!(outcome)
+                      : test.constant!(outcome)
                 : outcome === "truthy"
                   ? test.truth!
                   : test.presence!;

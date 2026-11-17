@@ -124,7 +124,7 @@ function variantsField(
             if (typeof read === "string")
                 context.fail(
                     node,
-                    `'${spelled(node)}' reads a ShaderMaterial's '${field}', which generation does not hold: ${read}.`,
+                    `'${spelled(node)}' reads a ShaderMaterial's '${field}', which generation does not hold for shader variant '${variant}': ${read}.`,
                 );
             if (
                 found &&
@@ -268,6 +268,21 @@ export function compileCreateMaterialView(
             programs: new Map(variants.map((variant) => [variant, variant])),
         },
     };
+}
+
+/**
+ * The variants a ShaderMaterial generation knows only at run time may be:
+ * every variant the program's `createShaderMaterial` calls create, those a
+ * previous compile attempt reached after this point included
+ * (`ShaderCreationsRequired`). The split records them.
+ */
+export function runtimeShaderVariants(
+    context: Pick<LoweringServices, "reachShaderCreations" | "sceneManifest">,
+): readonly string[] {
+    context.reachShaderCreations();
+    const variants = context.sceneManifest.shaderDerivations.createdVariants();
+    context.sceneManifest.shaderDerivations.recordSplit(variants);
+    return variants;
 }
 
 /**

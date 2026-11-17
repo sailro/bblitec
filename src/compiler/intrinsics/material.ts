@@ -101,6 +101,7 @@ export interface MaterialIntrinsicContext
             | "boundPixelsTextures"
             | "expectSameEngine"
             | "requireDefaultEngine"
+            | "reachShaderCreations"
             | "requireEngine"
             | "compileNumber"
             | "compileBoolean"
@@ -1270,6 +1271,7 @@ function compileShaderMaterialCreation(
             context.sceneManifest.shaderDerivations.recordCreation(
                 variant.name,
                 variant.creation,
+                true,
             );
         const created = `bbl::create_shader_material(${engine}, ${variant.id}u)`;
         return {

@@ -429,6 +429,11 @@ export interface LoweringServices {
         expression: ts.Expression,
         stage: ShaderStage,
     ): ShaderSourceText;
+    /**
+     * Registers the programs a previous compile attempt's
+     * `createShaderMaterial` calls created (`reachLedgerProgram`).
+     */
+    reachShaderCreations(): void;
     resolveStaticExpression(
         expression: ts.Expression,
         resolving?: ReadonlySet<ts.Symbol>,

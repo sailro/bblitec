@@ -52,6 +52,7 @@ import {
     shaderOptionFacts,
     sourceTextFact,
     type RecordFacts,
+    type ShaderCreationLedger,
 } from "./shader-derivations.js";
 
 /** A shader material's depth comparison, which its pipeline reads at generation. */
@@ -944,7 +945,7 @@ function compileShaderUniformSignatures(
  * the emitted variant table in reach order.
  */
 function reachShaderProgram(
-    context: ShaderMaterialContext,
+    context: Pick<ShaderMaterialContext, "sceneManifest">,
     program: CompiledShaderProgram,
 ): { name: string; id: number } {
     const identity = ({ name: _name, ...candidate }: CompiledShaderProgram) =>
@@ -974,6 +975,25 @@ function reachShaderProgram(
         name,
         id: context.sceneManifest.reachedShaderPrograms.length - 1,
     };
+}
+
+/**
+ * Registers a program a previous compile attempt's `createShaderMaterial`
+ * created, with the options it read: a run-time variant split compiled
+ * before the creation reads them (`ShaderCreationLedger`).
+ */
+export function reachLedgerProgram(
+    context: Pick<ShaderMaterialContext, "sceneManifest">,
+    entry: ShaderCreationLedger[number],
+): string {
+    const { name } = reachShaderProgram(context, entry.program);
+    for (const facts of entry.creations)
+        context.sceneManifest.shaderDerivations.recordCreation(
+            name,
+            new Map(facts),
+            true,
+        );
+    return name;
 }
 
 /**

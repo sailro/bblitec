@@ -53,6 +53,7 @@ import type { MaterialPluginManifest } from "../pinned-material-plugins.js";
 import type { PinnedStandardMaterialInput } from "../pinned-standard-variants.js";
 import type {
     ShaderCreation,
+    ShaderCreationLedger,
     ShaderRecipeLookup,
 } from "./shader-derivations.js";
 import type { ShaderMaterialView } from "./shader-material-views.js";
@@ -3866,6 +3867,8 @@ export interface ResolvedCompileOptions extends DeploymentOptions {
     runtimeLocationSearch?: boolean;
     /** A reached constructed promise can end a synchronous activation at its await. */
     pendingActivations?: boolean;
+    /** The shader material creations a previous attempt reached, for run-time variant splits. */
+    shaderCreations?: ShaderCreationLedger;
     fileName: string;
     /** The page's inline module script in the program, and the import of the entry it ends with. */
     pageLoader?: PageLoaderProgram;

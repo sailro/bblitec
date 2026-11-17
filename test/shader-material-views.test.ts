@@ -313,3 +313,85 @@ int main(){
         { expectedOutput: "warm-1:1:0:1:0 cold-1:1:1:0:0 " },
     );
 });
+
+const runtimeSource = (count: number): string => `${prelude}
+    import type { Mesh } from "@babylonjs/lite";
+    function fields(material: ShaderMaterial): number {
+        return material.samplerDecls.length * 1000 + material.fragmentSource.length;
+    }
+    async function main(): Promise<void> {
+        const engine = await createEngine({});
+        const scene = createSceneContext(engine);
+        const mesh = (material: ShaderMaterial): Mesh => {
+            const made = createMeshFromData(engine, "tri", new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]), new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]), new Uint32Array([0, 1, 2]));
+            made.material = material;
+            addToScene(scene, made);
+            return made;
+        };
+        const registry = { add(target: Mesh): number { return fields(target.material as ShaderMaterial); } };
+        const early = mesh(createShaderMaterial({ name: "early", vertexSource: wgsl\`\${VERT}\`, fragmentSource: wgsl\`\${surface("vec3<f32>(1.0)")}\`, attributes: ["position"], uniforms: ["worldViewProjection", "world"], samplers: ["a"] }));
+        console.log(registry.add(early));
+        ${Array.from(
+            { length: count },
+            (_, index) =>
+                `console.log(registry.add(mesh(createShaderMaterial({ name: "late${index}", vertexSource: wgsl\`\${VERT}\`, fragmentSource: wgsl\`\${surface("vec3<f32>(${index}.5)")}\`, attributes: ["position"], uniforms: ["worldViewProjection", "world"] }))));`,
+        ).join("\n        ")}
+    }
+    void main();
+`;
+
+test("a call reading a run-time ShaderMaterial's fields compiles once per variant the program creates, later creations included", () => {
+    const compiled = compileSource(runtimeSource(1));
+    const programs = compiled.manifest.customShaderPrograms;
+    const early = programs.findIndex(({ name }) => name === "early");
+    const late = programs.findIndex(({ name }) => name === "late0");
+    // Each arm reads its variant's fields at generation.
+    const length = (name: string): number =>
+        programs.find((program) => program.name === name)!.fragmentSource
+            .length;
+    for (const [samplers, name] of [
+        [1, "early"],
+        [0, "late0"],
+    ] as const)
+        assert.ok(
+            compiled.cpp.includes(
+                `= ((${samplers}.0 * 1000.0) + ${length(name)}.0);`,
+            ),
+            name,
+        );
+    // The arm is the one the material's run-time variant selects.
+    const site = compiled.cpp.match(
+        /const std::uint32_t (\w+) = bblscene::derived_shader_variant_(\d+)\(bbl::shader_material_variant\(/,
+    );
+    assert.ok(site, "variant arm selection");
+    const table = cppFunction(
+        compiled.cpp,
+        `inline std::uint32_t derived_shader_variant_${site[2]}(`,
+    );
+    assert.match(table, new RegExp(`case ${early}u: return 0u;`));
+    assert.match(table, new RegExp(`case ${late}u: return 1u;`));
+    assert.ok(compiled.cpp.includes(`if (${site[1]} == 0u) {`));
+});
+
+test("a run-time ShaderMaterial split refuses past its arm bound", () => {
+    assert.throws(
+        () => compileSource(runtimeSource(81)),
+        /compiles once per outcome of run-time tests in at most 81 arms; its tests make 82: target\.material as ShaderMaterial/,
+    );
+});
+
+test("a ShaderMaterial field built from an option the run time decides refuses, naming the variant", () => {
+    assert.throws(
+        () =>
+            compileSource(`${prelude}
+    async function main(): Promise<void> {
+        const engine = await createEngine({});
+        const tinted = createShaderMaterial({ name: "tinted", vertexSource: wgsl\`\${VERT}\`, fragmentSource: wgsl\`\${surface("vec3<f32>(shaderUniforms.uTint)")}\`, attributes: ["position"], uniforms: ["worldViewProjection", "world", { name: "uTint", type: "f32", defaultValue: Math.random() }] });
+        draw(engine, tinted);
+        console.log(tinted.uniformDecls.map((decl) => decl.name).join());
+    }
+    void main();
+`),
+        /'tinted\.uniformDecls' reads a ShaderMaterial's 'uniformDecls', which generation does not hold for shader variant 'tinted': its 'uniforms' option is decided at run time\./,
+    );
+});

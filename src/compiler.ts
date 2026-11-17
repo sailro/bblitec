@@ -1,3 +1,5 @@
+import { ShaderCreationsRequired } from "./compiler/shader-derivations.js";
+import { reachLedgerProgram } from "./compiler/shader-material.js";
 import { DeferredCapabilities } from "./compiler/deferred-capabilities.js";
 import { thinInstanceOwnershipFailure } from "./thin-instance-admission.js";
 import { lowerThinInstanceUploadBody } from "./compiler/thin-instance-upload.js";
@@ -713,14 +715,16 @@ function compileSourceApplication(
 
 /**
  * The replays a compile applies before its next attempt: a storage demand,
- * a lazy module's activation, runtime query state, pending activations.
+ * a lazy module's activation, runtime query state, pending activations,
+ * the whole program's shader material creations.
  */
 function isReplay(error: unknown): error is Error {
     return (
         error instanceof StorageDemand ||
         error instanceof ModuleActivationRequired ||
         error instanceof RuntimeSearchParamsRequired ||
-        error instanceof PendingActivationsRequired
+        error instanceof PendingActivationsRequired ||
+        error instanceof ShaderCreationsRequired
     );
 }
 
@@ -812,6 +816,10 @@ function lowerSourceApplication(
             if (error instanceof ModuleActivationRequired) {
                 if (lazyModules.has(error.file)) return false;
                 lazyModules.add(error.file);
+                return true;
+            }
+            if (error instanceof ShaderCreationsRequired) {
+                resolved.shaderCreations = error.ledger;
                 return true;
             }
             if (error instanceof StorageDemand) {
@@ -1465,6 +1473,10 @@ class Compiler implements LoweringServices {
         if (!this.options.pageStartup?.length) this.emitNativeHostUi();
         this.finalizeSceneRegistration();
         this.admissions.enforceDeferredAdmissions();
+        const ledger = this.sceneManifest.shaderDerivations.splitLedger(
+            this.sceneManifest.reachedShaderPrograms,
+        );
+        if (ledger) throw new ShaderCreationsRequired(ledger);
         const particles = this.sceneManifest.reachedNodeParticles;
         if (
             particles.nativeProvider &&
@@ -5366,6 +5378,11 @@ class Compiler implements LoweringServices {
      * formatted text denotes. A stage that is a function literal's call
      * reads the numbers it formats from known arguments from uniforms too.
      */
+    public reachShaderCreations(): void {
+        for (const entry of this.options.shaderCreations ?? [])
+            reachLedgerProgram(this, entry);
+    }
+
     public compileShaderSource(
         expression: ts.Expression,
         stage: ShaderStage,

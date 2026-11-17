@@ -394,6 +394,7 @@ export interface ExpressionContext
             | "probeEmission"
             | "runCallOverHeldData"
             | "nativeEmission"
+            | "reachShaderCreations"
             | "requireEngine"
             | "conditions"
             | "compileNumber"

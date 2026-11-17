@@ -6701,6 +6701,14 @@ inline MaterialHandle mark_shader_material_transmissive(Engine& engine, Material
     return material;
 }
 
+/** The shader variant a ShaderMaterial, or a view of one, draws: what a run-time variant split selects on. */
+inline std::uint32_t shader_material_variant(const Engine& engine, MaterialHandle material) {
+    const MaterialRecord& record = handle_at(engine.materials, material);
+    if (!record.shader_material)
+        throw std::runtime_error("A shader variant split reached a material that is not a ShaderMaterial.");
+    return record.shader_variant;
+}
+
 /** The shader factory's authored alpha flag; other material families omit it. */
 inline js::Nullable<bool> shader_material_alpha_blending(const Engine& engine,
                                                          MaterialHandle material) {
