@@ -144,6 +144,7 @@ export const featureMacros: readonly FeatureMacro[] = [
         allOf: ["material:plugin-textures", "material:plugins"],
     },
     { macro: "BBLITE_HAS_EFFECT_TASK", anyOf: ["effect:task"] },
+    { macro: "BBLITE_EFFECT_TASK_SCISSOR", anyOf: ["effect:task-scissor"] },
     { macro: "BBLITE_HAS_TEXT", anyOf: ["text:renderable", "renderer:text"] },
     { macro: "BBLITE_HAS_TEXT_RENDERABLE", anyOf: ["text:renderable"] },
     { macro: "BBLITE_HAS_TEXT_RENDERER", anyOf: ["renderer:text"] },

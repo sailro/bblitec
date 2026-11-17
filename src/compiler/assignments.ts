@@ -2802,6 +2802,109 @@ function emitCameraViewportAssignment(
     });
 }
 
+/** Whether `left` names the pin's `EffectRenderTask.scissor`. */
+function isEffectTaskScissor(
+    checker: ts.TypeChecker,
+    left: ts.PropertyAccessExpression,
+): boolean {
+    const symbol = resolvedSymbol(checker, left);
+    const declaration = symbol?.valueDeclaration;
+    return (
+        declaration !== undefined &&
+        declaredIn(symbol, "babylon") &&
+        ts.isInterfaceDeclaration(declaration.parent) &&
+        declaration.parent.name.text === "EffectRenderTask"
+    );
+}
+
+/**
+ * `task.scissor = viewport | null`: the `NormalizedViewport` the pin's
+ * `execute` narrows the fullscreen pass to, read at every execute; null or
+ * absent draws the whole target. The pin keeps the object and the native
+ * task copies its four lanes, so the store refuses wherever the program can
+ * tell the copy apart (`recordCopyObservation`).
+ */
+function emitEffectTaskScissorAssignment(
+    context: AssignmentContext,
+    expression: ts.BinaryExpression,
+    left: ts.PropertyAccessExpression,
+    task: Value,
+): void {
+    requireSimpleAssignment(context, expression, "EffectRenderTask.scissor");
+    const { checker } = context;
+    const declared = checker.getTypeAtLocation(left);
+    const lanes = ["x", "y", "width", "height"];
+    const source = checker.getNonNullableType(
+        checker.getTypeAtLocation(expression.right),
+    );
+    // A null or undefined value keeps no object.
+    const observed =
+        source.flags & ts.TypeFlags.Never
+            ? undefined
+            : recordCopyObservation(
+                  context,
+                  source,
+                  checker.getNonNullableType(declared),
+                  lanes,
+                  checker
+                      .getPropertiesOfType(source)
+                      .some((property) => !lanes.includes(property.name)),
+                  undefined,
+                  "sole",
+              );
+    if (observed)
+        context.fail(
+            expression,
+            `EffectRenderTask.scissor keeps the object it is given, which the native task copies, and ${observed}.`,
+        );
+    const type = context.dataTypes.requireFromTsType(
+        declared,
+        left,
+        "EffectRenderTask.scissor",
+    );
+    const optional = type.kind === "optional";
+    const record = optional ? type.inner : type;
+    if (record.kind !== "struct")
+        context.fail(
+            expression.right,
+            "EffectRenderTask.scissor requires a represented NormalizedViewport record.",
+        );
+    const fields = context.dataTypes.structFields(record.name, left);
+    const held = context.allocateTemporaryCppName("scissor");
+    context.emit({
+        kind: "declaration",
+        type: "const auto&",
+        name: held,
+        initializer: context.dataLowerer.compileForSink(expression.right, type),
+    });
+    const access = `${optional ? `(*${held})` : held}${context.dataTypes.memberAccess(record.name)}`;
+    const viewport = `bbl::NormalizedViewport{${lanes
+        .map((name) => {
+            const field = fields.find(
+                (candidate) =>
+                    candidate.sourceName === name &&
+                    candidate.type.kind === "number",
+            );
+            if (!field)
+                context.fail(
+                    expression.right,
+                    `EffectRenderTask.scissor requires a numeric '${name}'.`,
+                );
+            return `${access}${field.name}`;
+        })
+        .join(", ")}}`;
+    const present = context.dataTypes.slotPresentCpp(type, held);
+    context.reachFeature("effect:task-scissor", expression);
+    context.emit({
+        kind: "expression",
+        code:
+            `${recordAt(`${context.requireEngine(task, expression)}.frame_tasks`, task.cpp)}.effect_scissor = ` +
+            (present
+                ? `${present} ? std::optional<bbl::NormalizedViewport>{${viewport}} : std::nullopt;`
+                : `${viewport};`),
+    });
+}
+
 /**
  * A boolean expression's value where it is assigned: a condition is its
  * operand's truthiness, which for a boolean is the value itself.
@@ -2891,7 +2994,13 @@ import { PINNED_ASSIGNMENT_OPERATORS } from "../lowering/pinned-operators.js";
 import { unwrappedIdentifier } from "./syntax.js";
 import { unionMembers } from "./type-facts.js";
 import { ERROR_CLASS_FIELDS } from "./error-values.js";
-import { isGlobalUndefined, libraryName } from "./symbols.js";
+import {
+    declaredIn,
+    isGlobalUndefined,
+    libraryName,
+    resolvedSymbol,
+} from "./symbols.js";
+import { recordCopyObservation } from "./record-observations.js";
 import {
     emitDeterministicRandomInstall,
     type DeterministicRandomContext,
@@ -3103,6 +3212,14 @@ function emitTargetPropertyAssignment(
             kind: "expression",
             code: `bbl::set_effect_task_method(${context.requireEngine(target, expression)}, ${target.cpp}, ${property === "dispose"}, ${method});`,
         });
+        return true;
+    }
+    if (
+        target.kind === "task" &&
+        target.effectTask &&
+        isEffectTaskScissor(context.checker, left)
+    ) {
+        emitEffectTaskScissorAssignment(context, expression, left, target);
         return true;
     }
     // `RenderTask.enabled` is the app's own execute gate beside the Task

@@ -484,7 +484,9 @@ public:
                 const DawnPassTimestamps timestamps{timing_sequence.pass()};
                 descriptor.timestampWrites = timestamps.get();
                 DawnRenderPass render_pass{wgpuCommandEncoderBeginRenderPass(encoder, &descriptor)};
-                record_dawn_effect_pass(render_pass, pass);
+                record_dawn_effect_task_pass(render_pass, pass, task,
+                                             record.swapchain ? width : output.width,
+                                             record.swapchain ? height : output.height);
                 wgpuRenderPassEncoderEnd(render_pass);
                 render_pass.reset();
             } else

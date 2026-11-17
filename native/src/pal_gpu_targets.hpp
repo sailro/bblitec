@@ -7,6 +7,7 @@
 #include <bblite/features/has_post_process.hpp>
 #include <bblite/features/has_screen_space.hpp>
 #include <bblite/features/effect_wrapper_disposal.hpp>
+#include <bblite/features/effect_task_scissor.hpp>
 #include <bblite/features/render_task_transmission.hpp>
 
 #include <bblite/runtime.hpp>
@@ -230,6 +231,34 @@ inline void prepare_effect_task(const Engine& engine, const FrameTaskRecord& tas
     (void)engine;
     (void)task;
 #endif
+}
+
+/** What an effect task's pass draws: nothing, or its triangle under an optional scissor. */
+struct EffectTaskDraw {
+    bool draws = true;
+    std::optional<PixelViewport> scissor;
+};
+
+/**
+ * `EffectRenderTask.execute`'s draw over its `target_width` x `target_height` target, after the
+ * pass began (and cleared): its scissor's rectangle (`effect_task_scissor`), none that covers no
+ * pixel, or the whole target without one.
+ */
+[[nodiscard]] inline EffectTaskDraw effect_task_draw(const FrameTaskRecord& task,
+                                                     std::uint32_t target_width,
+                                                     std::uint32_t target_height) {
+#if BBLITE_EFFECT_TASK_SCISSOR
+    if (task.effect_scissor) {
+        const std::optional<PixelViewport> scissor =
+            effect_task_scissor(*task.effect_scissor, target_width, target_height);
+        return EffectTaskDraw{scissor.has_value(), scissor};
+    }
+#else
+    (void)task;
+    (void)target_width;
+    (void)target_height;
+#endif
+    return {};
 }
 
 /**

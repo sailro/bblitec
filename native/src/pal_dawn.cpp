@@ -3998,7 +3998,8 @@ public:
                             descriptor.timestampWrites = effect_timestamps.get();
                             DawnRenderPass effect_pass{
                                 wgpuCommandEncoderBeginRenderPass(encoder, &descriptor)};
-                            record_dawn_effect_pass(effect_pass, pass);
+                            record_dawn_effect_task_pass(effect_pass, pass, task, target.width,
+                                                         target.height);
                             wgpuRenderPassEncoderEnd(effect_pass);
                             effect_pass.reset();
                             if (target_record.swapchain) {

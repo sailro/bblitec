@@ -3750,6 +3750,7 @@ export type Feature =
     | "effect:wrapper"
     | "effect:wrapper-disposal"
     | "effect:task"
+    | "effect:task-scissor"
     | "renderer:scene"
     | "renderer:transmission"
     | "material:pbr-linear-image-processing"

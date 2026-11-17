@@ -1977,6 +1977,8 @@ struct FrameTaskRecord {
     std::optional<bool> execution_enabled;
     /** `RenderTask.enabled`: the app's own execute gate, default on. */
     bool render_enabled = true;
+    /** `EffectRenderTask.scissor`, its lanes as written: none draws the whole target. */
+    std::optional<NormalizedViewport> effect_scissor;
     std::shared_ptr<ComputeTask> compute;
     RenderTaskOptions render;
     std::vector<RenderTaskMesh> render_meshes;
@@ -8999,6 +9001,12 @@ EffectRendererHandle create_effect_renderer(Engine& engine, EffectWrapperHandle 
                                             EffectRendererOptions options);
 void register_effect_renderer(Engine& engine, EffectRendererHandle renderer);
 TaskHandle create_effect_render_task(Engine& engine, EffectTaskOptions options);
+/**
+ * `EffectRenderTask.execute`'s scissor over a `target_width` x `target_height` target: the
+ * rectangle its pass rasterizes, or none when the pass ends without drawing.
+ */
+std::optional<PixelViewport> effect_task_scissor(const NormalizedViewport& scissor,
+                                                 double target_width, double target_height);
 SpriteRendererHandle create_sprite_renderer(Engine& engine, SpriteRendererOptions options);
 void add_sprite_renderer_layer(Engine& engine, SpriteRendererHandle renderer,
                                Sprite2DLayerHandle layer);

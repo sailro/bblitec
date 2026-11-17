@@ -1720,6 +1720,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "(the frame-graph pass into a RenderTarget)",
         consumers: CMAKE,
     },
+    "effect:task-scissor": {
+        provenance:
+            "src/effect/effect-renderer.ts createEffectRenderTask execute " +
+            "(EffectRenderTask.scissor)",
+        consumers: CMAKE,
+    },
     "renderer:scene": {
         provenance:
             "src/material/pbr/pbr-template.ts (fragments composed by the " +

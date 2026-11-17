@@ -1750,6 +1750,7 @@ ${lowerThinInstanceSync(context)}
             taskBuild: features.includes("frame-graph:task-build"),
             taskDisposal: features.includes("frame-graph:task-disposal"),
             taskMethodSlots: features.includes("frame-graph:task-method-slots"),
+            taskScissor: features.includes("effect:task-scissor"),
         });
         this.emitLoaderSplat(
             features,

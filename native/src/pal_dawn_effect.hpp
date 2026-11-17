@@ -338,4 +338,18 @@ inline void record_dawn_effect_pass(WGPURenderPassEncoder render_pass, const Daw
     wgpuRenderPassEncoderDraw(render_pass, 3, 1, 0, 0);
 }
 
+/**
+ * `EffectRenderTask.execute`'s draw into its already-open pass over a `target_width` x
+ * `target_height` target (`effect_task_draw`): under its scissor, or none.
+ */
+inline void record_dawn_effect_task_pass(WGPURenderPassEncoder render_pass,
+                                         const DawnEffectPass& pass, const FrameTaskRecord& task,
+                                         std::uint32_t target_width, std::uint32_t target_height) {
+    const EffectTaskDraw draw = effect_task_draw(task, target_width, target_height);
+    if (!draw.draws)
+        return;
+    set_pass_scissor(render_pass, draw.scissor);
+    record_dawn_effect_pass(render_pass, pass);
+}
+
 } // namespace bbl::pal

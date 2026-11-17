@@ -3642,14 +3642,13 @@ public:
                             EffectPass& pass = handle_at(state.effect_tasks, handle);
                             const RenderTargetRecord& target_record =
                                 pal::resolve_render_target(engine, task.effect.target, target_user);
+                            const GpuRenderTarget& effect_output = pal::resolve_gpu_target(
+                                engine, state.render_targets, task.effect.target, target_user);
                             if (!pass.pipeline) {
                                 pass = create_effect_pass(
                                     state.device, engine, task.effect.effect,
-                                    target_record.swapchain
-                                        ? swapchain_format
-                                        : pal::resolve_gpu_target(engine, state.render_targets,
-                                                                  task.effect.target, target_user)
-                                              .color_format,
+                                    target_record.swapchain ? swapchain_format
+                                                            : effect_output.color_format,
                                     // Through the MSAA gate like every other
                                     // task pipeline, so a single-sample run
                                     // matches the 1-sample texture the gate
@@ -3671,8 +3670,9 @@ public:
                                 sdl_timed_pass(command, timing_sequence.pass());
                             SdlRenderPass effect_pass{
                                 SDL_BeginGPURenderPass(command, &effect_target, 1, nullptr)};
-                            record_effect_pass(command, effect_pass, engine, pass,
-                                               task.effect.effect, source_texture);
+                            record_effect_task_pass(command, effect_pass, engine, pass, task,
+                                                    effect_output.width, effect_output.height,
+                                                    source_texture);
                             effect_pass.end();
                             if (target_record.swapchain) {
                                 capture_texture = effect_target.texture;

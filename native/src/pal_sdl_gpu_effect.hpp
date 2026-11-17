@@ -261,4 +261,20 @@ inline void record_effect_pass(SDL_GPUCommandBuffer* command, SDL_GPURenderPass*
     SDL_DrawGPUPrimitives(render_pass, 3, 1, 0, 0);
 }
 
+/**
+ * `EffectRenderTask.execute`'s draw into its already-open pass over a `target_width` x
+ * `target_height` target (`effect_task_draw`): under its scissor, or none.
+ */
+inline void record_effect_task_pass(SDL_GPUCommandBuffer* command, SDL_GPURenderPass* render_pass,
+                                    const Engine& engine, const EffectPass& pass,
+                                    const FrameTaskRecord& task, std::uint32_t target_width,
+                                    std::uint32_t target_height,
+                                    const EffectRenderTextureSource& render_texture) {
+    const EffectTaskDraw draw = effect_task_draw(task, target_width, target_height);
+    if (!draw.draws)
+        return;
+    set_pass_scissor(render_pass, draw.scissor);
+    record_effect_pass(command, render_pass, engine, pass, task.effect.effect, render_texture);
+}
+
 } // namespace bbl::pal

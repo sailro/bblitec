@@ -368,6 +368,7 @@ export const featureSources: Record<Feature, string[]> = {
     "effect:wrapper": [],
     "effect:wrapper-disposal": [],
     "effect:task": [],
+    "effect:task-scissor": [],
     "renderer:scene": ["src/pal_sdl_gpu.cpp"],
     "renderer:transmission": [],
     "material:pbr-linear-image-processing": [],

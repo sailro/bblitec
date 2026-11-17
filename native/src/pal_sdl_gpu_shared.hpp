@@ -1169,6 +1169,16 @@ inline void release_sprite_fragment_textures(SDL_GPUDevice* device,
     textures.clear();
 }
 
+/** Narrows a pass's rasterization to `resolved` (`setScissorRect`), or leaves the whole target. */
+inline void set_pass_scissor(SDL_GPURenderPass* pass,
+                             const std::optional<PixelViewport>& resolved) {
+    if (!resolved.has_value())
+        return;
+    const PixelViewport& rect = *resolved;
+    const SDL_Rect scissor{rect.x, rect.y, rect.width, rect.height};
+    SDL_SetGPUScissor(pass, &scissor);
+}
+
 /**
  * Narrows a pass to `resolved`, its viewport and scissor, or leaves it at the whole target: the
  * pin's `executePassBody` and geometry `executeTask` opening (`_applyCameraViewport`), where a
@@ -1194,8 +1204,7 @@ inline void set_pass_viewport(SDL_GPURenderPass* pass,
         1.0f,
     };
     SDL_SetGPUViewport(pass, &viewport);
-    const SDL_Rect scissor{rect.x, rect.y, rect.width, rect.height};
-    SDL_SetGPUScissor(pass, &scissor);
+    set_pass_scissor(pass, rect);
 }
 
 /**
