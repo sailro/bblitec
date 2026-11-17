@@ -1450,15 +1450,7 @@ function compileCreateMeshFromData(
             : factory,
         engineCpp: engine.engineCpp ?? engine.cpp,
         directMorphCompatible: true,
-        ...(runtimeStreams
-            ? {
-                  runtimeMeshStreams: streams
-                      .slice(1)
-                      .every((stream) => stream.present !== undefined)
-                      ? ("uv" as const)
-                      : (true as const),
-              }
-            : {}),
+        ...(runtimeStreams ? { runtimeMeshStreams: true as const } : {}),
     };
 }
 

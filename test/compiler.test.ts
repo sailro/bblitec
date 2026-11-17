@@ -20801,6 +20801,63 @@ test("reads a TransformNode name in a runtime template", () => {
     assert.match(result.cpp, /bbl::set_transform_node_rotation\(/);
 });
 
+test("a shader material draws a mesh whose optional streams are decided at run time", () => {
+    // The pin binds a zero buffer for a declared stream the mesh lacks, so
+    // the shader program does not depend on which streams the run passes;
+    // a Standard material's variant key still does.
+    const compile = (material: string) =>
+        compileSource(`
+        import { addToScene, createEngine, createMeshFromData, createSceneContext, createShaderMaterial, createStandardMaterial } from "@babylonjs/lite";
+        const vertexSource = \`struct VertexOutput{@builtin(position) position:vec4<f32>,};
+@vertex fn mainVertex(input:VertexInput)->VertexOutput{var out:VertexOutput;out.position=shaderSystem.worldViewProjection*vec4<f32>(input.position,1.0);return out;}\`;
+        const fragmentSource = \`struct VertexOutput{@builtin(position) position:vec4<f32>,};
+@fragment fn mainFragment(input:VertexOutput)->@location(0) vec4<f32>{return vec4<f32>(1.0);}\`;
+        const engine = await createEngine({});
+        const scene = createSceneContext(engine);
+        let uv2: Float32Array | null = null;
+        if (Math.random() > 0.5) uv2 = new Float32Array(2);
+        const colors = Math.random() > 0.5 ? new Float32Array(4) : undefined;
+        const mesh = createMeshFromData(engine, "patch", new Float32Array([0, 0, 0]), new Float32Array([0, 1, 0]), new Uint32Array([0]), new Float32Array(2), uv2!, undefined, colors);
+        mesh.material = ${material};
+        addToScene(scene, mesh);
+        void createShaderMaterial; void createStandardMaterial; void vertexSource; void fragmentSource;
+    `);
+    const result = compile(
+        `createShaderMaterial({ vertexSource, fragmentSource, attributes: ["position", "uv2", "color"], uniforms: ["worldViewProjection"] })`,
+    );
+    assert.match(result.cpp, /runtime_attribute_features = true/);
+    assert.match(result.cpp, /bbl::set_mesh_material\(/);
+    assert.throws(
+        () => compile("createStandardMaterial()"),
+        /optional vertex streams are decided at run time/,
+    );
+});
+
+test("a material the pin types ShaderMaterial draws a mesh with run-time streams wherever it was read from", () => {
+    // A record field holds the material, so its value carries no shader
+    // variant of its own; its type still names the shader family.
+    const result = compileSource(`
+        import { addToScene, createEngine, createMeshFromData, createSceneContext, createShaderMaterial, type ShaderMaterial } from "@babylonjs/lite";
+        const vertexSource = \`struct VertexOutput{@builtin(position) position:vec4<f32>,};
+@vertex fn mainVertex(input:VertexInput)->VertexOutput{var out:VertexOutput;out.position=shaderSystem.worldViewProjection*vec4<f32>(input.position,1.0);return out;}\`;
+        const fragmentSource = \`struct VertexOutput{@builtin(position) position:vec4<f32>,};
+@fragment fn mainFragment(input:VertexOutput)->@location(0) vec4<f32>{return vec4<f32>(1.0);}\`;
+        const engine = await createEngine({});
+        const scene = createSceneContext(engine);
+        interface MaterialSet { material: ShaderMaterial }
+        let set: MaterialSet | undefined;
+        const build = (uvs: Float32Array | undefined): void => {
+            set = { material: createShaderMaterial({ vertexSource, fragmentSource, attributes: ["position", "uv"], uniforms: ["worldViewProjection"] }) };
+            const mesh = createMeshFromData(engine, "crown", new Float32Array([0, 0, 0]), new Float32Array([0, 1, 0]), new Uint32Array([0]), uvs, Math.random() > 0.5 ? new Float32Array(2) : undefined);
+            (mesh as unknown as { material: unknown }).material = set.material;
+            addToScene(scene, mesh);
+        };
+        build(Math.random() > 0.5 ? new Float32Array(2) : undefined);
+    `);
+    assert.match(result.cpp, /runtime_attribute_features = true/);
+    assert.match(result.cpp, /bbl::set_mesh_material\(/);
+});
+
 test("discards side-effect-free void expressions and preserves void calls", () => {
     const result = compileSource(`
         import { createEngine } from "@babylonjs/lite";

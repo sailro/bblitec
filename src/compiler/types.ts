@@ -2464,20 +2464,13 @@ export function commonResourceValue(
             };
         }
     }
-    const runtimeStreams = candidates.flatMap((candidate) =>
-        candidate.runtimeMeshStreams ? [candidate.runtimeMeshStreams] : [],
-    );
     if (
         (common.kind === "mesh" ||
             common.kind === "transform-node" ||
             common.kind === "scene-node") &&
-        runtimeStreams.length > 0
+        candidates.some((candidate) => candidate.runtimeMeshStreams)
     )
-        common.runtimeMeshStreams = runtimeStreams.every(
-            (streams) => streams === "uv",
-        )
-            ? "uv"
-            : true;
+        common.runtimeMeshStreams = true;
     if (!candidates.every((candidate) => candidate.directMorphCompatible))
         delete common.directMorphCompatible;
     if (value.kind === "mesh") {
@@ -2911,10 +2904,9 @@ export interface ValueFields {
      * attribute stream whose presence is a run-time answer, so the
      * attribute set the Standard and PBR variant keys need is not
      * generation-known. Carried on the value because the refusal belongs at
-     * the material assignment, which is where the pairing exists. `"uv"`:
-     * only the uv stream's presence is decided at run time.
+     * the material assignment, which is where the pairing exists.
      */
-    runtimeMeshStreams?: true | "uv";
+    runtimeMeshStreams?: true;
     /** Stable identity shared by every Value alias of one light handle. */
     lightIdentity?: LightIdentity;
     /**

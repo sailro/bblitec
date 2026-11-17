@@ -4392,16 +4392,22 @@ function emitMaterialAssignment(
         context.expectSameEngine(target, material, expression);
         // Node materials inspect attributes through uniform lanes. Loaded PBR
         // materials compose the bounded optional-stream feature product. A
-        // scene shader program reads its declared streams, and the pin
-        // uploads a zero uv buffer for a mesh given none, so a run-time uv
-        // stream alone leaves its draw unchanged. Other families still
+        // scene shader program reads its declared streams, and the pin binds
+        // a zero buffer (or the material's colour fallback) for one a mesh
+        // lacks, so the mesh's run-time streams leave its program unchanged;
+        // the native mesh packs an absent stream alike whether generation or
+        // the run decides it. A value the pin types `ShaderMaterial` is one
+        // such program wherever it was read from. Other families still
         // require a fixed attribute profile.
         const sceneShader =
             material.sceneShaderVariant !== undefined ||
-            (material.possibleSceneShaderVariants?.length ?? 0) > 0;
+            (material.possibleSceneShaderVariants?.length ?? 0) > 0 ||
+            isPinnedType(context.checker.getTypeAtLocation(expression.right), [
+                "ShaderMaterial",
+            ]);
         if (
             target.runtimeMeshStreams !== undefined &&
-            !(target.runtimeMeshStreams === "uv" && sceneShader) &&
+            !sceneShader &&
             material.nodeMaterialIndex === undefined &&
             material.assetPbrMaterial !== true
         ) {
