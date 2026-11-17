@@ -213,6 +213,35 @@ export function recordFieldIsWritten(
 }
 
 /**
+ * Whether any write in the program can add, replace or delete a key of a
+ * map record of `source` type (one declaring an index signature): through a
+ * holder of a type that can hold such a record and is not open to any value,
+ * or through any holder with a key only the run time knows. A named write
+ * through an open holder is attributed to the types declaring its name, as
+ * {@link recordFieldIsWritten} attributes it.
+ */
+export function recordKeysAreWritten(
+    context: RecordObservationContext,
+    source: ts.Type,
+): boolean {
+    const holds = holderTest(context.checker);
+    const observations = programObservations(context.program);
+    return (
+        writesWhere(
+            observations,
+            (type) =>
+                (type.flags & OPEN_HOLDER_FLAGS) === 0 && holds(type, [source]),
+            () => true,
+        ) !== undefined ||
+        writesWhere(
+            observations,
+            (type) => holds(type, [source]),
+            (write) => write.property === undefined,
+        ) !== undefined
+    );
+}
+
+/**
  * Whether a write in the program can replace `property` on a record of
  * `source` type once that record is built: as
  * {@link recordFieldIsWritten}, but a write through a function's own

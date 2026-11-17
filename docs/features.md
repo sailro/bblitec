@@ -352,6 +352,11 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
   `depthBias`, `depthBiasSlopeScale` and `depthOnlyFragment` control pipeline depth behaviour. WGSL `@interpolate`
   and static `blend` overrides are supported (`add`; `zero`, `one`, `src-alpha`, `one-minus-src-alpha`, `dst`, `dst-alpha`).
   Conditional option spreads select up to 64 static variants; effectful predicates or conflicts with earlier evaluations refuse.
+  Options spreading `recipe.options`, where `recipe` is a `const` read of a `const` material-keyed `Map`/`WeakMap`
+  every store of which holds the options its key was created from (same binding, never reassigned), compile once
+  per stored source variant; the material takes the variant derived from its source's at run time. A store compiled
+  after the derivation, a record the program may write, options lifting run-time numbers, transmissive options or
+  options whose evaluation has effects refuse.
   Generation-selected nullish uniform, sampler, external-texture, storage-buffer and define declarations use the pinned
   empty defaults, including absent retained fields and getters.
   `uniformDecls`, `samplerDecls` and `storageBufferDecls` of a run-time material take `.some(arrow)` and `for...of`

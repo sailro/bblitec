@@ -688,6 +688,7 @@ interface DataLoweringContext extends Pick<
     | "recordDataAssignmentMetadata"
     | "mutatesWhereCreated"
     | "sceneManifest"
+    | "staticLiteralData"
     | "propertyAccess"
     | "resolveStaticExpression"
     | "constantNameValue"

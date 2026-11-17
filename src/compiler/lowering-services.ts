@@ -381,6 +381,16 @@ export interface LoweringServices {
     objectProperties(
         object: ts.ObjectLiteralExpression,
     ): readonly ts.ObjectLiteralElementLike[];
+    /** The literal `{ key: owner.key, ... }` of `keys`, placed where `owner` stands. */
+    memberLiteral(
+        owner: ts.Expression,
+        keys: readonly string[],
+    ): ts.ObjectLiteralExpression;
+    /**
+     * The plain data a value holds when generation knows all of it and its
+     * facts are current; undefined otherwise. `expression` reads the value.
+     */
+    staticLiteralData(value: Value, expression: ts.Expression): unknown;
     /**
      * An application function run once at generation per declaration and
      * arguments; its plain-data result. `pinnedStandIn` binds pinned imports

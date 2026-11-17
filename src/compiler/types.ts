@@ -51,6 +51,10 @@ import type {
 } from "../pinned-node-particle.js";
 import type { MaterialPluginManifest } from "../pinned-material-plugins.js";
 import type { PinnedStandardMaterialInput } from "../pinned-standard-variants.js";
+import type {
+    ShaderCreation,
+    ShaderRecipeLookup,
+} from "./shader-derivations.js";
 import type { DataType, TypedArrayKind } from "./data-types.js";
 import type { RegExpLayout } from "./regexp-grammar.js";
 import type { SceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
@@ -3205,6 +3209,10 @@ export interface ValueFields {
     sceneShaderVariant?: string;
     /** Possible scene-local programs, distinct from a singleton material identity. */
     possibleSceneShaderVariants?: readonly string[];
+    /** The options `createShaderMaterial` read to create this material. */
+    shaderCreation?: ShaderCreation;
+    /** A recipe map's `get`: the map and the material it was keyed by. */
+    shaderRecipeLookup?: ShaderRecipeLookup;
     /** Stable creation slot for a scene-owned material that escapes a scope. */
     sceneMaterialSlot?: number;
     animationFrameRate?: string;

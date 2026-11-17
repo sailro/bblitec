@@ -845,8 +845,11 @@ interface MainCppProjection {
     postProcessCompositeCount: number;
     screenSpaceTaskCount: number;
     renderDataPreamble: () => DataPreamble;
-    /** The PBR plugin list algebra, over the signatures the whole program reaches. */
-    renderPbrPluginFunctions?: () => string;
+    /**
+     * The PBR plugin list algebra and the derived shader variants, over the
+     * signatures and recipes the whole program reaches.
+     */
+    renderMaterialFunctions?: () => string;
     nativeFunctions: readonly NativeFunctionDefinition[];
     staticNativeDeclarations: readonly string[];
     /** The emitted entry-body lines; the render marks unused locals in place. */
@@ -1106,9 +1109,8 @@ inline void begin_scene_mesh_profile(Engine&, std::uint32_t) {}
     if (dataPreamble.standalone.length > 0) {
         preambleSections.push(dataPreamble.standalone);
     }
-    const pbrPluginFunctions = projection.renderPbrPluginFunctions?.() ?? "";
-    if (pbrPluginFunctions.length > 0)
-        preambleSections.push(pbrPluginFunctions);
+    const materialFunctions = projection.renderMaterialFunctions?.() ?? "";
+    if (materialFunctions.length > 0) preambleSections.push(materialFunctions);
     if (
         nativeFunctionPrototypes.length > 0 ||
         nativeFunctionDefinitions.length > 0
@@ -1224,7 +1226,7 @@ ${projection.deferredCapabilitiesReached ? "#include <bblite/deferred_capability
                 ? [{ scene: false, text: meshProfileFallback }]
                 : []),
             ...sceneDeclarations(dataPreamble.shared),
-            ...sceneDeclarations(pbrPluginFunctions),
+            ...sceneDeclarations(materialFunctions),
             ...nativeFunctionPrototypes.map((prototype) => ({
                 scene: true,
                 text: prototype,

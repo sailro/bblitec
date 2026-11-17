@@ -77,6 +77,7 @@ import {
     type ShaderMaterialContext,
     type ShaderUniformLengthCheck,
     type ShaderUniformSlot,
+    type CompiledShaderMaterialOptions,
 } from "./shader-material.js";
 import type { GeometryOutputTaskManifest, Value } from "./types.js";
 
@@ -203,15 +204,9 @@ export class IntrinsicOptions {
         return compileSubsurfaceOptions(this.context, expression);
     }
 
-    public compileShaderMaterialOptions(expression: ts.Expression): {
-        name: string;
-        id: number;
-        transmissive: boolean;
-        dynamicUniforms?: Array<{
-            offset: number;
-            components: string[];
-        }>;
-    } {
+    public compileShaderMaterialOptions(
+        expression: ts.Expression,
+    ): CompiledShaderMaterialOptions {
         return compileShaderMaterialOptions(this.context, expression);
     }
 

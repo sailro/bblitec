@@ -1651,19 +1651,40 @@ export class StaticEvaluator {
                 this.evaluateBrowserValue(left)?.kind === "undefined"
             )
                 return expression.right;
-            // Records are identifier-bound, so only those owners are
-            // probed: the probe is a full value compile with emit
-            // authority, and an owner shape whose compilation emits
-            // statements (a call's arguments) must not emit them here
-            // first and again on the value path.
-            const ownerNode = this.unwrap(left.expression);
+            // Records are identifier-bound, so only those owners and the
+            // compile-time records their member chains reach are probed:
+            // the probe is a full value compile with emit authority, and an
+            // owner shape whose compilation emits statements (a call's
+            // arguments) must not emit them here first and again on the
+            // value path.
+            const path: string[] = [];
+            let ownerNode = this.unwrap(left.expression);
+            while (
+                ts.isPropertyAccessExpression(ownerNode) &&
+                !ownerNode.questionDotToken
+            ) {
+                path.unshift(ownerNode.name.text);
+                ownerNode = this.unwrap(ownerNode.expression);
+            }
             if (
                 !ts.isIdentifier(ownerNode) &&
                 ownerNode.kind !== ts.SyntaxKind.ThisKeyword
             ) {
                 return undefined;
             }
-            const owner = this.resolveValue(left.expression);
+            let owner: Value | undefined =
+                path.length === 0
+                    ? this.resolveValue(left.expression)
+                    : ts.isIdentifier(ownerNode)
+                      ? this.lookupOptional(ownerNode)
+                      : undefined;
+            for (const key of path)
+                owner =
+                    owner?.kind === "record"
+                        ? owner.recordProperties?.[key]
+                        : undefined;
+            if (!owner || (path.length > 0 && owner.kind !== "record"))
+                return undefined;
             // Initializer metadata does not settle the current contents of a
             // materialized field unless whole-program observation proved that
             // field is never written.

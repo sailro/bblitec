@@ -4356,21 +4356,34 @@ class Compiler implements LoweringServices {
     }
 
     /**
-     * A name bound to a record whose properties are current, as the literal
-     * of its own fields: each one reads the bound owner, whose initializer
-     * has already run, and dynamic fields remain ordinary native reads.
-     * Undefined for anything else.
+     * A name, or a member chain of one, bound to a record whose properties
+     * are current, as the literal of its own fields: each one reads the
+     * bound owner, whose initializer has already run, and dynamic fields
+     * remain ordinary native reads. Undefined for anything else.
      */
     private boundRecordLiteral(
         expression: ts.Expression,
     ): ts.ObjectLiteralExpression | undefined {
         const node = this.unwrap(expression);
-        const bound = ts.isIdentifier(node)
-            ? this.bindings.lookupOptional(node)
-            : undefined;
-        if (!bound || !ts.isIdentifier(node)) return undefined;
+        const path: string[] = [];
+        let root: ts.Expression = node;
+        while (ts.isPropertyAccessExpression(root) && !root.questionDotToken) {
+            path.unshift(root.name.text);
+            root = this.unwrap(root.expression);
+        }
+        if (!ts.isIdentifier(root)) return undefined;
+        const named = this.bindings.lookupOptional(root);
+        const bound =
+            path.length === 0
+                ? named
+                : this.bindings.currentRecordMember(named, path);
+        if (!bound) return undefined;
         // A struct whose every field is always an own key: its fields.
-        if (bound.kind === "data" && bound.dataType?.kind === "struct") {
+        if (
+            ts.isIdentifier(node) &&
+            bound.kind === "data" &&
+            bound.dataType?.kind === "struct"
+        ) {
             const struct = bound.dataType.name;
             return bound.recordOwnKeys ||
                 this.dataTypes.ownKeysDecided(struct, node)
@@ -4406,8 +4419,8 @@ class Compiler implements LoweringServices {
     }
 
     /** The literal `{ key: owner.key, ... }` of `keys`, placed where `owner` stands. */
-    private memberLiteral(
-        owner: ts.Identifier,
+    public memberLiteral(
+        owner: ts.Expression,
         keys: readonly string[],
     ): ts.ObjectLiteralExpression {
         const object = ts.factory.createObjectLiteralExpression(
@@ -6138,6 +6151,10 @@ class Compiler implements LoweringServices {
         return this.resolveStaticExpression(name) !== name
             ? this.compileValue(name)
             : undefined;
+    }
+
+    public staticLiteralData(value: Value, expression: ts.Expression): unknown {
+        return this.currentStaticLiteral(value, expression);
     }
 
     /** Read complete current snapshots through the ordinary property ownership rules. */
@@ -11609,8 +11626,8 @@ class Compiler implements LoweringServices {
             postProcessCompositeCount:
                 this.sceneManifest.postProcessComposites.length,
             screenSpaceTaskCount: this.sceneManifest.screenSpaceTasks.length,
-            renderPbrPluginFunctions: () =>
-                this.sceneManifest.pbrPluginFunctionsCpp(),
+            renderMaterialFunctions: () =>
+                this.sceneManifest.materialFunctionsCpp(),
             // Worker messages and IndexedDB values clone records field by field.
             renderDataPreamble: () =>
                 this.dataTypes.renderPreamble(

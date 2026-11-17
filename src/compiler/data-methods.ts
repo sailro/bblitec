@@ -20,7 +20,12 @@ import {
     readOnlyDataMethods,
 } from "./receiver-methods.js";
 import ts from "typescript";
-import { knownCondition, staticKeyOf, undefinedValue } from "./values/model.js";
+import {
+    knownCondition,
+    staticKeyOf,
+    undefinedValue,
+    valueForKind,
+} from "./values/model.js";
 import { hasProvenUndefinedCompletion } from "./undefined-values.js";
 import { absentReceiverMessage } from "./properties.js";
 import { belongsToEntryEngine } from "./data-types/handles.js";
@@ -118,6 +123,10 @@ import {
     unionMembers,
 } from "./type-facts.js";
 import { jsToUint32Call } from "../lowering/pinned-operators.js";
+import {
+    recordShaderRecipeStore,
+    shaderRecipeLookup,
+} from "./shader-derivations.js";
 
 /** The member a call names ({@link namedMember}). */
 function calledMember(
@@ -4056,7 +4065,12 @@ function compileMapDataMethod(
                 ...(slotFoundCpp ? { slotFoundCpp } : {}),
             };
         }
-        return {
+        const shaderRecipe = shaderRecipeLookup(
+            lowerer.context,
+            callee.expression,
+            keyValue,
+        );
+        const read: Value = {
             // Map.get declares its absence, so source guards may narrow it.
             ...lowerer.mapPropertyValue(
                 narrowed.cpp,
@@ -4066,6 +4080,12 @@ function compileMapDataMethod(
             ),
             ...(slotFoundCpp ? { slotFoundCpp } : {}),
         };
+        return shaderRecipe
+            ? valueForKind(read.kind, {
+                  ...read,
+                  shaderRecipeLookup: shaderRecipe,
+              })
+            : read;
     }
     if (method === "set") {
         if (call.arguments.length !== 2) {
@@ -4112,6 +4132,14 @@ function compileMapDataMethod(
                     : `bbl::js::snapshot_value(${keyCpp})`,
         });
         const assignedValue = lowerer.context.compileValue(argumentAt(call, 1));
+        recordShaderRecipeStore(
+            lowerer.context,
+            callee.expression,
+            keyValue,
+            argumentAt(call, 1),
+            assignedValue,
+            call,
+        );
         if (
             lowerer.context.dataTypes.carriesBorrowedPlatformEvent(
                 dataType.value,

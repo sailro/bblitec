@@ -2230,6 +2230,12 @@ export class DeclarationLowerer {
                         ...(narrowed.preserveUncheckedLookup
                             ? { preserveUncheckedLookup: true as const }
                             : {}),
+                        ...(narrowed.shaderRecipeLookup
+                            ? {
+                                  shaderRecipeLookup:
+                                      narrowed.shaderRecipeLookup,
+                              }
+                            : {}),
                         ...(slotFoundCpp ? { slotFoundCpp } : {}),
                         ...(optionalHandle
                             ? {

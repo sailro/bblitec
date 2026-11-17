@@ -56,6 +56,12 @@ function readListItem<T>(
     return item.within ? item.within(() => read(item)) : read(item);
 }
 import { knownCondition } from "./values/model.js";
+import {
+    derivesShaderMaterials,
+    shaderOptionFacts,
+    type RecordFact,
+    type RecordFacts,
+} from "./shader-derivations.js";
 
 /** A shader material's depth comparison, which its pipeline reads at generation. */
 const shaderDepthCompare: TableOption = {
@@ -73,6 +79,14 @@ const shaderDepthCompare: TableOption = {
  * is the shared export.
  */
 const WGSL_IDENTIFIER = cppIdentifierPattern;
+
+/** The options holding declaration lists, read item by item. */
+const SHADER_DECLARATION_LISTS: ReadonlySet<string> = new Set([
+    "uniforms",
+    "samplers",
+    "externalTextures",
+    "storageBuffers",
+]);
 
 /** Per-stage resource limits for native shader materials. */
 const MAX_SHADER_SAMPLERS = 16;
@@ -103,6 +117,7 @@ export interface ShaderMaterialContext
             | "emit"
             | "emitDiscardedValue"
             | "probeEmission"
+            | "program"
             | "unwrap"
             | "fail"
         > {}
@@ -188,10 +203,8 @@ function validateShaderAttributes(
     }
 }
 
-export function compileShaderMaterialOptions(
-    context: ShaderMaterialContext,
-    expression: ts.Expression,
-): {
+/** The variant a `createShaderMaterial` options object compiles to. */
+export interface CompiledShaderMaterialOptions {
     name: string;
     id: number;
     /** `transmissive`: the renderable that triggers a transmission grab. */
@@ -200,7 +213,14 @@ export function compileShaderMaterialOptions(
         offset: number;
         components: string[];
     }>;
-} {
+    /** The options as read, where a material may derive from them. */
+    creation?: RecordFacts;
+}
+
+export function compileShaderMaterialOptions(
+    context: ShaderMaterialContext,
+    expression: ts.Expression,
+): CompiledShaderMaterialOptions {
     const object = context.expectObjectLiteral(expression);
     validateObjectProperties(
         context,
@@ -491,9 +511,29 @@ export function compileShaderMaterialOptions(
         context.objectProperty(object, "transmissive"),
         false,
     );
+    const source = (compiled: typeof compiledVertex): RecordFact =>
+        compiled.dynamicUniforms.length > 0
+            ? "runtime"
+            : { json: compiled.source };
+    const creation = derivesShaderMaterials(context)
+        ? shaderOptionFacts(
+              context,
+              object,
+              {
+                  ...(staticName === undefined
+                      ? {}
+                      : { name: { json: staticName } }),
+                  vertexSource: source(compiledVertex),
+                  fragmentSource: source(compiledFragment),
+                  attributes: { json: attributes },
+              },
+              SHADER_DECLARATION_LISTS,
+          )
+        : undefined;
     return {
         ...reached,
         transmissive,
+        ...(creation ? { creation } : {}),
         ...(dynamicInitializers.length > 0
             ? {
                   dynamicUniforms: dynamicInitializers.map(

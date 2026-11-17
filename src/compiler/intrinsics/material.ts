@@ -72,6 +72,13 @@ import { shaderUniformSlots } from "../../shader-material-programs.js";
 import { shadowCasterMaterialWrite } from "../shadow-caster-material.js";
 import { knownCondition } from "../values/model.js";
 import { namedMember } from "../symbols.js";
+import type { CompiledShaderMaterialOptions } from "../shader-material.js";
+import {
+    compileDerivedShaderMaterial,
+    derivedRecipeSpread,
+    optionsBinding,
+    type ShaderDerivationContext,
+} from "../shader-derivations.js";
 
 export interface MaterialIntrinsicContext
     extends
@@ -82,6 +89,7 @@ export interface MaterialIntrinsicContext
         ObjectValidationContext,
         PositiveIntegerContext,
         MaterialPluginResourceContext,
+        ShaderDerivationContext,
         Pick<
             LoweringServices,
             | "engineLifecycle"
@@ -1176,39 +1184,54 @@ function compileCreateShaderMaterial(
             cpp: `(${condition} ? ${whenTrue.cpp} : ${whenFalse.cpp})`,
         };
     };
-    return compile(context.expectObjectLiteral(argumentAt(call, 0)));
+    const object = context.expectObjectLiteral(argumentAt(call, 0));
+    return derivedRecipeSpread(context, object)
+        ? compileDerivedShaderMaterialCreation(context, call, object)
+        : compile(object);
 }
 
-function compileShaderMaterialCreation(
+/**
+ * A shader material created from programs `compile` reaches: its scene
+ * slot, taken before them, the features they declare, and the creation
+ * `compile` spells, kept in the slot outside run-time construction.
+ */
+function shaderMaterialValue(
     context: MaterialIntrinsicContext,
     call: ts.CallExpression,
-    options: ts.ObjectLiteralExpression,
+    compile: (engine: string) => {
+        creation: string;
+        programs: readonly number[];
+        dynamicUniforms?: CompiledShaderMaterialOptions["dynamicUniforms"];
+        facts: Pick<
+            Value,
+            | "shaderVariant"
+            | "sceneShaderVariant"
+            | "possibleSceneShaderVariants"
+            | "shaderCreation"
+        >;
+    },
 ): Value {
     const materialSlot = context.sceneManifest.recordSceneMaterialSlot();
     const runtimeProfile = context.isRuntimeResourceConstruction();
     const engine = context.requireDefaultEngine(call);
-    const variant =
-        context.intrinsicOptions.compileShaderMaterialOptions(options);
+    const { creation, programs, dynamicUniforms, facts } = compile(engine);
     context.reachFeature("material:shader", call);
     context.reachFeature("renderer:scene", call);
     // A declared slot binds through the pin's checks whether or not
     // anything fills it.
     if (
-        context.sceneManifest.reachedShaderPrograms[variant.id]!
-            .externalTextures
+        programs.some(
+            (id) =>
+                context.sceneManifest.reachedShaderPrograms[id]!
+                    .externalTextures,
+        )
     ) {
         context.reachFeature("material:shader-external-texture", call);
     }
-    const created = `bbl::create_shader_material(${engine}, ${variant.id}u)`;
-    // The pin's `transmissive` option marks the renderables it builds, which a
-    // transmission grab then waits for.
-    const creation = variant.transmissive
-        ? `bbl::mark_shader_material_transmissive(${engine}, ${created})`
-        : created;
     let materialCpp = runtimeProfile
         ? creation
         : `bbl::remember_scene_material(${engine}, ${materialSlot}u, ${creation})`;
-    if (variant.dynamicUniforms?.length) {
+    if (dynamicUniforms?.length) {
         const material = context.allocateTemporaryCppName("shader_material");
         context.emit({
             kind: "declaration",
@@ -1216,7 +1239,7 @@ function compileShaderMaterialCreation(
             name: material,
             initializer: materialCpp,
         });
-        for (const uniform of variant.dynamicUniforms) {
+        for (const uniform of dynamicUniforms) {
             context.emit({
                 kind: "expression",
                 code: `([&]() { const std::array<float, ${uniform.components.length}> values{${uniform.components.join(", ")}}; bbl::initialize_shader_uniform_values(${engine}, ${material}, ${uniform.offset}u, ${uniform.components.length}u, values.data()); }());`,
@@ -1228,10 +1251,72 @@ function compileShaderMaterialCreation(
         kind: "material",
         cpp: materialCpp,
         engineCpp: engine,
-        shaderVariant: variant.name,
-        sceneShaderVariant: variant.name,
+        ...facts,
         ...(runtimeProfile ? {} : { sceneMaterialSlot: materialSlot }),
     };
+}
+
+function compileShaderMaterialCreation(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+    options: ts.ObjectLiteralExpression,
+): Value {
+    return shaderMaterialValue(context, call, (engine) => {
+        const variant =
+            context.intrinsicOptions.compileShaderMaterialOptions(options);
+        const binding = optionsBinding(context, argumentAt(call, 0));
+        const created = `bbl::create_shader_material(${engine}, ${variant.id}u)`;
+        return {
+            // The pin's `transmissive` option marks the renderables it
+            // builds, which a transmission grab then waits for.
+            creation: variant.transmissive
+                ? `bbl::mark_shader_material_transmissive(${engine}, ${created})`
+                : created,
+            programs: [variant.id],
+            ...(variant.dynamicUniforms
+                ? { dynamicUniforms: variant.dynamicUniforms }
+                : {}),
+            facts: {
+                shaderVariant: variant.name,
+                sceneShaderVariant: variant.name,
+                ...(variant.creation
+                    ? {
+                          shaderCreation: {
+                              options: variant.creation,
+                              ...(binding ? { binding } : {}),
+                          },
+                      }
+                    : {}),
+            },
+        };
+    });
+}
+
+/**
+ * A material derived from a recipe's options: one program per source
+ * variant, the one created selected at run time from the source material's.
+ */
+function compileDerivedShaderMaterialCreation(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+    object: ts.ObjectLiteralExpression,
+): Value {
+    return shaderMaterialValue(context, call, (engine) => {
+        const { variants, lookup, site } = compileDerivedShaderMaterial(
+            context,
+            object,
+        );
+        const source = `bbl::shader_material(${lookup.engineCpp}, ${lookup.materialCpp}).shader_variant`;
+        return {
+            creation: `bbl::create_shader_material(${engine}, bblscene::derived_shader_variant_${site}(${source}))`,
+            programs: [...variants.values()].map(({ id }) => id),
+            facts: {
+                possibleSceneShaderVariants: [
+                    ...new Set([...variants.values()].map(({ name }) => name)),
+                ].sort(),
+            },
+        };
+    });
 }
 
 function compileUpdateStorageBuffer(
