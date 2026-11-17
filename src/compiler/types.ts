@@ -2250,11 +2250,13 @@ export interface CollectionCardinality {
 
 /**
  * One item of a generation-known list: an element as spelled, or a string
- * generation holds for a part not spelled (`node` is that part).
+ * generation holds for a part not spelled (`node` is that part). An element
+ * a called function returns is read `within` its parameters' bindings.
  */
 export interface StaticListItem {
     readonly node: ts.Expression;
     readonly text?: string;
+    readonly within?: <T>(read: () => T) => T;
 }
 
 /** A point of the source walk by the run-time regions around it. */

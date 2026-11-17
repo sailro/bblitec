@@ -37,6 +37,7 @@ import type {
     CompiledShaderStorageBuffer,
     CompiledShaderUniformDefault,
     SceneMeshManifest,
+    StaticListItem,
     Value,
 } from "./types.js";
 import {
@@ -46,6 +47,14 @@ import {
 } from "./data-types.js";
 import { isJsonValue } from "./json-bridge.js";
 import { presenceCpp } from "./types.js";
+
+/** Reads a list item within the bindings of the call that returned it. */
+function readListItem<T>(
+    item: StaticListItem,
+    read: (item: StaticListItem) => T,
+): T {
+    return item.within ? item.within(() => read(item)) : read(item);
+}
 import { knownCondition } from "./values/model.js";
 
 /** A shader material's depth comparison, which its pipeline reads at generation. */
@@ -517,80 +526,83 @@ function compileShaderSamplers(
         return [];
     }
     const samplers: CompiledShaderSampler[] = [];
-    for (const { node: element, text } of context.staticListItems(expression)) {
-        // A typed `ShaderSamplerDecl` names its own sample type, view
-        // dimension and comparison mode. Everything else goes through the
-        // same static-string resolution `attributes` and `uniforms` take, so
-        // a module constant naming a sampler works in all three.
-        const resolved =
-            text === undefined
-                ? context.resolveStaticLiteral(element)
-                : element;
-        let name: string;
-        let sampleType: CompiledShaderSampler["sampleType"] = "float";
-        let viewDimension: CompiledShaderSampler["viewDimension"] = "2d";
-        let comparison = false;
-        if (ts.isObjectLiteralExpression(resolved)) {
-            validateObjectProperties(
-                context,
-                resolved,
-                ["name", "sampleType", "viewDimension", "comparison"],
-                "Shader sampler declaration",
-            );
-            const nameExpression = context.objectProperty(resolved, "name");
-            if (!nameExpression) {
-                context.fail(
+    for (const item of context.staticListItems(expression)) {
+        readListItem(item, ({ node: element, text }) => {
+            // A typed `ShaderSamplerDecl` names its own sample type, view
+            // dimension and comparison mode. Everything else goes through the
+            // same static-string resolution `attributes` and `uniforms` take, so
+            // a module constant naming a sampler works in all three.
+            const resolved =
+                text === undefined
+                    ? context.resolveStaticLiteral(element)
+                    : element;
+            let name: string;
+            let sampleType: CompiledShaderSampler["sampleType"] = "float";
+            let viewDimension: CompiledShaderSampler["viewDimension"] = "2d";
+            let comparison = false;
+            if (ts.isObjectLiteralExpression(resolved)) {
+                validateObjectProperties(
+                    context,
                     resolved,
-                    "Shader sampler declaration requires a name.",
+                    ["name", "sampleType", "viewDimension", "comparison"],
+                    "Shader sampler declaration",
                 );
-            }
-            name = context.compileStaticString(nameExpression);
-            const sampleTypeExpression = context.objectProperty(
-                resolved,
-                "sampleType",
-            );
-            if (sampleTypeExpression) {
-                const candidate =
-                    context.compileStaticString(sampleTypeExpression);
-                if (
-                    candidate !== "float" &&
-                    candidate !== "unfilterable-float" &&
-                    candidate !== "depth"
-                ) {
+                const nameExpression = context.objectProperty(resolved, "name");
+                if (!nameExpression) {
                     context.fail(
-                        sampleTypeExpression,
-                        `Unsupported shader sampler sampleType '${candidate}'.`,
+                        resolved,
+                        "Shader sampler declaration requires a name.",
                     );
                 }
-                sampleType = candidate;
-            }
-            const viewExpression = context.objectProperty(
-                resolved,
-                "viewDimension",
-            );
-            if (viewExpression) {
-                const candidate = context.compileStaticString(viewExpression);
-                if (candidate !== "2d" && candidate !== "2d-array") {
-                    context.fail(
-                        viewExpression,
-                        `Unsupported shader sampler viewDimension '${candidate}'.`,
-                    );
+                name = context.compileStaticString(nameExpression);
+                const sampleTypeExpression = context.objectProperty(
+                    resolved,
+                    "sampleType",
+                );
+                if (sampleTypeExpression) {
+                    const candidate =
+                        context.compileStaticString(sampleTypeExpression);
+                    if (
+                        candidate !== "float" &&
+                        candidate !== "unfilterable-float" &&
+                        candidate !== "depth"
+                    ) {
+                        context.fail(
+                            sampleTypeExpression,
+                            `Unsupported shader sampler sampleType '${candidate}'.`,
+                        );
+                    }
+                    sampleType = candidate;
                 }
-                viewDimension = candidate;
+                const viewExpression = context.objectProperty(
+                    resolved,
+                    "viewDimension",
+                );
+                if (viewExpression) {
+                    const candidate =
+                        context.compileStaticString(viewExpression);
+                    if (candidate !== "2d" && candidate !== "2d-array") {
+                        context.fail(
+                            viewExpression,
+                            `Unsupported shader sampler viewDimension '${candidate}'.`,
+                        );
+                    }
+                    viewDimension = candidate;
+                }
+                comparison = compileOptionalStaticBoolean(
+                    context,
+                    context.objectProperty(resolved, "comparison"),
+                    false,
+                );
+                if (comparison && !sampleTypeExpression) {
+                    sampleType = "depth";
+                }
+            } else {
+                name = text ?? context.compileStaticString(element);
             }
-            comparison = compileOptionalStaticBoolean(
-                context,
-                context.objectProperty(resolved, "comparison"),
-                false,
-            );
-            if (comparison && !sampleTypeExpression) {
-                sampleType = "depth";
-            }
-        } else {
-            name = text ?? context.compileStaticString(element);
-        }
-        reserveSamplerPair(context, element, "sampler", name, used);
-        samplers.push({ name, sampleType, viewDimension, comparison });
+            reserveSamplerPair(context, element, "sampler", name, used);
+            samplers.push({ name, sampleType, viewDimension, comparison });
+        });
     }
     if (samplers.length > MAX_SHADER_SAMPLERS) {
         context.fail(
@@ -615,9 +627,8 @@ function compileShaderExternalTextures(
     samplers: number,
 ): string[] {
     if (!expression || absentShaderOption(context, expression)) return [];
-    const names = context
-        .staticListItems(expression)
-        .map(({ node: element, text }) => {
+    const names = context.staticListItems(expression).map((item) =>
+        readListItem(item, ({ node: element, text }) => {
             const name = text ?? context.compileStaticString(element);
             reserveSamplerPair(
                 context,
@@ -627,7 +638,8 @@ function compileShaderExternalTextures(
                 used,
             );
             return name;
-        });
+        }),
+    );
     // Each binds a texture/sampler pair after the samplers', in the same slots.
     if (samplers + names.length > MAX_SHADER_SAMPLERS) {
         context.fail(
@@ -800,92 +812,96 @@ function compileShaderUniformSignatures(
         name: string;
         components: string[];
     }> = [];
-    const signatures = context.staticListItems(expression).map((item) => {
-        if (item.text !== undefined) return item.text;
-        const resolved = context.resolveStaticLiteral(item.node);
-        if (ts.isStringLiteralLike(resolved)) {
-            return resolved.text;
-        }
-        if (!ts.isObjectLiteralExpression(resolved)) {
-            context.fail(
-                resolved,
-                "Shader uniforms must be string or typed object literals.",
-            );
-        }
-        for (const property of resolved.properties) {
-            const propertyName =
-                ts.isPropertyAssignment(property) ||
-                ts.isShorthandPropertyAssignment(property)
-                    ? context.propertyName(property.name)
-                    : undefined;
-            if (
-                !propertyName ||
-                !["name", "type", "defaultValue"].includes(propertyName)
-            ) {
+    const signatures = context.staticListItems(expression).map((listed) =>
+        readListItem(listed, (item) => {
+            if (item.text !== undefined) return item.text;
+            const resolved = context.resolveStaticLiteral(item.node);
+            if (ts.isStringLiteralLike(resolved)) {
+                return resolved.text;
+            }
+            if (!ts.isObjectLiteralExpression(resolved)) {
                 context.fail(
-                    property,
-                    "Typed shader uniforms support name, type, and defaultValue.",
+                    resolved,
+                    "Shader uniforms must be string or typed object literals.",
                 );
             }
-        }
-        const name = context.objectProperty(resolved, "name");
-        const type = context.objectProperty(resolved, "type");
-        if (!name || !type) {
-            context.fail(
-                resolved,
-                "Typed shader uniforms require name and type.",
-            );
-        }
-        const uniformName = context.compileStaticString(name);
-        const uniformType = context.compileStaticString(type);
-        const defaultExpression = context.objectProperty(
-            resolved,
-            "defaultValue",
-        );
-        if (defaultExpression) {
-            const resolvedDefault =
-                context.resolveStaticExpression(defaultExpression);
-            const componentCount = typeComponents(uniformType);
-            if (componentCount === 0) {
+            for (const property of resolved.properties) {
+                const propertyName =
+                    ts.isPropertyAssignment(property) ||
+                    ts.isShorthandPropertyAssignment(property)
+                        ? context.propertyName(property.name)
+                        : undefined;
+                if (
+                    !propertyName ||
+                    !["name", "type", "defaultValue"].includes(propertyName)
+                ) {
+                    context.fail(
+                        property,
+                        "Typed shader uniforms support name, type, and defaultValue.",
+                    );
+                }
+            }
+            const name = context.objectProperty(resolved, "name");
+            const type = context.objectProperty(resolved, "type");
+            if (!name || !type) {
                 context.fail(
-                    type,
-                    `Shader uniform default '${uniformName}' has an unsupported type.`,
+                    resolved,
+                    "Typed shader uniforms require name and type.",
                 );
             }
-            const candidates = ts.isArrayLiteralExpression(resolvedDefault)
-                ? [...resolvedDefault.elements]
-                : [resolvedDefault];
-            // Only a literal of the uniform's own lanes can fold; a spread
-            // or another value is compiled once, below.
-            const staticValues =
-                candidates.length === componentCount &&
-                !candidates.some(ts.isSpreadElement)
-                    ? candidates.map((entry) => staticNumber(context, entry))
-                    : undefined;
-            if (
-                staticValues?.every(
-                    (value): value is number => value !== undefined,
-                )
-            ) {
-                defaults.push({ name: uniformName, values: staticValues });
-            } else {
-                dynamicDefaults.push({
-                    name: uniformName,
-                    components: compileShaderUniformComponents(
-                        context,
-                        defaultExpression,
-                        {
-                            count: componentCount,
-                            name: uniformName,
-                            type: uniformType,
-                        },
-                        "normalizeUniformValue",
-                    ),
-                });
+            const uniformName = context.compileStaticString(name);
+            const uniformType = context.compileStaticString(type);
+            const defaultExpression = context.objectProperty(
+                resolved,
+                "defaultValue",
+            );
+            if (defaultExpression) {
+                const resolvedDefault =
+                    context.resolveStaticExpression(defaultExpression);
+                const componentCount = typeComponents(uniformType);
+                if (componentCount === 0) {
+                    context.fail(
+                        type,
+                        `Shader uniform default '${uniformName}' has an unsupported type.`,
+                    );
+                }
+                const candidates = ts.isArrayLiteralExpression(resolvedDefault)
+                    ? [...resolvedDefault.elements]
+                    : [resolvedDefault];
+                // Only a literal of the uniform's own lanes can fold; a spread
+                // or another value is compiled once, below.
+                const staticValues =
+                    candidates.length === componentCount &&
+                    !candidates.some(ts.isSpreadElement)
+                        ? candidates.map((entry) =>
+                              staticNumber(context, entry),
+                          )
+                        : undefined;
+                if (
+                    staticValues?.every(
+                        (value): value is number => value !== undefined,
+                    )
+                ) {
+                    defaults.push({ name: uniformName, values: staticValues });
+                } else {
+                    dynamicDefaults.push({
+                        name: uniformName,
+                        components: compileShaderUniformComponents(
+                            context,
+                            defaultExpression,
+                            {
+                                count: componentCount,
+                                name: uniformName,
+                                type: uniformType,
+                            },
+                            "normalizeUniformValue",
+                        ),
+                    });
+                }
             }
-        }
-        return `${uniformName}:${uniformType}`;
-    });
+            return `${uniformName}:${uniformType}`;
+        }),
+    );
     return { signatures, defaults, dynamicDefaults };
 }
 
@@ -1255,7 +1271,12 @@ function compileStaticStringArray(
 ): string[] {
     return context
         .staticListItems(expression)
-        .map((item) => item.text ?? context.compileStaticString(item.node));
+        .map((listed) =>
+            readListItem(
+                listed,
+                (item) => item.text ?? context.compileStaticString(item.node),
+            ),
+        );
 }
 
 function expectStaticNumber(

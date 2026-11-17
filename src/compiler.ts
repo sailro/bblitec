@@ -3973,8 +3973,104 @@ class Compiler implements LoweringServices {
             );
         const held = this.heldStrings(expression);
         if (held) return held.map((text) => ({ node: expression, text }));
+        const returned = this.returnedListItems(expression);
+        if (returned) return returned;
         return this.expectStaticArrayElements(expression).map((node) => ({
             node,
+        }));
+    }
+
+    /**
+     * The items of the array literal a local function returns and does
+     * nothing else, for a call generation cannot run: its arguments are
+     * evaluated once, here, and each item is read `within` a scope binding
+     * the callee's parameters to them. A returned conditional selects the
+     * literal its condition, known at generation over those bindings,
+     * names. A parameter the callee writes, a default or rest parameter, or
+     * a spread argument keeps the call unspelled.
+     */
+    private returnedListItems(
+        expression: ts.Expression,
+    ): StaticListItem[] | undefined {
+        const call = this.unwrap(expression);
+        if (!ts.isCallExpression(call) || call.questionDotToken)
+            return undefined;
+        const callee = calledFunction(this.checker, call);
+        const body = callee?.body;
+        const statement =
+            body && ts.isBlock(body) && body.statements.length === 1
+                ? body.statements[0]
+                : undefined;
+        const returned =
+            body && !ts.isBlock(body)
+                ? body
+                : statement && ts.isReturnStatement(statement)
+                  ? statement.expression
+                  : undefined;
+        const listsOnly = (node: ts.Expression): boolean => {
+            const current = this.unwrap(node);
+            return ts.isConditionalExpression(current)
+                ? listsOnly(current.whenTrue) && listsOnly(current.whenFalse)
+                : ts.isArrayLiteralExpression(current);
+        };
+        if (
+            !callee ||
+            !returned ||
+            !listsOnly(returned) ||
+            call.arguments.length !== callee.parameters.length ||
+            call.arguments.some(ts.isSpreadElement) ||
+            !callee.parameters.every(
+                (parameter) =>
+                    ts.isIdentifier(parameter.name) &&
+                    !parameter.dotDotDotToken &&
+                    !parameter.initializer &&
+                    parameterIsReadOnly(this.checker, callee, parameter.name),
+            )
+        )
+            return undefined;
+        const values = call.arguments.map((argument) =>
+            this.bindings.pinValueToTemporary(
+                this.compileValue(argument),
+                "list_argument",
+                argument,
+            ),
+        );
+        const within = <T>(read: () => T): T => {
+            this.bindings.pushScope(this.allocateUserFunctionPrefix());
+            try {
+                callee.parameters.forEach((parameter, index) =>
+                    this.bindings.bindParameterValue(
+                        parameter.name as ts.Identifier,
+                        values[index]!,
+                        call.arguments[index],
+                    ),
+                );
+                return read();
+            } finally {
+                this.bindings.popScope();
+            }
+        };
+        let list = this.unwrap(returned);
+        while (ts.isConditionalExpression(list)) {
+            const condition = list.condition;
+            const known = within(
+                () => this.compileValue(condition).staticBoolean,
+            );
+            if (known === undefined) return undefined;
+            list = this.unwrap(known ? list.whenTrue : list.whenFalse);
+        }
+        if (!ts.isArrayLiteralExpression(list)) return undefined;
+        const elements = list.elements;
+        return within(() =>
+            elements.flatMap((element) =>
+                ts.isSpreadElement(element)
+                    ? this.staticListItems(element.expression)
+                    : [{ node: element }],
+            ),
+        ).map((item) => ({
+            ...item,
+            within: <T>(read: () => T): T =>
+                within(() => (item.within ? item.within(read) : read())),
         }));
     }
 

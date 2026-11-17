@@ -328,7 +328,9 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
   render-target colour and sampled depth textures rebind per draw. Template text and plugin `getCustomCode`
   functions run at generation with scalar or fresh literal-data arguments; reaching host/engine APIs, `this`, module
   `let`, clock or random refuses. Retained objects stay native. `attributes` and `samplers` lists may be a local list
-  built by pushes generation settles, or a closed call (a module list mapped to names) run at generation.
+  built by pushes generation settles, or a closed call (a module list mapped to names) run at generation. A list may
+  spread a call to a local function that only returns an array literal: run-time arguments are read once and its
+  entries' run-time defaults read the callee's parameters.
   `depthBias`, `depthBiasSlopeScale` and `depthOnlyFragment` control pipeline depth behaviour. WGSL `@interpolate`
   and static `blend` overrides are supported (`add`; `zero`, `one`, `src-alpha`, `one-minus-src-alpha`, `dst`, `dst-alpha`).
   Conditional option spreads select up to 64 static variants; effectful predicates or conflicts with earlier evaluations refuse.
