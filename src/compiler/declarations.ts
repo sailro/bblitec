@@ -2020,6 +2020,14 @@ export class DeclarationLowerer {
                 stableOwnerAlias ||
                 (aliases && !wrapperCopiesIdentity) ||
                 borrowsStorage;
+            // A document copied out of the storage its initializer names
+            // holds what that storage holds: a `JsonValue` copy shares the
+            // object, array or native view, so a write through the local
+            // reaches the object JavaScript shares.
+            const copiesDocument =
+                narrowed.dataType.kind === "json" &&
+                !reference &&
+                initializerCpp === narrowed.cpp;
             // An alias of a read-only reference parameter is a const handle,
             // through which the shared record stays writable.
             const constant =
@@ -2065,7 +2073,8 @@ export class DeclarationLowerer {
                     constructs ||
                         referenceStruct ||
                         narrowed.freshData ||
-                        ownsSharedStorage
+                        ownsSharedStorage ||
+                        copiesDocument
                         ? "owned"
                         : "copy",
                 );
