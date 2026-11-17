@@ -14,6 +14,7 @@ test("Promise reactions join owned results without changing scheduling or aliase
         queueMicrotask(()=>{});
         async function ready(reject:boolean):Promise<boolean>{if(reject)throw new Error('failed');return false;}
         function recover(_error:unknown):void {}
+        function settle(adopt:boolean):Promise<undefined>|undefined{return adopt?Promise.resolve(undefined):undefined;}
         (async()=>{
             const preserved=await ready(false).catch(recover);
             const recovered=await ready(true).catch(recover);
@@ -54,6 +55,26 @@ test("Promise reactions join owned results without changing scheduling or aliase
             const neighbour=Promise.resolve().then(()=>{}).then(()=>{recovery+='b';});
             await Promise.all([absent,neighbour]);
             if(recovery!=='ab')throw new Error('undefined recovery job');
+            recovery='';
+            const value=Promise.reject<number>(new Error('source')).catch(()=>settle(false)).then(()=>{recovery+='a';});
+            const third=Promise.resolve().then(()=>{recovery+='1';}).then(()=>{recovery+='2';}).then(()=>{recovery+='3';}).then(()=>{recovery+='4';});
+            await Promise.all([value,third]);
+            if(recovery!=='1a234')throw new Error('recovery value fulfills at once');
+            recovery='';
+            const promise=Promise.reject<number>(new Error('source')).catch(()=>settle(true)).then(()=>{recovery+='a';});
+            const fourth=Promise.resolve().then(()=>{recovery+='1';}).then(()=>{recovery+='2';}).then(()=>{recovery+='3';}).then(()=>{recovery+='4';});
+            await Promise.all([promise,fourth]);
+            if(recovery!=='123a4')throw new Error('recovery promise adopts');
+            recovery='';
+            const fulfilledValue=Promise.resolve().then(()=>settle(false)).then(()=>{recovery+='a';});
+            const fifth=Promise.resolve().then(()=>{recovery+='1';}).then(()=>{recovery+='2';}).then(()=>{recovery+='3';}).then(()=>{recovery+='4';});
+            await Promise.all([fulfilledValue,fifth]);
+            if(recovery!=='1a234')throw new Error('fulfillment value settles at once');
+            recovery='';
+            const fulfilledPromise=Promise.resolve().then(()=>settle(true)).then(()=>{recovery+='a';});
+            const sixth=Promise.resolve().then(()=>{recovery+='1';}).then(()=>{recovery+='2';}).then(()=>{recovery+='3';}).then(()=>{recovery+='4';});
+            await Promise.all([fulfilledPromise,sixth]);
+            if(recovery!=='123a4')throw new Error('fulfillment promise adopts');
             globalThis.close();
         })();
     `;
@@ -158,7 +179,7 @@ test("Promise resolve uses its checked result for explicit settlement types", as
     });
 });
 
-test("Promise joins refuse observed record settlements without distinct nullish storage", async () => {
+test("Promise joins keep a record settlement's null and undefined apart", async (t) => {
     const source = `
         queueMicrotask(()=>{});
         (async()=>{
@@ -171,12 +192,74 @@ test("Promise joins refuse observed record settlements without distinct nullish 
             if(kept===null||kept===undefined||kept!==record)throw new Error('record identity');
             kept.value=7;
             if(record.value!==7)throw new Error('record alias');
+            const later=await Promise.reject<{value:number}|null>(new Error('source')).catch(async()=>undefined);
+            if(later!==undefined)throw new Error('adopted absence');
             globalThis.close();
         })();
     `;
     await assertAsyncSourceCloses(source);
+    const result = compileSource(source);
+    const native = optionalNativeFixtureTools(false);
+    await t.test("native assertions", { skip: !native }, () => {
+        runGeneratedProgram(
+            native!,
+            "promise-settlement-joins/absence",
+            result.cpp,
+            {
+                flags: ["/DBBLITE_WORKERS=1"],
+                timeoutMs: 10000,
+                expectedOutput: "",
+            },
+        );
+    });
+});
+
+test("Promise joins resolve a record settlement with a promise or a value", async (t) => {
+    const source = `
+        queueMicrotask(()=>{});
+        function settle(adopt:boolean):Promise<undefined>|undefined{return adopt?Promise.resolve(undefined):undefined;}
+        (async()=>{
+            const original:Promise<{value:number}|null>=Promise.resolve(null);
+            const passed=await original.catch(()=>settle(false));
+            const settled=await Promise.reject<{value:number}|null>(new Error('source')).catch(()=>settle(false));
+            const adopted=await Promise.reject<{value:number}|null>(new Error('source')).catch(()=>settle(true));
+            const record={value:1};
+            const kept=await Promise.resolve<{value:number}|null>(record).catch(()=>settle(true));
+            if(passed!==null||settled!==undefined||adopted!==undefined||passed===settled)throw new Error('promise or value absence');
+            if(kept!==record)throw new Error('record identity');
+            globalThis.close();
+        })();
+    `;
+    await assertAsyncSourceCloses(source);
+    const result = compileSource(source);
+    const native = optionalNativeFixtureTools(false);
+    await t.test("native assertions", { skip: !native }, () => {
+        runGeneratedProgram(
+            native!,
+            "promise-settlement-joins/resolution",
+            result.cpp,
+            {
+                flags: ["/DBBLITE_WORKERS=1"],
+                timeoutMs: 10000,
+                expectedOutput: "",
+            },
+        );
+    });
+});
+
+test("Promise joins refuse an absent promise result that may be null or undefined where the settlement tells them apart", () => {
     assert.throws(
-        () => compileSource(source),
-        /may be null or undefined.*stored where they are told apart/,
+        () =>
+            compileSource(`
+        queueMicrotask(()=>{});
+        function settle():Promise<undefined>|null|undefined{return undefined;}
+        (async()=>{
+            const original:Promise<{value:number}|null>=Promise.resolve(null);
+            const empty=await original.catch(()=>settle());
+            if(empty!==null)throw new Error('distinct absence');
+            globalThis.close();
+        })();
+    `),
+        /absent promise that may be null or undefined settles where they are told apart/,
     );
 });

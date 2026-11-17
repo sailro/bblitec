@@ -379,6 +379,7 @@ function valuePromise(
         value.promiseResult?.kind === "void" &&
         result &&
         (result.kind === "optional" ||
+            result.kind === "tagged" ||
             result.kind === "function" ||
             result.kind === "json" ||
             (result.kind === "struct" && types.isReferenceStruct(result.name)))
@@ -400,6 +401,7 @@ function valuePromise(
         return rejectionOnlyPromiseCpp(value.cpp, expected);
     const payload = value.promiseResult;
     const source =
+        payload?.absenceTagType ??
         payload?.dataType ??
         (payload?.kind === "number" ||
         payload?.kind === "string" ||

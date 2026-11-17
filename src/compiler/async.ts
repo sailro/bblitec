@@ -12,6 +12,7 @@ import ts from "typescript";
 import {
     absenceOf,
     knownCondition,
+    nullValue,
     presentCopy,
     undefinedValue,
     valueDataType,
@@ -605,6 +606,7 @@ export class AsyncLowerer {
                         promise,
                         settlement,
                         node,
+                        reaction.expression,
                     );
                     return {
                         kind: "promise",
@@ -1841,6 +1843,7 @@ export class AsyncLowerer {
             ? parameterStorage
             : `${parameterStorage}&`;
         const result: { value: Value } = { value: { kind: "void", cpp: "" } };
+        let resolved = false;
         const compiled = context.withOwnedCallbackBody(() =>
             context.captureManagedClosureLines(() => {
                 const inputs: Value[] = [];
@@ -1963,6 +1966,31 @@ export class AsyncLowerer {
                     context.emitDiscardedValue(result.value);
                     result.value = undefinedValue();
                 }
+                // A result that may or may not be a promise resolves the
+                // derived promise as JavaScript does: a promise is adopted,
+                // any other value fulfills it at once.
+                const derived = cleanup ? undefined : settlement;
+                const resolution =
+                    derived && returnType
+                        ? this.resolutionOf(
+                              result.value,
+                              node,
+                              returnType,
+                              derived,
+                          )
+                        : undefined;
+                if (derived && resolution !== undefined) {
+                    context.emit({
+                        kind: "control",
+                        code: `return ${resolution};`,
+                        transfer: "return",
+                    });
+                    result.value = derived.result
+                        ? context.dataLowerer.leafValue("", derived.result)
+                        : { kind: "void", cpp: "" };
+                    resolved = true;
+                    return;
+                }
                 if (!cleanup)
                     result.value = this.ownResult(
                         result.value,
@@ -2015,13 +2043,15 @@ export class AsyncLowerer {
                 cleanup ? "" : `[[maybe_unused]] ${parameterType} ${name}`,
                 neverReturns
                     ? cppType
-                    : settlement
-                      ? result.value.kind === "promise"
-                          ? context.dataTypes.cppType(settlement)
-                          : settlement.result
-                            ? cppType
-                            : "void"
-                      : undefined,
+                    : resolved
+                      ? `bbl::js::AsyncReturn<${cppType}>`
+                      : settlement
+                        ? result.value.kind === "promise"
+                            ? context.dataTypes.cppType(settlement)
+                            : settlement.result
+                              ? cppType
+                              : "void"
+                        : undefined,
             ),
             output,
             cppType,
@@ -2134,6 +2164,7 @@ export class AsyncLowerer {
         promise: Value,
         expected: DataType<"promise">,
         node: ts.Node,
+        receiver: ts.Expression,
     ): string {
         const context = this.context;
         const name = context.allocateTemporaryCppName("promise_fulfillment");
@@ -2145,7 +2176,11 @@ export class AsyncLowerer {
                 );
                 const binding = context.registerNativeBinding(name);
                 const value = this.convertResult(
-                    this.resultAt(promise.promiseResult!, name, binding),
+                    this.forwardedFulfillment(
+                        this.resultAt(promise.promiseResult!, name, binding),
+                        receiver,
+                        expected,
+                    ),
                     expected,
                     node,
                 );
@@ -2166,6 +2201,32 @@ export class AsyncLowerer {
         );
     }
 
+    /**
+     * A fulfillment a reaction passes on, with the absence its receiver's
+     * settlement type names: no expression's type is the value's own.
+     */
+    private forwardedFulfillment(
+        value: Value,
+        receiver: ts.Expression,
+        expected: DataType<"promise">,
+    ): Value {
+        if (value.slotFoundCpp !== undefined || value.absence !== undefined)
+            return value;
+        const checker = this.context.checker;
+        const settled = checker.getAwaitedType(
+            checker.getNonNullableType(checker.getTypeAtLocation(receiver)),
+        );
+        const absence = settled && absentValueKind(nullability(settled));
+        if (absence === "either" && expected.result?.kind === "tagged")
+            return this.context.fail(
+                receiver,
+                "A promise settlement that may be null or undefined is passed on where they are told apart only once one of them is ruled out (narrow the type).",
+            );
+        return absence === "null" || absence === "undefined"
+            ? { ...value, absence }
+            : value;
+    }
+
     private cppType(value: Value, node: ts.Node): string {
         if (
             value.kind === "void" ||
@@ -2176,6 +2237,10 @@ export class AsyncLowerer {
             return "bbl::js::PromiseVoid";
         if (value.kind === "tuple")
             return `std::tuple<${(value.tupleElements ?? []).map((element) => this.cppType(element, node)).join(", ")}>`;
+        // A value read from tagged storage settles as that storage, which
+        // keeps `null` apart from `undefined`.
+        if (value.absenceTagType)
+            return this.context.dataTypes.cppType(value.absenceTagType);
         if (value.dataType)
             return this.context.dataTypes.cppType(value.dataType);
         if (value.kind === "number") return "double";
@@ -2203,6 +2268,14 @@ export class AsyncLowerer {
         // itself, as an aggregate's `undefined` lane does.
         if (source.kind === "browser" || absenceOf(source) === "undefined")
             return source;
+        if (source.absenceTagType)
+            return {
+                ...this.context.dataLowerer.leafValue(
+                    cpp,
+                    source.absenceTagType,
+                ),
+                nativeCaptures: [binding],
+            };
         const { ownedCpp, ...value } = source;
         if (value.dataType?.kind === "handle" && value.dataType.ownedEngine) {
             const owned = {
@@ -2403,6 +2476,46 @@ export class AsyncLowerer {
         source = this.context.checker.getTypeAtLocation(node),
         target?: DataType<"promise">,
     ): Value | undefined {
+        const adopted = this.promiseUnionLanes(
+            value,
+            node,
+            source,
+            target,
+            false,
+        );
+        return (
+            adopted &&
+            this.context.dataLowerer.leafValue(adopted.cpp, adopted.settlement)
+        );
+    }
+
+    /**
+     * A union holding a promise as a reaction's result resolves its
+     * derived promise (`bbl::js::AsyncReturn`): its promise arm is adopted,
+     * and any other value, absence included, fulfills it at once.
+     */
+    private resolutionOf(
+        value: Value,
+        node: ts.Node,
+        source: ts.Type,
+        target: DataType<"promise">,
+    ): string | undefined {
+        return this.promiseUnionLanes(value, node, source, target, true)?.cpp;
+    }
+
+    /**
+     * The closure call turning a union holding a promise into the
+     * `settlement` a promise settles to: as a promise when `resolution` is
+     * false, as the `bbl::js::AsyncReturn` a promise is resolved with when
+     * it is true.
+     */
+    private promiseUnionLanes(
+        value: Value,
+        node: ts.Node,
+        source: ts.Type,
+        target: DataType<"promise"> | undefined,
+        resolution: boolean,
+    ): { cpp: string; settlement: DataType<"promise"> } | undefined {
         const type = value.dataType;
         if (
             value.kind !== "data" ||
@@ -2444,7 +2557,12 @@ export class AsyncLowerer {
         }
         const settlement = target;
         context.useNativeValue(value);
-        const cppType = context.dataTypes.cppType(settlement);
+        const resultCpp = settlement.result
+            ? context.dataTypes.cppType(settlement.result)
+            : "bbl::js::PromiseVoid";
+        const cppType = resolution
+            ? `bbl::js::AsyncReturn<${resultCpp}>`
+            : context.dataTypes.cppType(settlement);
         const name = context.allocateTemporaryCppName("promise_input");
         // The promise an optional call returned settles with the absence its
         // own result type names; the awaited type adds the short circuit's.
@@ -2465,7 +2583,26 @@ export class AsyncLowerer {
             context.registerNativeBinding(name);
             const resolve = (cpp: string, member: DataType): string => {
                 const input = context.dataLowerer.leafValue(cpp, member);
-                return this.promiseInput(
+                if (resolution && member.kind !== "promise")
+                    return (
+                        this.promiseUnionLanes(
+                            input,
+                            node,
+                            source,
+                            settlement,
+                            true,
+                        )?.cpp ??
+                        `${cppType}(${
+                            settlement.result
+                                ? context.dataLowerer.compileKnownValueForSink(
+                                      input,
+                                      settlement.result,
+                                      node,
+                                  )
+                                : "bbl::js::PromiseVoid{}"
+                        })`
+                    );
+                const adopted = this.promiseInput(
                     input.kind === "promise" &&
                         input.promiseResult &&
                         (absence === "null" || absence === "undefined")
@@ -2481,6 +2618,7 @@ export class AsyncLowerer {
                     node,
                     source,
                 );
+                return resolution ? `${cppType}(${adopted})` : adopted;
             };
             const emitReturn = (cpp: string): void =>
                 context.emit({
@@ -2496,9 +2634,21 @@ export class AsyncLowerer {
                 emitReturn(resolve(`(*${name})`, type.inner));
                 context.emit({ kind: "close", code: "}" });
                 const absent = settlement.result
-                    ? context.dataTypes.absentValue(settlement.result)
+                    ? this.absentSettlement(
+                          settlement.result,
+                          ts.isAwaitExpression(node)
+                              ? context.checker.getTypeAtLocation(
+                                    node.expression,
+                                )
+                              : source,
+                          node,
+                      )
                     : "bbl::js::PromiseVoid{}";
-                emitReturn(`${cppType}::resolved(${absent})`);
+                emitReturn(
+                    resolution
+                        ? `${cppType}(${absent})`
+                        : `${cppType}::resolved(${absent})`,
+                );
                 return;
             }
             for (const [index, member] of members.entries()) {
@@ -2512,9 +2662,35 @@ export class AsyncLowerer {
                 if (guarded) context.emit({ kind: "close", code: "}" });
             }
         });
-        return context.dataLowerer.leafValue(
-            `(${renderClosure(body, `const ${context.dataTypes.cppType(type)}& ${name}`, cppType)})(${value.cpp})`,
+        return {
+            cpp: `(${renderClosure(body, `const ${context.dataTypes.cppType(type)}& ${name}`, cppType)})(${value.cpp})`,
             settlement,
+        };
+    }
+
+    /**
+     * What an absent promise settles to in `result`: tagged storage keeps
+     * the absence `source` names, `null` apart from `undefined`; any other
+     * storage holds one absent state.
+     */
+    private absentSettlement(
+        result: DataType,
+        source: ts.Type,
+        node: ts.Node,
+    ): string {
+        const context = this.context;
+        if (result.kind !== "tagged")
+            return context.dataTypes.absentValue(result);
+        const absence = absentValueKind(nullability(source));
+        if (absence === "either")
+            return context.fail(
+                node,
+                "An absent promise that may be null or undefined settles where they are told apart only once one of them is ruled out (narrow the type).",
+            );
+        return context.dataLowerer.compileKnownValueForSink(
+            absence === "null" ? nullValue() : undefinedValue(),
+            result,
+            node,
         );
     }
 
@@ -3027,6 +3203,8 @@ export class AsyncLowerer {
             (!value.dataType || value.dataType.kind === "string")
         )
             return `std::string{${value.cpp}}`;
+        if (value.absenceTagType && value.absenceTagStorageCpp)
+            return value.absenceTagStorageCpp;
         return value.kind === "tuple" && !value.cpp
             ? `${this.cppType(value, node)}{${(value.tupleElements ?? []).map((element) => this.resultCpp(element, node)).join(", ")}}`
             : (value.storedEngineCpp ??

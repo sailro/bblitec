@@ -24,10 +24,14 @@ template <typename T, typename Convert> auto adopt_promise(Promise<T> source, Co
     return PromiseAdoption<T, Convert>{std::move(source), std::move(convert)};
 }
 
+/** How a return settles its promise: none yet, a value, a promise to adopt, or an adoption. */
+template <typename T>
+using PromiseCompletion =
+    std::variant<std::monostate, T, Promise<T>, Callback<void(const Promise<T>&)>>;
+
 /** A return is evaluated before asynchronous cleanup and adopted after it completes. */
 template <typename T> struct AsyncReturn : AbruptCompletion {
-    using Adoption = Callback<void(const Promise<T>&)>;
-    std::variant<std::monostate, T, Promise<T>, Adoption> value;
+    PromiseCompletion<T> value;
     explicit AsyncReturn(T result) : value(std::in_place_index<1>, std::move(result)) {}
     explicit AsyncReturn(Promise<T> result) : value(std::in_place_index<2>, std::move(result)) {}
     template <typename U, typename Convert>
@@ -80,6 +84,9 @@ template <> struct Result<void> {
     using type = PromiseVoid;
 };
 template <typename T> struct Result<Promise<T>> {
+    using type = T;
+};
+template <typename T> struct Result<AsyncReturn<T>> {
     using type = T;
 };
 template <typename T> using ResultType = typename Result<T>::type;
@@ -178,6 +185,8 @@ public:
     void resolve(const Promise& other) const {
         adopt(other, [](const T& value) { return value; });
     }
+    /** A returned value that may be a promise: a value fulfills, a promise is adopted. */
+    void resolve(AsyncReturn<T> returned) const { complete(std::move(returned.value)); }
     template <typename U, typename Convert>
     void adopt(const Promise<U>& other, Convert convert) const {
         require_resolver();
@@ -277,8 +286,7 @@ public:
 
     struct promise_type {
         Promise result;
-        using Adoption = Callback<void(const Promise&)>;
-        std::variant<std::monostate, T, Promise, Adoption> completion;
+        PromiseCompletion<T> completion;
         pal::EventLoop* loop = &pal::EventLoop::current();
         pal::EventLoop::ContinuationId continuation = 0;
         // Not an aggregate: clang initializes an aggregate promise from the
@@ -294,12 +302,7 @@ public:
         // after those destructors have run, so a finally throw can replace it.
         std::suspend_never final_suspend() noexcept {
             try {
-                if (auto* value = std::get_if<1>(&completion))
-                    result.resolve(std::move(*value));
-                else if (const auto* adopted = std::get_if<2>(&completion))
-                    result.resolve(*adopted);
-                else if (auto* converted = std::get_if<3>(&completion))
-                    (*converted)(result);
+                result.complete(std::move(completion));
             } catch (const pal::WorkerTerminated&) {
             } catch (...) {
                 run_teardown("Promise completion",
@@ -379,6 +382,16 @@ private:
                     next.reject(std::current_exception());
                 }
             });
+    }
+
+    /** Settles as a return completes: a value fulfills, a promise or a conversion is adopted. */
+    void complete(PromiseCompletion<T> completion) const {
+        if (auto* value = std::get_if<1>(&completion))
+            resolve(std::move(*value));
+        else if (const auto* adopted = std::get_if<2>(&completion))
+            resolve(*adopted);
+        else if (auto* converted = std::get_if<3>(&completion))
+            (*converted)(*this);
     }
 
     explicit Promise(std::shared_ptr<State> state, std::shared_ptr<View> view = {})
