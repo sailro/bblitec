@@ -460,8 +460,9 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
   it is when read; another target's refuses when read.
 - Render and effect render task `dispose()` releases owned targets (not the swapchain's); executing a disposed task refuses.
   An effect task's `record`/`dispose` can be read, bound and replaced; the frame graph calls the replacements.
-- An effect render task's `scissor` takes a run-time `NormalizedViewport` or null; the native task copies its lanes, so
-  a program that writes a lane of such a record refuses.
+- An effect render task's `scissor` takes a run-time `NormalizedViewport` or null; the native task copies its lanes. A
+  fresh object (a literal, or a call returning only literals or null) in a statement that only stores it always stores;
+  any other value refuses where the program writes a lane of a record that type could hold.
 - `disposeRenderTargetTexture`: a later executed task or material using the target refuses; material plugin textures
   keep the image they bound. `disposeEffectWrapper`: a registered EffectRenderer drawing a wrapper with a uniform
   binding refuses.

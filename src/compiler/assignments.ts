@@ -2822,7 +2822,9 @@ function isEffectTaskScissor(
  * `execute` narrows the fullscreen pass to, read at every execute; null or
  * absent draws the whole target. The pin keeps the object and the native
  * task copies its four lanes, so the store refuses wherever the program can
- * tell the copy apart (`recordCopyObservation`).
+ * tell the copy apart (`recordCopyObservation`). A fresh object the
+ * assignment alone receives (`yieldsFreshObject`) has no other handle, so
+ * nothing can.
  */
 function emitEffectTaskScissorAssignment(
     context: AssignmentContext,
@@ -2837,9 +2839,15 @@ function emitEffectTaskScissorAssignment(
     const source = checker.getNonNullableType(
         checker.getTypeAtLocation(expression.right),
     );
-    // A null or undefined value keeps no object.
+    // A null or undefined value keeps no object; a fresh one whose
+    // assignment's own value is discarded is held by the task alone.
+    const statement = outermostWrapper(expression);
+    const sole =
+        statement.parent !== undefined &&
+        valueConsumer(statement).kind === "discarded" &&
+        yieldsFreshObject(checker, expression.right);
     const observed =
-        source.flags & ts.TypeFlags.Never
+        source.flags & ts.TypeFlags.Never || sole
             ? undefined
             : recordCopyObservation(
                   context,
@@ -2935,7 +2943,10 @@ import {
     accessKey,
     propertyKey,
     unwrapExpression,
+    outermostWrapper,
+    valueConsumer,
 } from "./syntax.js";
+import { yieldsFreshObject } from "./fresh-records.js";
 import { emitAudioPropertyAssignment } from "./audio-surface.js";
 import { emitMediaStreamAssignment } from "./media-streams.js";
 import { emitBrowserFileAssignment } from "./browser-file.js";

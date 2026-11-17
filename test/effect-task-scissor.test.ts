@@ -265,6 +265,46 @@ test("EffectRenderTask.scissor stores a run-time viewport or null and refuses a 
     );
 });
 
+test("EffectRenderTask.scissor stores a fresh viewport whatever another record type's lanes take", () => {
+    // The application's shape: a helper whose every return is a fresh
+    // literal or null, beside an unrelated record whose `x` the program
+    // writes; a NormalizedViewport could be held where that record is.
+    const helper = `interface Point { x: number; y: number }
+        const cursor: Point = { x: 0, y: 0 };
+        function region(t: number): NormalizedViewport | null {
+            if (!(t > 0)) return null;
+            if (t > 2) return { x: 0, y: 0, width: 0, height: 0 };
+            const left = Math.max(0, t * 0.1);
+            return { x: left, y: 0.25, width: 0.5 - left, height: 0.5 };
+        }
+        let frame = 0;
+        onBeforeRender(scene, () => {
+            frame++;
+            cursor.x += 1;
+`;
+    const stored = compileSource(
+        `${PROGRAM}${helper}            task.scissor = frame % 2 ? region(frame % 5) : null;
+        });
+        ${STARTED}`,
+    );
+    assert.match(
+        stored.cpp,
+        /\.effect_scissor = static_cast<bool>\((v_\w+)\) \? std::optional<bbl::NormalizedViewport>\{bbl::NormalizedViewport\{\1->x, \1->y, \1->width, \1->height\}\} : std::nullopt;/,
+    );
+    // A literal stored where the program keeps the assignment's value is
+    // still reached by the program's write.
+    assert.throws(
+        () =>
+            compileSource(
+                `${PROGRAM}${helper}            const kept = (task.scissor = { x: 0, y: 0, width: 1, height: 1 });
+            kept.x = 0.5;
+        });
+        ${STARTED}`,
+            ),
+        /EffectRenderTask\.scissor keeps the object it is given, which the native task copies, and the program writes 'x' of such records\./,
+    );
+});
+
 test("an effect task's native scissor rounds as the pin's execute does at pixel edges", async (t) => {
     const expected = await pinnedScissors(ROUNDING_CASES);
     // The edges the cases are chosen for: a fraction landing past a pixel
