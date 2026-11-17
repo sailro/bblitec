@@ -13945,6 +13945,129 @@ check(
 `,
 );
 
+check(
+    "declared-record-key-order-follows-creation",
+    `
+    interface Plain { a: number; b: string }
+    interface Range { local: number; count: number; first: number }
+    interface Retained extends Range { first: number; local: number; datum?: string }
+    const values = [1, 2, 3];
+    const forIn = (row: Retained): string => { const keys: string[] = []; for (const key in row) keys.push(key); return keys.join(); };
+    const plain: Plain[] = [];
+    plain.push({ b: "x" + values[0], a: values[1]! });
+    plain.push({ b: "y", a: values[0]! });
+    if (plain.map((row) => Object.keys(row).join()).join("|") !== "b,a|b,a") throw new Error("plain keys");
+    if (JSON.stringify(plain) !== '[{"b":"x1","a":2},{"b":"y","a":1}]') throw new Error("plain json");
+    if (Object.entries(plain[values[0]!]!).map(([key, value]) => key + "=" + value).join() !== "b=y,a=1") throw new Error("plain entries");
+    const range: Omit<Range, "local"> = { count: values[0]!, first: values[1]! };
+    const local = values[2]!, datum = "d" + values[0];
+    const retained: Retained[] = [{ ...range, local, datum }];
+    if (Object.keys(retained[0]!).join() !== "count,first,local,datum" || forIn(retained[0]!) !== "count,first,local,datum") throw new Error("spread then members");
+    if (JSON.stringify(retained[0]) !== '{"count":1,"first":2,"local":3,"datum":"d1"}') throw new Error("spread then members json");
+    const ranges: Range[] = [];
+    ranges.push({ local, ...range });
+    ranges.push({ local: values[0]!, ...range, count: values[2]! });
+    if (ranges.map((row) => Object.keys(row).join()).join("|") !== "local,count,first|local,count,first") throw new Error("members then spread");
+    if (JSON.stringify(ranges) !== '[{"local":3,"count":1,"first":2},{"local":1,"count":3,"first":2}]') throw new Error("members then spread json");
+`,
+);
+
+check(
+    "declared-record-key-order-indices-conversions-and-copies",
+    `
+    interface Indexed { b: number; 2: string; a: number; 1: string }
+    interface Pair { a: number; b: number }
+    const values = [1, 2, 3];
+    const indexed: Indexed[] = [];
+    indexed.push({ b: values[0]!, 2: "two", a: values[1]!, 1: "one" });
+    if (Object.keys(indexed[0]!).join() !== "1,2,b,a") throw new Error("index keys");
+    if (JSON.stringify(indexed[0]) !== '{"1":"one","2":"two","b":1,"a":2}') throw new Error("index json");
+    const literal = { b: values[0]!, a: values[1]! };
+    const converted: Pair = literal;
+    const pairs: Pair[] = [converted];
+    const source = pairs[0]!;
+    if (Object.keys(source).join() !== "b,a") throw new Error("converted keys");
+    const copy = { ...source, extra: values[2]! };
+    if (Object.keys(copy).join() !== "b,a,extra") throw new Error("copy keys");
+    const before = { extra: values[2]!, ...source };
+    if (JSON.stringify(before) !== '{"extra":3,"b":1,"a":2}') throw new Error("copy json");
+    const dictionary: Record<string, number> = { ...source };
+    if (Object.keys(dictionary).join() !== "b,a") throw new Error("dictionary keys");
+    if (JSON.stringify({ pairs }) !== '{"pairs":[{"b":1,"a":2}]}') throw new Error("nested json");
+    interface Kept { a: number; b: string; c?: number }
+    let state: Kept = { b: "x", a: values[0]! };
+    const kept: Kept[] = [state];
+    state = { ...state, a: values[1]! };
+    kept.push(state);
+    state = { ...state, c: values[2]! };
+    kept.push(state);
+    if (kept.map((row) => Object.keys(row).join()).join("|") !== "b,a|b,a|b,a,c") throw new Error("respread keys");
+    if (JSON.stringify(kept) !== '[{"b":"x","a":1},{"b":"x","a":2},{"b":"x","a":2,"c":3}]') throw new Error("respread json");
+`,
+);
+
+check(
+    "declared-record-key-order-per-record-where-creations-disagree",
+    `
+    interface Pair { a: number; b: string }
+    interface State { a: number; b: string; c?: number }
+    interface Flagged { c: number; b?: number; a: number }
+    const values = [1, 2, 3];
+    const first: Pair = { a: values[0]!, b: "x" };
+    const second: Pair = { b: "y", a: values[1]! };
+    const pairs: Pair[] = [first, second];
+    if (pairs.map((row) => Object.keys(row).join()).join("|") !== "a,b|b,a") throw new Error("two literal orders");
+    if (JSON.stringify(pairs) !== '[{"a":1,"b":"x"},{"b":"y","a":2}]') throw new Error("two literal orders json");
+    let state: State = { b: "x", a: values[0]! };
+    const states: State[] = [state];
+    state = { ...state, c: values[2]! };
+    states.push(state, { c: values[1]!, b: "y", a: values[0]! });
+    if (states.map((row) => Object.keys(row).join()).join("|") !== "b,a|b,a,c|c,b,a") throw new Error("a key created later");
+    const flag = values.length > 1;
+    const flagged: Flagged[] = [];
+    flagged.push({ a: values[0]!, ...(flag ? { b: values[1]! } : {}), c: values[2]! });
+    flagged.push({ a: values[1]!, c: values[0]! });
+    if (flagged.map((row) => Object.keys(row).join()).join("|") !== "a,b,c|a,c") throw new Error("conditional spread");
+    if (JSON.stringify(flagged) !== '[{"a":1,"b":2,"c":3},{"a":2,"c":1}]') throw new Error("conditional spread json");
+`,
+);
+
+check(
+    "declared-record-key-order-through-definitions-and-copies-of-each-other",
+    `
+    interface Token { readonly key: number }
+    interface Row { height: number; tower: number }
+    const values = [1, 2, 3];
+    function attach<T extends object>(row: T, id: Token): T & { readonly id: Token } {
+        const item = { ...row } as T & { readonly id: Token };
+        Object.defineProperty(item, "id", { value: id, enumerable: true, writable: false, configurable: false });
+        return item;
+    }
+    const row: Row = { tower: values[0]!, height: values[1]! };
+    const tagged = [attach(row, { key: values[2]! })];
+    const { id: _id, ...rest } = tagged[0]!;
+    if (Object.keys(rest).join() !== "tower,height") throw new Error("rest keys");
+    tagged.push(attach(rest, { key: values[0]! }));
+    if (tagged.map((item) => Object.keys(item).join()).join("|") !== "tower,height,id|tower,height,id") throw new Error("defined and copied keys");
+    if (JSON.stringify(tagged) !== '[{"tower":1,"height":2,"id":{"key":3}},{"tower":1,"height":2,"id":{"key":1}}]') throw new Error("defined and copied json");
+`,
+);
+
+test("records no document holds refuse an enumeration their creations order apart", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            interface Pair { a: number; readonly b: number }
+            const values = [1, 2];
+            const pairs: Pair[] = [];
+            pairs.push({ a: values[0]!, get b() { return 2; } });
+            pairs.push({ get b() { return 3; }, a: values[1]! });
+            console.log(Object.keys(pairs[0]!).join());
+            `),
+        /'Pair' records create their own keys in different orders; enumerating them requires each record's own order/,
+    );
+});
+
 test("dynamic object and built-in boundaries refuse explicitly", () => {
     const refusals: Array<[string, RegExp]> = [
         [

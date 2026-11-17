@@ -5,6 +5,7 @@ import { erasedFieldWidens } from "./data-types/operations.js";
 import type { CompletionProof } from "./completion-storage.js";
 import type { AbsenceTagDeclaration } from "./absence-tag-storage.js";
 import type { InstanceProperty } from "./class-members.js";
+import type { KeyOrders } from "./record-key-orders.js";
 import type { EngineOwnerStorageDeclaration } from "./engine-owner-storage.js";
 import type { ErasedHandleStorage } from "./asserted-handle-field-storage.js";
 import type { DynamicBindingStorage } from "./dynamic-binding-storage.js";
@@ -64,6 +65,11 @@ export type StorageRequest =
     | { kind: "parameter-object"; declaration: ts.ParameterDeclaration }
     | { kind: "enum-array"; unions: readonly string[] }
     | { kind: "enum-record"; schema: string }
+    | {
+          kind: "key-order";
+          record: ts.Symbol | ts.Type;
+          orders: KeyOrders;
+      }
     | { kind: "thrown-value"; valueKind: "string" }
     | { kind: "shared-class"; declaration: ts.ClassLikeDeclaration };
 
@@ -85,6 +91,7 @@ export function storageRequestSite(
         case "generic":
         case "enum-array":
         case "enum-record":
+        case "key-order":
         case "thrown-value":
             return undefined;
         default:
@@ -165,6 +172,19 @@ export class ReplayStorage {
     readonly stringElementUnions = new Set<string>();
     /** @unjournaled Finite-key record schemas whose enumeration requires dictionary order. */
     readonly orderedRecordSchemas = new Set<string>();
+    /**
+     * @unjournaled Demands outlive the attempts that met them. The own-key
+     * orders an enumerated record type's records take, by record identity,
+     * as the last attempt to find them did (`RecordKeyOrderRequired`): an
+     * earlier attempt may have read a source's fields in a layout since
+     * reordered.
+     */
+    readonly recordKeyOrders = new Map<ts.Symbol | ts.Type, KeyOrders>();
+    /** @unjournaled Every set of orders demanded for a record type, spelled (`spellKeyOrders`). */
+    private readonly keyOrderSpellings = new Map<
+        ts.Symbol | ts.Type,
+        Set<string>
+    >();
     /** @unjournaled Reached primitive throws require dynamic catch storage across call boundaries. */
     readonly thrownValueKinds = new Set<"string">();
     /** @unjournaled Classes shared from their first construction. */
@@ -321,11 +341,36 @@ export class ReplayStorage {
                 );
             case "enum-record":
                 return addNew(this.orderedRecordSchemas, request.schema);
+            case "key-order": {
+                // Orders demanded once already would replay in a cycle.
+                if (this.demandedKeyOrders(request.record, request.orders))
+                    return false;
+                const spellings =
+                    this.keyOrderSpellings.get(request.record) ??
+                    new Set<string>();
+                this.keyOrderSpellings.set(
+                    request.record,
+                    spellings.add(spellKeyOrders(request.orders)),
+                );
+                this.recordKeyOrders.set(request.record, request.orders);
+                return true;
+            }
             case "thrown-value":
                 return addNew(this.thrownValueKinds, request.valueKind);
             case "shared-class":
                 return addNew(this.sharedClasses, request.declaration);
         }
+    }
+
+    /** Whether `orders` were demanded for record type `record` before (`RecordKeyOrderRequired`). */
+    public demandedKeyOrders(
+        record: ts.Symbol | ts.Type,
+        orders: KeyOrders,
+    ): boolean {
+        return (
+            this.keyOrderSpellings.get(record)?.has(spellKeyOrders(orders)) ===
+            true
+        );
     }
 
     /**
@@ -374,6 +419,11 @@ export function demandsKeyOnly(request: StorageRequest): boolean {
         default:
             return false;
     }
+}
+
+/** A set of key orders as one string, whatever order it lists them in. */
+function spellKeyOrders(orders: KeyOrders): string {
+    return JSON.stringify(orders.map((order) => JSON.stringify(order)).sort());
 }
 
 function addNew<T>(set: Set<T>, value: T): boolean {

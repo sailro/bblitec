@@ -21,7 +21,7 @@ import { requireHeldRecordStorage } from "../dynamic-binding-storage.js";
 import { NativeRecordStorageRequired } from "../native-record-storage.js";
 import { nativeStructuralViewType } from "../native-owner-carrier.js";
 import { callableRecordValue } from "../callable-records.js";
-import { recordPropertyKeys } from "../object-statics.js";
+import { recordCreatedKeys, recordPropertyKeys } from "../object-statics.js";
 import {
     completeLiteralSelf,
     homeReceiver,
@@ -581,6 +581,12 @@ function valueStruct(
                 (property) => !stored.has(property),
             ),
         );
+        // A class instance seen as a record lists the record type's members.
+        if (value.classDeclaration === undefined)
+            lowerer.context.dataTypes.noteRecordCreation(
+                dataType.name,
+                recordCreatedKeys(value),
+            );
         // The members lowered into function slots, and the accessors of
         // slots without a receiver, may read `this` as the object the
         // literal creates.
@@ -774,6 +780,9 @@ function valueStruct(
             ),
             sourceType,
         );
+        lowerer.context.dataTypes.noteRecordCreation(dataType.name, [
+            { struct: sourceType.name },
+        ]);
         lowerer.context.dataTypes.requireEngineFieldsStorage(
             fields.flatMap((field) => {
                 const source = sourceFields.get(field.sourceName);

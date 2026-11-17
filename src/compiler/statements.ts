@@ -3372,6 +3372,7 @@ export class StatementLowerer {
             // Keep this object's identity: later iterations observe field
             // deletions, while rebinding the source must not change its owner.
             context.dataTypes.markStoredObjectReferences(dataType);
+            context.dataTypes.noteKeyEnumeration(dataType.name, node);
             const fields = context.dataTypes.structFields(
                 dataType.name,
                 node,

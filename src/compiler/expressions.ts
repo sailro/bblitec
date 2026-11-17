@@ -7143,6 +7143,11 @@ export class ExpressionLowerer {
                     const known = ownKeysKnown(this.context, spread, property);
                     if (!known && declines === "run-time-keys")
                         return undefined;
+                    if (!spread.recordOwnKeys)
+                        this.context.dataTypes.noteKeyEnumeration(
+                            spread.dataType.name,
+                            property,
+                        );
                     // A `?` field whose storage says whether it is own
                     // becomes a key the record holds while it is present.
                     const entries = structOwnEntries(

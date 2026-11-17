@@ -99,6 +99,13 @@ import {
 import { AbsentRecordProperties } from "./absent-record-properties.js";
 import { ReplayStorage } from "./replay-storage.js";
 import { EnumRecordStorageRequired } from "./enum-record-storage.js";
+import {
+    agreedKeyOrder,
+    ownKeyOrder,
+    RecordKeyOrderRequired,
+    RecordKeyOrders,
+    type CreatedKeys,
+} from "./record-key-orders.js";
 import { SharedClassStorageRequired } from "./shared-class-storage.js";
 import {
     numericSlotRead,
@@ -1369,6 +1376,17 @@ function isPropertyField(field: DataStructField): boolean {
     });
 }
 
+/** `items` in the order `order` gives their keys, the others after them as they were. */
+function inKeyOrder<T>(
+    items: readonly T[],
+    key: (item: T) => string,
+    order: readonly string[],
+): T[] {
+    const positions = new Map(order.map((name, index) => [name, index]));
+    const at = (item: T): number => positions.get(key(item)) ?? positions.size;
+    return [...items].sort((left, right) => at(left) - at(right));
+}
+
 /**
  * The C++ spelling of a class field. A private name's sigil is not an
  * identifier character, and the prefix keeps `#x` apart from a public `_x`
@@ -1599,9 +1617,7 @@ export class DataTypeRegistry {
     ): void {
         if (this.enumMapKeyOrders.has(type.enumName)) return;
         const members = this.enumMembers(type.enumName);
-        const own = Object.keys(
-            Object.fromEntries(keys.map((key) => [key, true])),
-        );
+        const own = ownKeyOrder(keys);
         if (
             own.length !== members.length ||
             own.some((key, index) => key !== members[index])
@@ -1632,6 +1648,85 @@ export class DataTypeRegistry {
         (target, sources, property, node) =>
             this.retainConvertedRecordProperty(target, sources, property, node),
     );
+    /** The own-key orders native records are created and enumerated in. */
+    private readonly keyOrders = new RecordKeyOrders();
+
+    /** A record of struct `name` created making `keys` own, in order (`RecordKeyOrders`). */
+    public noteRecordCreation(
+        name: string,
+        keys: readonly CreatedKeys[],
+    ): void {
+        this.keyOrders.noteCreation(name, keys);
+    }
+
+    /** Struct `name`'s records' own keys are enumerated in its field order. */
+    public noteKeyEnumeration(name: string, node: ts.Node): void {
+        this.keyOrders.noteEnumeration(name, node);
+    }
+
+    /**
+     * An enumerated struct lays its fields out in the one order its records
+     * create their keys in; records creating them in different orders keep
+     * each its own as documents, and refuse where no document holds them.
+     * One replay settles every struct the program needs settled.
+     */
+    private checkRecordKeyOrders(): void {
+        const reordered: RecordKeyOrderRequired[] = [];
+        const documents: NativeRecordStorageRequired[] = [];
+        this.keyOrders.check(
+            (name) =>
+                this.structsByName
+                    .get(name)
+                    ?.fields.filter(
+                        (field) =>
+                            isPropertyField(field) &&
+                            !isSymbolPropertyKey(field.sourceName),
+                    )
+                    .map((field) => ({
+                        key: field.sourceName,
+                        maybe:
+                            field.optionalProperty === true ||
+                            this.presenceByTags(name, field),
+                    })),
+            (name, orders, node) => {
+                // A class instance creates its keys as its constructor runs.
+                if (this.isClassStruct(name)) return;
+                const source = this.nativeRecordSources.get(name);
+                const record =
+                    source && recordIdentity(this.checker, source.type);
+                if (
+                    orders &&
+                    record &&
+                    !this.storage.demandedKeyOrders(record, orders)
+                ) {
+                    reordered.push(new RecordKeyOrderRequired(record, orders));
+                    return;
+                }
+                const document =
+                    orders ||
+                    (source &&
+                        this.documentRecords.has(
+                            this.structIdentity(source.type),
+                        ))
+                        ? undefined
+                        : this.documentRecordDemand(name);
+                if (document) {
+                    documents.push(new NativeRecordStorageRequired(document));
+                    return;
+                }
+                this.fail(
+                    node,
+                    orders
+                        ? `'${name}' records create their keys in one order its layout does not take; enumerating them would list them in another.`
+                        : `'${name}' records create their own keys in different orders; enumerating them requires each record's own order, which no document holds for these records.`,
+                );
+            },
+        );
+        const [document, ...otherDocuments] = documents;
+        if (document) throw document.joinedWith(otherDocuments);
+        const [order, ...otherOrders] = reordered;
+        if (order) throw order.joinedWith(otherOrders);
+    }
 
     /** An observable extra property joins the concrete record layouts that carried it. */
     private retainConvertedRecordProperty(
@@ -7331,7 +7426,9 @@ export class DataTypeRegistry {
             );
         }
 
-        return this.internMappedStruct(name, fields, presences);
+        return this.internMappedStruct(name, fields, presences, undefined, [
+            type,
+        ]);
     }
 
     /** Required, non-null payloads use their existing empty storage for an absent union key. */
@@ -7437,7 +7534,9 @@ export class DataTypeRegistry {
                 ),
             );
         }
-        return this.internMappedStruct(name, fields, presences);
+        return this.internMappedStruct(name, fields, presences, undefined, [
+            type,
+        ]);
     }
 
     /**
@@ -7990,7 +8089,9 @@ export class DataTypeRegistry {
                 ),
             );
         }
-        return this.internMappedStruct(name, fields, presences);
+        return this.internMappedStruct(name, fields, presences, undefined, [
+            type,
+        ]);
     }
 
     /**
@@ -8618,10 +8719,7 @@ export class DataTypeRegistry {
             if (member.key === undefined) return undefined;
             keys.push(member.key);
         }
-        // An object of these keys orders them as JavaScript does.
-        return Object.keys(
-            Object.fromEntries(keys.map((key) => [key, undefined])),
-        );
+        return ownKeyOrder(keys);
     }
 
     /** Intersection constraints keep their refinements without hiding concrete generic fields. */
@@ -8631,11 +8729,8 @@ export class DataTypeRegistry {
         const declared = this.checker.getPropertiesOfType(type);
         // A literal's fields follow the order its own keys are created in.
         const order = this.objectLiteralKeyOrder(type);
-        const positions = new Map(order?.map((key, index) => [key, index]));
-        const at = (symbol: ts.Symbol): number =>
-            positions.get(symbol.name) ?? positions.size;
         const properties = order
-            ? [...declared].sort((left, right) => at(left) - at(right))
+            ? inKeyOrder(declared, (symbol) => symbol.name, order)
             : declared;
         if (!type.isIntersection()) return properties;
         // In its members' order, as the checker orders a concrete
@@ -9090,6 +9185,7 @@ export class DataTypeRegistry {
             fields,
             presences,
             call,
+            [type, ...(component?.shapes ?? [])],
         );
         if (
             [...layout.properties.values()].some((declared) =>
@@ -9114,12 +9210,53 @@ export class DataTypeRegistry {
         return this.prototypeAccessorStructs.has(name);
     }
 
+    /**
+     * The order the key orders demanded for `records` put `keys` in
+     * (`RecordKeyOrderRequired`); undefined where none is demanded.
+     */
+    private demandedKeyOrder(
+        records: readonly ts.Type[],
+        keys: readonly string[],
+    ): string[] | undefined {
+        const demanded = [...new Set(records)].flatMap((record) => {
+            const orders = this.storage.recordKeyOrders.get(
+                recordIdentity(this.checker, record),
+            );
+            return orders ? [orders] : [];
+        });
+        return demanded.length > 0
+            ? agreedKeyOrder(demanded.flat(), keys)
+            : undefined;
+    }
+
+    /**
+     * The struct of `fields`, an existing one with the same layout or a new
+     * one: an enumerated record type of `records` lays its fields out in the
+     * order its records create their keys in (`demandedKeyOrder`).
+     */
     private internMappedStruct(
         provisionalName: string,
         fields: DataStructField[],
         presences: readonly FieldPresence[],
         call?: DataType<"function">,
+        records: readonly ts.Type[] = [],
     ): DataType<"struct"> {
+        const order = this.demandedKeyOrder(
+            records,
+            fields.map((field) => field.sourceName),
+        );
+        if (order) {
+            const placed = inKeyOrder(
+                fields.map((field, index) => ({
+                    field,
+                    presence: presences[index]!,
+                })),
+                ({ field }) => field.sourceName,
+                order,
+            );
+            fields = placed.map(({ field }) => field);
+            presences = placed.map(({ presence }) => presence);
+        }
         fields = fields.map((field) => ({
             ...field,
             type: this.engineFieldStorage(field.type, field.declarations),
@@ -11324,6 +11461,7 @@ export class DataTypeRegistry {
                         return;
                     }
                     this.jsonSerializedStructs.set(current.name, node);
+                    this.keyOrders.noteEnumeration(current.name, node);
                     path.push(current.name);
                     for (const field of this.structFields(
                         current.name,
@@ -11602,6 +11740,7 @@ export class DataTypeRegistry {
                     );
             }
         this.jsonBoxedStructs.set(type.name, node);
+        this.keyOrders.noteEnumeration(type.name, node);
         this.cppType(type);
         for (const field of this.structFields(
             type.name,
@@ -11954,6 +12093,7 @@ export class DataTypeRegistry {
     public renderPreamble(structuredClone = false): DataPreamble {
         this.checkFieldPresenceReads();
         this.absentProperties.check();
+        this.checkRecordKeyOrders();
         const used = this.reachableNamedTypes();
         if (
             used.structs.size === 0 &&

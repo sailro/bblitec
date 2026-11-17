@@ -240,10 +240,12 @@ import {
     deleteRecordProperty,
     keysDefinedOnDeclaration,
     ownEntries,
+    recordCreatedKeys,
     setRecordProperty,
     structOwnEntries,
     type OwnEntry,
 } from "./object-statics.js";
+import type { CreatedKeys } from "./record-key-orders.js";
 import {
     compileJsonStrictComparison,
     compileJsonElementRead,
@@ -14061,6 +14063,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         if (source.kind !== "data" || source.dataType?.kind !== "struct")
             return undefined;
+        if (!source.recordOwnKeys)
+            this.context.dataTypes.noteKeyEnumeration(
+                source.dataType.name,
+                property,
+            );
         const snapshot = this.context.allocateTemporaryCppName("spread_source");
         this.context.emit({
             kind: "declaration",
@@ -14393,6 +14400,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 "Struct literals support plain property assignments.",
             );
         }
+        this.noteLiteralCreation(
+            literal,
+            dataType,
+            [...provided.keys()].map((key) => ({ key })),
+        );
         const self = literalSelf(
             this.context,
             dataType,
@@ -14832,6 +14844,25 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
+     * Notes the record of `dataType` a literal creates making `keys` own,
+     * then the keys the statements right after its declaration define on it
+     * (`keysDefinedOnDeclaration`): a definition keeps a key's place, and
+     * appends one the record lacks.
+     */
+    private noteLiteralCreation(
+        literal: ts.ObjectLiteralExpression,
+        dataType: DataType<"struct">,
+        keys: readonly CreatedKeys[],
+    ): void {
+        this.context.dataTypes.noteRecordCreation(dataType.name, [
+            ...keys,
+            ...keysDefinedOnDeclaration(this.context.checker, literal).map(
+                (key) => ({ key }),
+            ),
+        ]);
+    }
+
+    /**
      * Whether a literal's record can hold placeholders in the fields it
      * lacks: the statements right after its declaration define each
      * (`keysDefinedOnDeclaration`) before anything reads the record, and
@@ -14918,6 +14949,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             }
         };
         const assigned = new EmissionSet<string>();
+        // The keys the new record makes own, in creation order.
+        const created: CreatedKeys[] = [];
         const assign = (
             sourceName: string,
             sourceValue: Value,
@@ -14978,6 +15011,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 }
                 if (spread.kind === "record") {
                     declareDefault();
+                    created.push(...recordCreatedKeys(spread));
                     // A spread reads each getter once; it copies the value.
                     if (
                         Object.keys(spread.recordGetters ?? {}).length ||
@@ -15074,6 +15108,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                                 (declared && field.type.kind === "optional"),
                         )
                 ) {
+                    created.push({ struct: dataType.name });
                     if (!declared) {
                         this.context.emit(
                             `${this.context.dataTypes.cppType(dataType)} ${cppName} = ` +
@@ -15118,6 +15153,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     spread.dataType?.kind === "struct"
                 ) {
                     declareDefault();
+                    created.push({ struct: spread.dataType.name });
                     // A getter still runs where the spread reads it.
                     const excludedKeys = new Set(
                         this.context.dataTypes
@@ -15175,6 +15211,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     knownProperties = undefined;
                     declareDefault();
                     const innerType = spread.dataType.inner;
+                    created.push({ struct: innerType.name, maybe: true });
                     const pinned = this.context.bindings.pinValueToTemporary(
                         spread,
                         "spread_optional",
@@ -15225,6 +15262,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (key && ts.isPropertyAssignment(property)) {
                 knownProperties = undefined;
                 declareDefault();
+                created.push({ unordered: true });
                 for (const name of this.emitKeyedFieldWrite(
                     cppName + member,
                     dataType,
@@ -15238,6 +15276,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (ts.isPropertyAssignment(property)) {
                 declareDefault();
                 const field = fieldOf(this.knownKey(property.name), property);
+                created.push({ key: field.sourceName });
                 trackKnownField(
                     field.sourceName,
                     field,
@@ -15274,6 +15313,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (ts.isShorthandPropertyAssignment(property)) {
                 declareDefault();
                 const field = fieldOf(property.name.text, property);
+                created.push({ key: field.sourceName });
                 trackKnownField(
                     field.sourceName,
                     field,
@@ -15302,6 +15342,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     name === undefined ? undefined : fieldOf(name, property);
                 if (field?.type.kind === "function") {
                     declareDefault();
+                    created.push({ key: field.sourceName });
                     this.context.recordProxies.requireIndependentFunction(
                         field,
                         property,
@@ -15330,6 +15371,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             );
         }
         declareDefault();
+        this.noteLiteralCreation(literal, dataType, created);
         // An absent optional field keeps the default the declaration
         // stored, as a struct literal omitting it does; so does a lacked
         // field the next statements define, a placeholder until then.

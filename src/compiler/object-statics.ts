@@ -25,6 +25,7 @@ import {
 } from "./data-types.js";
 import { isJsonValue } from "./json-bridge.js";
 import { NativeRecordStorageRequired } from "./native-record-storage.js";
+import { ownKeyOrder, type CreatedKeys } from "./record-key-orders.js";
 import {
     heldRecord,
     storeLoweredRecordProperty,
@@ -124,13 +125,26 @@ type OwnObjectContext = OwnEntryContext &
 
 /** Raw descriptor order, with JavaScript's integer keys first. */
 export function recordPropertyKeys(owner: Value): string[] {
-    const keys = owner.recordPropertyOrder ?? [
-        ...Object.keys(owner.recordProperties ?? {}),
-        ...Object.keys(owner.recordMethods ?? {}),
-        ...Object.keys(owner.recordGetters ?? {}),
-        ...Object.keys(owner.recordSetters ?? {}),
-    ];
-    return Object.keys(Object.fromEntries(keys.map((key) => [key, undefined])));
+    return ownKeyOrder(
+        owner.recordPropertyOrder ?? [
+            ...Object.keys(owner.recordProperties ?? {}),
+            ...Object.keys(owner.recordMethods ?? {}),
+            ...Object.keys(owner.recordGetters ?? {}),
+            ...Object.keys(owner.recordSetters ?? {}),
+        ],
+    );
+}
+
+/**
+ * A compile-time record's own keys as a creation copying it makes them own
+ * (`RecordKeyOrders`): one a conditional spread wrote only maybe.
+ */
+export function recordCreatedKeys(owner: Value): CreatedKeys[] {
+    return recordPropertyKeys(owner).map((key) =>
+        owner.recordProperties?.[key]?.conditionalOwnKey
+            ? { key, maybe: true }
+            : { key },
+    );
 }
 
 /** Change a raw data property without replacing the alias-shared tables. */
@@ -338,10 +352,13 @@ export function ownEntries(
             .map(([key, member]) =>
                 context.dataLowerer.recordMemberEntry(key, member, node),
             );
-    if (owner.kind === "data" && owner.dataType?.kind === "struct")
+    if (owner.kind === "data" && owner.dataType?.kind === "struct") {
+        if (!owner.recordOwnKeys)
+            context.dataTypes.noteKeyEnumeration(owner.dataType.name, node);
         return structOwnEntries(context, owner, owner.dataType, node).filter(
             (entry) => !isSymbolPropertyKey(entry.key),
         );
+    }
     return undefined;
 }
 

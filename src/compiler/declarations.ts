@@ -6630,6 +6630,9 @@ export class DeclarationLowerer {
             initializer: this.context.dataLowerer.structAggregate(type, []),
         });
         // The rest object is fresh: each field still holds its absent default.
+        this.context.dataTypes.noteRecordCreation(type.name, [
+            { struct: source.dataType.name },
+        ]);
         this.context.dataLowerer.copyStructOwnProperties(
             { cpp: cppName, type },
             source,
