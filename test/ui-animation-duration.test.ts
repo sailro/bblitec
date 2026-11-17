@@ -27,8 +27,10 @@ const program = `
         document.body.appendChild(dot);
     }
     const inline = document.getElementById("inline")!;
-    inline.style.animationDuration = \`\${Number("1600")}ms\`;
-    inline.style.transitionDuration = \`\${Number("200")}ms\`;
+    // Numbers generation does not know: the durations are written at run time.
+    const runtimeZero = Math.floor(Math.random());
+    inline.style.animationDuration = \`\${1600 + runtimeZero}ms\`;
+    inline.style.transitionDuration = \`\${200 + runtimeZero}ms\`;
     globalThis.close();
 `;
 
