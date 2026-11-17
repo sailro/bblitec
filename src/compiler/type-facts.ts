@@ -658,6 +658,19 @@ export function objectLikeType(type: ts.Type): boolean {
     );
 }
 
+/** Whether a slot of this type holds a record: an object neither array-like nor callable or constructible. */
+export function recordObjectType(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): boolean {
+    return (
+        objectLikeType(type) &&
+        !checker.isArrayLikeType(type) &&
+        type.getCallSignatures().length === 0 &&
+        type.getConstructSignatures().length === 0
+    );
+}
+
 /**
  * An intersection a union keeps although the checker reduced it to
  * `never` (`B & { ok: true }` of `(A | B) & { ok: true }`, whose `ok` is

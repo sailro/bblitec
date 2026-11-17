@@ -596,6 +596,95 @@ void main();
         );
 });
 
+test("a packaged number read through records a repair writes only while they hold numbers folds", () => {
+    // `repair` may reach `config.look` (its records hold any record), but it
+    // writes a slot only while that slot holds a number, never the record
+    // `config.look.shade` holds; a write that may replace that record
+    // leaves the read at run time.
+    const compile = (after: string): CompileResult => {
+        const directory = resolve(
+            `artifacts/packaged-fetch-held-record-${after.length}`,
+        );
+        mkdirSync(join(directory, "public"), { recursive: true });
+        writeFileSync(
+            join(directory, "public", "config.json"),
+            `{"look":{"shade":{"scale":2.5,"tone":0.25}}}`,
+        );
+        writeFileSync(join(directory, "noop-worker.ts"), "self.close();\n");
+        return compileSource(
+            `import { createEngine, createSceneContext, createShaderMaterial, wgsl } from "@babylonjs/lite";
+interface Config { look: { shade: { scale: number; tone: number } } }
+const DEFAULTS: Config = { look: { shade: { scale: 2.5, tone: 0.25 } } };
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function deepMerge<T>(base: T, source: unknown): T {
+    if (!isPlainObject(base) || !isPlainObject(source)) return source === undefined ? base : (source as T);
+    const out: Record<string, unknown> = { ...(base as unknown as Record<string, unknown>) };
+    for (const key of Object.keys(source)) out[key] = isPlainObject(out[key]) ? deepMerge(out[key], source[key]) : source[key];
+    return out as unknown as T;
+}
+async function loadConfig(): Promise<Config> {
+    try {
+        const response = await fetch("/config.json");
+        if (!response.ok) return DEFAULTS;
+        const parsed = (await response.json()) as unknown;
+        return deepMerge(DEFAULTS, parsed);
+    } catch {
+        return DEFAULTS;
+    }
+}
+function repair(value: unknown, depth = 0): void {
+    if (depth > 4 || value === null || typeof value !== "object") return;
+    const record = value as Record<string, unknown>;
+    for (const key of Object.keys(record)) {
+        const child = record[key];
+        if (typeof child === "number") {
+            if (!Number.isFinite(child)) record[key] = 0;
+            continue;
+        }
+        repair(child, depth + 1);
+    }
+}
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*S*/ * /*T*/, 1.0); return out; }\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+const worker = new Worker(new URL("./noop-worker.ts", import.meta.url), { type: "module" });
+worker.terminate();
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    const config = await loadConfig();
+    repair(config);
+    ${after}
+    const vertex = VERTEX.replace("/*S*/", config.look.shade.scale.toFixed(2)).replace("/*T*/", config.look.shade.tone.toFixed(2));
+    createShaderMaterial({ name: "m", vertexSource: wgsl\`\${vertex}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+void main();
+`,
+            {
+                fileName: join(directory, "entry.ts"),
+                publicDir: join(directory, "public"),
+            },
+        );
+    };
+    assert.deepEqual(
+        compile("").manifest.customShaderPrograms.map((program) =>
+            /position \* ([0-9.]+) \* ([0-9.]+), 1\.0\)/
+                .exec(program.vertexSource)
+                ?.slice(1),
+        ),
+        [["2.50", "0.25"]],
+    );
+    assert.throws(
+        () =>
+            compile(
+                "const wipe = (value: unknown): void => { const record = value as Record<string, unknown>; for (const key of Object.keys(record)) { const child = record[key]; if (typeof child === 'object') record[key] = { scale: 3, tone: 3 }; } }; if (Date.now() < 0) wipe(config.look);",
+            ),
+        /'vertex' is bound as data without a static string/,
+    );
+});
+
 test("a packaged URL read from a packaged response's JSON keeps the document's values", (t) => {
     const directory = resolve("artifacts/packaged-fetch-document");
     const data = join(directory, "public", "data");

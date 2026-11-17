@@ -110,7 +110,9 @@ import {
     unionMembers,
     boundedTupleElements,
     stringLiteralValues,
+    recordObjectType,
 } from "./type-facts.js";
+import { HELD_RECORD } from "./value-guards.js";
 import {
     absentAwareEquality,
     absentAwareIdentity,
@@ -19175,12 +19177,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * (`builtRecordFieldIsWritten`): a read through a run-time key may be
      * any member. `leaf` "outer" asks of the members the read goes through
      * only; a known value asks of the read member too, a write that runs
-     * only while it holds another value not counted.
+     * only while it holds another value not counted. A member the read goes
+     * through holds the record the next read is made of: where its type is
+     * a record's, a write that runs only while it holds no record
+     * (`HELD_RECORD`) is not counted.
      */
     private membersStayAsBuilt(
         access: ts.Expression,
         leaf?: "outer" | { readonly value: unknown },
     ): boolean {
+        const { checker } = this.context;
         for (
             let node = this.context.unwrap(access);
             isMemberAccess(node);
@@ -19192,16 +19198,24 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (name === undefined) return false;
             const read = node === this.context.unwrap(access);
             if (read && leaf === "outer") continue;
+            const held = checker.getNonNullableType(
+                checker.getTypeAtLocation(node),
+            );
+            const holding = read
+                ? leaf !== "outer"
+                    ? leaf
+                    : undefined
+                : recordObjectType(checker, held)
+                  ? { value: HELD_RECORD }
+                  : undefined;
             if (
                 builtRecordFieldIsWritten(
                     this.context,
-                    this.context.checker.getNonNullableType(
-                        this.context.checker.getTypeAtLocation(node.expression),
+                    checker.getNonNullableType(
+                        checker.getTypeAtLocation(node.expression),
                     ),
                     name,
-                    read && leaf !== undefined && leaf !== "outer"
-                        ? leaf
-                        : undefined,
+                    holding,
                 )
             )
                 return false;

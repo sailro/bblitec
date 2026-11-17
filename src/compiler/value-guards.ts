@@ -79,6 +79,12 @@ export function writeGuardRejects(
     return false;
 }
 
+/**
+ * The value a guard reads in a slot holding a record: an object, neither
+ * an array nor a function.
+ */
+export const HELD_RECORD: unknown = Object.freeze({});
+
 /** The key a slot access names: a property's name, a literal key, or the symbol of a key variable. */
 function slotKey(
     checker: ts.TypeChecker,
@@ -214,6 +220,15 @@ function evaluateGuard(
             const b = right.known;
             const equality = equalityOperator(operator);
             if (equality) {
+                // An object loosely equals a primitive other than null or
+                // undefined by its own conversion, which a guard does not know.
+                if (
+                    equality.loose &&
+                    a != null &&
+                    b != null &&
+                    (typeof a === "object") !== (typeof b === "object")
+                )
+                    return undefined;
                 const equal = equality.loose ? a == b : a === b;
                 return { known: equality.negated ? !equal : equal };
             }
