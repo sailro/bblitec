@@ -18,6 +18,10 @@ import {
 } from "./program-observations.js";
 import { yieldsNewArray } from "./fresh-records.js";
 import { enclosedReference } from "./array-length-growth.js";
+import {
+    determinedTypeArguments,
+    mentionsTypeParameter,
+} from "./type-arguments.js";
 import { bindingReferences, soleBindingRead } from "./binding-references.js";
 import { OPEN_HOLDER_FLAGS } from "./written-holders.js";
 import {
@@ -606,7 +610,7 @@ function observedArrayWrites(
     const targetShape = arrayShape(checker, target);
     const targetMutable = targetShape?.mutable === true && !targetShape.tuple;
     const writtenHolder = (holder: ts.Type): boolean =>
-        holdsArray(checker, holder, [source, target], (element) => {
+        holdsArray(context, holder, [source, target], (element) => {
             if (
                 sourceElement === undefined ||
                 assignable(element, sourceElement) ||
@@ -631,6 +635,12 @@ function observedArrayWrites(
             buildsUnsharedArray(context, place.expression)
         );
     };
+    // A record write naming a key that is neither an index nor `length`
+    // changes no element and no length of an array it may reach.
+    const changesElements = (write: ObservedWrite): boolean =>
+        write.property === undefined ||
+        write.property === "length" ||
+        String(Number(write.property)) === write.property;
     if (
         writesWhere(
             observations,
@@ -638,7 +648,11 @@ function observedArrayWrites(
             counted,
             observations.arrayWrites,
         ) ||
-        writesWhere(observations, writtenHolder, counted)
+        writesWhere(
+            observations,
+            writtenHolder,
+            (write) => changesElements(write) && counted(write),
+        )
     )
         return "the program changes the elements of such arrays";
     return undefined;
@@ -680,7 +694,7 @@ function observedArrayIdentity(
     ];
     if (
         [...observations.identities].some((type) =>
-            holdsArray(checker, type, copyTypes, (element) =>
+            holdsArray(context, type, copyTypes, (element) =>
                 copyTypes.some((copy) => {
                     const own = arrayElementType(checker, copy);
                     return (
@@ -1062,20 +1076,24 @@ function receiverWrites(initializer: ts.Expression | undefined): string[] {
  * assignable to, or an array type whose element type `related` accepts.
  */
 function holdsArray(
-    checker: ts.TypeChecker,
+    context: RecordObservationContext,
     holder: ts.Type,
     arrays: readonly ts.Type[],
     related: (element: ts.Type) => boolean,
 ): boolean {
+    const { checker } = context;
     if (holder.isUnion() || holder.isIntersection())
         return holder.types.some((member) =>
-            holdsArray(checker, member, arrays, related),
+            holdsArray(context, member, arrays, related),
         );
     const element = arrayElementType(checker, holder);
     if (element === undefined || (holder.flags & ts.TypeFlags.Object) === 0)
         return holdsRecord(checker, holder, arrays);
-    // A type parameter's array holds what its constraint admits.
+    // A type parameter's array holds what its function's calls bind it to
+    // (`typeParameterBindings`), else what its constraint admits.
     if ((element.flags & ts.TypeFlags.TypeParameter) !== 0) {
+        const bound = typeParameterBindings(context, element);
+        if (bound) return bound.some(related);
         const constraint = checker.getBaseConstraintOfType(element);
         return (
             constraint === undefined ||
@@ -1093,6 +1111,86 @@ function holdsArray(
         );
     }
     return related(element);
+}
+
+/**
+ * What a function's type parameter stands for over the program: the type
+ * each call binds it to (`determinedTypeArguments`), where every reference
+ * to the function calls it, and a binding to a type parameter of the
+ * calling function stands for what that one does. Undefined where the
+ * parameter is no named function's, a reference hands the function on, or
+ * a binding is a type that mentions a type parameter.
+ */
+function typeParameterBindings(
+    context: RecordObservationContext,
+    parameter: ts.Type,
+    active: ReadonlySet<ts.Symbol> = new Set(),
+): readonly ts.Type[] | undefined {
+    const symbol = parameter.symbol;
+    if (!symbol || active.has(symbol)) return undefined;
+    let bound = typeParameterAnswers.get(symbol);
+    if (bound === undefined) {
+        bound =
+            boundTypeArguments(
+                context,
+                parameter,
+                new Set([...active, symbol]),
+            ) ?? null;
+        // An answer that leaned on an enclosing parameter being resolved
+        // is that resolution's alone.
+        if (active.size === 0) typeParameterAnswers.set(symbol, bound);
+    }
+    return bound ?? undefined;
+}
+
+/** @unjournaled {@link typeParameterBindings} by type parameter: pure functions of the checked program. */
+const typeParameterAnswers = new WeakMap<
+    ts.Symbol,
+    readonly ts.Type[] | null
+>();
+
+/** {@link typeParameterBindings}, computed. */
+function boundTypeArguments(
+    context: RecordObservationContext,
+    parameter: ts.Type,
+    active: ReadonlySet<ts.Symbol>,
+): readonly ts.Type[] | undefined {
+    const { program, checker } = context;
+    const declaration = parameter.symbol.declarations?.find(
+        ts.isTypeParameterDeclaration,
+    );
+    const owner = declaration?.parent;
+    const name =
+        owner && ts.isFunctionDeclaration(owner)
+            ? owner.name
+            : owner &&
+                (ts.isArrowFunction(owner) || ts.isFunctionExpression(owner)) &&
+                ts.isVariableDeclaration(owner.parent) &&
+                owner.parent.initializer === owner &&
+                variableKind(owner.parent) === "const" &&
+                ts.isIdentifier(owner.parent.name)
+              ? owner.parent.name
+              : undefined;
+    const binding = name && declaredSymbol(checker, name);
+    if (!owner || !binding || !ts.isFunctionLike(owner)) return undefined;
+    const types: ts.Type[] = [];
+    for (const site of bindingReferences(program, checker, binding)) {
+        const reference = outermostWrapper(site);
+        const call = reference.parent;
+        if (!ts.isCallExpression(call) || call.expression !== reference)
+            return undefined;
+        const type = determinedTypeArguments(checker, call, owner).get(
+            parameter.symbol,
+        );
+        if (!type) return undefined;
+        if ((type.flags & ts.TypeFlags.TypeParameter) !== 0) {
+            const outer = typeParameterBindings(context, type, active);
+            if (!outer) return undefined;
+            types.push(...outer);
+        } else if (mentionsTypeParameter(checker, type)) return undefined;
+        else types.push(type);
+    }
+    return types;
 }
 
 function observed(

@@ -9152,8 +9152,9 @@ test("keeps a length fold past writes that build another function's own array", 
 });
 
 test("withdraws the length fold past a write after another function shares its array", () => {
-    // `keep` hands its array to `sink` before pushing: once shared, the
-    // push may change any array of the type, `NONE.rules` included.
+    // `keep`, called with strings, hands its array to `sink` before
+    // pushing: once shared, the push may change any string array,
+    // `NONE.rules` included.
     assert.throws(
         () =>
             compileSource(`
@@ -9176,6 +9177,7 @@ test("withdraws the length fold past a write after another function shares its a
         }
         async function main() {
             await createEngine({});
+            keep([".b { width: 4px; }"], 1);
             const chosen = layer(false);
             const sheet = document.createElement("style");
             sheet.textContent = chosen.rules.length > 0 ? ".panel { width: 1px; }" : ".panel { width: 2px; }";
@@ -9185,6 +9187,51 @@ test("withdraws the length fold past a write after another function shares its a
     `),
         /Expected a string literal/,
     );
+});
+
+test("keeps a length fold past writes no call can aim at the array", () => {
+    // `append` only ever pushes numbers, `mark` writes a named key and
+    // `brand` defines one: none changes the elements or length of a
+    // string array, so the stylesheet the length selects stays a known
+    // string.
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        interface Layer {
+            readonly rules: readonly string[];
+            readonly bind: (n: number) => void;
+        }
+        const NONE: Layer = { rules: [], bind: () => {} };
+        function layer(on: boolean): Layer {
+            if (!on) return NONE;
+            return { rules: [".a { width: 3px; }"], bind: (n: number) => { console.log(n); } };
+        }
+        function append<T>(list: T[], item: T): void { list.push(item); }
+        function mark<T extends object>(item: T): T & { mark?: number } {
+            const copy: T & { mark?: number } = { ...item };
+            copy.mark = 2;
+            return copy;
+        }
+        function brand<T extends object>(item: T): T {
+            const copy = { ...item };
+            Object.defineProperty(copy, "id", { value: 1, enumerable: true, writable: false, configurable: false });
+            return copy;
+        }
+        const totals: number[] = [];
+        async function main() {
+            await createEngine({});
+            append(totals, 3);
+            mark({ x: 1 });
+            const chosen = layer(false);
+            const sheet = document.createElement("style");
+            sheet.textContent = chosen.rules.length > 0 ? ".panel { width: 1px; }" : ".panel { width: 2px; }";
+            document.head.appendChild(sheet);
+        }
+        void main();
+        void brand;
+    `);
+
+    assert.match(result.cpp, /ui_add_class_style[^\n]*"panel"[^\n]*width:2px/);
+    assert.doesNotMatch(result.cpp, /width:1px/);
 });
 
 test("builds ribbon paths through native nested loops", () => {
