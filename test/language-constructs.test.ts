@@ -179,6 +179,28 @@ check(
 );
 
 check(
+    "an-asserted-number-runs-its-operand-once",
+    `
+    // A call whose result is asserted a number, in a compound assignment,
+    // an argument and an operand: each read runs the call once.
+    let calls = 0;
+    function pick(flag: boolean): number | string {
+        calls++;
+        for (let i = 0; i < 1; i++) if (flag) return 1;
+        return 2;
+    }
+    const flags = JSON.parse("[true,false]") as boolean[];
+    let total = 0;
+    for (const flag of flags) total += pick(flag) as number;
+    let largest = 0;
+    for (const flag of flags) largest = Math.max(largest, pick(flag) as number);
+    const scaled = (pick(true) as number) * 3;
+    if (total !== 3 || largest !== 2 || scaled !== 3 || calls !== 5)
+        throw new Error("calls " + calls + " " + total + " " + largest + " " + scaled);
+`,
+);
+
+check(
     "split-evaluates-its-separator-once-and-keeps-a-limit",
     `
     const log: string[] = [];

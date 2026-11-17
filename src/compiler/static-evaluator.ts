@@ -454,6 +454,8 @@ export class StaticEvaluator {
         ) => Value | undefined,
         /** `Compiler.probeEmission`: a declined compile leaves no trace. */
         private readonly probeEmission: LoweringServices["probeEmission"],
+        /** `Compiler.keptEmission`: the same, without speculating. */
+        private readonly keptEmission: LoweringServices["keptEmission"],
         /** `DataLowerer.compileKnownValueForSink`: a value as a data sink stores it. */
         private readonly valueForSink: (
             value: Value,
@@ -845,14 +847,18 @@ export class StaticEvaluator {
                     );
                 return this.castNumber(value, precision);
             }
-            // A number or a parsed document, which the numeric sink coerces.
-            const asserted = this.resolveValue(assertion);
-            if (isNumericValue(asserted))
-                return this.castNumber(asserted, precision);
-            // An optional number slot behind a type the checker cannot see
-            // through (`unknown`) reads as ToNumber reads it too.
-            const slot = castOptionalNumber(asserted, true);
-            if (slot !== undefined) return slot;
+            // A number or a parsed document, which the numeric sink coerces,
+            // or an optional number slot behind a type the checker cannot
+            // see through (`unknown`), which reads as ToNumber reads it too.
+            // Any other value is the operand's to read below: what reading
+            // it here emitted is rolled back, or the operand would run twice.
+            const asserted = this.keptEmission(() => {
+                const value = this.resolveValue(assertion);
+                return isNumericValue(value)
+                    ? this.castNumber(value, precision)
+                    : castOptionalNumber(value, true);
+            });
+            if (asserted !== undefined) return asserted;
         }
         const awaited = unwrapExpression(expression);
         if (ts.isAwaitExpression(awaited)) {

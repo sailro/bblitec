@@ -1342,6 +1342,7 @@ class Compiler implements LoweringServices {
             (identifier) => this.inlinedArgumentText(identifier),
             (access) => this.dataLowerer.compileGuardableElementAccess(access),
             (probe, answered) => this.probeEmission(probe, answered),
+            (work, answered) => this.keptEmission(work, answered),
             (value, dataType, node) =>
                 this.dataLowerer.compileKnownValueForSink(
                     value,
