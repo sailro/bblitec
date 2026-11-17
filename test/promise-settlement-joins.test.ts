@@ -49,6 +49,11 @@ test("Promise reactions join owned results without changing scheduling or aliase
             const competitor=Promise.resolve().then(()=>{}).then(()=>{order+='b';});
             await Promise.all([converted,competitor]);
             if(order!=='ab')throw new Error('conversion job');
+            let recovery='';
+            const absent=Promise.reject<number>(new Error('source')).catch(()=>undefined).then(value=>{recovery+=value===undefined?'a':'x';});
+            const neighbour=Promise.resolve().then(()=>{}).then(()=>{recovery+='b';});
+            await Promise.all([absent,neighbour]);
+            if(recovery!=='ab')throw new Error('undefined recovery job');
             globalThis.close();
         })();
     `;

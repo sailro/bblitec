@@ -31,6 +31,9 @@ export function nativeReturnTsType(
     ) {
         return undefined;
     }
+    const promiseChecker = checker as ts.TypeChecker & {
+        getPromisedTypeOfPromise(candidate: ts.Type): ts.Type | undefined;
+    };
     if (
         (type.flags & ts.TypeFlags.Undefined) !== 0 &&
         declaration &&
@@ -39,13 +42,19 @@ export function nativeReturnTsType(
     ) {
         // A pure undefined supplier still returns a value to an optional
         // callback sink. Keep that sink's storage instead of lowering it as void.
+        // `undefined` is not a thenable: the storage is the one the sink's
+        // result settles to (a reaction's `TResult | PromiseLike<TResult>`
+        // settles to `TResult`).
         const contextual = checker.getContextualType(declaration);
         const signatures = contextual
             ? callSignatures(checker, contextual, "present")
             : [];
         const result =
             signatures.length === 1
-                ? checker.getReturnTypeOfSignature(signatures[0]!)
+                ? settledUnion(
+                      promiseChecker,
+                      checker.getReturnTypeOfSignature(signatures[0]!),
+                  )
                 : undefined;
         if (result?.isUnion()) {
             const absent = nullability(result);
@@ -54,9 +63,6 @@ export function nativeReturnTsType(
     }
     if (undefinedOnly(type)) return undefined;
     if (options.unwrapPromise === false) return type;
-    const promiseChecker = checker as ts.TypeChecker & {
-        getPromisedTypeOfPromise(candidate: ts.Type): ts.Type | undefined;
-    };
     let resolved = type;
     const seen = new Set<ts.Type>();
     // Awaited<T> is a conditional type when T is still generic. Unwrap only
