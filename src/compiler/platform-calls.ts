@@ -1901,11 +1901,12 @@ export class PlatformCalls {
                     const pixels = this.context.compileValue(pixelsExpression);
                     if (
                         pixels.kind !== "data" ||
-                        pixels.dataType?.kind !== "u8array"
+                        (pixels.dataType?.kind !== "u8array" &&
+                            pixels.dataType?.kind !== "u8clampedarray")
                     ) {
                         this.context.fail(
                             pixelsExpression,
-                            "Retained Canvas2D ImageData pixels must lower to a Uint8Array.",
+                            "Retained Canvas2D ImageData pixels must lower to a Uint8Array or a Uint8ClampedArray.",
                         );
                     }
                     return {

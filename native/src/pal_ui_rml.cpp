@@ -3356,9 +3356,9 @@ void ui_canvas_set_image_smoothing_quality(Engine& engine, UiElementHandle eleme
         ui_canvas(engine, element).drawing.image_smoothing_quality = std::move(value);
 }
 
-void ui_canvas_put_image_data(Engine& engine, UiElementHandle element, const js::U8Array& source,
-                              double source_width, double source_height, double destination_x,
-                              double destination_y) {
+void ui_canvas_put_image_data(Engine& engine, UiElementHandle element,
+                              std::span<const std::uint8_t> source, double source_width,
+                              double source_height, double destination_x, double destination_y) {
     auto& canvas = ui_canvas(engine, element);
     const int width = std::max(0, static_cast<int>(std::floor(source_width)));
     const int height = std::max(0, static_cast<int>(std::floor(source_height)));

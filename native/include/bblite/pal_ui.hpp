@@ -16,6 +16,7 @@
 #include <initializer_list>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -305,8 +306,25 @@ void ui_canvas_stroke_rect(Engine&, UiElementHandle, double, double, double, dou
 void ui_canvas_set_image_smoothing(Engine&, UiElementHandle, bool);
 /** An ImageSmoothingQuality enum value; any other string is ignored. */
 void ui_canvas_set_image_smoothing_quality(Engine&, UiElementHandle, std::string);
-void ui_canvas_put_image_data(Engine&, UiElementHandle, const js::U8Array&, double, double, double,
-                              double);
+/** `putImageData(new ImageData(rgba, width, height), dx, dy)` over the RGBA bytes of `rgba`. */
+void ui_canvas_put_image_data(Engine&, UiElementHandle, std::span<const std::uint8_t>, double,
+                              double, double, double);
+/** The same over a Uint8Array's bytes in place. */
+inline void ui_canvas_put_image_data(Engine& engine, UiElementHandle element,
+                                     const js::U8Array& rgba, double width, double height,
+                                     double destination_x, double destination_y) {
+    ui_canvas_put_image_data(engine, element,
+                             std::span<const std::uint8_t>(rgba.data(), rgba.size()), width, height,
+                             destination_x, destination_y);
+}
+/** The same over a Uint8ClampedArray's bytes in place. */
+inline void ui_canvas_put_image_data(Engine& engine, UiElementHandle element,
+                                     const js::U8CArray& rgba, double width, double height,
+                                     double destination_x, double destination_y) {
+    ui_canvas_put_image_data(engine, element,
+                             std::span<const std::uint8_t>(js::typed_array_bytes(rgba)), width,
+                             height, destination_x, destination_y);
+}
 /**
  * `drawImage(source, dx, dy[, dw, dh])` and `drawImage(source, sx, sy, sw, sh, dx, dy, dw, dh)`
  * from a canvas or img source: an image still loading draws nothing, a broken one throws.
