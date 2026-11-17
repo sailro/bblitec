@@ -7041,6 +7041,50 @@ void main();
     );
 });
 
+test("a static record's number field folds inside a Math call whatever another record's whole-object writes", () => {
+    // `reset` assigns over a `Toggle`, which the options type's `enabled`
+    // could view; the options record `limitOf` reads is a static one, so its
+    // `max` is what reading it yields. Writing that record leaves the read
+    // a run-time one.
+    const source = (body: string): string =>
+        `import { createEngine, createSceneContext, createShaderMaterial, wgsl } from "@babylonjs/lite";
+interface Opts { max?: number; enabled?: boolean }
+interface Toggle { enabled: boolean; label: string }
+const toggle: Toggle = { enabled: true, label: "a" };
+function reset(target: Toggle): void { Object.assign(target, { enabled: false }); }
+function limitOf(options: Opts = {}): number { return Math.max(1, options.max ?? 40); }
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    reset(toggle);
+    console.log(toggle.enabled);
+    ${body}
+    const vertex = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * \${limit.toFixed(1)}, 1.0); return out; }\`;
+    createShaderMaterial({ name: "m", vertexSource: wgsl\`\${vertex}\`, fragmentSource: wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+void main();
+`;
+    assert.deepEqual(
+        compileSource(
+            source("const limit = limitOf({ max: 30 });"),
+        ).manifest.customShaderPrograms.map(
+            (program) =>
+                /position \* ([0-9.]+)/.exec(program.vertexSource)?.[1] ?? "",
+        ),
+        ["30.0"],
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                source(
+                    "const opts: Opts = { max: 30 }; Object.assign(opts, { max: 50 }); const limit = limitOf(opts);",
+                ),
+            ),
+        /'vertex' is bound as data without a static string/,
+    );
+});
+
 test("a parameter's scalar no write in the program replaces keeps its value when another field is written", () => {
     // `opts.count` is written, so the parameter is mutated; the flags no write
     // in the program reaches keep their values, and the nine compose one program.

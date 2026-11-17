@@ -4065,8 +4065,8 @@ class Compiler implements LoweringServices {
      * The number a named record's field holds: its initializer's, when the
      * name is a static literal and that initializer re-reads alike; else the
      * bound number, when its binding still holds the record it was declared
-     * with and no write in the program (through this type or any view of
-     * it) can have replaced the field.
+     * with and, for a record in native storage, no write in the program
+     * (through this type or any view of it) can have replaced the field.
      */
     public staticProperty(
         access: ts.PropertyAccessExpression,
@@ -4092,14 +4092,17 @@ class Compiler implements LoweringServices {
         )
             return undefined;
         const property = owner.recordProperties?.[access.name.text];
+        // A static record's field is what reading it yields; only one in
+        // native storage can take a write through another view.
         if (
             property?.kind !== "number" ||
             property.parameterBinding ||
-            recordFieldIsWritten(
-                this,
-                this.checker.getTypeAtLocation(access.expression),
-                access.name.text,
-            )
+            (owner.kind !== "record" &&
+                recordFieldIsWritten(
+                    this,
+                    this.checker.getTypeAtLocation(access.expression),
+                    access.name.text,
+                ))
         )
             return undefined;
         return property.staticNumber;
