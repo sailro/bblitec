@@ -99,6 +99,33 @@ interface StandardMaterialSetters {
 }
 
 /**
+ * `uniformDecls` / `samplerDecls` / `storageBufferDecls`: the names
+ * createShaderMaterial pushed, in declaration order. The variant's uniform
+ * slots end with its lifted source numbers and its samplers with its
+ * externalTextures, which the pin's lists do not hold.
+ */
+const shaderDeclarationNamesCpp = `std::vector<std::string> shader_declaration_names(
+    Engine& engine, MaterialHandle material, ShaderDeclarationList list) {
+    const auto& info = upstream::shader_variant_info(shader_material(engine, material).shader_variant);
+    std::vector<std::string> names;
+    switch (list) {
+    case ShaderDeclarationList::uniforms:
+        for (auto slot = info.uniform_slots.begin(); slot != info.uniform_slots.end() - info.lifted_uniforms; ++slot)
+            names.emplace_back(slot->name);
+        break;
+    case ShaderDeclarationList::samplers:
+        names.assign(info.samplers.begin(), info.samplers.end() - info.external_textures);
+        break;
+    case ShaderDeclarationList::storage_buffers:
+        for (const auto& slot : info.storage_buffers) names.emplace_back(slot.name);
+        break;
+    }
+    return names;
+}
+
+`;
+
+/**
  * The material/texture half of the factory unit, completing the class:
  * node, shader, PBR, grid and Standard material factories plus the
  * pixels/file texture factories and the Standard texture setters.
@@ -322,7 +349,12 @@ void queue_node_material_group(Scene& scene, MeshHandle mesh) {
 
     public lowerShaderMaterialFactory({
         rangeUpdates = false,
-    }: { rangeUpdates?: boolean } = {}): LoweredSource {
+        declarationLists = false,
+    }: {
+        rangeUpdates?: boolean;
+        /** The scene reads a ShaderMaterial's declaration lists. */
+        declarationLists?: boolean;
+    } = {}): LoweredSource {
         const modulePath = "src/material/shader/shader-material.ts";
         const { declaration } = this.context.functionDeclaration(
             modulePath,
@@ -663,7 +695,7 @@ void set_shader_storage_buffer(
 
 ${lowerShaderStorageNameBinding(this.context)}
 
-#if BBLITE_SHADOWS_CSM
+${declarationLists ? shaderDeclarationNamesCpp : ""}#if BBLITE_SHADOWS_CSM
 void set_shader_csm_texture(
     Engine& engine,
     MaterialHandle material,

@@ -936,6 +936,12 @@ export interface CompiledShaderProgram {
     readonly fragmentSource: string;
     readonly attributes: string[];
     readonly uniforms: string[];
+    /**
+     * How many trailing `uniforms` entries are source numbers lifted into
+     * uniforms (`compileShaderSource`); the pin's `uniformDecls` holds the
+     * entries before them. Absent when none are.
+     */
+    readonly liftedUniforms?: number;
     readonly uniformDefaults: CompiledShaderUniformDefault[];
     /**
      * The `samplers` list: each name reaches WGSL as the pin's own
@@ -3528,6 +3534,7 @@ export type Feature =
     | "material:node-inputs"
     | "material:shader"
     | "material:shader-uniform-ranges"
+    | "material:shader-declaration-lists"
     | "material:shader-storage"
     | "material:shader-external-texture"
     | "material:standard"

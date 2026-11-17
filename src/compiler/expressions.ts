@@ -117,6 +117,7 @@ import {
 } from "./audio-surface.js";
 import { compileLibraryPrototype } from "./prototype-values.js";
 import { compileVatMethodCall } from "./intrinsics/vat.js";
+import { compileShaderDeclarationSearch } from "./shader-declaration-lists.js";
 import { compilePhysicsMethodCall } from "./physics-surface.js";
 import { compileCustomEventConstructor } from "./custom-events.js";
 import { compileSyntheticEventConstructor } from "./synthetic-events.js";
@@ -344,6 +345,7 @@ export interface ExpressionContext
             | "nativeFunctions"
             | "symbols"
             | "bindings"
+            | "allocateBlockPrefix"
             | "unwrap"
             | "unwrapValue"
             | "expectArgumentCount"
@@ -8158,6 +8160,7 @@ export class ExpressionLowerer {
         // probe compiles their owner. A fused `meshes.map(...).find(...)`
         // has no native intermediate array for that probe to lower.
         const found =
+            compileShaderDeclarationSearch(this.context, call, member) ??
             this.context.handleCollections.compileFind(call, member) ??
             this.context.handleCollections.compileSome(call, member) ??
             this.context.handleCollections.compileFilter(call, member);

@@ -426,6 +426,9 @@ export function compileShaderMaterialOptions(
         fragmentSource,
         attributes,
         uniforms,
+        ...(dynamicSourceUniforms.length > 0
+            ? { liftedUniforms: dynamicSourceUniforms.length }
+            : {}),
         uniformDefaults,
         samplers,
         samplerDeclarations,

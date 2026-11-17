@@ -5,7 +5,7 @@ import {
     valueForKind,
     withNativeMetadata,
 } from "./types.js";
-import type { ValueBase } from "./types.js";
+import type { ValueBase, ValueFields } from "./types.js";
 // Handle collections carry engine identity, generation-known members and asset traversal contracts.
 import { EmissionSet, EmissionMap, writable } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
@@ -109,6 +109,10 @@ interface HandleCollectionLoopContext extends Pick<
     | "registerNativeConstBinding"
 > {}
 
+/** Fields a loop's bound element carries, or a builder of them from its native item. */
+export type ElementFields =
+    Partial<ValueBase> | ((item: string) => Partial<ValueFields>);
+
 /**
  * The emitted range-for over an engine handle collection: the loop, its
  * scope, and the binding the body reads. Both the `for...of` lowering and
@@ -133,9 +137,10 @@ export function emitHandleCollectionLoop<
      * Fields the caller licenses on the bound member, beyond the handle
      * itself. Only a caller that has PROVEN what its loop covers may add
      * one: the flatten walk carries the container it visits in full, and no
-     * other collection can say that about its members.
+     * other collection can say that about its members. A shader material's
+     * declaration list builds its entry, a record of the item's name, here.
      */
-    extraBinding?: Partial<ValueBase>,
+    extraBinding?: ElementFields,
 ): void {
     const item = context.allocateTemporaryCppName(target.temporaryLabel);
     context.emit({
@@ -168,7 +173,9 @@ export function emitHandleCollectionLoop<
                       ],
                   }
                 : {}),
-            ...(extraBinding ?? {}),
+            ...(typeof extraBinding === "function"
+                ? extraBinding(item)
+                : (extraBinding ?? {})),
         });
         const bound = target.elementTemplate
             ? withNativeMetadata(value, target.elementTemplate)
@@ -181,6 +188,111 @@ export function emitHandleCollectionLoop<
         context.decreaseIndent();
     }
     context.emit({ kind: "close", code: "}" });
+}
+
+/** A search's one arrow argument: the element parameter and the test. */
+export function searchPredicate(
+    context: Pick<LoweringServices, "expectArgumentCount" | "unwrap" | "fail">,
+    call: ts.CallExpression,
+    method: string,
+): ts.ArrowFunction {
+    context.expectArgumentCount(call, 1, 1);
+    const predicate = context.unwrap(argumentAt(call, 0));
+    if (
+        !ts.isArrowFunction(predicate) ||
+        predicate.parameters.length !== 1 ||
+        !ts.isIdentifier(predicate.parameters[0]!.name) ||
+        ts.isBlock(predicate.body)
+    ) {
+        context.fail(
+            call.arguments[0] ?? call,
+            `${method} takes an arrow whose one parameter is the element and whose body is the test.`,
+        );
+    }
+    return predicate;
+}
+
+/**
+ * The loaded loop `find` and `some` run over a native collection: the
+ * test, the caller's own expression with the element bound, runs in
+ * collection order and stops at the first match. Returns the flag saying
+ * whether one matched and the variable holding the match, declared only
+ * when the caller reads it.
+ */
+export function emitCollectionSearch<
+    Context extends HandleCollectionLoopContext &
+        Pick<LoweringServices, "conditions" | "fail">,
+>(
+    context: Context,
+    target: Parameters<typeof emitHandleCollectionLoop>[1],
+    predicate: ts.ArrowFunction,
+    /** Only whether one matched: the match itself is never read. */
+    presenceOnly: boolean,
+    /** What the bound element carries beyond its native item. */
+    elementFields?: ElementFields,
+): { match: string; found: string } {
+    const predicateParameter = predicate.parameters[0]?.name;
+    if (!predicateParameter || !ts.isIdentifier(predicateParameter)) {
+        context.fail(
+            predicate,
+            "Handle searches require one identifier parameter.",
+        );
+    }
+
+    const match = context.allocateTemporaryCppName(
+        `${target.temporaryLabel}_match`,
+    );
+    const found = context.allocateTemporaryCppName(
+        `${target.temporaryLabel}_found`,
+    );
+    if (!presenceOnly)
+        context.emit({
+            kind: "declaration",
+            type: target.elementCppType,
+            name: match,
+            initializer: "",
+            initialization: "default",
+        });
+    // A caller may use the selected handle without testing the optional
+    // result (for example, a scene whose asset contract guarantees the
+    // named camera). The search still needs the flag for callers that do
+    // test it and for optional composition, so keep it and make that
+    // deliberate unused case warning-clean.
+    context.emit({
+        kind: "declaration",
+        type: "bool",
+        name: found,
+        initializer: "false",
+        attributes: "[[maybe_unused]] ",
+    });
+    emitHandleCollectionLoop(
+        context,
+        target,
+        predicateParameter,
+        (context) => {
+            const item = context.bindings.lookup(predicateParameter).cpp;
+            const test = context.conditions.compileCondition(
+                predicate.body as ts.Expression,
+            );
+            context.emit({ kind: "open", code: `if (${test}) {` });
+            context.increaseIndent();
+            if (!presenceOnly)
+                context.emit({
+                    kind: "expression",
+                    code: `${match} = ${item};`,
+                });
+            context.emit({ kind: "expression", code: `${found} = true;` });
+            context.emit({
+                kind: "control",
+                code: "break;",
+                transfer: "break",
+            });
+            context.decreaseIndent();
+            context.emit({ kind: "close", code: "}" });
+        },
+        elementFields,
+    );
+    return { match, found };
 }
 
 /** What the collection operations need from the entry compiler. */
@@ -1971,7 +2083,7 @@ export class HandleCollections {
         if (!target) {
             return undefined;
         }
-        const predicate = this.searchPredicate(call, "find");
+        const predicate = searchPredicate(this.context, call, "find");
         const resolved =
             bound?.handleCollection?.asset !== undefined
                 ? this.staticFind(
@@ -2006,31 +2118,10 @@ export class HandleCollections {
         if (callee.name !== "some") return undefined;
         const target = this.iterationTarget(callee.expression);
         if (!target) return undefined;
-        const predicate = this.searchPredicate(call, "some");
+        const predicate = searchPredicate(this.context, call, "some");
         return booleanValue(
             this.runtimeFind(target, predicate, true).optionalFoundCpp!,
         );
-    }
-
-    /** A search's one arrow argument: the element parameter and the test. */
-    private searchPredicate(
-        call: ts.CallExpression,
-        method: string,
-    ): ts.ArrowFunction {
-        this.context.expectArgumentCount(call, 1, 1);
-        const predicate = this.context.unwrap(argumentAt(call, 0));
-        if (
-            !ts.isArrowFunction(predicate) ||
-            predicate.parameters.length !== 1 ||
-            !ts.isIdentifier(predicate.parameters[0]!.name) ||
-            ts.isBlock(predicate.body)
-        ) {
-            this.context.fail(
-                call.arguments[0] ?? call,
-                `${method} takes an arrow whose one parameter is the element and whose body is the test.`,
-            );
-        }
-        return predicate;
     }
 
     /**
@@ -2630,68 +2721,14 @@ export class HandleCollections {
         /** Only whether one matched: the match itself is never read. */
         presenceOnly = false,
     ): Value {
-        const predicateParameter = predicate.parameters[0]?.name;
-        if (!predicateParameter || !ts.isIdentifier(predicateParameter)) {
-            this.context.fail(
-                predicate,
-                "Handle searches require one identifier parameter.",
-            );
-        }
-
-        const result = this.context.allocateTemporaryCppName(
-            `${target.temporaryLabel}_match`,
-        );
-        const found = this.context.allocateTemporaryCppName(
-            `${target.temporaryLabel}_found`,
-        );
-        if (!presenceOnly)
-            this.context.emit({
-                kind: "declaration",
-                type: target.elementCppType,
-                name: result,
-                initializer: "",
-                initialization: "default",
-            });
-        // A caller may use the selected handle without testing the optional
-        // result (for example, a scene whose asset contract guarantees the
-        // named camera). The search still needs the flag for callers that do
-        // test it and for optional composition, so keep it and make that
-        // deliberate unused case warning-clean.
-        this.context.emit({
-            kind: "declaration",
-            type: "bool",
-            name: found,
-            initializer: "false",
-            attributes: "[[maybe_unused]] ",
-        });
-        emitHandleCollectionLoop(
+        const { match, found } = emitCollectionSearch(
             this.context,
             target,
-            predicateParameter,
-            (context) => {
-                const item = context.bindings.lookup(predicateParameter).cpp;
-                const test = context.conditions.compileCondition(
-                    predicate.body as ts.Expression,
-                );
-                context.emit({ kind: "open", code: `if (${test}) {` });
-                context.increaseIndent();
-                if (!presenceOnly)
-                    context.emit({
-                        kind: "expression",
-                        code: `${result} = ${item};`,
-                    });
-                context.emit({ kind: "expression", code: `${found} = true;` });
-                context.emit({
-                    kind: "control",
-                    code: "break;",
-                    transfer: "break",
-                });
-                context.decreaseIndent();
-                context.emit({ kind: "close", code: "}" });
-            },
+            predicate,
+            presenceOnly,
         );
         return valueForKind(target.elementKind, {
-            cpp: result,
+            cpp: match,
             engineCpp: target.engineCpp,
             optionalFoundCpp: found,
         });

@@ -1867,6 +1867,9 @@ ${lowerThinInstanceSync(context)}
                 rangeUpdates: features.includes(
                     "material:shader-uniform-ranges",
                 ),
+                declarationLists: features.includes(
+                    "material:shader-declaration-lists",
+                ),
             }),
         );
         emitReached("upstream/src/material_shader_external.cpp", () =>
@@ -3256,6 +3259,9 @@ ${wgsl}`,
                         "camera:view-projection",
                     ),
                     shaderPrograms: options.shaderPrograms,
+                    shaderDeclarationLists: features.includes(
+                        "material:shader-declaration-lists",
+                    ),
                 }),
                 generated,
                 "upstream/include/bblite/upstream/renderer_plan.hpp",
@@ -3364,6 +3370,9 @@ ${wgsl}`,
                     ),
                     orthographicCamera: features.includes(
                         "camera:orthographic",
+                    ),
+                    shaderDeclarationLists: features.includes(
+                        "material:shader-declaration-lists",
                     ),
                 }),
                 generated,

@@ -117,8 +117,10 @@ import {
 import {
     emitHandleCollectionLoop,
     isRecursiveImportedMeshWalk,
+    type ElementFields,
     type HandleCollectionTarget,
 } from "./handle-collections.js";
+import { shaderDeclarationWalk } from "./shader-declaration-lists.js";
 import { recordAt } from "./record-access.js";
 import { ownEntries } from "./object-statics.js";
 import { ASSIGNMENT_OPERATORS } from "../lowering/pinned-operators.js";
@@ -148,6 +150,7 @@ interface StatementLoweringContext extends Pick<
     | "refusedDemand"
     | "bindEmptyStorage"
     | "checker"
+    | "program"
     | "symbols"
     | "dataTypes"
     | "sceneManifest"
@@ -3563,6 +3566,9 @@ export class StatementLowerer {
         if (this.emitAssetFlattenedMeshesForOf(context, statement, head)) {
             return;
         }
+        if (this.emitShaderDeclarationForOf(context, statement, head)) {
+            return;
+        }
         if (this.emitHandleCollectionForOf(context, statement, head)) {
             return;
         }
@@ -4219,7 +4225,7 @@ export class StatementLowerer {
         statement: ts.ForOfStatement,
         head: LoopHead,
         target: HandleCollectionTarget,
-        extraBinding?: Partial<Value>,
+        extraBinding?: ElementFields,
     ): void {
         const binding = headIdentifier(head);
         if (!binding) {
@@ -4262,6 +4268,27 @@ export class StatementLowerer {
         } else {
             emitBody();
         }
+    }
+
+    /** `for (const decl of <material>.uniformDecls)` and its sibling lists. */
+    private emitShaderDeclarationForOf(
+        context: StatementLoweringContext,
+        statement: ts.ForOfStatement,
+        head: LoopHead,
+    ): boolean {
+        const binding = headIdentifier(head);
+        const walk =
+            binding &&
+            shaderDeclarationWalk(context, statement.expression, binding);
+        if (!walk) return false;
+        this.emitCollectionForOfBody(
+            context,
+            statement,
+            head,
+            walk.target,
+            walk.entry,
+        );
+        return true;
     }
 
     private emitHandleCollectionForOf(
