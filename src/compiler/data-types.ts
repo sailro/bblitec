@@ -8451,6 +8451,16 @@ export class DataTypeRegistry {
         ) {
             return true;
         }
+        // A mapped type over a parameter (`Omit<T, "id">`) has no members
+        // to walk: its alias arguments name what it maps.
+        if (
+            (objectType.objectFlags & ts.ObjectFlags.Mapped) !== 0 &&
+            type.aliasTypeArguments?.some((argument) =>
+                this.mentionsSubstitution(argument, seen),
+            )
+        ) {
+            return true;
+        }
         if (
             callSignatures(this.checker, type, "exact").some(
                 (signature) =>
@@ -8615,6 +8625,8 @@ export class DataTypeRegistry {
 
     /** Intersection constraints keep their refinements without hiding concrete generic fields. */
     private structProperties(type: ts.Type): readonly ts.Symbol[] {
+        const keyed = this.keyedProperties(type);
+        if (keyed) return keyed;
         const declared = this.checker.getPropertiesOfType(type);
         // A literal's fields follow the order its own keys are created in.
         const order = this.objectLiteralKeyOrder(type);
@@ -8634,9 +8646,10 @@ export class DataTypeRegistry {
         const byName = new Map<string, ts.Symbol>();
         for (const member of type.types) {
             const concrete = this.resolveTypeParameter(member);
-            for (const property of concrete.isIntersection()
-                ? this.structProperties(concrete)
-                : this.checker.getPropertiesOfType(concrete))
+            for (const property of this.keyedProperties(concrete) ??
+                (concrete.isIntersection()
+                    ? this.structProperties(concrete)
+                    : this.checker.getPropertiesOfType(concrete)))
                 if (!byName.has(property.name))
                     byName.set(
                         property.name,
@@ -8646,6 +8659,33 @@ export class DataTypeRegistry {
         for (const property of properties)
             if (!byName.has(property.name)) byName.set(property.name, property);
         return [...byName.values()];
+    }
+
+    /**
+     * The properties of `Pick<T, K>` or `Omit<T, K>` whose arguments the
+     * instantiation in force substitutes: those of `T` that `K`'s literal
+     * keys select, or leave, each keeping its modifiers, as the library's
+     * homomorphic mapped type does. Undefined for any other type and for
+     * keys that are not string literals.
+     */
+    private keyedProperties(type: ts.Type): readonly ts.Symbol[] | undefined {
+        const alias = libraryName(type.aliasSymbol);
+        const [record, keys] = type.aliasTypeArguments ?? [];
+        if (
+            (alias !== "Pick" && alias !== "Omit") ||
+            !record ||
+            !keys ||
+            !this.mentionsSubstitution(type)
+        )
+            return undefined;
+        const names = new Set<string>();
+        for (const key of unionMembers(this.resolveTypeParameter(keys))) {
+            if (!key.isStringLiteral()) return undefined;
+            names.add(key.value);
+        }
+        return this.structProperties(this.resolveTypeParameter(record)).filter(
+            (property) => names.has(property.name) === (alias === "Pick"),
+        );
     }
 
     /**

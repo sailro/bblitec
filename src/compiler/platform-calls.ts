@@ -806,11 +806,22 @@ export class PlatformCalls {
                 };
             }
         }
+        // The receiver the render surface stands for: a canvas a name holds,
+        // or the erased primary canvas a record field holds (`deps.canvas`).
+        const renderCanvas = (): boolean => {
+            if (ts.isIdentifier(receiver))
+                return this.context.isCanvasElement(receiver);
+            const field =
+                this.context.browserErasure.browserRecordField(receiver);
+            return (
+                field?.browserValue?.kind === "object" &&
+                field.browserValue.primaryCanvas === true
+            );
+        };
         if (
             callee.name === "focus" &&
             call.arguments.length === 0 &&
-            ts.isIdentifier(receiver) &&
-            this.context.isCanvasElement(receiver)
+            renderCanvas()
         ) {
             return {
                 kind: "void",
@@ -820,8 +831,7 @@ export class PlatformCalls {
         if (
             callee.name === "requestPointerLock" &&
             call.arguments.length === 0 &&
-            ts.isIdentifier(receiver) &&
-            this.context.isCanvasElement(receiver)
+            renderCanvas()
         ) {
             return {
                 kind: "void",

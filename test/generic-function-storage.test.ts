@@ -534,6 +534,44 @@ check(
 `,
 );
 
+check(
+    "omitted-rest-under-instantiation",
+    `
+    interface Token { readonly key: number }
+    function attach<T extends object>(row: T, id: Token): T & { readonly id: Token } {
+        const item = { ...row } as T & { readonly id: Token };
+        Object.defineProperty(item, "id", { value: id, enumerable: true, writable: false, configurable: false });
+        return item;
+    }
+    function strip<T extends { readonly id: Token }>(row: T): Omit<T, "id"> {
+        const { id: _id, ...rest } = row;
+        return rest;
+    }
+    function cloneRows<T extends { readonly id: Token }>(
+        input: readonly T[],
+        clone: (row: Omit<T, "id">) => Omit<T, "id">,
+    ): Array<Omit<T, "id"> & { readonly id: Token }> {
+        const items: Array<Omit<T, "id"> & { readonly id: Token }> = [];
+        let key = 10;
+        for (const row of input) {
+            const { id: _sourceId, ...withoutId } = row;
+            items.push(attach(clone(withoutId), { key: key++ }));
+        }
+        return items;
+    }
+    const slit = attach({ tower: 2, height: 1.5 }, { key: 1 });
+    const stripped = strip(slit);
+    if (stripped.tower !== 2 || stripped.height !== 1.5 || Object.keys(stripped).join() !== "tower,height")
+        throw new Error("omitted rest");
+    const other = strip(attach({ side: -1 }, { key: 2 }));
+    if (other.side !== -1 || Object.keys(other).join() !== "side") throw new Error("second instantiation");
+    const clones = cloneRows([slit, attach({ tower: 3, height: 0.5 }, { key: 3 })], (row) => ({ ...row, tower: row.tower + 5 }));
+    if (clones.length !== 2 || clones[0]!.tower !== 7 || clones[1]!.height !== 0.5 || clones[1]!.id.key !== 11 ||
+        Object.keys(clones[0]!).join() !== "tower,height,id")
+        throw new Error("cloned rows");
+    `,
+);
+
 test("Arguments object unsupported mutations and unconstrained storage refuse explicitly", () => {
     for (const mutation of [
         "arguments[0]=3;",

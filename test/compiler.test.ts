@@ -17499,6 +17499,23 @@ test("projects render-canvas focus into native host state", () => {
     assert.match(result.cpp, /bbl::focus_canvas\(v_engine\)/);
 });
 
+test("a record field holding the erased render canvas focuses and locks the render surface", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        interface Deps { canvas: HTMLCanvasElement }
+        async function main(deps: Deps) {
+            const engine = await createEngine(deps.canvas);
+            deps.canvas.focus();
+            deps.canvas.addEventListener("click", () => { void deps.canvas.requestPointerLock(); });
+            void engine;
+        }
+        void main({ canvas: document.getElementById("renderCanvas") as HTMLCanvasElement });
+    `);
+
+    assert.match(result.cpp, /bbl::focus_canvas\(v_fn\d+_engine\)/);
+    assert.match(result.cpp, /bbl::request_pointer_lock\(v_fn\d+_engine\)/);
+});
+
 test("lowers dynamic engine canvas cursor writes", () => {
     const result = compileSource(`
         import { createEngine } from "@babylonjs/lite";

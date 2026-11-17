@@ -1132,7 +1132,7 @@ export class BrowserErasure {
      * names (a record parameter's `deps.canvas`, nested records too): the
      * read erases as a name bound to that value does.
      */
-    private browserRecordField(expression: ts.Expression): Value | undefined {
+    public browserRecordField(expression: ts.Expression): Value | undefined {
         const field = ts.isPropertyAccessExpression(expression)
             ? this.recordField(expression)
             : undefined;
