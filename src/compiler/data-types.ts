@@ -338,6 +338,7 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
     PointerDrag: "pointer-drag",
     SceneContext: "scene",
     RenderTarget: "render-target",
+    RenderTargetTextureResult: "render-target-texture",
     SceneColorGrab: "transmission-grab",
     SceneNode: "scene-node",
     LightBase: "light",

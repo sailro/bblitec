@@ -5597,6 +5597,45 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     "nullish_handle",
                     expression,
                 );
+            // Handles of one kind whose engines are spelled apart select as
+            // engine-owned storage, each arm paired with its own engine, as
+            // a conditional between them does.
+            if (
+                !pair &&
+                fallbackFound === undefined &&
+                fallback.kind === left.kind &&
+                isHandleKind(left.kind) &&
+                isEngineScopedHandleKind(left.kind) &&
+                left.engineCpp !== undefined &&
+                fallback.engineCpp !== undefined &&
+                left.engineCpp !== fallback.engineCpp
+            ) {
+                const owned: DataType<"handle"> = {
+                    kind: "handle",
+                    handle: left.kind,
+                    ownedEngine: true,
+                };
+                const { optionalFoundCpp: _found, ...present } = left;
+                const found = this.compileKnownValueForSink(
+                    present,
+                    owned,
+                    expression.left,
+                );
+                return this.context.bindings.pinValueToTemporary(
+                    this.leafValue(
+                        `(${leftFound} ? ${found} : ${fallbackArm(owned, () =>
+                            this.compileKnownValueForSink(
+                                fallback,
+                                owned,
+                                expression.right,
+                            ),
+                        )})`,
+                        owned,
+                    ),
+                    "nullish_handle",
+                    expression,
+                );
+            }
             // A Texture2D has several native storages; a stored texture's
             // fallback is stored the same way, whichever factory made it.
             const storedTexture =

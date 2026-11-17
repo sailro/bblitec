@@ -1284,6 +1284,17 @@ export const propertyRules: readonly PropertyRule[] = [
         knownPresent: (owner: Value) => owner.shaderVariant !== undefined,
     },
     {
+        // `ShaderMaterial.depthWrite`, fixed at creation; another material has none.
+        owner: "material",
+        property: "depthWrite",
+        value: "data",
+        dataType: { kind: "optional", inner: { kind: "boolean" } },
+        helper: "bbl::shader_material_depth_write",
+        helperTakesEngine: true,
+        helperReturnsFreshData: true,
+        knownPresent: (owner: Value) => owner.shaderVariant !== undefined,
+    },
+    {
         // Material is the polymorphic source object, and every loader copies
         // its authored name onto it. A mapped walk over `scene.meshes` uses this
         // field to find one shared glTF material before mutating its texture.

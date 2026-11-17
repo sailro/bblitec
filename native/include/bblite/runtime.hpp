@@ -2049,6 +2049,8 @@ struct RenderTargetTexture {
     RenderTargetHandle rt{};
     RenderTextureRef texture{};
     RenderTextureRef depth_texture{};
+    /** Each `createRenderTargetTexture` result owns a target of its own. */
+    [[nodiscard]] bool operator==(const RenderTargetTexture& other) const { return rt == other.rt; }
 };
 
 /**
@@ -6615,6 +6617,15 @@ inline js::Nullable<bool> shader_material_alpha_blending(const Engine& engine,
     if (!record.shader_material)
         return {};
     return {record.alpha_mode == MaterialAlphaMode::blend};
+}
+
+/** `ShaderMaterial.depthWrite` (`options.depthWrite ?? !needAlphaBlending`); none on another material. */
+inline js::Nullable<bool> shader_material_depth_write(const Engine& engine,
+                                                      MaterialHandle material) {
+    const auto& record = handle_at(engine.materials, material);
+    if (!record.shader_material)
+        return {};
+    return {record.shader_depth_write};
 }
 
 /** A tracked color element write marks the source UBO dirty; the next draw reads the array. */

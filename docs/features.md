@@ -377,7 +377,7 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
   unknown material selections require a recorded shader/mesh association and validate the compiled lanes before drawing.
   Unused scene-local shader materials retain their IDs and resource slots without compiling stages; task overrides
   participate in mesh-layout discovery and retain their own texture bindings, including runtime replacements.
-  `needAlphaBlending` reads the shader factory's flag; other material families yield `undefined`.
+  `needAlphaBlending` and `depthWrite` read the shader factory's flags; other material families yield `undefined`.
   Alpha-to-coverage on Standard, PBR and shader materials; NodeMaterial refuses. Storage uploads preserve typed-array, DataView and ArrayBufferView byte ranges.
   `_shadowCasterMaterial` reads preserve the optional caster handle; writes bind an alternate shader caster during
   unconditional setup before scene registration. PCF/CSM creates cached shader no-color views and follows caster
@@ -491,6 +491,8 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
   presence: set for the swapchain, an eager target, and a target the frame graph's registration or
   `buildFrameGraphTask` built (render, effect, copy, geometry and post-process task outputs), until it is disposed.
 - A render target's `samples` may be decided at run time (1 or 4). An option written `undefined` is that option unset.
+- A `RenderTargetTextureResult` is storable data and a parameter type (`<T extends RenderTargetTextureResult>`).
+  Engine resources joined by `??` keep the engine each operand names.
 - A copy task's `ownsTargetTexture: true` takes a surface-sized target (rebuilt at each resize); a fixed one refuses
   at run time.
 - Render and effect render task `dispose()` releases owned targets (not the swapchain's); executing a disposed task refuses.

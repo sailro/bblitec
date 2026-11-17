@@ -59,6 +59,7 @@ export type HandleKind =
     | "touch"
     | "scene"
     | "render-target"
+    | "render-target-texture"
     | "transmission-grab"
     | "scene-node"
     | "light"
