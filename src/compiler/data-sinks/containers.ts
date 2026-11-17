@@ -629,6 +629,8 @@ function requireGrowableTuple(
         throw new DynamicBindingStorageRequired(declaration, "array");
     // A record property's tuples take growable array storage likewise.
     requireTupleArraySlot(lowerer.context.tupleArraySlots, value);
+    // Nothing grows an array through a field declared as a read-only view.
+    if (value.readonlyArraySlot) return;
     lowerer.context.fail(
         node,
         "A fixed-length tuple stored as a number array could grow through that array, which its native storage cannot follow; give it number[] storage or store a copy ([...tuple]).",

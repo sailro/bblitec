@@ -720,16 +720,26 @@ export function presentLiteralKeys(
 
 /**
  * Whether the slot `expression` is stored into is typed so that nothing can
- * change an array's length through it: its contextual type is known and no
- * present member is a growable array (`readonly number[]`, `ArrayLike`,
- * primitives).
+ * change an array's length through it: its contextual type is known and
+ * holds no growable array (`readonlyArrayType`).
  */
 export function storedAsReadonlyArray(
     checker: ts.TypeChecker,
     expression: ts.Expression,
 ): boolean {
     const type = checker.getContextualType(expression);
-    if (type === undefined) return false;
+    return type !== undefined && readonlyArrayType(checker, type);
+}
+
+/**
+ * Whether nothing can change an array's length through a slot of `type`:
+ * no present member is a growable array (`readonly number[]`, `ArrayLike`,
+ * primitives).
+ */
+export function readonlyArrayType(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): boolean {
     const members = presentMembers(type);
     return (
         members.length > 0 &&

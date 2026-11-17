@@ -10862,6 +10862,127 @@ test("numeric tuple parameters refuse array parameters that may grow them", () =
 });
 
 check(
+    "fresh-literal-built-in-the-one-record-type-it-reaches",
+    `
+    interface Sight { point: ArrayLike<number>; body: object | null }
+    interface Hit { point: [number, number, number]; distance: number }
+    interface PhotographerDeps { sight(u: number, v: number): Sight | null }
+    function total(sight: Sight | null): number {
+        if (!sight) return -1;
+        let sum = 0;
+        for (let i = 0; i < sight.point.length; i++) sum += sight.point[i]!;
+        return sum;
+    }
+    function createPhotographer(deps: PhotographerDeps) {
+        const bodies = new Map<object, number>();
+        return {
+            shoot(u: number, v: number): number {
+                const seen = deps.sight(u, v);
+                if (seen?.body) bodies.set(seen.body, 1);
+                return total(seen) + bodies.size;
+            },
+        };
+    }
+    interface Picking { pick(x: number, y: number): Hit | null }
+    function createGlade(picking: Picking) {
+        return createPhotographer({
+            sight(u, v) {
+                const hit = picking.pick(u, v);
+                return hit ? { point: hit.point, body: null } : null;
+            },
+        });
+    }
+    const hits: Hit[] = [{ point: [1, 2, 3], distance: 1 }];
+    const photographer = createGlade({ pick: (x) => hits[x] ?? null });
+    hits[0]!.point[2] = 4;
+    const first = photographer.shoot(0, 0);
+    const missed = photographer.shoot(1, 0);
+    if (first !== 7 || missed !== -1) throw new Error("shots " + first + " " + missed);
+`,
+);
+
+check(
+    "tuple-stored-through-a-readonly-array-field",
+    `
+    interface Sight { point: ArrayLike<number>; label: string }
+    function ray(x: number): [number, number, number] { return [x, x + 1, x + 2]; }
+    function aim(x: number) {
+        const sight = { point: ray(x), label: "aim" };
+        return sight;
+    }
+    function total(s: Sight): number {
+        let t = 0;
+        for (let i = 0; i < s.point.length; i++) t += s.point[i]!;
+        return t;
+    }
+    const seen: Sight = aim(Math.random() < 2 ? 1 : 0);
+    const shots: Sight[] = [seen];
+    if (total(shots[0]!) !== 6) throw new Error("total");
+`,
+);
+
+test("a literal read through its own type and a growable field keep their refusals", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+    interface Sight { point: ArrayLike<number>; body: object | null }
+    interface Hit { point: [number, number, number]; distance: number }
+    interface PhotographerDeps { sight(u: number, v: number): Sight | null }
+    function total(sight: Sight | null): number {
+        if (!sight) return -1;
+        let sum = 0;
+        for (let i = 0; i < sight.point.length; i++) sum += sight.point[i]!;
+        return sum;
+    }
+    function createPhotographer(deps: PhotographerDeps) {
+        const bodies = new Map<object, number>();
+        return {
+            shoot(u: number, v: number): number {
+                const seen = deps.sight(u, v);
+                if (seen?.body) bodies.set(seen.body, 1);
+                return total(seen) + bodies.size;
+            },
+        };
+    }
+    interface Picking { pick(x: number, y: number): Hit | null }
+    function createGlade(picking: Picking) {
+        return createPhotographer({
+            sight(u, v) {
+                const hit = picking.pick(u, v);
+                if (!hit) return null;
+                const own = { point: hit.point, body: null };
+                return own.point.length === 3 ? own : null;
+            },
+        });
+    }
+    const hits: Hit[] = [{ point: [1, 2, 3], distance: 1 }];
+    const photographer = createGlade({ pick: (x) => hits[x] ?? null });
+    hits[0]!.point[2] = 4;
+    const first = photographer.shoot(0, 0);
+    const missed = photographer.shoot(1, 0);
+    if (first !== 7 || missed !== -1) throw new Error("shots " + first + " " + missed);
+            `),
+        /record stored as 'Sight' would be a copy of the one object JavaScript keeps/,
+    );
+    assert.throws(
+        () =>
+            compileSource(`
+    interface Sight { point: number[]; label: string }
+    function ray(x: number): [number, number, number] { return [x, x + 1, x + 2]; }
+    function aim(x: number) {
+        const sight = { point: ray(x), label: "aim" };
+        return sight;
+    }
+    const seen: Sight = aim(Math.random() < 2 ? 1 : 0);
+    const shots: Sight[] = [seen];
+    shots[0]!.point.push(4);
+    if (shots[0]!.point.length !== 4) throw new Error("grown");
+            `),
+        /A fixed-length tuple stored as a number array could grow through that array/,
+    );
+});
+
+check(
     "parsed-document-array-destructuring",
     `
     interface RawNode { translation?: number[]; rotation?: number[] }

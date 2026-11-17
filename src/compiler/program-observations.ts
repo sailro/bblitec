@@ -114,6 +114,8 @@ export interface ProgramObservations {
     /** The element types each array local is read with, over the program. */
     readonly arrayLocalElements: ReadonlyMap<ts.Symbol, readonly ts.Type[]>;
     readonly namedReads: ReadonlyMap<string, readonly NamedRead[]>;
+    /** The members called by name (`object.name(...)`), as named reads are kept. */
+    readonly memberCalls: ReadonlyMap<string, readonly NamedRead[]>;
     readonly wholesaleReads: readonly ts.Node[];
     /** Where `from`'s own fields are copied into the new object `into` names. */
     readonly copies: readonly {
@@ -279,6 +281,7 @@ function observe(program: ts.Program): ProgramObservations {
         return shape?.mutable && !shape.tuple ? shape.element : undefined;
     };
     const namedReads = new Map<string, NamedRead[]>();
+    const memberCalls = new Map<string, NamedRead[]>();
     const wholesaleReads: ts.Node[] = [];
     const copies: { from: ts.Node; into: ts.Node }[] = [];
     const handed: ts.Expression[] = [];
@@ -402,10 +405,15 @@ function observe(program: ts.Program): ProgramObservations {
         const type = typeOf(node);
         if (objectLike(type)) enumerations.add(type);
     };
-    const read = (name: string, node: ts.Node, object?: ts.Node): void => {
-        const reads = namedReads.get(name);
+    const read = (
+        name: string,
+        node: ts.Node,
+        object?: ts.Node,
+        index = namedReads,
+    ): void => {
+        const reads = index.get(name);
         if (reads) reads.push({ node, object });
-        else namedReads.set(name, [{ node, object }]);
+        else index.set(name, [{ node, object }]);
     };
     const written = (target: ts.Expression): void => {
         const unwrapped = unwrapExpression(target);
@@ -576,7 +584,15 @@ function observe(program: ts.Program): ProgramObservations {
             )
                 foreignPrototype ??= node;
             if (readsOnlyAsMember(node)) {
-                // Read as a member of the access around it.
+                // Read as a member of the access around it; a callee is
+                // a member call.
+                const call = wrappedParent(node);
+                if (
+                    key !== undefined &&
+                    ts.isCallExpression(call) &&
+                    unwrapExpression(call.expression) === node
+                )
+                    read(key, node, node.expression, memberCalls);
             } else if (key !== undefined) read(key, node, node.expression);
             else wholesaleReads.push(node.expression);
         } else if (ts.isPropertyAssignment(node) && isProtoSetter(node)) {
@@ -760,6 +776,7 @@ function observe(program: ts.Program): ProgramObservations {
         widenedArrays,
         arrayLocalElements,
         namedReads,
+        memberCalls,
         wholesaleReads,
         copies,
         handed,

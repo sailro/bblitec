@@ -182,6 +182,45 @@ export function recordCopyObservation(
     return answer;
 }
 
+/** @unjournaled Pure answers of the checked program, kept across replays. */
+const ownTypeReads = new WeakMap<ts.Type, boolean>();
+
+/**
+ * Whether the program reaches a record of the object literal type `literal`
+ * through that type itself: a read, call, write or enumeration of its
+ * members, or a copy or wholesale read of it, through an expression the
+ * checker types as it. A read through a destructuring assignment target, which names no
+ * source, reaches it.
+ */
+export function observedUnderOwnType(
+    context: RecordObservationContext,
+    literal: ts.Type,
+): boolean {
+    const known = ownTypeReads.get(literal);
+    if (known !== undefined) return known;
+    const { checker } = context;
+    const observations = programObservations(context.program);
+    const own = (type: ts.Type): boolean =>
+        unionMembers(checker.getNonNullableType(type)).includes(literal);
+    const typed = (node: ts.Node): boolean =>
+        own(checker.getTypeAtLocation(node));
+    const observed =
+        [...observations.writes.keys()].some(own) ||
+        [...observations.enumerations].some(own) ||
+        checker
+            .getPropertiesOfType(literal)
+            .some((property) =>
+                [
+                    ...(observations.namedReads.get(property.name) ?? []),
+                    ...(observations.memberCalls.get(property.name) ?? []),
+                ].some(({ object }) => object === undefined || typed(object)),
+            ) ||
+        observations.wholesaleReads.some(typed) ||
+        observations.copies.some(({ from }) => typed(from));
+    ownTypeReads.set(literal, observed);
+    return observed;
+}
+
 /**
  * Whether any write in the program can replace `property` on a record of
  * `source` type: one through a holder that can hold such a record, or through

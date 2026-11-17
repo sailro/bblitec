@@ -682,12 +682,7 @@ function valueStruct(
                       property.dataType?.kind === "optional" &&
                       field.type.kind !== "optional"
                         ? armFieldOrDefault(lowerer, property, field, node)
-                        : lowerer.compileMemberForSink(
-                              property,
-                              field.type,
-                              node,
-                              field.sourceName,
-                          )
+                        : storeFieldMember(lowerer, property, field, node)
                     : field.defaultWhenMissing ||
                         (field.accessorReceiver &&
                             field.type.kind === "optional")
@@ -823,16 +818,16 @@ function valueStruct(
                 if (copyDataSlots && field.accessorReceiver) {
                     let stored = "";
                     const lines = lowerer.context.captureEmittedLines(() => {
-                        stored = lowerer.compileMemberForSink(
+                        stored = storeFieldMember(
+                            lowerer,
                             lowerer.leafValue(
                                 source.accessorReceiver
                                     ? `${sourceCpp}.get()`
                                     : sourceCpp,
                                 source.type,
                             ),
-                            field.type,
+                            field,
                             node,
-                            field.sourceName,
                         );
                     });
                     const slot =
@@ -860,11 +855,11 @@ function valueStruct(
                         );
                     return sourceCpp;
                 }
-                return lowerer.compileMemberForSink(
+                return storeFieldMember(
+                    lowerer,
                     lowerer.leafValue(sourceCpp, source.type),
-                    field.type,
+                    field,
                     node,
-                    field.sourceName,
                 );
             },
         ).join(", ")}}`;
@@ -977,12 +972,7 @@ function conditionalOwnFieldInitializer(
             held.dataType?.kind === "optional" &&
             field.type.kind !== "optional"
                 ? armFieldOrDefault(lowerer, held, field, node)
-                : lowerer.compileMemberForSink(
-                      held,
-                      field.type,
-                      node,
-                      field.sourceName,
-                  );
+                : storeFieldMember(lowerer, held, field, node);
     });
     const slot = lowerer.context.dataTypes.structFieldCppType(field);
     const initialized = lowerer.context.dataTypes.structFieldInitializerCpp(
@@ -1002,6 +992,26 @@ function conditionalOwnFieldInitializer(
  * arm holds it, else the field's default storage, which its tags keep
  * from being own.
  */
+/**
+ * A member stored as a struct field, marked when the field is declared only
+ * as a read-only array view (`readonlyArrayField`).
+ */
+function storeFieldMember(
+    lowerer: DataSinkHost,
+    member: Value,
+    field: DataStructField,
+    node: ts.Node,
+): string {
+    return lowerer.compileMemberForSink(
+        lowerer.context.dataTypes.readonlyArrayField(field)
+            ? { ...member, readonlyArraySlot: true }
+            : member,
+        field.type,
+        node,
+        field.sourceName,
+    );
+}
+
 function armFieldOrDefault(
     lowerer: DataSinkHost,
     property: Value,
@@ -1010,20 +1020,15 @@ function armFieldOrDefault(
 ): string {
     const type = property.dataType;
     if (type?.kind !== "optional")
-        return lowerer.compileMemberForSink(
-            property,
-            field.type,
-            node,
-            field.sourceName,
-        );
+        return storeFieldMember(lowerer, property, field, node);
     const slot = lowerer.context.allocateTemporaryCppName("arm_field");
     let converted = "";
     const lines = lowerer.context.captureEmittedLines(() => {
-        converted = lowerer.compileMemberForSink(
+        converted = storeFieldMember(
+            lowerer,
             lowerer.leafValue(optionalValueCpp(slot), type.inner),
-            field.type,
+            field,
             node,
-            field.sourceName,
         );
     });
     const cppType = lowerer.context.dataTypes.cppType(field.type);

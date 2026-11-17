@@ -114,6 +114,7 @@ import {
     type NumericSlotKind,
 } from "./numeric-slot-storage.js";
 import {
+    observedUnderOwnType,
     recordCopyObservation,
     type RecordObservationContext,
 } from "./record-observations.js";
@@ -161,6 +162,7 @@ import {
     isNullable,
     nullability,
     presentMembers,
+    readonlyArrayType,
     isTypeReference,
     type AbsentValueKind,
     undefinedOnly,
@@ -3404,6 +3406,23 @@ export class DataTypeRegistry {
     }
 
     /**
+     * Whether every declaration a field stores types it as a read-only array
+     * view (`readonlyArrayType`): no array grows through the field.
+     */
+    public readonlyArrayField(field: DataStructField): boolean {
+        const declarations = field.declarations ?? [];
+        return (
+            declarations.length > 0 &&
+            declarations.every((declaration) =>
+                readonlyArrayType(
+                    this.checker,
+                    this.checker.getTypeAtLocation(declaration),
+                ),
+            )
+        );
+    }
+
+    /**
      * A field's native initializer from the value it stores: in an accessor
      * slot, the value is held inline. `{}` is the default value.
      */
@@ -4248,10 +4267,73 @@ export class DataTypeRegistry {
                 });
                 return;
             }
+            // A fresh literal's records the program reads only as the
+            // target type are built in the target's layout: one object.
+            if (
+                !union &&
+                !sourceUnion &&
+                !sourceInstantiation &&
+                !targetInstantiation &&
+                !this.demandedJoins
+                    .get(sourceRecord)
+                    ?.some(
+                        (join) =>
+                            join.target === targetRecord &&
+                            join.kind === "construction",
+                    ) &&
+                this.constructedAsTarget(
+                    sourceRecord,
+                    targetRecord,
+                    observation,
+                )
+            ) {
+                this.requireJoin({
+                    ...source,
+                    type: sourceRecord,
+                    joins: [
+                        {
+                            source: sourceRecord,
+                            target: targetRecord,
+                            kind: "construction",
+                        },
+                    ],
+                });
+                return;
+            }
         }
         return this.fail(
             node,
             `A '${source ? this.checker.typeToString(source.type) : sourceType.name}' record stored as '${target ? this.checker.typeToString(target.type) : targetType.name}' would be a copy of the one object JavaScript keeps, and ${observed}; no shared layout holds both record types.`,
+        );
+    }
+
+    /**
+     * Whether records of an object literal's type (its symbol declared by
+     * literals alone) can be built in a plain target record's layout: the
+     * target declares each of its
+     * properties, and nothing reads, writes, enumerates or copies them
+     * through the literal's own type (`observedUnderOwnType`).
+     */
+    private constructedAsTarget(
+        literal: ts.Type,
+        target: ts.Type,
+        observation: RecordObservationContext,
+    ): boolean {
+        const declarations = literal.getSymbol()?.declarations ?? [];
+        return (
+            declarations.length > 0 &&
+            declarations.every(ts.isObjectLiteralExpression) &&
+            isPlainRecord(this.checker, target) &&
+            this.checker
+                .getPropertiesOfType(literal)
+                .every(
+                    (property) =>
+                        this.checker.getPropertyOfType(
+                            target,
+                            property.name,
+                        ) !== undefined,
+                ) &&
+            !observedUnderOwnType(observation, literal)
         );
     }
 

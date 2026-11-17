@@ -301,7 +301,7 @@ test("records storing functions whose results are stored another way refuse one 
             interface Source { readonly name: string; readonly data: (n: number) => number | string }
             const entry = { name: "clip", data: (n: number): number => n * 2 };
             const sources: Source[] = [entry];
-            if (sources[0] !== entry) throw new Error('identity');
+            if (sources[0] !== entry || entry.data(1) !== 2) throw new Error('identity');
         `),
         /'\{ name: string; data: \(n: number\) => number; \}' record stored as 'Source' would be a copy/,
     );
