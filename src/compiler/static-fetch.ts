@@ -457,43 +457,40 @@ function discoverPackagedCandidates(
                 context.options.fileName,
                 context.options,
             );
-            try {
-                readAssetBytesSync(source, context.options.fileName);
+            if (readablePackagedAsset(context, source))
                 return [{ logicalSource, source }];
-            } catch {
-                // The browser fetches a remote candidate; natively only its
-                // packaged bytes exist, so one generation cannot read refuses.
-                if (domain && isRemoteCandidate(context, logicalSource))
-                    context.fail(
-                        expression,
-                        `Packaged URL provenance: candidate '${logicalSource}' is a remote file generation cannot read.`,
-                    );
-                if (domain) return [];
-                const directory = resolve(
-                    dirname(resolve(context.options.fileName)),
-                    source,
+            // The browser fetches a remote candidate; natively only its
+            // packaged bytes exist, so one generation cannot read refuses.
+            if (domain && isRemoteCandidate(context, logicalSource))
+                context.fail(
+                    expression,
+                    `Packaged URL provenance: candidate '${logicalSource}' is a remote file generation cannot read.`,
                 );
-                try {
-                    const logicalBase = logicalSource.endsWith("/")
-                        ? logicalSource
-                        : `${logicalSource}/`;
-                    return listFiles(directory)
-                        .map((file) => ({
-                            logicalSource:
-                                logicalBase +
-                                relative(directory, file).split(sep).join("/"),
-                            // Keep the resolved file until registration canonicalizes
-                            // it; an entry-relative path is still a deployment URL.
-                            source: file,
-                        }))
-                        .filter(
-                            ({ source }) =>
-                                accepts(source) &&
-                                readablePackagedAsset(context, source),
-                        );
-                } catch {
-                    return [];
-                }
+            if (domain) return [];
+            const directory = resolve(
+                dirname(resolve(context.options.fileName)),
+                source,
+            );
+            try {
+                const logicalBase = logicalSource.endsWith("/")
+                    ? logicalSource
+                    : `${logicalSource}/`;
+                return listFiles(directory)
+                    .map((file) => ({
+                        logicalSource:
+                            logicalBase +
+                            relative(directory, file).split(sep).join("/"),
+                        // Keep the resolved file until registration canonicalizes
+                        // it; an entry-relative path is still a deployment URL.
+                        source: file,
+                    }))
+                    .filter(
+                        ({ source }) =>
+                            accepts(source) &&
+                            readablePackagedAsset(context, source),
+                    );
+            } catch {
+                return [];
             }
         })
         .filter(({ source }) => accepts(source));

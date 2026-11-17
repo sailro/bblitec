@@ -916,3 +916,47 @@ test("a record read out of an asserted parse is a document with everything read 
 `;
     await oneReplay(t, "parse-roots", source);
 });
+
+test("an array literal of constants an identity read stores by reference replays once for all of them", () => {
+    // Each constant's record needs its own object once the array holds
+    // records by reference; a later element naming a constant joins the
+    // first element's demand, plain or past a conditional spread, so the
+    // literal replays as often as a literal of one constant does.
+    const program = (literal: string, last: string, index: number) => `
+    interface Decl { name: string; size: number }
+    const A: Decl = { name: "a", size: 1 };
+    const B: Decl = { name: "b", size: 2 };
+    const C: Decl = { name: "c", size: 3 };
+    async function main(): Promise<void> {
+        await Promise.resolve();
+        const held: Decl[] = ${literal};
+        if (held.indexOf(${last}) !== ${index} || held[0]!.name !== "a") throw new Error("identity");
+        globalThis.close();
+    }
+    void main();
+`;
+    const single = measured(false, () =>
+        compileSource(program("[A]", "A", 0)),
+    ).constructions;
+    const tools = optionalNativeFixtureTools(false);
+    for (const [name, literal] of [
+        ["listed", "[A, B, C]"],
+        ["spread", "[...(Date.now() > 0 ? [A, B] : []), C]"],
+    ] as const) {
+        const compiled = measured(false, () =>
+            compileSource(program(literal, "C", 2)),
+        );
+        assert.equal(compiled.constructions, single, name);
+        if (tools)
+            runGeneratedProgram(
+                tools,
+                `storage-demand-planner/literal-constants-${name}`,
+                compiled.result.cpp,
+                {
+                    flags: ["/DBBLITE_WORKERS=1"],
+                    expectedOutput: "",
+                    timeoutMs: 15000,
+                },
+            );
+    }
+});

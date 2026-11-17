@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
+import fs, { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
@@ -174,6 +175,47 @@ test("a generation-time fetch of a runtime-selected file reads its text and JSON
     assert.equal(result.manifest.assets.length, 2);
     assert.match(result.cpp, /bbl::js::decode_utf8_removing_bom\(/);
     assert.match(result.cpp, /bbl::js::json_parse\(/);
+    runPackagedProgram(t, directory, result);
+});
+
+test("a URL a run-time key selects from a table finds its packaged files without reading them", (t) => {
+    const directory = resolve("artifacts/packaged-fetch-candidates");
+    const publicDir = join(directory, "public");
+    mkdirSync(join(publicDir, "data"), { recursive: true });
+    writeFileSync(join(publicDir, "data", "a.bin"), Buffer.from([1, 2]));
+    writeFileSync(join(publicDir, "data", "b.bin"), Buffer.from([3, 4, 5]));
+    // A candidate is packaged where its file is; generation needs none of
+    // its bytes, so no candidate is read while the entry compiles.
+    const reads = t.mock.method(fs, "readFileSync");
+    syncBuiltinESMExports();
+    let result: CompileResult;
+    try {
+        result = compileSource(
+            `
+            const FILES = { a: "a.bin", b: "b.bin" } as const;
+            async function load(base: string, key: keyof typeof FILES): Promise<number> {
+                const response = await fetch(\`\${base}/data/\${FILES[key]}\`);
+                return new Uint8Array(await response.arrayBuffer()).length;
+            }
+            const key: keyof typeof FILES = Date.now() > 0 ? "a" : "b";
+            if ((await load("", key)) !== 2) throw new Error("bytes");
+        `,
+            { fileName: join(directory, "entry.ts"), publicDir },
+        );
+    } finally {
+        reads.mock.restore();
+        syncBuiltinESMExports();
+    }
+    assert.deepEqual(
+        result.manifest.assets.map(({ source }) => source.split(/[\\/]/).pop()),
+        ["a.bin", "b.bin"],
+    );
+    assert.deepEqual(
+        reads.mock.calls
+            .map(({ arguments: [path] }) => String(path))
+            .filter((path) => path.endsWith(".bin")),
+        [],
+    );
     runPackagedProgram(t, directory, result);
 });
 

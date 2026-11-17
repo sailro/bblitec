@@ -13591,21 +13591,21 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
-     * Stores `members[index]` of a literal, which stores its members one
-     * after another. A member whose holder needs object storage ends this
-     * attempt; a later member naming a constant of literal data stores the
-     * same record in the next attempt, so the demand its holder meets joins
-     * this one and one replay plans them all. Likewise a member whose
-     * record must become a document joins every later member's own, each
-     * naming the member's own record type (`documentRecordDemand` of the
-     * member's expression in the literal, `value`).
+     * Stores `members[index]` of an object or array literal, which stores
+     * its members one after another. A member whose holder needs object
+     * storage ends this attempt; a later member naming a constant of literal
+     * data stores the same record in the next attempt, so the demand its
+     * holder meets joins this one and one replay plans them all. Likewise a
+     * member whose record must become a document joins every later member's
+     * own, each naming the member's own record type (`documentRecordDemand`
+     * of the member's expression in the literal, `value`).
      */
-    public storeLiteralMember<M>(
+    public storeLiteralMember<M, R = string>(
         members: readonly M[],
         index: number,
         value: (member: M) => ts.Expression | undefined,
-        store: (member: M) => string,
-    ): string {
+        store: (member: M) => R,
+    ): R {
         try {
             return store(members[index]!);
         } catch (error) {
@@ -22444,56 +22444,78 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 let elements: Value[] | undefined = retainElements
                     ? []
                     : undefined;
-                for (const element of unwrapped.elements) {
-                    let statement: string;
+                const retained = (value: Value): Value =>
+                    dataType.element.kind === "union" ? value : { ...value };
+                // One member's append and the values it retains, which the
+                // loop keeps: a later member's store is probed for the
+                // demand its holder meets (`storeLiteralMember`).
+                const store = (
+                    element: ts.Expression,
+                ): {
+                    statement: string;
+                    known: readonly Value[] | undefined;
+                } => {
                     if (ts.isSpreadElement(element)) {
                         const iterable = this.spreadSource(
                             element,
                             dataType,
                             copiedRecordSources,
                         );
-                        const known =
-                            iterable.staticElementsOwner?.staticElements ??
-                            iterable.staticElements;
-                        if (elements && known)
-                            elements.push(
-                                ...known.map((value) =>
-                                    dataType.element.kind === "union"
-                                        ? value
-                                        : { ...value },
-                                ),
-                            );
-                        else elements = undefined;
-                        statement = `bbl::js::array_append(${result}, ${iterable.cpp});`;
-                    } else if (retainElements) {
+                        return {
+                            statement: `bbl::js::array_append(${result}, ${iterable.cpp});`,
+                            known: (
+                                iterable.staticElementsOwner?.staticElements ??
+                                iterable.staticElements
+                            )?.map(retained),
+                        };
+                    }
+                    if (retainElements) {
                         const value = this.context.compileValue(element);
-                        elements?.push(
-                            dataType.element.kind === "union"
-                                ? value
-                                : { ...value },
-                        );
+                        const known = [retained(value)];
                         const converted = this.compileKnownValueForSink(
                             value,
                             dataType.element,
                             element,
                         );
-                        statement = `${result}.push_back(${converted});`;
-                    } else {
-                        statement = `${result}.push_back(${this.compileForRetainedSink(element, dataType.element, "Array literal")});`;
+                        return {
+                            statement: `${result}.push_back(${converted});`,
+                            known,
+                        };
                     }
+                    return {
+                        statement: `${result}.push_back(${this.compileForRetainedSink(element, dataType.element, "Array literal")});`,
+                        known: undefined,
+                    };
+                };
+                unwrapped.elements.forEach((_, index) => {
+                    const { statement, known } = this.storeLiteralMember(
+                        unwrapped.elements,
+                        index,
+                        (member) =>
+                            ts.isSpreadElement(member) ? undefined : member,
+                        store,
+                    );
+                    if (elements && known) elements.push(...known);
+                    else elements = undefined;
                     this.context.emit({ kind: "expression", code: statement });
-                }
+                });
                 retainElements?.(elements);
                 return result;
             }
             const pins = this.context.evaluationOrder.operandsToPin(
                 unwrapped.elements,
             );
-            const elements = unwrapped.elements.map((element, index) => {
-                const cpp = this.compileForRetainedSink(
-                    element,
-                    dataType.element,
-                    "Array literal",
+            const elements = unwrapped.elements.map((_, index) => {
+                const cpp = this.storeLiteralMember(
+                    unwrapped.elements,
+                    index,
+                    (member) => member,
+                    (member) =>
+                        this.compileForRetainedSink(
+                            member,
+                            dataType.element,
+                            "Array literal",
+                        ),
                 );
                 if (!pins[index]) return cpp;
                 // This is already sink storage. Projecting it to a Value
