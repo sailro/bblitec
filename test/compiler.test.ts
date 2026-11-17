@@ -6304,17 +6304,45 @@ void main();
     }
 });
 
+/** A repair of a parsed value: each non-finite number under it reset to 0. */
+const REPAIR = `interface Mutable { [key: string]: unknown }
+export function repairNonFinite(value: unknown): boolean {
+    if (value === null || typeof value !== "object") return false;
+    let repaired = false;
+    const record = value as Mutable;
+    for (const key of Object.keys(record)) {
+        const child = record[key];
+        if (typeof child === "number") {
+            if (!Number.isFinite(child)) {
+                record[key] = 0;
+                repaired = true;
+            }
+            continue;
+        }
+        if (child !== null && typeof child === "object" && repairNonFinite(child)) repaired = true;
+    }
+    return repaired;
+}
+`;
+
 test("a builder holding options a native table's entry fills as one object reads the members neither sets as absent in each key's arm", () => {
     // The table's entries hold a run-time value, so it is native; the
     // builder observes its options' identity, so it holds them as one
     // native object. `fade`, which neither sets, alone would create the
     // buffer.
-    const directory = resolve("artifacts/compiler-stored-table-options");
-    mkdirSync(directory, { recursive: true });
-    writeFileSync(join(directory, "noop-worker.ts"), "self.close();\n");
-    writeFileSync(
-        join(directory, "species.ts"),
-        `import type { EngineContext } from "@babylonjs/lite";
+    // A repair of a parsed value that writes a slot only while it holds a
+    // non-finite number replaces neither the record entry nor its finite or
+    // absent members, so it keeps the same facts.
+    for (const repaired of [false, true]) {
+        const directory = resolve(
+            `artifacts/compiler-stored-table-options${repaired ? "-repaired" : ""}`,
+        );
+        mkdirSync(directory, { recursive: true });
+        writeFileSync(join(directory, "noop-worker.ts"), "self.close();\n");
+        if (repaired) writeFileSync(join(directory, "repair.ts"), REPAIR);
+        writeFileSync(
+            join(directory, "species.ts"),
+            `import type { EngineContext } from "@babylonjs/lite";
 import { herd, type Herd, type HerdOptions } from "./herd";
 export type Species = "deer" | "fox" | "hen";
 interface SpeciesDef { file: string; height: number; glow?: boolean; base: { speed: number }; seed: number }
@@ -6334,10 +6362,10 @@ export async function buildHerds(engine: EngineContext, capacity: number): Promi
     return Promise.all(types.map((type) => herd(engine, optionsFor(type, capacity))));
 }
 `,
-    );
-    writeFileSync(
-        join(directory, "herd.ts"),
-        `import { createShaderMaterial, createStorageBuffer, updateStorageBuffer, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";
+        );
+        writeFileSync(
+            join(directory, "herd.ts"),
+            `import { createShaderMaterial, createStorageBuffer, updateStorageBuffer, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";
 export interface HerdOptions { file: string; height: number; glow?: boolean; capacity: number; fade?: boolean; dither?: boolean }
 const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
 @vertex fn mainVertex(input: VertexInput) -> VertexOutput {
@@ -6383,17 +6411,17 @@ export async function herd(engine: EngineContext, opts: HerdOptions): Promise<He
     return build(engine, opts, capacity);
 }
 `,
-    );
-    const result = compileSource(
-        `import { addToScene, createArcRotateCamera, createEngine, createPlane, createSceneContext, registerScene, startEngine } from "@babylonjs/lite";
+        );
+        const result = compileSource(
+            `import { addToScene, createArcRotateCamera, createEngine, createPlane, createSceneContext, registerScene, startEngine } from "@babylonjs/lite";
 import { buildHerds, isSpecies, speciesSpeed } from "./species";
-const worker = new Worker(new URL("./noop-worker.ts", import.meta.url), { type: "module" });
+${repaired ? 'import { repairNonFinite } from "./repair";\n' : ""}const worker = new Worker(new URL("./noop-worker.ts", import.meta.url), { type: "module" });
 worker.terminate();
 async function main(): Promise<void> {
     const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
     const scene = createSceneContext(engine);
     scene.camera = createArcRotateCamera(-Math.PI / 2, Math.PI / 2, 8, { x: 0, y: 0, z: 0 });
-    const herds = await buildHerds(engine, 8);
+${repaired ? '    if (repairNonFinite(JSON.parse(\'{"x":1e999,"y":{"z":2}}\'))) console.log("repaired");\n' : ""}    const herds = await buildHerds(engine, 8);
     const plane = createPlane(engine, { width: 2, height: 2 });
     plane.material = herds[0]!.material;
     console.log(herds[1]!.label());
@@ -6404,23 +6432,64 @@ async function main(): Promise<void> {
 }
 void main();
 `,
-        {
-            fileName: join(directory, "entry.ts"),
-        },
-    );
-    assert.deepEqual(
-        result.manifest.customShaderPrograms.map((program) => [
-            /\* ([0-9.]+), ([0-9.]+)\)/.exec(program.vertexSource)?.slice(1),
-            program.vertexSource.includes("(input.position * 1.1)"),
-        ]),
-        [
-            [["2.9", "1.0"], false],
-            [["0.8", "1.0"], true],
-            [["0.4", "1.0"], false],
-        ],
-    );
-    // The buffer only a present `fade` creates is never made or written.
-    assert.doesNotMatch(result.cpp, /bbl::update_storage_buffer\(/);
+            {
+                fileName: join(directory, "entry.ts"),
+            },
+        );
+        assert.deepEqual(
+            result.manifest.customShaderPrograms.map((program) => [
+                /\* ([0-9.]+), ([0-9.]+)\)/
+                    .exec(program.vertexSource)
+                    ?.slice(1),
+                program.vertexSource.includes("(input.position * 1.1)"),
+            ]),
+            [
+                [["2.9", "1.0"], false],
+                [["0.8", "1.0"], true],
+                [["0.4", "1.0"], false],
+            ],
+        );
+        // The buffer only a present `fade` creates is never made or written.
+        assert.doesNotMatch(result.cpp, /bbl::update_storage_buffer\(/);
+    }
+});
+
+test("a known-key read of a native table folds the members a repair of a parsed value cannot replace, and runs as JavaScript does", (t) => {
+    // The repair resets a parsed value's non-finite number; the table's
+    // entry, its string, its finite numbers and the member it lacks are
+    // none, so the read by a literal key folds while the loop's run-time
+    // keys read the native table.
+    const source = `
+type Kind = "deer" | "fox";
+interface Def { file: string; height: number; bad: number; glow?: boolean; seed: number }
+const TABLE: Record<Kind, Def> = {
+    deer: { file: "Deer.glb", height: 2.9, bad: 3, seed: Math.random() },
+    fox: { file: "Fox.glb", height: 0.8, bad: 1, glow: true, seed: Math.random() },
+};
+${REPAIR.replace("export ", "")}
+function describe(kind: Kind): string {
+    const def = TABLE[kind];
+    return def.file + ":" + def.height + ":" + def.bad + ":" + (def.glow ? "glow" : "plain");
+}
+const saved = JSON.parse('{"a":1,"b":{"c":2}}') as { a: number; b: { c: number } };
+saved.a /= 0;
+if (!repairNonFinite(saved) || saved.a !== 0 || saved.b.c !== 2) throw new Error("repair");
+const kinds = Object.keys(TABLE) as Kind[];
+const seen = kinds.map((kind) => describe(kind)).join(",");
+if (seen !== "Deer.glb:2.9:3:plain,Fox.glb:0.8:1:glow") throw new Error(seen);
+if (describe("deer") !== "Deer.glb:2.9:3:plain") throw new Error("deer " + describe("deer"));
+`;
+    runInNewContext(transpileCommonJs(source, "native-table-repair.ts"), {
+        exports: {},
+    });
+    const result = compileSource(source);
+    // The known key's description is generation's: its check folds away.
+    assert.doesNotMatch(result.cpp, /"deer "/);
+    const tools = optionalNativeFixtureTools();
+    if (!tools) return t.skip("Native fixture compiler unavailable.");
+    runGeneratedProgram(tools, "compiler/native-table-repair", result.cpp, {
+        expectedOutput: "",
+    });
 });
 
 test("an async callee's optional record parameter it was handed reads its members without a presence test", () => {

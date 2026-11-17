@@ -19422,7 +19422,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * the native read, holding what generation knows of the literal's
      * member where no write in the program replaces it (`recordFieldIsWritten`):
      * the entry itself, each scalar member kept, and for its own keys every
-     * other property its type declares.
+     * other property its type declares. A write that runs only while its
+     * slot holds another value than the literal's (a record for the entry,
+     * the scalar for a member, `undefined` for a key it does not spell)
+     * never replaces it.
      */
     private tableMember(
         access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
@@ -19444,6 +19447,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 key,
                 false,
                 table.literal,
+                { value: HELD_RECORD },
             )
         )
             return read;
@@ -19453,20 +19457,26 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
         if (known.kind !== "record" || !known.recordProperties) return read;
         const entryType = checker.getTypeAtLocation(access);
-        const unwritten = (name: string): boolean =>
+        const unwritten = (name: string, value?: unknown): boolean =>
             !recordFieldIsWritten(
                 this.context,
                 entryType,
                 name,
                 false,
                 literal,
+                { value },
             );
         const properties: Record<string, Value> = {};
         for (const [name, member] of Object.entries(known.recordProperties))
             if (
                 hasScalarFacts(member) &&
                 !member.parameterBinding &&
-                unwritten(name)
+                unwritten(
+                    name,
+                    member.staticString ??
+                        member.staticNumber ??
+                        member.staticBoolean,
+                )
             ) {
                 const kept: Value = { ...member };
                 writable(kept).readOnly = true;
