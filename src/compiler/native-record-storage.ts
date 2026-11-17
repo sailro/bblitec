@@ -29,6 +29,12 @@ export interface NativeRecordStorageDemand {
      * object's own fields and identity.
      */
     document?: true;
+    /**
+     * Properties of this record type whose values documents share with
+     * records of another type (`requireSharedValueViews`): each is stored as
+     * a document while the record's own other fields stay native.
+     */
+    documentFields?: readonly string[];
     /** A plain fixed record stored as a homogeneous open scalar dictionary. */
     dictionary?: "string" | "number" | "boolean";
     /** An open scalar dictionary retains undefined-valued own entries through document views. */
@@ -122,13 +128,15 @@ export function describeRecordDemand(
         );
     if (demand.accessors?.length)
         asked.push(`${demand.accessors.length} accessor(s)`);
+    if (demand.documentFields?.length)
+        asked.push(`document field(s) ${demand.documentFields.join(", ")}`);
     return `${recordTypeName(demand.type)}: ${asked.join(", ") || "shared"}`;
 }
 
 /**
- * Replays strengthen ownership and accumulate the joins and accessors
- * lowering met: `previous` merged with `next`, or undefined when `next`
- * demands nothing `previous` lacks.
+ * Replays strengthen ownership and accumulate the joins, document fields
+ * and accessors lowering met: `previous` merged with `next`, or undefined
+ * when `next` demands nothing `previous` lacks.
  */
 export function mergeNativeRecordStorage(
     previous: NativeRecordStorageDemand | undefined,
@@ -178,6 +186,12 @@ export function mergeNativeRecordStorage(
         (next.native !== undefined && previous?.native === undefined) ||
         (next.classView !== undefined && previous?.classView === undefined) ||
         RECORD_STORAGE_FLAGS.some((flag) => next[flag] && !previous[flag]);
+    const documentFields = new Set(previous?.documentFields);
+    for (const name of next.documentFields ?? [])
+        if (!documentFields.has(name)) {
+            documentFields.add(name);
+            changed = true;
+        }
     for (const { name, setter, own } of next.accessors ?? []) {
         const known = accessors.get(name);
         if (
@@ -202,6 +216,7 @@ export function mergeNativeRecordStorage(
         ...(nativeConflict ? { nativeConflict: true } : {}),
         ...(dictionaryConflict ? { dictionaryConflict: true } : {}),
         ...(joins.length ? { joins } : {}),
+        ...(documentFields.size ? { documentFields: [...documentFields] } : {}),
         ...(accessors.size
             ? {
                   accessors: [...accessors.values()],

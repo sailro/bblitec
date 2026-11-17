@@ -2170,6 +2170,8 @@ export class DataTypeRegistry {
     /** Property declarations a getter, and a setter, define. */
     private readonly getterProperties = new EmissionSet<ts.Node>();
     private readonly setterProperties = new EmissionSet<ts.Node>();
+    /** Property declarations whose values are documents (`documentFields`). */
+    private readonly documentProperties = new EmissionSet<ts.Node>();
     /**
      * Property declarations a class's prototype accessor stands for (an
      * `implements`ed or converted class getter): no own property of the
@@ -2256,6 +2258,12 @@ export class DataTypeRegistry {
                 this.withRecordDemand(demand, () =>
                     this.partialRecords.add(this.structIdentity(demand.type)),
                 );
+            for (const name of demand.documentFields ?? [])
+                for (const declaration of this.checker.getPropertyOfType(
+                    demand.type,
+                    name,
+                )?.declarations ?? [])
+                    this.documentProperties.add(declaration);
             for (const { name, setter, own } of demand.accessors ?? [])
                 for (const declaration of this.checker.getPropertyOfType(
                     demand.type,
@@ -2657,6 +2665,50 @@ export class DataTypeRegistry {
             if (named) return named;
         }
         return { ...source, document: true };
+    }
+
+    /**
+     * Whether struct `name`'s record type declares a method or an
+     * accessor, which no document holds (`ownedDocument`).
+     */
+    private declaresBehavior(name: string): boolean {
+        const source = this.nativeRecordSources.get(name);
+        return (
+            source !== undefined &&
+            this.checker
+                .getPropertiesOfType(source.type)
+                .some((property) =>
+                    (property.declarations ?? []).some(
+                        (declaration) =>
+                            ts.isMethodSignature(declaration) ||
+                            ts.isMethodDeclaration(declaration) ||
+                            ts.isAccessor(declaration),
+                    ),
+                )
+        );
+    }
+
+    /**
+     * The demand storing property `field` of struct `name`'s records as a
+     * document (`documentFields`); undefined where no source registered the
+     * struct or the property is already one.
+     */
+    private documentFieldDemand(
+        name: string,
+        field: string,
+    ): NativeRecordStorageDemand | undefined {
+        const source = this.nativeRecordSources.get(name);
+        const property =
+            source && this.checker.getPropertyOfType(source.type, field);
+        if (
+            !source ||
+            !property ||
+            (property.declarations ?? []).some((declaration) =>
+                this.documentProperties.has(declaration),
+            )
+        )
+            return undefined;
+        return { ...source, documentFields: [field] };
     }
 
     /** The document demand naming record type `record` itself; undefined where it has the layout. */
@@ -4035,7 +4087,9 @@ export class DataTypeRegistry {
      * Shared records and arrays retain nested records through one dictionary
      * or document view. A field one record stores as a dynamic value and the
      * other as an array or map holds one object in JavaScript: the record
-     * storing it typed takes the document layout, which holds that value.
+     * storing it typed takes the document layout, which holds that value,
+     * or, where its type declares a method or an accessor, stores just that
+     * field as a document.
      */
     public requireSharedValueViews(source: DataType, target: DataType): void {
         const seen = new Set<string>();
@@ -4096,7 +4150,14 @@ export class DataTypeRegistry {
                         : stored.kind === "json" && container(held)
                           ? leftRecord
                           : undefined;
-                const demand = typed && this.documentRecordDemand(typed);
+                // A document holds no method or accessor: a record type
+                // declaring one keeps its native layout, the field the
+                // document holds stored as a document.
+                const demand =
+                    typed &&
+                    (this.declaresBehavior(typed)
+                        ? this.documentFieldDemand(typed, field.sourceName)
+                        : this.documentRecordDemand(typed));
                 if (demand) throw new NativeRecordStorageRequired(demand);
                 compare(from.type, field.type);
             }
@@ -8336,6 +8397,12 @@ export class DataTypeRegistry {
     ): DataType | undefined {
         const assertedHandle = this.assertedHandleFieldStorage(node, property);
         if (assertedHandle) return assertedHandle;
+        if (
+            property?.declarations?.some((declaration) =>
+                this.documentProperties.has(declaration),
+            )
+        )
+            return { kind: "json" };
         const resolved = this.resolveTypeParameter(type);
         const members = unionMembers(resolved);
         // A required null-only field has storage before its record joins
