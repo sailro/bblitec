@@ -374,6 +374,7 @@ struct UiContentBox {
 struct UiComputedStyle {
     std::string display;
     std::string opacity;
+    std::string transform;
     std::string visibility;
     std::string z_index;
     /** The computed (specified, var()-substituted) values of the custom properties read, by name. */

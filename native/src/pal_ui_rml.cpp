@@ -63,6 +63,7 @@
 #include "pal_ui_scrollbars.hpp"
 #include "pal_ui_style_properties.hpp"
 #include "pal_ui_background.hpp"
+#include "pal_ui_transform.hpp"
 #include "pal_ui_text.hpp"
 #include "pal_ui_svg.hpp"
 #if BBLITE_UI_INLINE_SVG
@@ -1127,6 +1128,8 @@ std::string ui_computed_style(Engine& engine, UiElementHandle element, std::stri
         return style.display;
     if (property == "opacity")
         return style.opacity;
+    if (property == "transform")
+        return style.transform;
     if (property == "visibility")
         return style.visibility;
     if (property == "z-index")
@@ -3679,9 +3682,8 @@ UiComputedStyle ui_serialized_computed_style(Rml::Element& element,
     const auto& computed = element.GetComputedValues();
     UiComputedStyle style;
     style.display = displays.at(static_cast<std::size_t>(computed.display()));
-    char number[32];
-    std::snprintf(number, sizeof number, "%.6g", computed.group_opacity());
-    style.opacity = number;
+    style.opacity = pal::detail::css_serialized_number(computed.group_opacity());
+    style.transform = pal::ui_serialized_transform(element);
     style.visibility =
         computed.visibility() == Rml::Style::Visibility::Hidden ? "hidden" : "visible";
     const auto z_index = top_layer.authored_z_index(element).value_or(computed.z_index());
@@ -4222,6 +4224,7 @@ std::string rml_css_density_units(std::string value) {
     // The Rml context and recorded vertices use drawable pixels. Browser CSS
     // px, however, are density-independent CSS pixels. Rml's dp unit is the
     // exact equivalent once the context is given SDL's display scale.
+    value = pal::rml_css_matrix_translations(std::move(value));
     char quote = 0;
     bool url = false;
     for (std::size_t index = 0; index < value.size(); ++index) {
@@ -7591,6 +7594,16 @@ struct UiRmlRuntime {
                 set_projected_property(raw, name, record.style_properties.at(name));
             }
         }
+        const auto animation_written = [](const auto& from, const auto& to) {
+            return std::any_of(from.begin(), from.end(), [&to](const auto& declaration) {
+                const auto other = to.find(declaration.first);
+                return declaration.first.starts_with("animation") &&
+                       (other == to.end() || other->second != declaration.second);
+            });
+        };
+        if (animation_written(projected.style_properties, record.style_properties) ||
+            animation_written(record.style_properties, projected.style_properties))
+            animation_changed_elements.push_back(handle);
         projected.style_properties = record.style_properties;
         projected.style_property_order = record.style_property_order;
 
@@ -8064,6 +8077,33 @@ struct UiRmlRuntime {
                                  false));
             dispatch_dom_batch(engine, batch);
         }
+    }
+
+    /**
+     * Restores the inline declarations of elements whose inline animations changed: the update
+     * that stops an animation removes the inline value of each property it animated, so a
+     * declaration written with the change (a transform frozen from the animation) holds again.
+     */
+    bool restore_stopped_animation_declarations() {
+        bool restored = false;
+        for (const UiElementHandle handle : std::exchange(animation_changed_elements, {})) {
+            Rml::Element* raw =
+                handle.value < projected_elements.size() && handle.value < engine.ui_elements.size()
+                    ? projected_elements[handle.value].element
+                    : nullptr;
+            if (!raw)
+                continue;
+            const auto& record = engine.ui_elements[handle.value];
+            const auto& local = raw->GetLocalStyleProperties();
+            for (const auto& name : record.style_property_order) {
+                const Rml::PropertyId id = Rml::StyleSheetSpecification::GetPropertyId(name);
+                if (id == Rml::PropertyId::Invalid || local.find(id) != local.end())
+                    continue;
+                set_projected_property(*raw, name, record.style_properties.at(name));
+                restored = true;
+            }
+        }
+        return restored;
     }
 
     bool sync_focus() {
@@ -8910,6 +8950,8 @@ struct UiRmlRuntime {
     std::uint64_t projected_text_selection_revision = 0;
     std::vector<std::pair<DomEventTarget, std::string>> ended_transitions;
     std::unique_ptr<UiTransitionListener> transition_listener;
+    /** Elements whose inline animation declarations the last projection changed. */
+    std::vector<UiElementHandle> animation_changed_elements;
     std::string css_font_family;
     std::unique_ptr<SystemUiFontEngine> system_fonts;
     std::string css_sans_family;
@@ -9226,6 +9268,8 @@ void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint
     cpu.split(cpu.sample.projection, checkpoint);
     runtime.listen_transitions();
     runtime.context->Update();
+    if (runtime.restore_stopped_animation_declarations())
+        runtime.context->Update();
     bool root_font_changed = runtime.sync_root_font_math();
     cpu.split(cpu.sample.context, checkpoint);
     if (runtime.sync_text_form_metrics())

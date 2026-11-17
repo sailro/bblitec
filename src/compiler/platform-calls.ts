@@ -1461,7 +1461,7 @@ export class PlatformCalls {
             if (!read)
                 this.context.fail(
                     argumentAt(call, 0),
-                    `Computed style '${written}' is not represented; display, opacity, visibility, z-index and custom properties are.`,
+                    `Computed style '${written}' is not represented; display, opacity, transform, visibility, z-index and custom properties are.`,
                 );
             return read;
         }

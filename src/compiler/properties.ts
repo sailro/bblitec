@@ -2440,6 +2440,7 @@ const UI_LAYOUT_EXTENTS: ReadonlyMap<string, string> = new Map([
 const UI_COMPUTED_STYLES: ReadonlyMap<string, string> = new Map([
     ["display", "display"],
     ["opacity", "opacity"],
+    ["transform", "transform"],
     ["visibility", "visibility"],
     ["zIndex", "z-index"],
 ]);
@@ -3727,7 +3728,7 @@ export class PropertyAccessLowerer {
             if (!read)
                 this.context.fail(
                     expression.name,
-                    `Computed style '${property}' is not represented; display, opacity, visibility, zIndex and custom properties are.`,
+                    `Computed style '${property}' is not represented; display, opacity, transform, visibility, zIndex and custom properties are.`,
                 );
             return read;
         }
