@@ -803,6 +803,14 @@ export function isNullable(type: ts.Type): boolean {
     return absent.null || absent.undefined;
 }
 
+/** A type the checker's flow narrowed to exclude null and undefined. */
+export function provenPresent(type: ts.Type): boolean {
+    return (
+        (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) === 0 &&
+        !isNullable(type)
+    );
+}
+
 /**
  * The type an expression's position declares for it: its contextual type,
  * except as an argument of a generic call or construction, whose parameter

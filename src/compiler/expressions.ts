@@ -250,6 +250,7 @@ import {
     holdsOnly,
     isNullable,
     nullability,
+    provenPresent,
     valueKindOf,
     callSignatures,
     stringPlusOperands,
@@ -277,6 +278,7 @@ import {
     recordMethodValue,
 } from "./types.js";
 import { recordAt } from "./record-access.js";
+import { recordFieldIsWritten } from "./record-observations.js";
 import { pinOperand } from "./evaluation-order.js";
 import { someAnalysisNode } from "./analysis-walk.js";
 import { renderClosure, type NativeExpression } from "./closure-captures.js";
@@ -993,7 +995,12 @@ export class ExpressionLowerer {
                               unwrapped,
                           )
                         : value;
-                return this.materializeBrowserPrimitive(unwrapped, narrowed);
+                return this.materializeBrowserPrimitive(
+                    unwrapped,
+                    ts.isIdentifier(unwrapped)
+                        ? this.flowPresentRead(unwrapped, narrowed)
+                        : narrowed,
+                );
             }
             if (ts.isPrivateIdentifier(unwrapped)) {
                 this.context.fail(
@@ -1197,7 +1204,13 @@ export class ExpressionLowerer {
                 return data.kind === "data" &&
                     !ts.isPropertyAccessChain(unwrapped) &&
                     !data.preserveUncheckedLookup
-                    ? this.context.dataLowerer.narrowOptional(data, unwrapped)
+                    ? this.flowPresentRead(
+                          unwrapped,
+                          this.context.dataLowerer.narrowOptional(
+                              data,
+                              unwrapped,
+                          ),
+                      )
                     : data;
             }
             return property;
@@ -2604,6 +2617,60 @@ export class ExpressionLowerer {
             cpp: "",
             ...(browserValue ? { browserValue } : {}),
         });
+    }
+
+    /**
+     * A read the checker's flow proves present (`if (x)`, `o.p && ...`) of
+     * a binding, or a member of one, whose declared type admits absence:
+     * when nothing rebinds the binding and no write in the program can leave
+     * the member absent, the guard tested the value the read gets, so its
+     * presence is known there. An object's truthiness is its presence.
+     */
+    private flowPresentRead(
+        read: ts.Identifier | ts.PropertyAccessExpression,
+        value: Value,
+    ): Value {
+        const presence = presenceFlagCpp(value);
+        const object =
+            (value.dataType?.kind === "struct" &&
+                this.context.dataTypes.isReferenceStruct(
+                    value.dataType.name,
+                )) ||
+            isHandleKind(value.kind);
+        if (
+            knownCondition(presence) !== undefined ||
+            (presence === undefined && !object)
+        )
+            return value;
+        const { checker } = this.context;
+        const binding = ts.isIdentifier(read)
+            ? read
+            : this.context.unwrap(read.expression);
+        const symbol = ts.isIdentifier(read)
+            ? this.context.symbols.valueSymbol(read)
+            : resolvedSymbol(checker, read);
+        if (
+            !symbol ||
+            !ts.isIdentifier(binding) ||
+            !isNullable(checker.getTypeOfSymbol(symbol)) ||
+            !provenPresent(checker.getTypeAtLocation(read)) ||
+            this.context.sharedClosures.identifierIsRebound(binding) ||
+            (ts.isPropertyAccessExpression(read) &&
+                recordFieldIsWritten(
+                    this.context,
+                    checker.getTypeAtLocation(read.expression),
+                    read.name.text,
+                    true,
+                ))
+        )
+            return value;
+        return {
+            ...value,
+            optionalFoundCpp: "true",
+            ...(object || value.truthinessCpp === presence
+                ? { truthinessCpp: "true" }
+                : {}),
+        };
     }
 
     private materializeBrowserPrimitive(

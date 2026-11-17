@@ -97,6 +97,7 @@ import {
     arrayElementType,
     declaredContextualType,
     isNullable,
+    provenPresent,
     isTypeReference,
     nullability,
     presentValuesTruthy,
@@ -858,14 +859,6 @@ function updateStepCpp(
 /** Whether an expression's wrappers include a type assertion. */
 function assertsType(expression: ts.Expression): boolean {
     return wrappersUnder(expression).some(isTypeAssertion);
-}
-
-/** A type the checker's flow narrowed to exclude null and undefined. */
-function provenPresent(type: ts.Type): boolean {
-    return (
-        (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) === 0 &&
-        !isNullable(type)
-    );
 }
 
 /**
