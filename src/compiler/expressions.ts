@@ -5759,12 +5759,7 @@ export class ExpressionLowerer {
                 const keyNames = keyLiterals.every((member) =>
                     member.isStringLiteral(),
                 )
-                    ? new Set(
-                          keyLiterals.map(
-                              (member) =>
-                                  (member as ts.StringLiteralType).value,
-                          ),
-                      )
+                    ? new Set(keyLiterals.map((member) => member.value))
                     : undefined;
                 const selectable = Object.entries(
                     owner.recordProperties ?? {},
