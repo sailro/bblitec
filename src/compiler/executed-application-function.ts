@@ -18,7 +18,9 @@
  * the host, so a function reaching a browser or engine API throws, and so
  * does any other reach this closure does not carry: every refusal names the
  * node that made it. The deployment constants generation folds (the page
- * URL's parts, `import.meta.env`) run as their literals.
+ * URL's parts, `import.meta.env`) run as their literals, as does a text the
+ * caller stands in for an expression (`standInText`); an argument number the
+ * caller marks unread throws when the run reads it (`unreadNumbers`).
  *
  * The result must be plain data, compared through a JSON round trip, for
  * the reason the in-process module passes give: anything else is a value two
@@ -93,6 +95,23 @@ export interface ExecutedFunctionContext {
      * what it is handed), or undefined to refuse it.
      */
     pinnedStandIn?(name: string): unknown;
+    /**
+     * The text an expression of the run evaluates to instead of running,
+     * or undefined to run it.
+     */
+    standInText?(expression: ts.Expression): string | undefined;
+    /**
+     * The numbers of each argument, by argument index, that generation does
+     * not know: each lane, a key path into that argument, reads as an
+     * accessor that throws `message`.
+     */
+    readonly unreadNumbers?: ReadonlyMap<
+        number,
+        {
+            readonly lanes: readonly (readonly string[])[];
+            readonly message: string;
+        }
+    >;
 }
 
 /**
@@ -169,7 +188,15 @@ export function runApplicationFunction(
         "(value) => Array.isArray(value) || (typeof value === 'object' && value !== null && [Object.prototype, null].includes(Object.getPrototypeOf(value)))",
         realm,
     );
-    if (typeof parse !== "function" || typeof plain !== "function") {
+    const unread: unknown = vm.runInContext(
+        "(value, lane, message) => { let owner = value; for (const key of lane.slice(0, -1)) owner = owner[key]; Object.defineProperty(owner, lane[lane.length - 1], { get() { throw new Error(message); }, enumerable: true }); }",
+        realm,
+    );
+    if (
+        typeof parse !== "function" ||
+        typeof plain !== "function" ||
+        typeof unread !== "function"
+    ) {
         throw new Error("A generation function realm has no JSON.parse.");
     }
     // Data crosses into the realm as objects of the realm.
@@ -177,6 +204,21 @@ export function runApplicationFunction(
         value !== null && typeof value === "object"
             ? Reflect.apply(parse, undefined, [JSON.stringify(value)])
             : value;
+    const argumentInRealm = (
+        value: ExecutedArgument | undefined,
+        index: number,
+    ): unknown => {
+        const crossed = inRealm(value);
+        const numbers = context.unreadNumbers?.get(index);
+        if (numbers)
+            for (const lane of numbers.lanes)
+                Reflect.apply(unread, undefined, [
+                    crossed,
+                    lane,
+                    numbers.message,
+                ]);
+        return crossed;
+    };
     let result: unknown;
     try {
         const build: unknown = vm.runInContext(program.javascript, realm, {
@@ -206,7 +248,11 @@ export function runApplicationFunction(
             if (typeof executed !== "function") {
                 throw new Error(`${label} is not a function once executed.`);
             }
-            result = Reflect.apply(executed, undefined, args.map(inRealm));
+            result = Reflect.apply(
+                executed,
+                undefined,
+                args.map(argumentInRealm),
+            );
         }
         result = settledResult(realm, result);
     } catch (error: unknown) {
@@ -556,7 +602,8 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
             root,
             (node) => {
                 const deployed = ts.isExpression(node)
-                    ? this.context.deploymentValue?.(node)
+                    ? (this.context.standInText?.(node) ??
+                      this.context.deploymentValue?.(node))
                     : undefined;
                 if (deployed !== undefined) {
                     this.deployed.set(node, deployed);

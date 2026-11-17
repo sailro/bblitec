@@ -265,8 +265,14 @@ export function compileShaderMaterialOptions(
         );
     }
 
-    const compiledVertex = context.compileShaderSource(vertexExpression);
-    const compiledFragment = context.compileShaderSource(fragmentExpression);
+    const compiledVertex = context.compileShaderSource(
+        vertexExpression,
+        "vertex",
+    );
+    const compiledFragment = context.compileShaderSource(
+        fragmentExpression,
+        "fragment",
+    );
     const vertexSource = compiledVertex.source;
     const fragmentSource = compiledFragment.source;
     if (!vertexSource || !fragmentSource) {

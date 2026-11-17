@@ -212,7 +212,13 @@ import {
     type ExecutedResult,
     type ExecutedTarget,
 } from "./compiler/executed-application-function.js";
-import { liftWgslModuleConstant } from "./shader-ir.js";
+import { liftWgslNumberHoles, type ShaderStage } from "./shader-ir.js";
+import {
+    foldNumberFormat,
+    numberConstantValue,
+    numberFormatOf,
+    type NumberFormat,
+} from "./compiler/number-intrinsics.js";
 import { DataLowerer } from "./compiler/data-lowering.js";
 import {
     cameraNumberWrite,
@@ -278,7 +284,6 @@ import {
     staticPropertyKey,
     type DeclarationOrigin,
     typeMayHoldKey,
-    parameterInput,
     libraryName,
     computedEnumMember,
     isLibraryNumberFormatter,
@@ -297,6 +302,7 @@ import {
     inheritsFrom,
     isVoid,
     unionMembers,
+    valueKindOf,
 } from "./compiler/type-facts.js";
 import {
     retainedStaticText,
@@ -349,6 +355,8 @@ import {
     variableKind,
     referenceBases,
     keysMayMatch,
+    unwrapExpression,
+    type SupportedFunction,
 } from "./compiler/syntax.js";
 import { CompileError, unlessRefused } from "./compiler/compile-error.js";
 import { packagedValueDomain } from "./compiler/asset-url-domain.js";
@@ -949,6 +957,75 @@ function losslessGenerationNumber(value: ExecutedArgument): boolean {
     );
 }
 
+/**
+ * A run-time number a shader stage's text spells (`compileShaderSource`):
+ * the builder call, the formatter call of its body that spells the number,
+ * and the argument lane the formatter reads.
+ */
+interface ShaderSourceHole {
+    readonly call: ts.CallExpression;
+    readonly formatter: ts.CallExpression;
+    readonly parameter: number;
+    readonly lane: readonly string[];
+    readonly format: NumberFormat;
+    readonly digits: number | undefined;
+}
+
+/**
+ * The argument lanes of a builder call generation does not know the
+ * numbers of, by argument index: key paths into each argument.
+ */
+type UnreadLanes = ReadonlyMap<number, ReadonlyArray<readonly string[]>>;
+
+/** Whether two key paths name one lane. */
+function sameLane(left: readonly string[], right: readonly string[]): boolean {
+    return (
+        left.length === right.length &&
+        left.every((key, index) => key === right[index])
+    );
+}
+
+/**
+ * One fold of a shader stage's text (`compileShaderSource`): which run, the
+ * holes found so far, and whether a builder ran over an argument with holes.
+ */
+interface ShaderSourceRun {
+    run: 0 | 1;
+    readonly holes: ShaderSourceHole[];
+    admitted: boolean;
+    /** The call whose known numbers are holes too. */
+    readonly every?: ts.CallExpression;
+}
+
+/** A shader stage's text and the uniforms it reads its lifted numbers from. */
+interface ShaderSourceText {
+    source: string;
+    dynamicUniforms: Array<{
+        name: string;
+        type: "f32";
+        components: string[];
+    }>;
+}
+
+/**
+ * What each run spells a hole's number as before formatting it: distinct
+ * per hole and per run, as the two spellings locate holes by.
+ */
+const SHADER_SOURCE_REPRESENTATIVES = [1.2109375, 3804.6875] as const;
+
+/** The literal run `run` spells the hole at `index` with. */
+function shaderSourceSpelling(
+    hole: ShaderSourceHole,
+    index: number,
+    run: 0 | 1,
+): string {
+    return foldNumberFormat(
+        hole.format,
+        SHADER_SOURCE_REPRESENTATIVES[run] * 10 ** index,
+        hole.digits,
+    )!;
+}
+
 class Compiler implements LoweringServices {
     public readonly symbols: CompilerSymbols;
     public readonly evaluator: StaticEvaluator;
@@ -1225,6 +1302,11 @@ class Compiler implements LoweringServices {
     /** @unjournaled Module constants generation cannot run, a function of the program. */
     private readonly unrunnableModuleConstants =
         new Set<ts.VariableDeclaration>();
+    /**
+     * @unjournaled The run of the shader stage text `compileShaderSource`
+     * folds, kept across the probes of its runs.
+     */
+    private shaderSourceHoles: ShaderSourceRun | undefined;
     @journaled public accessor hasMainEntry = false;
     @journaled public accessor defaultEngineCpp: string | undefined;
     /** Platform owner for an entry that has no source-created Babylon engine. */
@@ -4556,9 +4638,11 @@ class Compiler implements LoweringServices {
             ts.isElementAccessExpression(unwrapped) ||
             ts.isTemplateExpression(unwrapped) ||
             ts.isCallExpression(unwrapped)
-                ? this.probeEmission(
-                      () => this.compileValue(unwrapped),
-                      (value) => value.staticString !== undefined,
+                ? this.unlessShaderSourceRefuses(() =>
+                      this.probeEmission(
+                          () => this.compileValue(unwrapped),
+                          (value) => value.staticString !== undefined,
+                      ),
                   )
                 : undefined;
         if (carried?.staticString !== undefined) {
@@ -4590,7 +4674,7 @@ class Compiler implements LoweringServices {
                     // string helper into a native function, which would turn
                     // the shader source into a runtime string after the
                     // variant table has already been generated.
-                    const value =
+                    const value = this.unlessShaderSourceRefuses(() =>
                         declaration && !ts.isFunctionDeclaration(declaration)
                             ? this.userFunctions.compileCallbackWithValues(
                                   this,
@@ -4608,7 +4692,8 @@ class Compiler implements LoweringServices {
                                   this,
                                   resolved,
                                   callee,
-                              );
+                              ),
+                    );
                     if (value?.staticString !== undefined) {
                         return value.staticString;
                     }
@@ -5286,131 +5371,491 @@ class Compiler implements LoweringServices {
     }
 
     /**
-     * A shader stage's generation-time text, with a runtime numeric template
-     * constant lifted into a material uniform when necessary.
+     * A shader stage's generation-time text, each run-time number a builder
+     * formats into it read from a material uniform.
      *
-     * LibreQuake builds one vertex source by formatting its mover depth bias.
-     * Native pipelines are generated ahead of the BSP parse, so the equivalent
-     * representation is one pipeline whose material block receives that float
-     * when the material is created.
+     * Native pipelines are generated before the program runs, so a stage
+     * spelling a run-time number (LibreQuake's mover depth bias, an atlas
+     * rectangle measured from a loaded mesh) is one pipeline whose material
+     * block receives each number when the material is created. The text is
+     * folded twice, each formatter of such a number spelling a different
+     * representative (`runShaderSourceBuilder`); the two spellings locate the
+     * holes (`liftWgslNumberHoles`), and each uniform holds the number its
+     * formatted text denotes. A stage that is a function literal's call
+     * reads the numbers it formats from known arguments from uniforms too.
      */
-    public compileShaderSource(expression: ts.Expression): {
-        source: string;
-        dynamicUniforms: Array<{
-            name: string;
-            type: "f32";
-            components: string[];
-        }>;
-    } {
+    public compileShaderSource(
+        expression: ts.Expression,
+        stage: ShaderStage,
+    ): ShaderSourceText {
         const resolved = this.resolveStaticExpression(expression);
         const callee = ts.isCallExpression(resolved)
             ? this.unwrap(resolved.expression)
             : undefined;
-        if (
-            !ts.isCallExpression(resolved) ||
-            !callee ||
-            !ts.isIdentifier(callee)
-        ) {
-            return {
-                source: this.compileStaticString(expression),
-                dynamicUniforms: [],
-            };
-        }
-        const declaration = resolveFunctionDeclaration(
-            this.checker,
-            callee,
-            (node, message) => this.fail(node, message),
-        );
-        // Function declarations use closed execution. Function literals keep
-        // the numeric-template uniform path before requiring static text.
-        if (declaration && ts.isFunctionDeclaration(declaration)) {
-            const built = this.runGenerationBuilder(resolved);
-            if (built !== undefined)
-                return { source: built, dynamicUniforms: [] };
-        }
-        const returned = this.builderReturn(declaration);
-        const template =
-            returned &&
-            ts.isTemplateExpression(returned) &&
-            returned.templateSpans.length === 1
-                ? returned
-                : undefined;
-        if (!declaration || !template) {
-            return {
-                source: this.compileStaticString(expression),
-                dynamicUniforms: [],
-            };
-        }
-        const span = template.templateSpans[0]!;
-        const formatted = this.unwrap(span.expression);
-        const formatter = ts.isCallExpression(formatted)
-            ? namedMember(this.checker, formatted.expression)
-            : undefined;
-        if (
-            !ts.isCallExpression(formatted) ||
-            !formatter ||
-            !isLibraryNumberFormatter(this.checker, formatted) ||
-            !ts.isIdentifier(formatter.expression)
-        ) {
-            return {
-                source: this.compileStaticString(expression),
-                dynamicUniforms: [],
-            };
-        }
-        const formatterTarget = formatter.expression;
-        const parameterIndex = declaration.parameters.findIndex(
-            ({ name }) =>
-                ts.isIdentifier(name) &&
-                this.symbols.valueSymbol(name) ===
-                    this.symbols.valueSymbol(formatterTarget),
-        );
-        const input =
-            parameterIndex >= 0
-                ? parameterInput(
+        const declaration =
+            callee && ts.isIdentifier(callee)
+                ? resolveFunctionDeclaration(
                       this.checker,
-                      resolved,
-                      declaration,
-                      parameterIndex,
+                      callee,
+                      (node, message) => this.fail(node, message),
                   )
                 : undefined;
-        const argument =
-            input?.kind === "argument"
-                ? input.argument
-                : input?.kind === "default"
-                  ? input.initializer
-                  : undefined;
-        if (!argument) {
+        if (ts.isCallExpression(resolved) && declaration) {
+            // Function declarations use closed execution.
+            if (ts.isFunctionDeclaration(declaration)) {
+                const built = this.runGenerationBuilder(resolved);
+                if (built !== undefined)
+                    return { source: built, dynamicUniforms: [] };
+            } else {
+                // A function literal's calls share one pipeline: every
+                // number it formats from its arguments is a uniform where
+                // its whole text lifts, a known one too.
+                const shared = this.probeEmission(() =>
+                    unlessRefused(() =>
+                        this.liftShaderSource(expression, stage, resolved),
+                    ),
+                );
+                if (shared) return shared;
+            }
+        }
+        let refusal: CompileError;
+        try {
             return {
-                source: this.compileStaticString(expression),
+                source: this.probeEmission(() =>
+                    this.compileStaticString(expression),
+                ),
                 dynamicUniforms: [],
             };
+        } catch (error) {
+            if (!(error instanceof CompileError)) throw error;
+            refusal = error;
         }
+        // Text no builder read a run-time argument of refuses as static text.
+        const lifted = this.liftShaderSource(expression, stage);
+        if (!lifted) throw refusal;
+        return lifted;
+    }
 
-        // The builder's one runtime number is a module-scope `f32` constant;
-        // it becomes a uniform read, located by the stage's own syntax tree.
-        const marker = "__BBL_DYNAMIC_SHADER_FLOAT__";
-        const uniformName = "bblDynamicDepthBias";
-        const lifted = liftWgslModuleConstant(
-            template.head.text + marker + span.literal.text,
-            marker,
-            () => `shaderUniforms.${uniformName}`,
-        );
-        if (!lifted) {
-            return {
-                source: this.compileStaticString(expression),
-                dynamicUniforms: [],
-            };
+    /**
+     * A stage's text folded twice (`compileShaderSource`), each number its
+     * builders format from a run-time argument -- and every number `every`
+     * formats from its arguments -- read from a uniform. Undefined when no
+     * builder ran over such an argument.
+     */
+    private liftShaderSource(
+        expression: ts.Expression,
+        stage: ShaderStage,
+        every?: ts.CallExpression,
+    ): ShaderSourceText | undefined {
+        const state: ShaderSourceRun = {
+            run: 0,
+            holes: [],
+            admitted: false,
+            ...(every ? { every } : {}),
+        };
+        const { holes } = state;
+        const spelled: string[] = [];
+        const enclosing = this.shaderSourceHoles;
+        this.shaderSourceHoles = state;
+        try {
+            for (const run of [0, 1] as const) {
+                state.run = run;
+                const text = this.probeEmission(
+                    () =>
+                        every
+                            ? this.runGenerationBuilder(every)
+                            : this.compileStaticString(expression),
+                    () => false,
+                );
+                if (!state.admitted || text === undefined) return undefined;
+                spelled.push(text);
+            }
+        } catch (error) {
+            if (error instanceof CompileError && !state.admitted)
+                return undefined;
+            throw error;
+        } finally {
+            this.shaderSourceHoles = enclosing;
         }
+        const name = (hole: number): string =>
+            `bblDynamic${stage === "vertex" ? "Vertex" : "Fragment"}${hole}`;
+        let lifted: ReturnType<typeof liftWgslNumberHoles>;
+        try {
+            lifted = liftWgslNumberHoles(
+                [spelled[0]!, spelled[1]!],
+                holes.map((hole, index) => [
+                    shaderSourceSpelling(hole, index, 0),
+                    shaderSourceSpelling(hole, index, 1),
+                ]),
+                (hole) => `shaderUniforms.${name(hole)}`,
+            );
+        } catch (error) {
+            if (error instanceof CompileError || !(error instanceof Error))
+                throw error;
+            this.fail(
+                expression,
+                `A ${stage} shader source is not WGSL the compiler reads: ${error.message}`,
+            );
+        }
+        if ("refusal" in lifted) {
+            const hole =
+                lifted.hole === undefined ? undefined : holes[lifted.hole];
+            this.fail(
+                hole?.formatter ?? expression,
+                hole
+                    ? `A ${stage} shader source spells the run-time number '${hole.formatter.getText()}' in ${lifted.refusal}; a material uniform takes its place only where WGSL reads an f32 value in a function body, or as a module-scope 'const NAME: f32 = <number>;'.`
+                    : `A ${stage} shader source ${lifted.refusal}.`,
+            );
+        }
+        // Each argument is read once, however many of its numbers the text spells.
+        const values = new Map<ts.Expression, Value>();
         return {
             source: lifted.source,
-            dynamicUniforms: [
-                {
-                    name: uniformName,
-                    type: "f32",
-                    components: [this.compileNumber(argument, "float")],
-                },
-            ],
+            dynamicUniforms: lifted.holes.map((index) => {
+                const hole = holes[index]!;
+                const argument = this.shaderSourceArgument(hole);
+                let value = values.get(argument);
+                if (!value) {
+                    value = this.compileValue(argument);
+                    values.set(argument, value);
+                }
+                const lane = this.runtimeNumberShape(
+                    argument,
+                    value,
+                    every === hole.call,
+                )?.lanes.find(({ lane }) => sameLane(lane, hole.lane));
+                if (!lane) {
+                    this.fail(
+                        hole.formatter,
+                        `The number '${hole.formatter.getText()}' a shader source spells is no longer one generation can read.`,
+                    );
+                }
+                const known = lane.value.staticNumber;
+                if (known === undefined && hole.digits !== undefined)
+                    this.reachJsData();
+                return {
+                    name: name(index),
+                    type: "f32" as const,
+                    components: [
+                        known !== undefined
+                            ? this.castNumber(
+                                  numberConstantValue(
+                                      Number(
+                                          foldNumberFormat(
+                                              hole.format,
+                                              known,
+                                              hole.digits,
+                                          ),
+                                      ),
+                                  ),
+                                  "float",
+                              )
+                            : `static_cast<float>(${
+                                  // Without digits, toExponential spells the
+                                  // shortest text that reads back as the
+                                  // number.
+                                  hole.digits === undefined
+                                      ? this.castNumber(lane.value, "double")
+                                      : `bbl::js::number_from_string(bbl::js::number_${hole.format === "toFixed" ? "to_fixed" : "to_exponential"}(${this.castNumber(lane.value, "double")}, ${hole.digits}.0))`
+                              })`,
+                    ],
+                };
+            }),
         };
+    }
+
+    /** The expression a hole's builder call passes the hole's argument as. */
+    private shaderSourceArgument(hole: ShaderSourceHole): ts.Expression {
+        const argument = hole.call.arguments[hole.parameter]!;
+        return this.alwaysUsedParameterDefault(argument) ?? argument;
+    }
+
+    /**
+     * An argument generation knows the shape of but not every number of
+     * (`compileShaderSource`): its data, each number generation does not
+     * know -- with `every`, each number -- as 0, and the key path and value
+     * of each such lane. Undefined for an argument whose evaluation writes
+     * or has effects, one of another shape, or one with no such lane.
+     */
+    private runtimeNumberShape(
+        expression: ts.Expression,
+        value?: Value,
+        every = false,
+    ):
+        | {
+              data: ExecutedArgument;
+              lanes: Array<{ lane: readonly string[]; value: Value }>;
+          }
+        | undefined {
+        const node = this.unwrap(expression);
+        if (
+            this.evaluationOrder.writesStorage(node) ||
+            this.evaluationOrder.hasModuleEffects(node)
+        )
+            return undefined;
+        const lanes: Array<{ lane: readonly string[]; value: Value }> = [];
+        // A parsed document typed as a number is one lane too.
+        const numberTyped =
+            valueKindOf(this.checker.getTypeAtLocation(node)) === "number";
+        const visit = (
+            current: Value,
+            lane: readonly string[],
+        ): ExecutedArgument | undefined => {
+            if (
+                current.kind === "number" ||
+                (current.kind === "data" &&
+                    current.dataType?.kind === "number") ||
+                (lane.length === 0 && numberTyped && isJsonValue(current))
+            ) {
+                const known = current.staticNumber;
+                if (
+                    !every &&
+                    known !== undefined &&
+                    losslessGenerationNumber(known)
+                )
+                    return known;
+                lanes.push({ lane, value: current });
+                return 0;
+            }
+            if (!this.bindings.recordPropertiesAreCurrent(current))
+                return undefined;
+            const elements =
+                current.staticElementIndex !== undefined
+                    ? undefined
+                    : current.staticElementsOwner
+                      ? current.staticElementsOwner.staticElements
+                      : (current.staticElements ?? current.tupleElements);
+            if (elements) {
+                const data: ExecutedArgument[] = [];
+                for (const [index, element] of elements.entries()) {
+                    const entry = visit(element, [...lane, String(index)]);
+                    if (entry === undefined) return undefined;
+                    data.push(entry);
+                }
+                return data;
+            }
+            if (current.kind === "data" && current.dataType?.kind === "tuple") {
+                return Array.from(
+                    { length: current.dataType.arity },
+                    (_, index) => {
+                        lanes.push({
+                            lane: [...lane, String(index)],
+                            value: this.dataLowerer.fixedTupleElement(
+                                current,
+                                index,
+                                node,
+                            )!,
+                        });
+                        return 0;
+                    },
+                );
+            }
+            if (
+                current.kind !== "record" ||
+                !current.recordProperties ||
+                Object.keys(current.recordMethods ?? {}).length > 0 ||
+                Object.keys(current.recordGetters ?? {}).length > 0 ||
+                Object.keys(current.recordSetters ?? {}).length > 0
+            )
+                return undefined;
+            const record: { [name: string]: ExecutedArgument } = {};
+            for (const key of current.recordOwnKeys ??
+                Object.keys(current.recordProperties)) {
+                const property = current.recordProperties[key];
+                const entry = property && visit(property, [...lane, key]);
+                if (entry === undefined || key === "__proto__")
+                    return undefined;
+                record[key] = entry;
+            }
+            return record;
+        };
+        const data = visit(
+            value ??
+                this.probeEmission(
+                    () => this.compileValue(node),
+                    () => false,
+                ),
+            [],
+        );
+        return data === undefined || lanes.length === 0
+            ? undefined
+            : { data, lanes };
+    }
+
+    /**
+     * A shader stage's builder run over arguments with numbers generation
+     * does not know (`compileShaderSource`): each formatter call of its own
+     * body spelling one runs as this run's spelling of that hole, and any
+     * other read of such a number refuses.
+     */
+    private runShaderSourceBuilder(
+        call: ts.CallExpression,
+        declaration: SupportedFunction,
+        args: readonly (ExecutedArgument | undefined)[],
+        unread: UnreadLanes,
+        state: ShaderSourceRun,
+        label: string,
+    ): unknown {
+        state.admitted = true;
+        const spellings = new Map<ts.Node, string>();
+        for (const found of this.shaderSourceFormatters(declaration, unread)) {
+            let index = state.holes.findIndex(
+                (hole) =>
+                    hole.call === call && hole.formatter === found.formatter,
+            );
+            if (index < 0) index = state.holes.push({ call, ...found }) - 1;
+            spellings.set(
+                found.formatter,
+                shaderSourceSpelling(state.holes[index]!, index, state.run),
+            );
+        }
+        const message = (index: number): string => {
+            const parameter = declaration.parameters[index]!.name;
+            return `it reads the run-time number '${parameter.getText()}' other than through a number formatter with literal digits, whose text a shader source's uniform replaces`;
+        };
+        // A number passed whole has no accessor to refuse a read through:
+        // only the formatters it stands in for may read its parameter.
+        for (const [index, lanes] of unread) {
+            const parameter = declaration.parameters[index]!.name;
+            if (
+                !lanes.some((lane) => lane.length === 0) ||
+                !declaration.body ||
+                !ts.isIdentifier(parameter)
+            )
+                continue;
+            const symbol = this.symbols.valueSymbol(parameter);
+            let stray: ts.Node | undefined;
+            forEachAnalysisNode(
+                declaration.body,
+                (node) => {
+                    if (spellings.has(node)) return "skip";
+                    if (
+                        !stray &&
+                        ts.isIdentifier(node) &&
+                        this.symbols.valueSymbol(node) === symbol
+                    )
+                        stray = node;
+                },
+                { types: "skip" },
+            );
+            if (stray)
+                this.fail(
+                    stray,
+                    `${label} cannot run at generation: ${message(index)}.`,
+                );
+        }
+        return executeApplicationFunction(
+            this.generationRunContext(
+                (identifier) => this.staticScalar(identifier),
+                {
+                    standInText: (node) => spellings.get(node),
+                    unreadNumbers: new Map(
+                        [...unread].map(([index, lanes]) => [
+                            index,
+                            {
+                                lanes: lanes.filter((lane) => lane.length > 0),
+                                message: message(index),
+                            },
+                        ]),
+                    ),
+                },
+            ),
+            declaration,
+            args,
+            label,
+        );
+    }
+
+    /**
+     * The library number formatter calls of a builder's own body that spell
+     * a number generation does not know of one of its arguments:
+     * `<parameter>[.<key>]*.toFixed(<digits>)` or `.toExponential(<digits>?)`,
+     * with literal digits, so the text is a float literal for every number.
+     */
+    private shaderSourceFormatters(
+        declaration: SupportedFunction,
+        unread: UnreadLanes,
+    ): Array<Omit<ShaderSourceHole, "call">> {
+        const found: Array<Omit<ShaderSourceHole, "call">> = [];
+        if (!declaration.body) return found;
+        forEachAnalysisNode(
+            declaration.body,
+            (node) => {
+                if (
+                    !ts.isCallExpression(node) ||
+                    node.questionDotToken ||
+                    !isLibraryNumberFormatter(this.checker, node)
+                )
+                    return;
+                const member = namedMember(
+                    this.checker,
+                    unwrapExpression(node.expression),
+                )!;
+                const lane: string[] = [];
+                let receiver = unwrapExpression(member.expression);
+                for (
+                    let access = namedMember(this.checker, receiver);
+                    access && !ts.isOptionalChain(access.access);
+                    access = namedMember(this.checker, receiver)
+                ) {
+                    lane.unshift(access.name);
+                    receiver = unwrapExpression(access.expression);
+                }
+                const symbol = ts.isIdentifier(receiver)
+                    ? this.symbols.valueSymbol(receiver)
+                    : undefined;
+                const parameter = declaration.parameters.findIndex(
+                    ({ name }) =>
+                        ts.isIdentifier(name) &&
+                        symbol !== undefined &&
+                        this.symbols.valueSymbol(name) === symbol,
+                );
+                if (
+                    !unread
+                        .get(parameter)
+                        ?.some((known) => sameLane(known, lane))
+                )
+                    return;
+                const format = numberFormatOf(member.name)!;
+                const written = node.arguments[0]
+                    ? unwrapExpression(node.arguments[0])
+                    : undefined;
+                const digits =
+                    written && ts.isNumericLiteral(written)
+                        ? Number(written.text)
+                        : undefined;
+                if (
+                    (written && digits === undefined) ||
+                    (digits !== undefined &&
+                        foldNumberFormat(format, 0, digits) === undefined)
+                ) {
+                    this.fail(
+                        node,
+                        `A shader source's run-time number formatted by '${node.getText()}' requires literal ${format} digits.`,
+                    );
+                }
+                if (
+                    format === "toPrecision" ||
+                    (format === "toFixed" &&
+                        !(digits !== undefined && digits >= 1))
+                ) {
+                    this.fail(
+                        node,
+                        `A shader source's run-time number formatted by '${node.getText()}' spells an integer literal for some numbers, whose WGSL type its position decides; toFixed with one or more digits and toExponential spell a float.`,
+                    );
+                }
+                found.push({
+                    formatter: node,
+                    parameter,
+                    lane,
+                    format,
+                    digits,
+                });
+                return "skip";
+            },
+            { types: "skip" },
+        );
+        return found;
     }
 
     /**
@@ -5424,14 +5869,16 @@ class Compiler implements LoweringServices {
         // lowering it: an impure expression folds only when its lowering
         // emits nothing (a declined probe rolls its statements back).
         const pure = this.evaluationOrder.isPureExpression(expression);
-        const carried = this.probeEmission(() => {
-            let value: Value | undefined;
-            const effects = this.captureEmittedStatements(() => {
-                value = this.compileValue(expression);
-            });
-            if (!value || (!pure && effects.length > 0)) return undefined;
-            return staticKeyOf(value);
-        });
+        const carried = this.unlessShaderSourceRefuses(() =>
+            this.probeEmission(() => {
+                let value: Value | undefined;
+                const effects = this.captureEmittedStatements(() => {
+                    value = this.compileValue(expression);
+                });
+                if (!value || (!pure && effects.length > 0)) return undefined;
+                return staticKeyOf(value);
+            }),
+        );
         if (carried !== undefined) return carried;
         if (
             ts.isIdentifier(expression) ||
@@ -5442,6 +5889,19 @@ class Compiler implements LoweringServices {
         return ts.isCallExpression(expression)
             ? this.runGenerationBuilder(expression)
             : undefined;
+    }
+
+    /**
+     * What `attempt` returns; while a shader stage's text folds
+     * (`compileShaderSource`), nothing where a lowering refuses, its
+     * emission dropped, so the fold reaches the builder runs that read
+     * run-time numbers. A fold that runs no builder over one refuses as the
+     * static text did.
+     */
+    private unlessShaderSourceRefuses<T>(attempt: () => T): T | undefined {
+        return this.shaderSourceHoles
+            ? unlessRefused(() => this.probeEmission(attempt, () => true))
+            : attempt();
     }
 
     /**
@@ -5773,10 +6233,11 @@ class Compiler implements LoweringServices {
      * scalar or fresh literal data (an always-omitted wrapper parameter folds to its default).
      * Omitted arguments take defaults in the closed function's own scope.
      * Undefined for any other call; a function that runs and returns anything
-     * but text refuses.
+     * but text refuses. While a shader stage's text folds, an argument may
+     * hold numbers generation does not know (`runShaderSourceBuilder`).
      */
     private runGenerationBuilder(call: ts.CallExpression): string | undefined {
-        const executed = this.runGenerationCall(call);
+        const executed = this.runGenerationCall(call, this.shaderSourceHoles);
         if (!executed) return undefined;
         const { value, label } = executed;
         if (typeof value === "string") return value;
@@ -5787,6 +6248,7 @@ class Compiler implements LoweringServices {
     /** Closed helpers share argument admission and execution for text and data. */
     private runGenerationCall(
         call: ts.CallExpression,
+        holes?: ShaderSourceRun,
     ): { value: unknown; label: string } | undefined {
         const callee = this.unwrap(call.expression);
         const member = libraryStaticMember(this.checker, callee);
@@ -5827,18 +6289,44 @@ class Compiler implements LoweringServices {
                 return undefined;
         }
         const args: Array<ExecutedArgument | undefined> = [];
+        const unread = new Map<number, readonly (readonly string[])[]>();
         // Omitted arguments stay omitted: the closed function evaluates its
         // own defaults in parameter order and observes the authored arity.
         for (const [index, argument] of call.arguments.entries()) {
-            const value = ts.isSpreadElement(argument)
+            const passed = ts.isSpreadElement(argument)
                 ? undefined
-                : this.generationArgument(
-                      this.alwaysUsedParameterDefault(argument) ?? argument,
-                  );
-            if (value === undefined) return undefined;
+                : (this.alwaysUsedParameterDefault(argument) ?? argument);
+            const value = passed && this.generationArgument(passed);
+            const parameter = declaration.parameters[index]?.name;
+            const every = holes?.every === call;
+            if (value === undefined || every) {
+                // A shader stage's builder may read, through formatters, the
+                // numbers of an argument it does not rebind that generation
+                // does not know (with `every`, all of them), where the call
+                // is the stage's own or in a function body: no module
+                // constant holds its text.
+                const shape =
+                    holes &&
+                    passed &&
+                    parameter &&
+                    ts.isIdentifier(parameter) &&
+                    (every ||
+                        ts.findAncestor(call.parent, ts.isFunctionLike)) &&
+                    parameterIsReadOnly(this.checker, declaration, parameter)
+                        ? this.runtimeNumberShape(passed, undefined, every)
+                        : undefined;
+                if (shape) {
+                    args.push(shape.data);
+                    unread.set(
+                        index,
+                        shape.lanes.map(({ lane }) => lane),
+                    );
+                    continue;
+                }
+                if (value === undefined) return undefined;
+            }
             // A snapshot of retained data crosses as a copy, so the helper
             // must only read it: a write would miss the native object.
-            const parameter = declaration.parameters[index]?.name;
             if (
                 value.snapshot &&
                 (!parameter ||
@@ -5850,7 +6338,17 @@ class Compiler implements LoweringServices {
         }
         const label = `Builder '${callee.text}'`;
         return {
-            value: this.runGenerationFunction(declaration, args, label),
+            value:
+                holes && unread.size > 0
+                    ? this.runShaderSourceBuilder(
+                          call,
+                          declaration,
+                          args,
+                          unread,
+                          holes,
+                          label,
+                      )
+                    : this.runGenerationFunction(declaration, args, label),
             label,
         };
     }
@@ -5937,7 +6435,10 @@ class Compiler implements LoweringServices {
      */
     private generationRunContext(
         foldEnclosing: ExecutedFunctionContext["foldEnclosing"],
-        more: Pick<ExecutedFunctionContext, "writtenThrough" | "pinnedStandIn">,
+        more: Pick<
+            ExecutedFunctionContext,
+            "writtenThrough" | "pinnedStandIn" | "standInText" | "unreadNumbers"
+        >,
     ): ExecutedFunctionContext {
         return {
             checker: this.checker,

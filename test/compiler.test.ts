@@ -19932,8 +19932,7 @@ test("reaches a shader material's samplers and defines", () => {
     assert.match(result.cpp, /bbl::set_shader_texture\([^)]*, 0u,/);
 });
 
-test("binds a numeric shader source factory default at its reached call", () => {
-    const result = compileSource(`
+const NUMERIC_SOURCE_FACTORY = `
         import { createEngine, createShaderMaterial } from "babylon-lite";
 
         const vertexSource = (depthBias: number) => \`struct VertexOutput {
@@ -19964,22 +19963,52 @@ test("binds a numeric shader source factory default at its reached call", () => 
             await createEngine({});
             makeMaterial();
         }
-    `);
+    `;
+
+test("binds a numeric shader source factory default at its reached call", () => {
+    const result = compileSource(NUMERIC_SOURCE_FACTORY);
 
     assert.match(
         result.manifest.customShaderPrograms[0]?.vertexSource ?? "",
-        /shaderUniforms\.bblDynamicDepthBias/,
+        /shaderUniforms\.bblDynamicVertex0/,
     );
     assert.deepEqual(result.manifest.customShaderPrograms[0]?.uniforms, [
         "worldViewProjection",
-        "bblDynamicDepthBias:f32",
+        "bblDynamicVertex0:f32",
     ]);
+    // A known number's uniform holds the number its spelling denotes.
     assert.match(
         result.cpp,
-        /const std::array<float, 1> values\{static_cast<float>\(0\.0\)\}; bbl::initialize_shader_uniform_values\([^;]*, 0u, 1u, values\.data\(\)\);/,
+        /const std::array<float, 1> values\{0\.0f\}; bbl::initialize_shader_uniform_values\([^;]*, 0u, 1u, values\.data\(\)\);/,
     );
     // An omitted argument runs the default inside the shared helper.
     assert.match(result.cpp, /bblscene::bbl_recursive_fn\d+_group\)\(\)/);
+});
+
+test("reads a numeric shader source factory's run-time argument from a uniform", () => {
+    const result = compileSource(
+        NUMERIC_SOURCE_FACTORY.replace(
+            "makeMaterial();",
+            "makeMaterial(Math.random());",
+        ),
+    );
+
+    // The module-scope constant is gone; its read reads the uniform, which
+    // holds the number the spelled text denotes.
+    const [program] = result.manifest.customShaderPrograms;
+    assert.doesNotMatch(program?.vertexSource ?? "", /DEPTH_BIAS/);
+    assert.match(
+        program?.vertexSource ?? "",
+        /out\.position\.z = out\.position\.z \+ shaderUniforms\.bblDynamicVertex0 \/ out\.position\.w;/,
+    );
+    assert.deepEqual(program?.uniforms, [
+        "worldViewProjection",
+        "bblDynamicVertex0:f32",
+    ]);
+    assert.match(
+        result.cpp,
+        /const std::array<float, 1> values\{static_cast<float>\(bbl::js::number_from_string\(bbl::js::number_to_exponential\([^;]*, 6\.0\)\)\)\}; bbl::initialize_shader_uniform_values\([^;]*, 0u, 1u, values\.data\(\)\);/,
+    );
 });
 
 test("reads the pin's wgsl tag as the identity over a shader source", () => {
@@ -20026,11 +20055,11 @@ test("reads the pin's wgsl tag as the identity over a shader source", () => {
     const [program] = result.manifest.customShaderPrograms;
     assert.match(
         program?.vertexSource ?? "",
-        /shaderUniforms\.bblDynamicDepthBias/,
+        /shaderUniforms\.bblDynamicVertex0/,
     );
     assert.deepEqual(program?.uniforms, [
         "worldViewProjection",
-        "bblDynamicDepthBias:f32",
+        "bblDynamicVertex0:f32",
     ]);
     assert.match(program?.fragmentSource ?? "", /return vec4<f32>\(0\.5\);/);
     assert.ok(!(program?.fragmentSource ?? "").includes("wgsl"));

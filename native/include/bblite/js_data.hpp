@@ -3877,6 +3877,58 @@ private:
     return std::string(buffer.data(), converted.ptr);
 }
 
+// Runtime Number.prototype.toExponential. ECMAScript picks the larger
+// magnitude of two equally near candidates, so the digits round the value's
+// exact decimal expansion (at most 767 significant digits) half up.
+[[nodiscard]] inline std::string number_to_exponential(double value, double precision) {
+    if (!std::isfinite(value))
+        return number_to_string(value);
+    const double integer = std::isnan(precision) ? 0.0 : std::trunc(precision);
+    if (integer < 0 || integer > 100)
+        throw std::range_error("Number.toExponential precision must be between 0 and 100");
+    const auto digits = static_cast<std::size_t>(integer);
+    std::string mantissa(digits + 1, '0');
+    int exponent = 0;
+    if (value != 0.0) {
+        std::array<char, 800> buffer{};
+        const auto converted =
+            number_chars::to_chars(buffer.data(), buffer.data() + buffer.size(), std::abs(value),
+                                   number_chars::chars_format::scientific, 770);
+        assert(converted.ec == std::errc{});
+        const std::string_view text(buffer.data(),
+                                    static_cast<std::size_t>(converted.ptr - buffer.data()));
+        const auto marker = text.find('e');
+        [[maybe_unused]] const auto parsed =
+            std::from_chars(text.data() + marker + 2, converted.ptr, exponent);
+        assert(parsed.ec == std::errc{});
+        if (text[marker + 1] == '-')
+            exponent = -exponent;
+        const auto digit = [&](std::size_t index) { return text[index == 0 ? 0 : index + 1]; };
+        for (std::size_t index = 0; index <= digits; ++index)
+            mantissa[index] = digit(index);
+        if (digit(digits + 1) >= '5') {
+            auto index = digits + 1;
+            while (index > 0 && mantissa[index - 1] == '9')
+                mantissa[--index] = '0';
+            if (index == 0) {
+                mantissa[0] = '1';
+                ++exponent;
+            } else {
+                ++mantissa[index - 1];
+            }
+        }
+    }
+    std::string result = value < 0.0 ? "-" : "";
+    result += mantissa[0];
+    if (digits > 0) {
+        result += '.';
+        result.append(mantissa, 1);
+    }
+    result += exponent < 0 ? "e-" : "e+";
+    result += std::to_string(exponent < 0 ? -exponent : exponent);
+    return result;
+}
+
 [[nodiscard]] inline double math_sign(double value) {
     if (std::isnan(value) || value == 0.0)
         return value;

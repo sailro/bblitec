@@ -347,8 +347,13 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
   `enableShaderUniformRangeUpdates`. Runtime resource replacements refresh shared GPU bindings;
   render-target colour and sampled depth textures rebind per draw. Template text and plugin `getCustomCode`
   functions run at generation with scalar or fresh literal-data arguments; reaching host/engine APIs, `this`, module
-  `let`, clock or random refuses. Retained objects stay native. `attributes` and `samplers` lists may be a local list
-  built by pushes generation settles, or a closed call (a module list mapped to names) run at generation. A list may
+  `let`, clock or random refuses. Retained objects stay native. A stage text builder's own `toFixed(n >= 1)` or
+  `toExponential` call on a run-time number of a number, tuple or record argument reads a material uniform holding
+  the number its text denotes, where WGSL reads an f32 value in a function body or as a module-scope
+  `const NAME: f32 = <number>;`; other positions, other reads of such a number and integer spellings refuse. A stage
+  that is a function literal's call reads its known formatted numbers from uniforms too when its whole text lifts.
+  `attributes` and `samplers` lists may be a local list built by pushes generation settles, or a closed call (a module
+  list mapped to names) run at generation. A list may
   spread a call to a local function that only returns an array literal: run-time arguments are read once and its
   entries' run-time defaults read the callee's parameters.
   `depthBias`, `depthBiasSlopeScale` and `depthOnlyFragment` control pipeline depth behaviour. WGSL `@interpolate`

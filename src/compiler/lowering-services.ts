@@ -53,6 +53,7 @@ import type { EngineLifecycle } from "./engine-lifecycle.js";
 import type { SharedClosureAnalysis } from "./shared-closure-analysis.js";
 import type { DynamicBindingStorage } from "./dynamic-binding-storage.js";
 import type { NativeEmissionRegistry } from "./native-emission-registry.js";
+import type { ShaderStage } from "../shader-ir.js";
 import type { AssetRegistry } from "./asset-registry.js";
 import type { AdmissionRecorder } from "./admissions.js";
 import type { IntrinsicOptions } from "./intrinsic-options.js";
@@ -414,7 +415,10 @@ export interface LoweringServices {
         written: (name: ts.Identifier) => boolean,
         label: string,
     ): ExecutedResult;
-    compileShaderSource(expression: ts.Expression): {
+    compileShaderSource(
+        expression: ts.Expression,
+        stage: ShaderStage,
+    ): {
         source: string;
         dynamicUniforms: Array<{
             name: string;

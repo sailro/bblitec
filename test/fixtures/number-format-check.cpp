@@ -38,6 +38,18 @@ int main(int argc, char** argv) {
             }
             start = end == std::string::npos ? line.size() : end + 1;
         }
+        for (const int digits : {0, 1, 2, 3, 6, 20, 50, 100}) {
+            const auto end = line.find('\t', start);
+            const auto expected_exponential = line.substr(start, end - start);
+            const auto exponential = bbl::js::number_to_exponential(value, digits);
+            if (exponential != expected_exponential) {
+                std::cerr << line.substr(0, first) << ".toExponential(" << digits
+                          << "): expected " << expected_exponential << ", received " << exponential
+                          << '\n';
+                return 1;
+            }
+            start = end == std::string::npos ? line.size() : end + 1;
+        }
     }
     assert(input.eof() && count > 8192);
 }
