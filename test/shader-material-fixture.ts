@@ -36,6 +36,7 @@ namespace bbl {
 Engine create_engine(EngineOptions) { return {}; }
 void initialize_shader_packet_camera_cache(const Scene&, const MaterialRecord&) {}
 ${lowerShaderUniformApi(context)}
+${cppFunction(factory, "void apply_shader_material_variant(")}
 ${cppFunction(factory, "MaterialHandle create_shader_material(")}
 ${cppFunction(factory, "MaterialRecord& shader_material(")}
 ${declarationLists ? cppFunction(factory, "std::vector<std::string> shader_declaration_names(") : ""}

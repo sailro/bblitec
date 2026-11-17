@@ -1291,6 +1291,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/material/shader/shader-material-view-gpu.ts releaseMaterialViewGpu",
         consumers: CMAKE,
     },
+    "material:shader-view": {
+        provenance: "src/material/material-view.ts createMaterialView",
+        consumers: CMAKE,
+    },
     "material:runtime-rebuild": {
         provenance:
             "src/material/material-rebuild.ts rebuildMaterial after startEngine",

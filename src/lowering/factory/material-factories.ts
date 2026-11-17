@@ -129,6 +129,45 @@ const shaderDeclarationNamesCpp = `std::vector<std::string> shader_declaration_n
 `;
 
 /**
+ * `createMaterialView(source, { features: 0 })` over a ShaderMaterial, and
+ * the program its redefined properties derive. The view keeps the source's
+ * slots (`shader_resource_material`), which a derived program declares
+ * alike; its own record draws the derived variant.
+ */
+const shaderMaterialViewsCpp = `
+MaterialHandle create_shader_material_view(
+    Engine& engine,
+    MaterialHandle source) {
+    return create_no_color_material_view(engine, source, false, true, false);
+}
+
+void derive_shader_material_view(
+    Engine& engine,
+    MaterialHandle view,
+    std::uint32_t variant,
+    bool transmissive) {
+    MaterialRecord& record = ${recordAt("engine.materials", "view")};
+    if (!record.shader_material || record.no_color ||
+        record.source_material.value == invalid_handle) {
+        throw std::runtime_error("A derived program needs a ShaderMaterial view.");
+    }
+    apply_shader_material_variant(record, variant);
+    record.shader_transmissive = transmissive;
+    record.shader_uniform_upload.reset();
+}
+
+std::uint32_t shader_material_view_variant(
+    const Engine& engine,
+    MaterialHandle view) {
+    const MaterialRecord& record = ${recordAt("engine.materials", "view")};
+    if (!record.shader_material || record.source_material.value == invalid_handle) {
+        throw std::runtime_error("A derived program needs a ShaderMaterial view.");
+    }
+    return record.shader_variant;
+}
+`;
+
+/**
  * The material/texture half of the factory unit, completing the class:
  * node, shader, PBR, grid and Standard material factories plus the
  * pixels/file texture factories and the Standard texture setters.
@@ -465,8 +504,29 @@ ${rangeUpdates ? lowerShaderUniformRangeUpdates(this.context) : ""}
 
 // The generated shader-variant table carries the pinned fixed-function
 // mapping (needAlphaBlending -> blend alpha mode, backFaceCulling ->
-// double-sided, needAlphaTesting, depthWrite) and the reflected uniform
-// layout with the createShaderMaterial defaultValue floats.
+// double-sided, needAlphaTesting, depthWrite) and its system uniforms'
+// dependencies; a material view derived from another program takes them
+// the same way.
+void apply_shader_material_variant(
+    MaterialRecord& material,
+    std::uint32_t variant) {
+    const upstream::ShaderVariantInfo& info =
+        upstream::shader_variant_info(variant);
+    material.shader_variant = variant;
+    material.shader_thin_instance_colors = info.thin_instance_color_option;
+    material.double_sided = !info.back_face_culling;
+    material.shader_alpha_testing = info.alpha_testing;
+    material.shader_depth_write = info.depth_write;
+    material.alpha_mode =
+        info.alpha_blending ? MaterialAlphaMode::blend : MaterialAlphaMode::opaque;
+    material.shader_system_dependencies = info.system_dependencies;
+    // shaderSystemDependencies: the packet's union of its slots' bits.
+    material.shader_system_dependency_mask = 0;
+    for (const auto bits : info.system_dependencies) material.shader_system_dependency_mask |= bits;
+}
+
+// The reflected uniform layout carries the createShaderMaterial
+// defaultValue floats.
 MaterialHandle create_shader_material(
     Engine& engine,
     std::uint32_t variant) {
@@ -475,23 +535,13 @@ MaterialHandle create_shader_material(
     MaterialRecord material;
     material.shader_material = true;
     material.source_group_builder = ${materialGroupIdentity(this.context, "shader")};
-    material.shader_variant = variant;
-    material.shader_thin_instance_colors = info.thin_instance_color_option;
-    material.double_sided = !info.back_face_culling;
-    material.shader_alpha_testing = info.alpha_testing;
-    material.shader_depth_write = info.depth_write;
-    if (info.alpha_blending) {
-        material.alpha_mode = MaterialAlphaMode::blend;
-    }
+    apply_shader_material_variant(material, variant);
     material.shader_uniform_values = info.defaults;
     material.shader_uniform_values.resize(info.value_count, 0.0f);
     material.shader_uniforms = std::make_shared<ShaderUniformState>();
     material.shader_uniform_snapshot = shader_uniform_render_values;
     material.shader_alpha_cutoff = shader_material_alpha_cutoff;
     material.shader_packet_initialize = initialize_shader_packet_camera_cache;
-    material.shader_system_dependencies = info.system_dependencies;
-    // shaderSystemDependencies: the packet's union of its slots' bits.
-    for (const auto bits : info.system_dependencies) material.shader_system_dependency_mask |= bits;
     for (const auto& slot : info.uniform_slots) {
         auto values = slot.defaults;
         if (values.empty()) values = default_shader_uniform_values(slot.name, slot.count);
@@ -2091,6 +2141,7 @@ void release_material_view_gpu(
         nodeEsmCasters = false,
         nodePcfCasters = false,
         viewGpuRelease = false,
+        shaderViews = false,
     ): LoweredSource {
         const nodeCasters = nodeEsmCasters || nodePcfCasters;
         const standardModule = "src/material/standard/no-color-view.ts";
@@ -2207,7 +2258,8 @@ void release_material_view_gpu(
                     : "") +
                 (nodeEsmCasters ? ",createNodeEsmShadowMaterialView" : "") +
                 (nodeCasters ? ",createNodeNoColorMaterialView" : "") +
-                (viewGpuRelease ? ",releaseMaterialViewGpu" : ""),
+                (viewGpuRelease ? ",releaseMaterialViewGpu" : "") +
+                (shaderViews ? ",createMaterialView" : ""),
             header: "",
             source: `// ${this.context.provenance(
                 viewModule,
@@ -2225,7 +2277,8 @@ MaterialHandle create_no_color_material_view(
     Engine& engine,
     MaterialHandle source,
     bool standard,
-    bool shader = false) {
+    bool shader = false,
+    bool no_color = true) {
     if (source.value >= engine.materials.size()) {
         throw std::runtime_error("Invalid source material handle.");
     }
@@ -2235,7 +2288,7 @@ MaterialHandle create_no_color_material_view(
             "No-color material view family does not match its source.");
     }
     MaterialRecord view = source_record;
-    view.no_color = true;
+    view.no_color = no_color;
     view.source_material =
         source_record.source_material.value == invalid_handle
             ? source
@@ -2264,6 +2317,7 @@ MaterialHandle create_shader_no_color_material_view(
     MaterialHandle source) {
     return create_no_color_material_view(engine, source, false, true);
 }
+${shaderViews ? shaderMaterialViewsCpp : ""}
 ${
     !nodeCasters
         ? ""

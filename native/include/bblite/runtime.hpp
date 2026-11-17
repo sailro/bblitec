@@ -8193,6 +8193,8 @@ void load_hdr_environment(Scene& scene, HdrEnvironmentOptions options);
 void load_dds_environment(Scene& scene, DdsEnvironmentOptions options);
 MaterialHandle create_standard_material(Engine& engine);
 MaterialHandle create_shader_material(Engine& engine, std::uint32_t variant);
+/** The variant's fixed-function state and system-uniform dependencies, applied to a shader record. */
+void apply_shader_material_variant(MaterialRecord& material, std::uint32_t variant);
 void initialize_shader_packet_camera_cache(const Scene& scene, const MaterialRecord& material);
 /**
  * One texture a scene handed `parseNodeMaterialFromSnippet` through its
@@ -8342,6 +8344,13 @@ MaterialHandle create_node_esm_shadow_material_view(Engine& engine, MaterialHand
                                                     ShadowGeneratorHandle generator);
 MaterialHandle create_pbr_no_color_material_view(Engine& engine, MaterialHandle source);
 MaterialHandle create_shader_no_color_material_view(Engine& engine, MaterialHandle source);
+/** `createMaterialView(source, { features: 0 })` over a ShaderMaterial: its slots stay the source's. */
+MaterialHandle create_shader_material_view(Engine& engine, MaterialHandle source);
+/** The program a shader view draws: one generation derived from its redefined properties. */
+void derive_shader_material_view(Engine& engine, MaterialHandle view, std::uint32_t variant,
+                                 bool transmissive);
+/** The shader variant a shader view draws. */
+std::uint32_t shader_material_view_variant(const Engine& engine, MaterialHandle view);
 MaterialHandle create_node_no_color_material_view(Engine& engine, MaterialHandle source);
 void mark_material_ubo_dirty(Engine& engine, MaterialHandle material);
 void release_material_view_gpu(Engine& engine, MaterialHandle view);

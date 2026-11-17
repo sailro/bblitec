@@ -369,9 +369,17 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
   empty defaults, including absent retained fields and getters.
   `uniformDecls`, `samplerDecls` and `storageBufferDecls` of a run-time material take `.some(arrow)` and `for...of`
   whose entry is read only through `name`; its `attributes` take `.includes(name)`, `.some(arrow)` and `for...of`
-  over the names; other uses of an entry or the list refuse.
+  over the names. Other reads of `vertexSource`, `fragmentSource` and the three lists are the plain data the pinned
+  `createShaderMaterial` builds from the options of the material's generation-known variants, when every variant
+  agrees; otherwise they refuse. Reads of `_uniformValues`, `_textureSlots` and `_storageBufferSlots` refuse.
+  A typed uniform declaration of a system matrix (`mat4x4<f32>`, no default) is that system uniform.
   `createShaderNoColorMaterialView` shares source uniforms and resource bindings; it and `createStandardNoColorMaterialView`
-  may run in a loop of run-time passes. Depth-only render tasks use each
+  may run in a loop of run-time passes. `createMaterialView(source, { features: 0 })` over a ShaderMaterial shares
+  them too. On such a view, effect-free `Object.defineProperty`/`defineProperties` data descriptors after its `const`
+  declaration in the same block redefine its sources, `attributes`, declaration lists and pipeline state; the view
+  draws a program compiled per source variant and selected at run time. Redefinitions declaring other uniforms,
+  samplers or storage buffers, slot maps or other fields, run-time values, or a source of unknown variant refuse.
+  Depth-only render tasks use each
   material's pipeline, including custom vertex transforms and `depthOnlyFragment` discards.
   `releaseMaterialViewGpu` drops a shader view's own packed custom uniforms; a later draw repacks them.
   `screenSize` uses the current pass dimensions. Static descriptor arrays may use closed ECMAScript calls and callbacks.

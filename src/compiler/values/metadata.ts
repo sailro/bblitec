@@ -95,6 +95,7 @@ const resourceMetadataFields = {
         "sceneShaderVariant",
         "possibleSceneShaderVariants",
         "shaderCreation",
+        "shaderMaterialView",
         "assetPbrMaterial",
         "standardMaterial",
         "standardMaterialPluginIndex",

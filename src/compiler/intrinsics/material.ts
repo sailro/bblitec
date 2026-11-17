@@ -79,6 +79,7 @@ import {
     optionsBinding,
     type ShaderDerivationContext,
 } from "../shader-derivations.js";
+import { compileCreateMaterialView } from "../shader-material-views.js";
 
 export interface MaterialIntrinsicContext
     extends
@@ -1265,6 +1266,11 @@ function compileShaderMaterialCreation(
         const variant =
             context.intrinsicOptions.compileShaderMaterialOptions(options);
         const binding = optionsBinding(context, argumentAt(call, 0));
+        if (variant.creation)
+            context.sceneManifest.shaderDerivations.recordCreation(
+                variant.name,
+                variant.creation,
+            );
         const created = `bbl::create_shader_material(${engine}, ${variant.id}u)`;
         return {
             // The pin's `transmissive` option marks the renderables it
@@ -2652,6 +2658,7 @@ const materialIntrinsicHandlers = new EmissionMap<
     ],
     ["markMaterialUboDirty", compileMarkMaterialUboDirty],
     ["releaseMaterialViewGpu", compileReleaseMaterialViewGpu],
+    ["createMaterialView", compileCreateMaterialView],
     ["createShaderMaterial", compileCreateShaderMaterial],
     ["createStorageBuffer", compileCreateStorageBuffer],
     ["updateStorageBuffer", compileUpdateStorageBuffer],

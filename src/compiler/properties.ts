@@ -14,6 +14,7 @@
 // compile-time metadata rather than from a native field, and
 // `camera.target` synthesizes a three-component record. Those differ in
 // what they *do*, not in which field they name.
+import { readShaderMaterialFact } from "./shader-material-views.js";
 import { EVENT_TYPE_MEMBER, foreignEventTypes } from "./dom-listeners.js";
 import { AbsentRecordProperties } from "./absent-record-properties.js";
 import { readEngineRenderFunction } from "./engine-render-function.js";
@@ -4241,6 +4242,12 @@ export class PropertyAccessLowerer {
         const presentRead =
             presentHandle && this.readOwnerProperty(presentHandle, expression);
         if (presentRead) return presentRead;
+        const shaderFact = readShaderMaterialFact(
+            this.context,
+            owner,
+            expression,
+        );
+        if (shaderFact) return shaderFact;
         return this.context.fail(
             expression,
             `Unsupported property value '${this.propertyPathForDiagnostic(expression)}' (owner ${owner.kind} ${owner.dataType ? JSON.stringify(owner.dataType) : "without data type"}).`,

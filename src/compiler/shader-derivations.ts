@@ -9,6 +9,10 @@
 // with and the options generation read to create it, so the derived material
 // compiles once per source variant and selects its variant at run time from
 // the source's (`derived_shader_variant_<site>`).
+//
+// Every variant keeps the options it was created from, so a material of a
+// known variant answers the fields the pin's `createShaderMaterial` builds
+// from them (`pinnedShaderMaterialField`).
 import ts from "typescript";
 import { doubleLiteral } from "../cpp-literals.js";
 import { bindingReferences } from "./binding-references.js";
@@ -18,6 +22,7 @@ import {
     EmissionMap,
     EmissionSet,
 } from "./emission-transaction.js";
+import { pinnedModuleFunction } from "../lowering/pinned-shader-builders.js";
 import { jsonToValue, type JsonValuePolicy } from "./json-value.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { staticJsonValue } from "./option-helpers.js";
@@ -36,6 +41,7 @@ import {
     unwrapExpression,
     variableKind,
 } from "./syntax.js";
+import { isPinnedType } from "./data-types.js";
 import { arrayShape, callSignatures, presentMembers } from "./type-facts.js";
 import type { CompiledShaderMaterialOptions } from "./shader-material.js";
 import type { StaticListItem, Value } from "./types.js";
@@ -115,7 +121,7 @@ type RecipeStoreContext = Pick<
 >;
 
 /** Generation facts arrive as JSON: numbers are JavaScript doubles. */
-const recipeFactPolicy: JsonValuePolicy = {
+export const recipeFactPolicy: JsonValuePolicy = {
     numberLiteral: doubleLiteral,
     nullCpp: "std::nullopt",
     staticMetadata: true,
@@ -137,6 +143,25 @@ export class ShaderDerivationRecorder {
     private readonly derived = new EmissionSet<ts.Symbol>();
     /** Each derivation site's source variant to derived variant. */
     private readonly sites = emissionArray<ReadonlyMap<number, number>>();
+    /** The distinct options each shader variant was compiled from, by variant name. */
+    private readonly creations = new EmissionMap<
+        string,
+        readonly RecordFacts[]
+    >();
+
+    /** Records the options a variant compiled from, once per distinct reading. */
+    public recordCreation(variant: string, options: RecordFacts): void {
+        const known = this.creations.get(variant) ?? [];
+        const identity = JSON.stringify([...options]);
+        if (known.some((facts) => JSON.stringify([...facts]) === identity))
+            return;
+        this.creations.set(variant, [...known, options]);
+    }
+
+    /** The options a variant compiled from: one entry per distinct reading. */
+    public creationsOf(variant: string): readonly RecordFacts[] {
+        return this.creations.get(variant) ?? [];
+    }
 
     public recordStore(
         map: ts.Symbol,
@@ -170,11 +195,12 @@ export class ShaderDerivationRecorder {
         return this.opaque.get(map) ?? this.stores.get(map) ?? [];
     }
 
+    /** A site's table; a recipe map's stores close once one derives from it. */
     public recordSite(
-        map: ts.Symbol,
+        map: ts.Symbol | undefined,
         variants: ReadonlyMap<number, number>,
     ): number {
-        this.derived.add(map);
+        if (map) this.derived.add(map);
         return this.sites.push(variants) - 1;
     }
 
@@ -227,7 +253,7 @@ const derivationSites = sourceFilesWalk(
 
 /**
  * Whether the program derives a shader material from a recipe's options:
- * only then do creations keep their facts and recipe maps their stores.
+ * only then do recipe maps keep their stores.
  */
 export function derivesShaderMaterials(
     context: Pick<ShaderDerivationContext, "program" | "symbols">,
@@ -236,6 +262,101 @@ export function derivesShaderMaterials(
         derivationSites(context.program.getSourceFiles(), context.symbols)
             .length > 0
     );
+}
+
+/**
+ * The ShaderMaterial fields `createShaderMaterial` builds from its options,
+ * by the option each is built from.
+ */
+export const PINNED_SHADER_FIELDS: Readonly<Record<string, string>> = {
+    vertexSource: "vertexSource",
+    fragmentSource: "fragmentSource",
+    uniformDecls: "uniforms",
+    samplerDecls: "samplers",
+    storageBufferDecls: "storageBuffers",
+};
+
+/** Whether a type is the pin's ShaderMaterial, or an intersection holding it. */
+export function isShaderMaterialType(type: ts.Type): boolean {
+    return type.isIntersection()
+        ? type.types.some(isShaderMaterialType)
+        : isPinnedType(type, ["ShaderMaterial"]);
+}
+
+/** Reads of a ShaderMaterial's built fields, and `createMaterialView` calls. */
+const factReads = sourceFilesWalk(
+    (
+        node: ts.Node,
+        symbols: ShaderDerivationContext["symbols"],
+        checker: ts.TypeChecker,
+    ) =>
+        (ts.isCallExpression(node) &&
+            symbols.importedName(node.expression) === "createMaterialView") ||
+        (ts.isPropertyAccessExpression(node) &&
+            Object.hasOwn(PINNED_SHADER_FIELDS, node.name.text) &&
+            isShaderMaterialType(checker.getTypeAtLocation(node.expression)))
+            ? node
+            : undefined,
+);
+
+/**
+ * Whether shader material creations keep the options they read: the program
+ * derives a material from a recipe, reads a field the pin builds from the
+ * options, or views a material.
+ */
+export function keepsShaderCreations(
+    context: Pick<ShaderDerivationContext, "checker" | "program" | "symbols">,
+): boolean {
+    return (
+        derivesShaderMaterials(context) ||
+        factReads(
+            context.program.getSourceFiles(),
+            context.symbols,
+            context.checker,
+        ).length > 0
+    );
+}
+
+const shaderMaterialModule = "src/material/shader/shader-material.ts";
+
+/**
+ * A field of the ShaderMaterial the pin's `createShaderMaterial` builds
+ * from options `facts`, as plain data; a string says why generation does
+ * not hold it. The pin runs over the options its validation reads (both
+ * sources and the attributes) and `read`, the ones the field is built
+ * from: by default the option `PINNED_SHADER_FIELDS` names.
+ */
+export function pinnedShaderMaterialField(
+    facts: RecordFacts,
+    field: string,
+    read: readonly string[] = [PINNED_SHADER_FIELDS[field]!],
+): { readonly json: unknown } | string {
+    const options: Record<string, unknown> = {};
+    for (const key of [
+        "vertexSource",
+        "fragmentSource",
+        "attributes",
+        ...read,
+    ]) {
+        const fact = facts.get(key);
+        if (fact === undefined || fact === "undefined") continue;
+        if (fact === "runtime")
+            return `its '${key}' option is decided at run time`;
+        options[key] = fact.json;
+    }
+    const material = pinnedModuleFunction(
+        shaderMaterialModule,
+        "createShaderMaterial",
+    )(options);
+    const value: unknown =
+        typeof material === "object" && material !== null
+            ? Reflect.get(material, field)
+            : undefined;
+    if (value === undefined)
+        throw new Error(
+            `Pinned createShaderMaterial no longer builds '${field}'.`,
+        );
+    return { json: JSON.parse(JSON.stringify(value)) as unknown };
 }
 
 /**
@@ -273,13 +394,30 @@ export function shaderOptionFacts(
         const expression = context.objectProperty(object, key)!;
         facts.set(
             key,
-            known[key] ??
-                (lists.has(key)
-                    ? listFact(context, expression)
-                    : expressionFact(context, expression)),
+            known[key] ?? optionFact(context, expression, lists.has(key)),
         );
     }
     return facts;
+}
+
+/**
+ * What an option's expression holds, read without leaving code behind: a
+ * declaration list (`list`) item by item.
+ */
+export function optionFact(
+    context: Pick<
+        ShaderDerivationContext,
+        | "compileValue"
+        | "probeEmission"
+        | "resolveStaticLiteral"
+        | "staticListItems"
+    >,
+    expression: ts.Expression,
+    list: boolean,
+): RecordFact {
+    return list
+        ? listFact(context, expression)
+        : expressionFact(context, expression);
 }
 
 /** What a member's expression holds, read without leaving code behind. */
@@ -649,7 +787,7 @@ function writtenFact(
  * Whether evaluating an options literal writes nothing and runs no code with
  * effects; the pin's `wgsl` tag returns its text, so its spans are what run.
  */
-function effectFreeOptions(
+export function effectFreeOptions(
     context: Pick<ShaderDerivationContext, "evaluationOrder" | "symbols">,
     object: ts.ObjectLiteralExpression,
 ): boolean {

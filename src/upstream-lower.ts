@@ -1943,6 +1943,7 @@ ${lowerThinInstanceSync(context)}
                 nodeEsmCasters,
                 nodePcfCasters,
                 features.includes("material:view-gpu-release"),
+                features.includes("material:shader-view"),
             ),
         );
         this.emitMeshFactories(features, factories, generated);

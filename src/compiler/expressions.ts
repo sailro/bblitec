@@ -316,6 +316,12 @@ export interface ExpressionContext
         UserFunctionContext,
         Pick<
             LoweringServices,
+            | "compileShaderSource"
+            | "intrinsicOptions"
+            | "memberLiteral"
+            | "resolveStaticLiteral"
+            | "staticListItems"
+            | "staticLiteralData"
             | "isCanvasElement"
             | "noteImpureRead"
             | "expectStaticArrayElements"

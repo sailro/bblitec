@@ -55,6 +55,7 @@ import type {
     ShaderCreation,
     ShaderRecipeLookup,
 } from "./shader-derivations.js";
+import type { ShaderMaterialView } from "./shader-material-views.js";
 import type { DataType, TypedArrayKind } from "./data-types.js";
 import type { RegExpLayout } from "./regexp-grammar.js";
 import type { SceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
@@ -3218,6 +3219,8 @@ export interface ValueFields {
     shaderCreation?: ShaderCreation;
     /** A recipe map's `get`: the map and the material it was keyed by. */
     shaderRecipeLookup?: ShaderRecipeLookup;
+    /** A `createMaterialView` over a ShaderMaterial: its source and the programs it draws. */
+    shaderMaterialView?: ShaderMaterialView;
     /** Stable creation slot for a scene-owned material that escapes a scope. */
     sceneMaterialSlot?: number;
     animationFrameRate?: string;
@@ -3742,6 +3745,7 @@ export type Feature =
     | "material:runtime-rebuild"
     | "material:ubo-dirty"
     | "material:view-gpu-release"
+    | "material:shader-view"
     | "texture:file"
     | "texture:compressed"
     | "texture:ktx2"

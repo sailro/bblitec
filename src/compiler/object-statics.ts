@@ -1,5 +1,10 @@
 import { writable } from "./emission-transaction.js";
 import { knownCondition, presentCopy } from "./values/model.js";
+import {
+    compileShaderMaterialViewDefinitions,
+    shaderMaterialViewTarget,
+    type ShaderMaterialViewContext,
+} from "./shader-material-views.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import {
@@ -112,7 +117,8 @@ type ObjectStaticContext = Pick<
     | "emitUiStyleValue"
     | "registerNativeConstBinding"
     | "registerNativeBindingType"
->;
+> &
+    ShaderMaterialViewContext;
 
 /** What the own-entry walks read. */
 type OwnEntryContext = Pick<
@@ -1824,6 +1830,14 @@ function compileObjectDefineProperty(
 ): Value {
     context.expectArgumentCount(call, 3, 3);
     const global = isRealmGlobalObject(context, argumentAt(call, 0));
+    const view = global ? undefined : shaderMaterialViewTarget(context, call);
+    if (view)
+        return compileShaderMaterialViewDefinitions(
+            context,
+            call,
+            view,
+            "defineProperty",
+        );
     const target = global
         ? undefined
         : definitionTarget(context, call, "defineProperty");
@@ -1857,6 +1871,14 @@ function compileObjectDefineProperties(
 ): Value {
     context.expectArgumentCount(call, 2, 2);
     const global = isRealmGlobalObject(context, argumentAt(call, 0));
+    const view = global ? undefined : shaderMaterialViewTarget(context, call);
+    if (view)
+        return compileShaderMaterialViewDefinitions(
+            context,
+            call,
+            view,
+            "defineProperties",
+        );
     const target = global
         ? undefined
         : definitionTarget(context, call, "defineProperties");

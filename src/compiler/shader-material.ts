@@ -57,7 +57,7 @@ function readListItem<T>(
 }
 import { knownCondition } from "./values/model.js";
 import {
-    derivesShaderMaterials,
+    keepsShaderCreations,
     shaderOptionFacts,
     type RecordFact,
     type RecordFacts,
@@ -81,7 +81,7 @@ const shaderDepthCompare: TableOption = {
 const WGSL_IDENTIFIER = cppIdentifierPattern;
 
 /** The options holding declaration lists, read item by item. */
-const SHADER_DECLARATION_LISTS: ReadonlySet<string> = new Set([
+export const SHADER_DECLARATION_LISTS: ReadonlySet<string> = new Set([
     "uniforms",
     "samplers",
     "externalTextures",
@@ -98,6 +98,7 @@ export interface ShaderMaterialContext
         StaticBooleanContext,
         Pick<
             LoweringServices,
+            | "checker"
             | "sceneManifest"
             | "expectObjectLiteral"
             | "expectStaticArrayLiteral"
@@ -521,7 +522,7 @@ export function compileShaderMaterialOptions(
         compiled.dynamicUniforms.length > 0
             ? "runtime"
             : { json: compiled.source };
-    const creation = derivesShaderMaterials(context)
+    const creation = keepsShaderCreations(context)
         ? shaderOptionFacts(
               context,
               object,
@@ -901,6 +902,16 @@ function compileShaderUniformSignatures(
                 resolved,
                 "defaultValue",
             );
+            // The pin's pipeline files a declaration under the system
+            // uniforms by its name (`_isShaderSystemUniform`), so a system
+            // matrix declared with its own type is that system uniform, as
+            // `uniformDecls` spells the ones a material declared by name.
+            if (
+                !defaultExpression &&
+                isShaderSystemMatrix(uniformName) &&
+                uniformType === "mat4x4<f32>"
+            )
+                return uniformName;
             if (defaultExpression) {
                 const resolvedDefault =
                     context.resolveStaticExpression(defaultExpression);
