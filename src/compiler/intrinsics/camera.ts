@@ -7,7 +7,7 @@ import {
     staticVec3Value,
     type PositiveIntegerContext,
 } from "../option-helpers.js";
-import { presenceFlagCpp, type Value } from "../types.js";
+import { isAbsentValue, presenceFlagCpp, type Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { CAMERA_LIMIT_PROPERTIES } from "../camera-setters.js";
 import { recordAt } from "../record-access.js";
@@ -468,6 +468,50 @@ export function compileCameraIntrinsic(
                     `return ${aggregate}; }())`,
                 dataType: resultType,
                 engineCpp: engine,
+            };
+        }
+
+        case "getEffectiveAspectRatio": {
+            context.expectArgumentCount(call, 3, 3);
+            // The arguments are read in order before the pin's body runs.
+            const cameraExpression = argumentAt(call, 0);
+            const camera = context.bindings.pinValueToTemporary(
+                context.compileValue(cameraExpression),
+                "aspect_camera",
+                cameraExpression,
+            );
+            const [width, height] = [1, 2].map((index) => {
+                const name = context.allocateTemporaryCppName("aspect_extent");
+                context.emit({
+                    kind: "declaration",
+                    type: "const double",
+                    name,
+                    initializer: context.compileNumber(
+                        argumentAt(call, index),
+                        "double",
+                    ),
+                });
+                return name;
+            });
+            // `camera?.viewport`: no camera scales the target's own ratio.
+            const raw = `(${width} / ${height})`;
+            if (isAbsentValue(camera))
+                return {
+                    kind: "number",
+                    cpp: raw,
+                    dataType: { kind: "number" },
+                };
+            context.expectKind(camera, "camera", cameraExpression);
+            const engine = context.requireEngine(camera, call);
+            const ratio = `bbl::upstream::effective_aspect_ratio(${recordAt(`${engine}.cameras`, camera.cpp)}, ${width}, ${height})`;
+            const present = presenceFlagCpp(camera);
+            return {
+                kind: "number",
+                cpp:
+                    present === undefined
+                        ? ratio
+                        : `(${present} ? ${ratio} : ${raw})`,
+                dataType: { kind: "number" },
             };
         }
 
