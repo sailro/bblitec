@@ -59,11 +59,33 @@ int main() try {
         check(element("kept")->GetComputedValues().display() == Rml::Style::Display::Block,
               "the hiding rule leaves its exception displayed");
         check(element("kept")->GetBox().GetSize().x == 8.f, "the exception keeps its layout");
+        const auto displayed = [&](const char* id) {
+            return element(id)->GetComputedValues().display() == Rml::Style::Display::Block;
+        };
+        check(opacity("plain", 0.25f) &&
+                  ui_get_style_property(engine, ui_get_element_by_id(engine, "plain"), "opacity")
+                      .empty(),
+              "a plain write of a value carrying a priority mark is ignored");
+        check(displayed("survivor"), "an important CSSOM write beats an important rule");
+        check(!displayed("demoted"), "a later normal write drops a declaration's importance");
+        ui_set_style_property(engine, ui_get_element_by_id(engine, "survivor"), "display", "block");
+        at(1000);
+        check(!displayed("survivor"), "a normal write replaces the flagged declaration");
         // An important transition shorthand's delay reset beats a normal inline delay.
         ui_toggle_class(engine, ui_get_element_by_id(engine, "fade"), "on", true);
         at(1000);
         at(1050);
         check(opacity("fade", 0.5f), "important shorthand resets the inline delay");
+        // The transition would restore the declaration without its flag.
+        bool refused = false;
+        try {
+            ui_set_important_style_property(engine, ui_get_element_by_id(engine, "fade"), "opacity",
+                                            "0.2");
+            at(1100);
+        } catch (const std::runtime_error&) {
+            refused = true;
+        }
+        check(refused, "an important declaration of a transitioned property refuses");
     }
     SDL_DestroyWindow(window);
     SDL_Quit();

@@ -187,6 +187,41 @@ std::pair<std::string_view, bool> split_css_important(std::string_view value) {
     return {trim_css_token(value.substr(0, mark - 1)), true};
 }
 
+/** A declaration's value as CSSOM reads it: without its `!important` mark. */
+std::string css_declared_value(std::string_view value) {
+    const auto [declared, important] = split_css_important(value);
+    return std::string(important ? declared : value);
+}
+
+/**
+ * An inline declaration set with CSSOM's important priority: each property it declares, flagged
+ * important (RmlUi patch 0037). SetInlineProperty starts transitions but restores an unflagged
+ * declaration when they end, so a property the element's transitions cover throws.
+ */
+bool set_important_inline_property(Rml::Element& element, const std::string& name,
+                                   const std::string& value) {
+    Rml::PropertyDictionary parsed;
+    if (!Rml::StyleSheetSpecification::ParsePropertyDeclaration(parsed, name, value))
+        return false;
+    const Rml::Property* transition = element.GetProperty(Rml::PropertyId::Transition);
+    const Rml::TransitionList transitions =
+        transition ? transition->Get<Rml::TransitionList>() : Rml::TransitionList{};
+    for (const auto& [id, property] : parsed.GetProperties()) {
+        if (!transitions.none &&
+            (transitions.all ||
+             std::ranges::any_of(transitions.transitions, [id](const Rml::Transition& covered) {
+                 return covered.id == id;
+             })))
+            throw std::runtime_error(
+                "An important inline declaration of a transitioned property is not represented: " +
+                name);
+        Rml::Property flagged = property;
+        flagged.important = true;
+        element.SetProperty(id, flagged);
+    }
+    return true;
+}
+
 // CSS Backgrounds 3 `box-shadow: none | <shadow>#`: each shadow is an optional `inset`, two to four
 // contiguous lengths (the third nonnegative) and at most one color, in any order. A closing parenthesis
 // ends a token, so `rgb(1,2,3)55` is a color then a unitless number. A value naming var() or a math
@@ -2029,8 +2064,10 @@ void ui_set_boolean_attribute(Engine& engine, UiElementHandle element, std::stri
         ui_remove_attribute(engine, element, name);
 }
 
-void ui_set_style_property(Engine& engine, UiElementHandle element, std::string name,
-                           std::string value) {
+namespace {
+/** Stores a CSSOM declaration, its priority mark included. */
+void store_style_property(Engine& engine, UiElementHandle element, std::string name,
+                          std::string value) {
     if (name.empty()) {
         throw std::runtime_error("Native UI style property name cannot be empty.");
     }
@@ -2043,7 +2080,8 @@ void ui_set_style_property(Engine& engine, UiElementHandle element, std::string 
     }
     // CSSOM ignores an assignment the property's grammar rejects; a stored
     // value already passed.
-    if (!unchanged && name == "box-shadow" && !value.empty() && !css_box_shadow_valid(value))
+    if (!unchanged && name == "box-shadow" && !value.empty() &&
+        !css_box_shadow_valid(css_declared_value(value)))
         return;
     std::erase(record.style_property_order, name);
     record.style_property_order.push_back(name);
@@ -2051,6 +2089,22 @@ void ui_set_style_property(Engine& engine, UiElementHandle element, std::string 
     // A CSSOM write creates the element's `style` attribute.
     note_attribute_order(record, "style");
     mark_ui_changed(engine);
+}
+} // namespace
+
+void ui_set_style_property(Engine& engine, UiElementHandle element, std::string name,
+                           std::string value) {
+    // A priority is not part of a value: CSSOM ignores a value that carries one.
+    if (split_css_important(value).second)
+        return;
+    store_style_property(engine, element, std::move(name), std::move(value));
+}
+
+void ui_set_important_style_property(Engine& engine, UiElementHandle element, std::string name,
+                                     std::string value) {
+    if (!value.empty())
+        value += " !important";
+    store_style_property(engine, element, std::move(name), std::move(value));
 }
 
 std::string ui_background_longhand(std::string_view shorthand, std::string_view initial) {
@@ -2085,7 +2139,7 @@ std::string ui_get_style_property(Engine& engine, UiElementHandle element, std::
     const UiElementRecord& record = ui_element(engine, element);
     const auto dynamic = record.style_properties.find(std::string(name));
     if (dynamic != record.style_properties.end())
-        return dynamic->second;
+        return css_declared_value(dynamic->second);
     const auto attribute = record.attributes.find("style");
     if (attribute == record.attributes.end())
         return {};
@@ -2095,7 +2149,7 @@ std::string ui_get_style_property(Engine& engine, UiElementHandle element, std::
         const std::size_t colon = declaration.find(':');
         if (colon != std::string_view::npos &&
             css_property_name_equals(trim_css_token(declaration.substr(0, colon)), name)) {
-            value = std::string(trim_css_token(declaration.substr(colon + 1)));
+            value = css_declared_value(trim_css_token(declaration.substr(colon + 1)));
         }
     });
     return value;
@@ -6782,7 +6836,10 @@ struct UiRmlRuntime {
     }
 
     void set_projected_property(Rml::Element& element, const std::string& name,
-                                const std::string& value) const {
+                                const std::string& stored) const {
+        // A declaration set with the important priority keeps its mark in the record.
+        const auto [declared, important] = split_css_important(stored);
+        const std::string value = important ? std::string(declared) : stored;
         // The shorthand resets its time longhands; 'auto' keeps the shorthand's own times.
         for (const std::string_view longhand : ui_time_longhands(name)) {
             if (value.empty())
@@ -6814,11 +6871,11 @@ struct UiRmlRuntime {
         // Motion values keep their case (keyframes names) and refuse rather than drop, as a
         // background colour (custom property names keep their case) does.
         const bool motion = is_ui_motion_property(name);
-        const bool accepted = element.SetInlineProperty(
-            name, project_css(checked && name != "box-shadow" && name != "filter"
-                                  ? js::string_lower(value)
-                                  : value,
-                              name));
+        const std::string projected = project_css(
+            checked && name != "box-shadow" && name != "filter" ? js::string_lower(value) : value,
+            name);
+        const bool accepted = important ? set_important_inline_property(element, name, projected)
+                                        : element.SetInlineProperty(name, projected);
         if ((checked || motion || name == "background-color") && !accepted)
             throw std::runtime_error("Unsupported retained UI " + name + " value: " + value);
     }
@@ -8523,7 +8580,7 @@ struct UiRmlRuntime {
                         handle_at(engine.ui_elements, child_handle);
                     if (const auto dynamic_width = child_record.style_properties.find("width");
                         dynamic_width != child_record.style_properties.end()) {
-                        width = project_css(dynamic_width->second);
+                        width = project_css(css_declared_value(dynamic_width->second));
                     }
                     parent.children.push_back({child, std::move(width)});
                 }

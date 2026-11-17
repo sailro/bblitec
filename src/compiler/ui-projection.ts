@@ -6869,12 +6869,24 @@ export class UiProjection {
         valueExpression: ts.Expression,
         site: ts.Node,
         knownValue?: Value,
+        important = false,
     ): void {
         const nativeProperty = this.nativeUiStyleProperty(property);
         const knownString = knownValue
             ? knownValue.staticString
             : this.tryUiStaticString(valueExpression);
+        // The PAL flags an important declaration's own properties; a custom
+        // property or the background shorthand's longhands it does not.
+        if (
+            important &&
+            (nativeProperty.startsWith("--") || property === "background")
+        )
+            this.context.fail(
+                site,
+                `An important '${property}' declaration is not represented.`,
+            );
         const capability =
+            !important &&
             this.context.options.deferredCapabilities &&
             deferredUiStyleCapability(nativeProperty, knownString);
         if (
@@ -6981,7 +6993,7 @@ export class UiProjection {
         this.context.emit({
             kind: "expression",
             code:
-                `bbl::ui_set_style_property(${engine}, ${styleElement.cpp}, ` +
+                `bbl::${important ? "ui_set_important_style_property" : "ui_set_style_property"}(${engine}, ${styleElement.cpp}, ` +
                 `${this.context.cppString(nativeProperty)}, ${written});`,
         });
     }

@@ -1453,20 +1453,26 @@ export class PlatformCalls {
                 );
                 const name = this.ui.uiStylePropertyName(argumentAt(call, 0));
                 if (setting) {
-                    if (
+                    const priority =
                         call.arguments[2] &&
-                        this.context.compileStringLiteral(call.arguments[2]) !==
-                            ""
-                    )
+                        this.context.compileStringLiteral(call.arguments[2]);
+                    // CSSOM matches the priority ASCII case-insensitively.
+                    const important =
+                        priority?.replace(/[A-Z]/g, (letter) =>
+                            letter.toLowerCase(),
+                        ) === "important";
+                    if (priority && !important)
                         this.context.fail(
-                            call.arguments[2],
-                            "Native UI setProperty priority requires an empty string; important priority is not represented.",
+                            call.arguments[2]!,
+                            "Native UI setProperty priority requires an empty string or 'important'.",
                         );
                     this.ui.emitUiStyleProperty(
                         element,
                         name,
                         argumentAt(call, 1),
                         call,
+                        undefined,
+                        important,
                     );
                     return { kind: "void", cpp: "" };
                 }

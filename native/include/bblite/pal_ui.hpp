@@ -181,6 +181,9 @@ void ui_set_declared_attribute(Engine& engine, UiElementHandle element,
                                std::string_view property, std::string name, std::string value);
 void ui_set_style_property(Engine& engine, UiElementHandle element, std::string name,
                            std::string value);
+/** CSSOM setProperty with the important priority: an empty value removes the declaration. */
+void ui_set_important_style_property(Engine& engine, UiElementHandle element, std::string name,
+                                     std::string value);
 /** What a run-time `background` shorthand gives a longhand: its CSS-wide keyword, else `initial`. */
 std::string ui_background_longhand(std::string_view shorthand, std::string_view initial);
 /** The background shorthand's value, after its reset longhands: a colour or plain gradient layers. */

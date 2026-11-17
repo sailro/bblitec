@@ -56,8 +56,7 @@ test("CSS method priority and unsupported property names refuse explicitly", () 
     assert.throws(
         () =>
             compileSource(
-                prefix +
-                    `element.style.setProperty("color", "red", "important");`,
+                prefix + `element.style.setProperty("color", "red", "high");`,
             ),
         /priority/,
     );
