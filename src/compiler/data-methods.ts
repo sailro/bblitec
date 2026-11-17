@@ -108,6 +108,7 @@ import {
 } from "./string-searches.js";
 import {
     arrayElementType,
+    classInstanceDeclaration,
     declaredContextualType,
     isTypeReference,
     presentMembers,
@@ -1413,6 +1414,52 @@ function compileMissingPrimitiveMethod(
     );
 }
 
+/**
+ * `value.method(...)` on a document whose declared type is a class the
+ * program stores, naming one of its methods: the class instance the document
+ * holds, which it asserts (any other document throws TypeError), runs the
+ * method. A document's view of an instance holds only its fields.
+ */
+function compileDocumentClassMethod(
+    lowerer: DataLowerer,
+    call: ts.CallExpression,
+    callee: NamedMember,
+    owner: Value,
+): Value | undefined {
+    const context = lowerer.context;
+    const type = context.checker.getNonNullableType(
+        context.checker.getTypeAtLocation(callee.expression),
+    );
+    const declaration = classInstanceDeclaration(type);
+    if (
+        !declaration ||
+        !context.checker
+            .getPropertyOfType(type, callee.name)
+            ?.declarations?.some(ts.isMethodDeclaration)
+    )
+        return undefined;
+    const asserted = lowerer.documentClassInstance(
+        owner,
+        type,
+        callee.expression,
+    );
+    if (asserted?.dataType?.kind !== "struct") return undefined;
+    // The instance is a copy: the receiver binds it by reference, and the
+    // document read it is asserted from may be a temporary that alone owns it.
+    const instance: Value = {
+        ...asserted,
+        cpp: `${context.dataTypes.cppType(asserted.dataType)}(${asserted.cpp})`,
+    };
+    const receiver =
+        context.classLowerer.hydrate(instance, callee.expression) ?? instance;
+    return context.classLowerer.compileMethodCall(
+        receiver,
+        callee.name,
+        call,
+        context.classOf(receiver) ?? declaration,
+    );
+}
+
 function compileKnownDataMethod(
     lowerer: DataLowerer,
     call: ts.CallExpression,
@@ -1433,6 +1480,13 @@ function compileKnownDataMethod(
         callee.expression,
     );
     if (isJsonValue(narrowedOwner)) {
+        const classMethodCall = compileDocumentClassMethod(
+            lowerer,
+            call,
+            callee,
+            narrowedOwner,
+        );
+        if (classMethodCall) return classMethodCall;
         const held = compileJsonMemberCall(
             lowerer.context,
             call,

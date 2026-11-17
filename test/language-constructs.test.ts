@@ -4584,6 +4584,26 @@ check(
 );
 
 check(
+    "a class method called through a document runs on the instance the document holds",
+    `
+    class Counter { total = 0; add(v: number): number { this.total += v; return this.total; } }
+    interface Holder { counter?: Counter; label: string }
+    const counter = new Counter();
+    const doc = JSON.parse('{"label":"x"}') as Holder;
+    const holder: Holder = { ...doc, counter };
+    const first = holder.counter?.add(2);
+    const second = holder.counter!.add(3);
+    if (first !== 2 || second !== 5 || counter.total !== 5) throw new Error("method " + first + " " + second + " " + counter.total);
+    const forged = JSON.parse('{"counter":{"total":1},"label":"y"}') as Holder;
+    let threw = "none";
+    try { forged.counter!.add(1); } catch (error) { threw = error instanceof TypeError ? "TypeError" : "other"; }
+    if (threw !== "TypeError") throw new Error("forged " + threw);
+    const missing = JSON.parse('{"label":"z"}') as Holder;
+    if (missing.counter?.add(1) !== undefined) throw new Error("absent");
+`,
+);
+
+check(
     "null-fields-absent-reads-and-typed-parsed-views",
     `
     interface Wall { centreline: readonly number[]; halfThickness: number; }

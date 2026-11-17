@@ -6045,17 +6045,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             // A private name is no property of a document: the read is of
             // the class instance the document holds, which it asserts. The
             // class takes its stored struct, which a document holds boxed.
-            const instance = this.context.dataTypes.fromStoredTsType(
+            const instance = this.documentClassInstance(
+                owner,
                 this.context.checker.getTypeAtLocation(access.expression),
                 access.expression,
             );
-            return instance?.kind === "struct" &&
-                this.context.dataTypes.isClassStruct(instance.name)
-                ? this.propertyRead(
-                      this.assertedInstance(owner, instance),
-                      access,
-                  )
-                : undefined;
+            return instance ? this.propertyRead(instance, access) : undefined;
         }
         if (dataType.kind === "json") {
             const packaged = this.packagedPrimitive(access);
@@ -13496,6 +13491,22 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             reader.expression,
         );
         return member?.owner === "Array" && member.name === "from";
+    }
+
+    /**
+     * The class instance a document holds where `type` is a class the
+     * program stores (`assertedInstance`); undefined for any other type.
+     */
+    public documentClassInstance(
+        value: Value,
+        type: ts.Type,
+        node: ts.Node,
+    ): Value | undefined {
+        const instance = this.context.dataTypes.fromStoredTsType(type, node);
+        return instance?.kind === "struct" &&
+            this.context.dataTypes.isClassStruct(instance.name)
+            ? this.assertedInstance(value, instance)
+            : undefined;
     }
 
     /** The class instance a document holds; any other document throws TypeError. */
