@@ -194,6 +194,8 @@ cancel })` is a program source; `new Response(stream, { status, statusText, head
 - Native loops own extent refresh; `resizeEngine` runs the pin's `resizeSurface` on an application realm's DOM canvas.
 - `enableAsyncShaderPipelineCompilation` adds nothing: scene preparation compiles pipelines before the first frame.
 - `enableShaderMaterialPipelineSharing` and `enableKtx2WorkerDecoding` add nothing: frames and uploads are unchanged.
+- `prepareShaderMaterialPipelineForTask` resolves for a render task's ShaderMaterial and rejects for another task or
+  material; native pipelines are built when a draw first binds them.
 - An application realm's DOM canvas backing store is sized only by the pin's `resizeSurface` (client box, device
   pixel ratio or a getter the program defines for it on the global object, `maxDevicePixelRatio` option or write) at
   `createEngine`, `resizeEngine` and each frame head, on every

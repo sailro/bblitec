@@ -13,6 +13,7 @@ import {
 import { sharedPinnedContext } from "../../lowering/context.js";
 import { lowerMaterialPredicate } from "../../lowering/material-predicate.js";
 import { lowerMaterialTracking } from "../../lowering/material-tracking.js";
+import { lowerShaderPipelinePreparation } from "../../lowering/shader-pipeline-preparation.js";
 import { shaderMatrixWriteProvenance } from "../../lowering/shader-matrix-write.js";
 import {
     compileCreateStorageBuffer,
@@ -102,6 +103,7 @@ export interface MaterialIntrinsicContext
             | "intrinsicOptions"
             | "allocateTemporaryCppName"
             | "emit"
+            | "emitDiscardedValue"
             | "isRuntimeResourceConstruction"
             | "isRuntimeCallback"
             | "expectObjectLiteral"
@@ -2130,6 +2132,43 @@ function compileInstallPbrTracking(
     return { kind: "void", cpp: "" };
 }
 
+/**
+ * `prepareShaderMaterialPipelineForTask(task, material, layout, mesh?)`:
+ * its arguments in order, then the native preparation's promise.
+ */
+function compilePrepareShaderMaterialPipelineForTask(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value {
+    context.expectArgumentCount(call, 3, 4);
+    const argument = (index: number): Value =>
+        context.bindings.pinValueToTemporary(
+            context.compileValue(argumentAt(call, index)),
+            "prepared_pipeline_argument",
+            argumentAt(call, index),
+        );
+    const task = argument(0);
+    const material = argument(1);
+    // The layout and mesh select a vertex layout no native pipeline keys.
+    for (const index of call.arguments.length === 4 ? [2, 3] : [2])
+        context.emitDiscardedValue(
+            context.compileValue(argumentAt(call, index)),
+        );
+    context.expectKind(task, "task", argumentAt(call, 0));
+    context.expectKind(material, "material", argumentAt(call, 1));
+    context.expectSameEngine(task, material, call);
+    const prepare = context.nativeEmission.lowerOnce(
+        "prepare_shader_material_pipeline_for_task",
+        (name) => lowerShaderPipelinePreparation(sharedPinnedContext(), name),
+    );
+    return {
+        kind: "promise",
+        cpp: `${prepare}(${context.requireEngine(task, call)}, ${task.cpp}, ${material.cpp})`,
+        promiseType: "bbl::js::PromiseVoid",
+        promiseResult: { kind: "void", cpp: "" },
+    };
+}
+
 /** The pin's async family selection; resolves after its module hop. */
 function compileEnableMaterialTracking(
     context: MaterialIntrinsicContext,
@@ -2543,6 +2582,10 @@ const materialIntrinsicHandlers = new EmissionMap<
     ["installPbrTracking", compileInstallPbrTracking],
     ["installStdTracking", compileInstallPbrTracking],
     ["enableMaterialTracking", compileEnableMaterialTracking],
+    [
+        "prepareShaderMaterialPipelineForTask",
+        compilePrepareShaderMaterialPipelineForTask,
+    ],
     ["setPbrSheen", compileSetPbrSheen],
     ["setAlphaToCoverage", compileSetAlphaToCoverage],
     ["createStandardMaterial", compileCreateStandardMaterial],
