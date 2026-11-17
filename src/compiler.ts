@@ -1318,7 +1318,6 @@ class Compiler implements LoweringServices {
         ts.VariableDeclaration,
         DynamicBindingStorage | undefined
     >;
-    private readonly ownedRecords: Readonly<ReplayStorage["records"]>;
     private readonly replayStorage: ReplayStorage;
     public readonly absenceTags: ReadonlySet<ts.Declaration>;
     public readonly thrownValueKinds: ReadonlySet<"string">;
@@ -1335,7 +1334,6 @@ class Compiler implements LoweringServices {
     ) {
         this.replayStorage = storage;
         this.dynamicBindings = storage.dynamicBindings;
-        this.ownedRecords = storage.records;
         this.absenceTags = storage.absenceTags;
         this.thrownValueKinds = storage.thrownValueKinds;
         this.tupleArraySlots = storage.tupleArraySlots;
@@ -1622,22 +1620,23 @@ class Compiler implements LoweringServices {
      * a shared pointer that requires `record->field`.
      */
     private predeclareStoredObjectReferences(): void {
+        // In an order of the program: the layout is the program's, not the
+        // order the attempts before this one met the demands in.
+        const records = this.replayStorage.orderedRecords();
         this.dataTypes.prepareRecordComponents(
-            recordComponents(
-                this.checker,
-                [...this.ownedRecords.values()].flatMap(
-                    (demand) => demand.joins ?? [],
-                ),
-            ),
-            this.ownedRecords.values(),
+            recordComponents(this.checker, this.replayStorage.orderedJoins()),
+            records,
             this.program,
         );
-        for (const demand of this.ownedRecords.values())
+        for (const demand of records)
             if (!demand.document)
                 refusingRecordDemand(demand, () =>
                     this.dataTypes.predeclareOwnedRecord(demand),
                 );
-        for (const [declaration, storage] of this.dynamicBindings)
+        for (const [
+            declaration,
+            storage,
+        ] of this.replayStorage.sourceOrderedDynamicBindings())
             this.predeclaring(declaration, () => {
                 const source = this.checker.getTypeAtLocation(declaration.name);
                 // A record of methods has a type only as the storage it takes:

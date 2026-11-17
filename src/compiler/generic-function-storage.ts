@@ -2,6 +2,7 @@ import { StorageDemand } from "./storage-demand.js";
 import type { StorageRequest } from "./replay-storage.js";
 import ts from "typescript";
 import { isTypeReference, callSignatures } from "./type-facts.js";
+import { sourceOrder } from "./syntax.js";
 
 /** One reached instantiation of a stored generic function. */
 export interface GenericFunctionDemand {
@@ -308,8 +309,14 @@ export class GenericFunctionStorage {
         return key;
     }
 
+    /**
+     * A family's signatures in the source order of their calls: a family
+     * lays out its fields in it, whatever order the attempts met them in.
+     */
     public get(family: string): readonly GenericFunctionDemand[] {
-        return [...(this.demands.get(family) ?? [])];
+        return [...(this.demands.get(family) ?? [])].sort((left, right) =>
+            sourceOrder(left.site, right.site),
+        );
     }
 
     public add(demand: GenericFunctionDemand): boolean {

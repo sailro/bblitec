@@ -211,6 +211,23 @@ export function wrappersAround(
     return wrappers;
 }
 
+/**
+ * Orders two nodes of a program as its source spells them: by file, then
+ * by position. A node without a file (`undefined`) comes last.
+ */
+export function sourceOrder(
+    left: ts.Node | undefined,
+    right: ts.Node | undefined,
+): number {
+    if (left === right) return 0;
+    if (!left) return 1;
+    if (!right) return -1;
+    const leftFile = left.getSourceFile()?.fileName ?? "";
+    const rightFile = right.getSourceFile()?.fileName ?? "";
+    if (leftFile !== rightFile) return leftFile < rightFile ? -1 : 1;
+    return left.pos - right.pos || left.end - right.end;
+}
+
 /** Strip the type-only and grouping wrappers around an expression. */
 export function unwrapExpression(
     expression: ts.Expression,
