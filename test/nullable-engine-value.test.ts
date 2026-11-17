@@ -148,17 +148,24 @@ test("a render-target texture assigned inside a try is held by its name", () => 
         }
         if (!createMask()) throw new Error("mask");
     `);
+    // A render-target texture is an engine handle: its storage pairs it
+    // with its engine.
     const storage =
-        /std::optional<bbl::RenderTargetTexture> (v_\w*mask)\{\};/.exec(
+        /std::optional<std::pair<bbl::StoredEngine, bbl::RenderTargetTexture>> (v_\w*mask)\{\};/.exec(
             result.cpp,
         )?.[1];
     assert.ok(storage, "the declaration is empty optional storage");
-    assert.ok(
-        result.cpp.includes(`${storage} = bbl::create_render_target_texture(`),
+    assert.match(
+        result.cpp,
+        new RegExp(`${storage} = [^;]*bbl::create_render_target_texture\\(`),
         "the factory result lands in the storage",
     );
-    assert.ok(result.cpp.includes(`(*${storage}).rt`));
-    assert.ok(result.cpp.includes(`, 0u, (*${storage}).texture);`));
+    assert.match(
+        result.cpp,
+        new RegExp(`const auto& v_\\w+_source_\\d+ = ${storage};`),
+    );
+    assert.match(result.cpp, /\)\)\.second\.rt, /);
+    assert.match(result.cpp, /, 0u, \(\(\*v_\w+\)\)\.second\.texture\);/);
 });
 
 test("a scene's own type of the same name is not an engine value", () => {

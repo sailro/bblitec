@@ -100,6 +100,8 @@ test("stored callable record views refuse incompatible result storage", () => {
             }};
             const handlers:Handler[]=[original];
             if(handlers[0]!==original)throw new Error('identity');
+            // Read through its own type, the literal keeps its own layout.
+            if(original.apply({count:0,label:'own'})!==1)throw new Error('own');
         `),
         /no shared layout holds both record types/,
     );

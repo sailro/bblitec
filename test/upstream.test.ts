@@ -1317,7 +1317,10 @@ test("generates no-color material views from pinned view flags", () => {
     ).lowerNoColorMaterialViews();
     assert.match(lowered.source, /create_standard_no_color_material_view/);
     assert.match(lowered.source, /create_pbr_no_color_material_view/);
-    assert.match(lowered.source, /view\.no_color = true/);
+    assert.match(
+        lowered.source,
+        /bool no_color = true\)[^]*view\.no_color = no_color;/,
+    );
     assert.match(lowered.source, /mark_material_ubo_dirty/);
 });
 
