@@ -1870,7 +1870,11 @@ export class ExpressionLowerer {
             // An absent null is an "object"; which absent value this is
             // follows the one rule (`absenceKind`), asked only where the
             // operand can be absent. A run-time answer reads the slot flag.
-            const absentType = (): { cpp: string; runtime: boolean } => {
+            const absentType = (): {
+                cpp: string;
+                runtime: boolean;
+                tags: readonly string[];
+            } => {
                 const absence = absenceKind(
                     this.context.checker,
                     operand,
@@ -1887,14 +1891,25 @@ export class ExpressionLowerer {
                     ? {
                           cpp: `(${absence.slotFoundCpp} ? "object" : "undefined")`,
                           runtime: true,
+                          tags: ["object", "undefined"],
                       }
                     : {
                           cpp: this.context.cppString(
                               absence === "null" ? "object" : "undefined",
                           ),
                           runtime: false,
+                          tags: [absence === "null" ? "object" : "undefined"],
                       };
             };
+            // The answers a run-time typeof can give, which a comparison
+            // with another answer folds over; none for an operand a read
+            // writes through, whose read must run.
+            const possible = (
+                tags: readonly string[],
+            ): Pick<Value, "possibleStrings"> =>
+                this.context.evaluationOrder.writesStorage(expression)
+                    ? {}
+                    : { possibleStrings: [...new Set(tags)] };
             const unionType =
                 operand.dataType?.kind === "optional"
                     ? operand.dataType.inner
@@ -1913,6 +1928,10 @@ export class ExpressionLowerer {
                     cpp: absent
                         ? `([${absent.runtime ? "&" : ""}](const auto& value) -> std::string { return value.has_value() ? ${table}[(*value).index()] : ${absent.cpp}; }(${operand.cpp}))`
                         : `std::string(${table}[(${operand.cpp}).index()])`,
+                    ...possible([
+                        ...unionType.members.map(typeofTag),
+                        ...(absent?.tags ?? []),
+                    ]),
                 };
             }
             const documentType = compileJsonTypeOf(operand);
@@ -1951,13 +1970,15 @@ export class ExpressionLowerer {
             )
                 present = undefined;
             if (present !== undefined) {
+                const absent = absentType();
                 return {
                     kind: "data",
                     cpp:
                         `(${present} ? ` +
                         `${this.context.cppString(type)} : ` +
-                        `${absentType().cpp})`,
+                        `${absent.cpp})`,
                     dataType: { kind: "string" },
+                    ...possible([type, ...absent.tags]),
                 };
             }
             // A generation-known answer still runs an operand that writes

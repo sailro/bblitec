@@ -3249,6 +3249,8 @@ export interface ValueFields {
     /** A value bound by a native runtime iteration, not a static unroll. */
     runtimeIteration?: true;
     staticString?: string;
+    /** The strings a value generation knows only at run time can be: a typeof answer's tags. */
+    possibleStrings?: readonly string[];
     /**
      * A URLSearchParams object no deployment fold reads: one the program
      * constructs, or a URL's own. A mutation of it changes it alone.

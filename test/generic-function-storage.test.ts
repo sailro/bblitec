@@ -572,6 +572,31 @@ check(
     `,
 );
 
+check(
+    "nested-instantiation-intersection-fields",
+    `
+    interface Token { readonly key: number }
+    type HostRecord = { readonly id: Token; tower: number };
+    function attach<T extends object>(row: T, id: Token): T & { readonly id: Token } {
+        const item = { ...row } as T & { readonly id: Token };
+        Object.defineProperty(item, "id", { value: id, enumerable: true, writable: false, configurable: false });
+        return item;
+    }
+    function removeHost<T extends HostRecord>(rows: readonly T[], removed: number): T[] {
+        return rows.flatMap((row) => {
+            if (row.tower === removed) return [];
+            const { id, ...fields } = row;
+            return [attach({ ...fields, tower: row.tower > removed ? row.tower - 1 : row.tower }, id) as T];
+        });
+    }
+    const rows = [attach({ tower: 0, s: 1 }, { key: 1 }), attach({ tower: 2, s: 3 }, { key: 2 })];
+    const kept = removeHost(rows, 0);
+    if (kept.length !== 1 || kept[0]!.tower !== 1 || kept[0]!.s !== 3 || kept[0]!.id !== rows[1]!.id ||
+        Object.keys(kept[0]!).join() !== "tower,s,id")
+        throw new Error("removed host");
+    `,
+);
+
 test("Arguments object unsupported mutations and unconstrained storage refuse explicitly", () => {
     for (const mutation of [
         "arguments[0]=3;",

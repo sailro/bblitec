@@ -20289,15 +20289,23 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (undefinedResult !== undefined) return undefinedResult;
         }
         if (ts.isTypeOfExpression(left) || ts.isTypeOfExpression(right)) {
-            const leftValue = this.context.compileValue(left);
-            const rightValue = this.context.compileValue(right);
-            if (
-                leftValue.staticString !== undefined &&
-                rightValue.staticString !== undefined
-            ) {
+            const strings = (value: Value): readonly string[] | undefined =>
+                value.staticString !== undefined
+                    ? [value.staticString]
+                    : value.possibleStrings;
+            const leftStrings = strings(this.context.compileValue(left));
+            const rightStrings = strings(this.context.compileValue(right));
+            // Answers no string of the other side can be never compare equal.
+            if (leftStrings && rightStrings) {
                 const equal =
-                    leftValue.staticString === rightValue.staticString;
-                return equal !== negated ? "true" : "false";
+                    leftStrings.length === 1 &&
+                    rightStrings.length === 1 &&
+                    leftStrings[0] === rightStrings[0];
+                if (
+                    equal ||
+                    !leftStrings.some((text) => rightStrings.includes(text))
+                )
+                    return equal !== negated ? "true" : "false";
             }
         }
         const prototypeTest = this.prototypeComparison(left, right);

@@ -8644,21 +8644,69 @@ export class DataTypeRegistry {
             properties.map((property) => [property.name, property]),
         );
         const byName = new Map<string, ts.Symbol>();
+        // Each name's properties as the members declare it under the
+        // instantiation, and whether a substituted member is among them.
+        const resolved = new Map<
+            string,
+            { symbols: ts.Symbol[]; substituted: boolean }
+        >();
         for (const member of type.types) {
             const concrete = this.resolveTypeParameter(member);
-            for (const property of this.keyedProperties(concrete) ??
+            const keyed = this.keyedProperties(concrete);
+            const substituted = concrete !== member || keyed !== undefined;
+            for (const property of keyed ??
                 (concrete.isIntersection()
                     ? this.structProperties(concrete)
-                    : this.checker.getPropertiesOfType(concrete)))
+                    : this.checker.getPropertiesOfType(concrete))) {
+                const entry = resolved.get(property.name);
+                if (entry) {
+                    entry.symbols.push(property);
+                    entry.substituted ||= substituted;
+                } else
+                    resolved.set(property.name, {
+                        symbols: [property],
+                        substituted,
+                    });
                 if (!byName.has(property.name))
                     byName.set(
                         property.name,
                         declaredByName.get(property.name) ?? property,
                     );
+            }
         }
+        // The checker types a property a substituted member declares against
+        // the parameter (`T["tower"]`); where every member declaring it
+        // agrees under the instantiation, the property is that one.
+        for (const [name, { symbols, substituted }] of resolved)
+            if (substituted && this.agreeingProperties(symbols))
+                byName.set(name, symbols[0]!);
         for (const property of properties)
             if (!byName.has(property.name)) byName.set(property.name, property);
         return [...byName.values()];
+    }
+
+    /**
+     * Whether properties of one name are one property: one type, the same
+     * optionality and mutability, and data declarations only (an accessor's
+     * declaration decides its slot).
+     */
+    private agreeingProperties(symbols: readonly ts.Symbol[]): boolean {
+        const [first] = symbols;
+        if (!first) return false;
+        const type = this.checker.getTypeOfSymbol(first);
+        const optional = (first.flags & ts.SymbolFlags.Optional) !== 0;
+        const readOnly = propertyIsReadOnly(first);
+        return symbols.every(
+            (symbol) =>
+                this.checker.getTypeOfSymbol(symbol) === type &&
+                ((symbol.flags & ts.SymbolFlags.Optional) !== 0) === optional &&
+                propertyIsReadOnly(symbol) === readOnly &&
+                (symbol.declarations ?? []).every(
+                    (declaration) =>
+                        !this.getterProperties.has(declaration) &&
+                        !this.setterProperties.has(declaration),
+                ),
+        );
     }
 
     /**

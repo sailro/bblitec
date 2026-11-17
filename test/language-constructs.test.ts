@@ -8486,6 +8486,39 @@ check(
 );
 
 check(
+    "typeof-answers-a-value-cannot-give-fold-its-guard",
+    `
+    class Capability {
+        readonly #value: number;
+        constructor(value: number) { this.#value = value; }
+        static read(id: Capability): number { return id.#value; }
+    }
+    function keyOf(value: unknown): number | null {
+        if ((typeof value !== "object" && typeof value !== "function") || value === null) return null;
+        try {
+            const key = Capability.read(value as unknown as Capability);
+            return key > 0 ? key : null;
+        } catch {
+            return null;
+        }
+    }
+    function keys<T extends { readonly id?: unknown }>(input: readonly T[]): number[] {
+        return input.map((_, index) => {
+            const source = input[index]?.id;
+            return keyOf(source) ?? -1;
+        });
+    }
+    const plain = keys([{ id: 4, tower: 0 }, { id: 5, tower: 1 }]);
+    if (plain.join() !== "-1,-1") throw new Error("a number is no capability");
+    function tag(value: number | string | undefined): number {
+        return typeof value === "function" ? 1 : typeof value === "string" ? 2 : 3;
+    }
+    const tags = [tag(1), tag("a"), tag(undefined)];
+    if (tags.join() !== "3,2,3") throw new Error("typeof tags " + tags.join());
+`,
+);
+
+check(
     "void-callback-result-compared-with-true",
     `
     let seen = 0;
