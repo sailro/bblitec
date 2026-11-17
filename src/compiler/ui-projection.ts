@@ -2681,6 +2681,41 @@ export class UiProjection {
      * generation naming the property. Values may be runtime substitutions;
      * only the static property names are policed here.
      */
+    /**
+     * The runtime holes of the style template being lowered that hold
+     * numbers (`compileUiStyleString`), by index.
+     */
+    private numericStyleHoles: ReadonlySet<number> = new Set();
+
+    /**
+     * Whether a layout declaration's value is one the pinned layout
+     * formatters lay out (`supportedUiLayoutValue`); undefined for another
+     * property. A value with runtime holes is where each holds a number and
+     * every shape a finite number's text takes gives such a value; the text
+     * of NaN or an infinity makes the declaration invalid, which CSS drops.
+     */
+    private uiLayoutValueSupported(
+        property: string,
+        value: string,
+    ): boolean | undefined {
+        const holes = /__bblite_ui_style_(\d+)__/gi;
+        const indices = [...value.matchAll(holes)].map((hole) =>
+            Number(hole[1]),
+        );
+        if (indices.length === 0 || !isUiLayoutProperty(property))
+            return supportedUiLayoutValue(property, value);
+        return (
+            indices.every((index) => this.numericStyleHoles.has(index)) &&
+            ["0", "1", "-1.5", "1e-7", "-1e+21", "1.5e+21", "-1.5e-7"].every(
+                (text) =>
+                    supportedUiLayoutValue(
+                        property,
+                        value.replace(holes, text),
+                    ) === true,
+            )
+        );
+    }
+
     private auditUiStyleDeclarations(
         value: string,
         site: ts.Node | undefined,
@@ -2881,7 +2916,7 @@ export class UiProjection {
             }
             // RmlUi's cascade resolves the layout properties' CSS-wide keywords.
             if (
-                supportedUiLayoutValue(property, literalValue) === false &&
+                this.uiLayoutValueSupported(property, literalValue) === false &&
                 keyword === undefined
             ) {
                 this.uiStyleRefusal(
@@ -3513,10 +3548,15 @@ export class UiProjection {
                 ) {
                     lowered = `${property}:${this.lowerUiStyleValue(property, declaration.slice(colon + 1), site)}`;
                 } else if (colon >= 0 && isUiLayoutProperty(property)) {
+                    // A runtime hole keeps its marker's case.
                     lowered = `${property}:${declaration
                         .slice(colon + 1)
                         .trim()
-                        .toLowerCase()}`;
+                        .split(/(__BBLITE_UI_STYLE_\d+__)/)
+                        .map((chunk, index) =>
+                            index % 2 === 1 ? chunk : chunk.toLowerCase(),
+                        )
+                        .join("")}`;
                 }
                 declarations.push(
                     lowered.replaceAll(";", UiProjection.UI_MASKED_SEMICOLON),
@@ -4578,11 +4618,26 @@ export class UiProjection {
                     substitutions.push(part);
                 }
             }
-            const lowered = this.lowerUiAttributeLiteral(
-                "style",
-                source,
-                expression,
+            const enclosing = this.numericStyleHoles;
+            this.numericStyleHoles = new Set(
+                substitutions.flatMap((substitution, index) =>
+                    unionMembers(
+                        this.context.checker.getTypeAtLocation(substitution),
+                    ).every((member) => valueKindOf(member) === "number")
+                        ? [index]
+                        : [],
+                ),
             );
+            let lowered: string;
+            try {
+                lowered = this.lowerUiAttributeLiteral(
+                    "style",
+                    source,
+                    expression,
+                );
+            } finally {
+                this.numericStyleHoles = enclosing;
+            }
             const chunks = lowered.split(
                 /(__BBLITE_UI_(?:STYLE|ASSET)_\d+__)/g,
             );
