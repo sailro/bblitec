@@ -12739,9 +12739,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
 
     /**
      * A native handle an object literal writes to an `unknown` field: the
-     * field's declaration takes handle storage (a storage demand).
+     * field's declaration takes handle storage (a storage demand). The
+     * handle is what its type maps to, or what `stored` says the written
+     * value holds.
      */
-    private requireErasedHandleField(node: ts.Node): void {
+    public requireErasedHandleField(node: ts.Node, stored?: DataType): void {
         if (!ts.isExpression(node)) return;
         const property = node.parent;
         if (
@@ -12763,10 +12765,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             field?.declarations?.length === 1
                 ? field.declarations[0]
                 : undefined;
-        const written = this.context.dataTypes.fromTsType(
-            this.context.checker.getTypeAtLocation(node),
-            node,
-        );
+        const written =
+            stored ??
+            this.context.dataTypes.fromTsType(
+                this.context.checker.getTypeAtLocation(node),
+                node,
+            );
         if (declaration && written)
             this.context.dataTypes.requireWrittenHandleFieldStorage(
                 declaration,

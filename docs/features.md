@@ -69,6 +69,9 @@ Rules:
 - Static composition can spread unchanged literal array fields of stored records and generation-selected fresh array branches.
   Their lengths remain known when whole-program mutation analysis rules out array writes; identity comparisons are allowed.
 - `unknown[]` fields require finite source element layouts; object/class initializers and declaration-matched aliases contribute.
+- A field typed `unknown` that an assertion reads (through an access or a `const` destructuring) or a write fills with one
+  native handle kind stores that handle, absent when a write stores none; a function typed to return `unknown` whose
+  returns are one handle kind, `undefined` or such fields returns that handle.
 - A record binding whose member is written by a run-time key or replaced takes native storage; its fields typed
   `Record<string, unknown>` are documents.
 - A record type a parsed document is stored as is a document, with every record type the program reads out of it

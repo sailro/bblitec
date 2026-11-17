@@ -195,6 +195,7 @@ import {
 } from "./class-members.js";
 import { sourceFilesWalk } from "./analysis-walk.js";
 import {
+    bindingElementKey,
     propertyKey,
     unwrapExpression,
     isTypeAssertion,
@@ -3455,23 +3456,43 @@ export class DataTypeRegistry {
                 ? target.inner
                 : target;
         if (present.kind !== "handle") return;
-        const access = unwrapExpression(expression);
-        if (
-            !ts.isPropertyAccessExpression(access) &&
-            !ts.isElementAccessExpression(access)
-        )
-            return;
-        const property = accessedPropertySymbol(this.checker, access);
-        const declaration =
-            property?.declarations?.length === 1
-                ? property.declarations[0]
-                : undefined;
+        const declaration = this.readFieldDeclaration(expression);
         if (declaration)
             this.requireWrittenHandleFieldStorage(
                 declaration,
                 target,
                 expression,
             );
+    }
+
+    /** Whether an expression reads a record field the program types `unknown`. */
+    public isErasedFieldRead(expression: ts.Expression): boolean {
+        const declaration = this.readFieldDeclaration(expression);
+        return (
+            declaration !== undefined &&
+            (ts.isPropertySignature(declaration) ||
+                ts.isPropertyDeclaration(declaration)) &&
+            (this.checker.getTypeAtLocation(declaration).flags &
+                ts.TypeFlags.Unknown) !==
+                0
+        );
+    }
+
+    /** The one declaration of the field an access or a destructured binding reads. */
+    private readFieldDeclaration(
+        expression: ts.Expression,
+    ): ts.Declaration | undefined {
+        const access = unwrapExpression(expression);
+        const property =
+            ts.isPropertyAccessExpression(access) ||
+            ts.isElementAccessExpression(access)
+                ? accessedPropertySymbol(this.checker, access)
+                : ts.isIdentifier(access)
+                  ? this.destructuredField(access)
+                  : undefined;
+        return property?.declarations?.length === 1
+            ? property.declarations[0]
+            : undefined;
     }
 
     /**
@@ -3555,6 +3576,33 @@ export class DataTypeRegistry {
         return types.some((type) => type?.kind === "optional")
             ? { kind: "optional", inner: handle }
             : handle;
+    }
+
+    /**
+     * The field a `const` destructuring binding holds (`const { view } =
+     * entry`, `for (const { view } of entries)`): the member its pattern
+     * reads. A default, a rest or a computed key holds something else.
+     */
+    private destructuredField(
+        identifier: ts.Identifier,
+    ): ts.Symbol | undefined {
+        const element = resolvedSymbol(
+            this.checker,
+            identifier,
+        )?.valueDeclaration;
+        if (
+            !element ||
+            !ts.isBindingElement(element) ||
+            element.initializer ||
+            element.dotDotDotToken ||
+            !ts.isObjectBindingPattern(element.parent) ||
+            variableKind(element) !== "const"
+        )
+            return undefined;
+        const key = bindingElementKey(element);
+        return key === undefined
+            ? undefined
+            : this.checker.getTypeAtLocation(element.parent).getProperty(key);
     }
 
     /**

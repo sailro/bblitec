@@ -7976,11 +7976,27 @@ export class UserFunctionLowerer {
             // guards and return expressions determine its storage together.
             let inferred: DataType | undefined;
             let incompatible = false;
+            // `undefined` makes the handle optional; a read of an erased
+            // field holds what the program writes there, which the field
+            // then stores as the handle (a storage demand).
+            let absent = false;
+            const erasedReads: ts.Expression[] = [];
             context.probeEmission(
                 () => {
                     context.beginNativeFunctionBody({ kind: "number" }, false, {
                         compileReturn: (expression) => {
                             const value = context.compileValue(expression);
+                            if (absenceOf(value) === "undefined") {
+                                absent = true;
+                                return "0.0";
+                            }
+                            if (
+                                value.dataType?.kind === "json" &&
+                                context.dataTypes.isErasedFieldRead(expression)
+                            ) {
+                                erasedReads.push(expression);
+                                return "0.0";
+                            }
                             const represented =
                                 value.dataType ??
                                 (isHandleKind(value.kind)
@@ -7999,14 +8015,26 @@ export class UserFunctionLowerer {
                                     : inferred;
                             if (
                                 inner?.kind !== "handle" ||
-                                (previous && !dataTypesEqual(previous, inner))
+                                (previous &&
+                                    (previous.kind !== "handle" ||
+                                        previous.handle !== inner.handle))
                             )
                                 incompatible = true;
-                            else
+                            else {
+                                // A handle stored with its engine (an erased
+                                // field's) makes the result store it so.
+                                const handle =
+                                    previous?.kind === "handle" &&
+                                    previous.ownedEngine &&
+                                    !inner.ownedEngine
+                                        ? previous
+                                        : inner;
                                 inferred =
-                                    inferred?.kind === "optional"
-                                        ? inferred
-                                        : represented;
+                                    inferred?.kind === "optional" ||
+                                    represented?.kind === "optional"
+                                        ? { kind: "optional", inner: handle }
+                                        : handle;
+                            }
                             return "0.0";
                         },
                     });
@@ -8018,7 +8046,23 @@ export class UserFunctionLowerer {
                 },
                 () => false,
             );
-            if (!incompatible) type = inferred;
+            if (!incompatible && inferred) {
+                type =
+                    absent || erasedReads.length > 0
+                        ? {
+                              kind: "optional",
+                              inner:
+                                  inferred.kind === "optional"
+                                      ? inferred.inner
+                                      : inferred,
+                          }
+                        : inferred;
+                for (const read of erasedReads)
+                    context.dataTypes.requireAssertedHandleFieldStorage(
+                        read,
+                        type,
+                    );
+            }
         }
         type ??= expectedResult;
         // Every return writes the one result: a record type reaching

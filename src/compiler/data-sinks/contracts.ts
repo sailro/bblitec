@@ -41,6 +41,7 @@ export type DataSinkHost = Pick<
     | "connectFunctionStorage"
     | "requireNumericSlot"
     | "requireArrayBindingElements"
+    | "requireErasedHandleField"
 >;
 
 /** Every data kind declares expression and already-evaluated value conversion. */

@@ -216,6 +216,14 @@ function expressionHandle(
         ) {
             return lowerer.compileKnownValueForSink(value, dataType, unwrapped);
         }
+        // An erased field a present handle settled widens to the optional
+        // one this write stores.
+        if (
+            rawValue.dataType?.kind === "optional" &&
+            rawValue.dataType.inner.kind === "handle" &&
+            rawValue.dataType.inner.handle === dataType.handle
+        )
+            lowerer.requireErasedHandleField(unwrapped, rawValue.dataType);
         lowerer.context.fail(
             unwrapped,
             `Expected a ${dataType.handle} value, received ${value.kind}.`,
