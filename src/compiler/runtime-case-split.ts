@@ -4,6 +4,7 @@ import { CompileError, unlessRefused } from "./compile-error.js";
 import { writable } from "./emission-transaction.js";
 import type { DataType } from "./data-types/model.js";
 import type { LoweringServices } from "./lowering-services.js";
+import { selectedModuleConstants } from "./held-constants.js";
 import { declaredSymbol, resolvedSymbol, sameExpression } from "./symbols.js";
 import { StorageDemand } from "./storage-demand.js";
 import {
@@ -13,6 +14,7 @@ import {
     holdsOnly,
     objectLikeType,
     presentMembers,
+    recordObjectType,
     stringLiteralValues,
 } from "./type-facts.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
@@ -55,6 +57,8 @@ export type CaseSplitContext = Pick<
     | "increaseIndent"
     | "leaveRuntimeControlFlow"
     | "probeEmission"
+    | "program"
+    | "userFunctions"
 >;
 
 /** At most this many distinct runtime tests split one call (2^n arms). */
@@ -121,9 +125,10 @@ export function armSpecializesCall(
  * Compiles a local function call whose arguments pick between values with a
  * runtime test (`f({...(c ? a : {})})`), or pass a value of a few outcomes (a
  * boolean, an optional object present or absent), itself or as a member of a
- * record an argument names (`f(options)`), once per outcome when the single
- * compilation refuses: a callee that specializes on its argument (a shader
- * composed from options) then sees each outcome as a constant. The
+ * record an argument names (`f(options)`), or an object that is one of a few
+ * module constants (`f(entry.lane ?? DEFAULT_LANE)`), once per outcome when
+ * the single compilation refuses: a callee that specializes on its argument
+ * (a shader composed from options) then sees each outcome as a constant. The
  * test is read once, before the call, which is where JavaScript reads it
  * unless an argument evaluated earlier could change it; so every test is
  * free of writes, no argument assigns or constructs, and an argument's calls
@@ -283,9 +288,24 @@ function refusesPerOutcome(error: unknown): boolean {
 
 /**
  * What a test reads as in one arm: true (a present object), false, absent,
- * or one string of a literal union.
+ * one string of a literal union, or one module constant.
  */
-type Outcome = "truthy" | "falsy" | "absent" | { readonly literal: string };
+type Outcome =
+    | "truthy"
+    | "falsy"
+    | "absent"
+    | { readonly literal: string }
+    | ConstantOutcome;
+
+/**
+ * The module constant an object is in one arm: a reference to it, and,
+ * once the call refused, its value as the reference reads where the call
+ * compiles, whose members the arm reads.
+ */
+interface ConstantOutcome {
+    readonly constant: ts.Identifier;
+    readonly record?: Value;
+}
 
 /**
  * One runtime test: the node read once, and every node spelling it. A
@@ -293,15 +313,26 @@ type Outcome = "truthy" | "falsy" | "absent" | { readonly literal: string };
  * boolean; a `presence` an argument value that is an object or one absence
  * (`undefined` or `null`); an `optional-boolean` a boolean or one absence;
  * a `literal` a value typed as a union of string literals (a key of a
- * constant table). `outcomes` are the ones the value can take. With `member`, the value is
+ * constant table); a `constant` an argument value that is one of a few
+ * module constants (`selectedModuleConstants`). `outcomes` are the ones the
+ * value can take. With `member`, the value is
  * the member at that key path of the record `test` names, of that type;
  * `present` is the storage of an object member where an arm found it.
+ * A constant test's `discriminants` are the members, strings in every one
+ * of its constants, whose values tell them apart.
  */
 interface Selector {
-    kind: "condition" | "boolean" | "presence" | "optional-boolean" | "literal";
+    kind:
+        | "condition"
+        | "boolean"
+        | "presence"
+        | "optional-boolean"
+        | "literal"
+        | "constant";
     test: ts.Expression;
     nodes: readonly ts.Expression[];
     outcomes: readonly Outcome[];
+    discriminants?: readonly string[];
     member?: {
         readonly path: readonly string[];
         readonly type: ts.Type;
@@ -334,7 +365,10 @@ interface SelectorTests {
 
 /** Every outcome a test of `kind` can take. */
 const KIND_OUTCOMES: Readonly<
-    Record<Exclude<Selector["kind"], "literal">, readonly Outcome[]>
+    Record<
+        Exclude<Selector["kind"], "literal" | "constant">,
+        readonly Outcome[]
+    >
 > = {
     condition: ["truthy", "falsy"],
     boolean: ["truthy", "falsy"],
@@ -342,7 +376,10 @@ const KIND_OUTCOMES: Readonly<
     "optional-boolean": ["truthy", "falsy", "absent"],
 };
 
-/** Every outcome a value of `type`, a selector of `kind`, can take. */
+/**
+ * Every outcome a value of `type`, a selector of `kind`, can take: none its
+ * type gives for a constant test, whose outcomes are the constants found.
+ */
 function kindOutcomes(
     kind: Selector["kind"],
     type: ts.Type,
@@ -351,7 +388,9 @@ function kindOutcomes(
         ? [...(stringLiteralValues(type) ?? [])].map((literal) => ({
               literal,
           }))
-        : KIND_OUTCOMES[kind];
+        : kind === "constant"
+          ? []
+          : KIND_OUTCOMES[kind];
 }
 
 /**
@@ -451,11 +490,13 @@ function forcedValue(
     const absent = (): Value =>
         nullability(type).null ? nullValue() : undefinedValue();
     if (typeof outcome === "object")
-        return {
-            kind: "string",
-            cpp: context.cppString(outcome.literal),
-            staticString: outcome.literal,
-        };
+        return "literal" in outcome
+            ? {
+                  kind: "string",
+                  cpp: context.cppString(outcome.literal),
+                  staticString: outcome.literal,
+              }
+            : constantValue(read(), outcome);
     // A present object is truthy and present wherever the arm reads it.
     if (selector.kind === "presence")
         return outcome === "truthy"
@@ -476,6 +517,13 @@ function forcedValue(
         cpp: outcome === "truthy" ? "true" : "false",
         staticBoolean: outcome === "truthy",
     };
+}
+
+/** The run-time object `value`, whose members are the constant's. */
+function constantValue(value: Value, outcome: ConstantOutcome): Value {
+    const forced: Value = { ...value };
+    writable(forced).recordProperties = outcome.record!.recordProperties!;
+    return forced;
 }
 
 /**
@@ -544,7 +592,7 @@ function selectorValue(
  */
 function selectorKind(
     type: ts.Type,
-): Exclude<Selector["kind"], "condition"> | undefined {
+): Exclude<Selector["kind"], "condition" | "constant"> | undefined {
     if (holdsOnly(type, ["boolean"])) return "boolean";
     const literals = stringLiteralValues(type);
     if (literals)
@@ -644,7 +692,11 @@ function selectorTests(
     if (call.arguments.some(effects)) return undefined;
     // Each distinct test with every place it appears.
     const groups: (Selector & { nodes: ts.Expression[] })[] = [];
-    const addGroup = (kind: Selector["kind"], test: ts.Expression): void => {
+    const addGroup = (
+        kind: Selector["kind"],
+        test: ts.Expression,
+        outcomes?: readonly Outcome[],
+    ): void => {
         const group = groups.find(
             (candidate) =>
                 candidate.kind === kind &&
@@ -656,10 +708,9 @@ function selectorTests(
                 kind,
                 test,
                 nodes: [test],
-                outcomes: kindOutcomes(
-                    kind,
-                    context.checker.getTypeAtLocation(test),
-                ),
+                outcomes:
+                    outcomes ??
+                    kindOutcomes(kind, context.checker.getTypeAtLocation(test)),
             });
     };
     const records: RecordArgument[] = [];
@@ -682,6 +733,21 @@ function selectorTests(
             );
             if (record) record.nodes.push(node);
             else records.push({ nodes: [node], type });
+        } else if (
+            recordObjectType(context.checker, type) &&
+            !containsSelection(node)
+        ) {
+            const absent = nullability(type);
+            const constants =
+                absent.null || absent.undefined
+                    ? undefined
+                    : selectedModuleConstants(context, node);
+            if (constants)
+                addGroup(
+                    "constant",
+                    node,
+                    constants.map((constant) => ({ constant })),
+                );
         }
     };
     const visit = (node: ts.Node): void => {
@@ -866,6 +932,17 @@ function runtimeSelectors(
                 variable.push(group);
             continue;
         }
+        if (group.kind === "constant") {
+            const resolved =
+                value && !staticArgument(value)
+                    ? constantSelector(context, group, value)
+                    : undefined;
+            if (resolved)
+                (resolved.outcomes.length === 1 ? fixed : variable).push(
+                    resolved,
+                );
+            continue;
+        }
         const truth = knownCondition(
             group.member
                 ? value && context.dataLowerer.truthinessCondition(value)
@@ -891,6 +968,86 @@ function runtimeSelectors(
     return fixed.length > 0 || variable.length > 0
         ? { fixed, variable }
         : undefined;
+}
+
+/**
+ * A constant test as its arms read it: each constant's value with the
+ * members generation knows, and the string members of the run-time object
+ * `value`'s storage that, read in member order while they tell more apart,
+ * tell every two constants apart. Undefined when generation knows no
+ * constant's members, or two read the same.
+ */
+function constantSelector(
+    context: CaseSplitContext,
+    selector: Selector,
+    value: Value,
+): Selector | undefined {
+    if (selector.outcomes.length > MAX_LITERAL_OUTCOMES) return undefined;
+    const outcomes: ConstantOutcome[] = [];
+    for (const outcome of selector.outcomes) {
+        if (typeof outcome !== "object" || !("constant" in outcome))
+            return undefined;
+        // The discarded probe undoes what reading the reference wrote; a
+        // copy keeps what generation knows of the constant there.
+        const record = unlessRefused(() =>
+            context.probeEmission(
+                () => {
+                    const read = context.compileValue(outcome.constant);
+                    return read.recordProperties &&
+                        context.bindings.recordPropertiesAreCurrent(read)
+                        ? { ...read }
+                        : undefined;
+                },
+                () => false,
+            ),
+        );
+        if (!record) return undefined;
+        outcomes.push({ constant: outcome.constant, record });
+    }
+    const text = (outcome: ConstantOutcome, key: string): string | undefined =>
+        outcome.record!.recordProperties![key]?.staticString;
+    // The pairs no discriminant tells apart yet; each member, in order,
+    // joins the discriminants when it tells one of them apart.
+    let pairs = outcomes.flatMap((left, index) =>
+        outcomes.slice(index + 1).map((right) => [left, right] as const),
+    );
+    const discriminants: string[] = [];
+    for (const key of Object.keys(outcomes[0]!.record!.recordProperties!)) {
+        const stored = context.dataLowerer.storedFieldRead(
+            value,
+            key,
+            selector.test,
+        );
+        if (
+            !stored ||
+            !literalStorage(stored) ||
+            outcomes.some((outcome) => text(outcome, key) === undefined)
+        )
+            continue;
+        const rest = pairs.filter(
+            ([left, right]) => text(left, key) === text(right, key),
+        );
+        if (rest.length === pairs.length) continue;
+        discriminants.push(key);
+        pairs = rest;
+    }
+    const told = pairs.length === 0;
+    return told ? { ...selector, outcomes, discriminants } : undefined;
+}
+
+/** A run-time string or native enum, spelled `cpp`, compared with one literal. */
+function literalTest(
+    context: CaseSplitContext,
+    cpp: string,
+    storage: DataType | undefined,
+    text: string,
+    node: ts.Expression,
+): string {
+    return `${cpp} == ${
+        storage?.kind === "enum"
+            ? context.dataTypes.enumMemberCpp(storage, text, node)
+            : context.cppString(text)
+    }`;
 }
 
 /** A literal test's storage, which its arms compare: a string or a native enum. */
@@ -920,6 +1077,10 @@ function splitCall(
     selectors: readonly Selector[],
     compile: () => Value | undefined,
 ): Value | undefined {
+    // With no run-time test left there is one arm: the call itself, every
+    // fixed outcome forced, its value as it compiles.
+    if (selectors.length === 0)
+        return withOutcomes(context, fixed, [], [], compile);
     // Each selector's tests, read once before the call: its truth, and an
     // optional boolean's presence.
     const pin = (initializer: string): string => {
@@ -940,6 +1101,7 @@ function splitCall(
                   truth?: string;
                   presence?: string;
                   literal?: (text: string) => string;
+                  constant?: (outcome: ConstantOutcome) => string;
               }
             | undefined => {
             if (selector.kind === "literal") {
@@ -952,18 +1114,52 @@ function splitCall(
                     name,
                     initializer: value.cpp,
                 });
-                const storage = value.dataType;
                 return {
                     literal: (text) =>
-                        `${name} == ${
-                            storage?.kind === "enum"
-                                ? context.dataTypes.enumMemberCpp(
-                                      storage,
-                                      text,
-                                      selector.test,
-                                  )
-                                : context.cppString(text)
-                        }`,
+                        literalTest(
+                            context,
+                            name,
+                            value.dataType,
+                            text,
+                            selector.test,
+                        ),
+                };
+            }
+            if (selector.kind === "constant") {
+                // The object is the constant whose discriminants it holds.
+                const value = selectorValue(context, selector);
+                if (!value) return undefined;
+                const name = context.allocateTemporaryCppName("case_value");
+                context.emit({
+                    kind: "declaration",
+                    type: "const auto&",
+                    name,
+                    initializer: value.cpp,
+                });
+                const reads = (selector.discriminants ?? []).map((key) => ({
+                    key,
+                    read: context.dataLowerer.storedFieldRead(
+                        { ...value, cpp: name },
+                        key,
+                        selector.test,
+                    ),
+                }));
+                if (reads.some(({ read }) => !read || !literalStorage(read)))
+                    return undefined;
+                return {
+                    constant: (outcome) =>
+                        reads
+                            .map(({ key, read }) =>
+                                literalTest(
+                                    context,
+                                    read!.cpp,
+                                    read!.dataType,
+                                    outcome.record!.recordProperties![key]!
+                                        .staticString!,
+                                    selector.test,
+                                ),
+                            )
+                            .join(" && "),
                 };
             }
             if (selector.kind !== "optional-boolean" && !selector.member)
@@ -1051,7 +1247,9 @@ function splitCall(
         // presence (after truth, false); the last outcome is the rest.
         const guard = (outcome: Outcome): string =>
             typeof outcome === "object"
-                ? test.literal!(outcome.literal)
+                ? "literal" in outcome
+                    ? test.literal!(outcome.literal)
+                    : test.constant!(outcome)
                 : outcome === "truthy"
                   ? test.truth!
                   : test.presence!;

@@ -345,6 +345,7 @@ import {
     containsSuspension,
     functionKind,
     isSupportedFunction,
+    isModuleConstDeclaration,
     variableKind,
     referenceBases,
     keysMayMatch,
@@ -5645,14 +5646,7 @@ class Compiler implements LoweringServices {
         const declaration = this.symbols
             .valueSymbol(identifier)
             ?.declarations?.find(ts.isVariableDeclaration);
-        const statement = declaration?.parent.parent;
-        return declaration?.initializer &&
-            ts.isIdentifier(declaration.name) &&
-            statement &&
-            ts.isVariableStatement(statement) &&
-            ts.isSourceFile(statement.parent) &&
-            !statement.parent.isDeclarationFile &&
-            variableKind(statement.declarationList) === "const"
+        return isModuleConstDeclaration(declaration)
             ? { declaration, name: declaration.name }
             : undefined;
     }

@@ -88,7 +88,9 @@ Rules:
   (two levels deep) of a record an argument names, compiles once per outcome and merges the results into native
   storage; a discarded call merges none. At most four tests split, of at most eight read; past either, the refusal
   names them. A shader material so merged resolves uniform, texture and storage-buffer names against its own variant
-  at run time.
+  at run time. An object argument that can only be one of a few module constants (through `??`, `?:` and members
+  every store sets to one) splits per constant, tested on the first string members that differ; a split left with no
+  run-time test compiles the call once.
 - Recursive groups evaluate a caller-independent default once at the root; other defaults refuse. A function a call
   passes counts as a call the callee may make: directly, as a literal in a record or array, or as a named async
   function there.

@@ -3262,6 +3262,46 @@ export class DataLowerer {
         return field?.accessor ? field : undefined;
     }
 
+    /** The native slot of a struct's field on an owner spelled `ownerCpp`. */
+    private fieldSlot(
+        ownerCpp: string,
+        structName: string,
+        fieldName: string,
+    ): string {
+        return this.context.dataTypes.isReferenceStruct(structName)
+            ? `${ownerCpp}->${fieldName}`
+            : `${ownerCpp}.${fieldName}`;
+    }
+
+    /**
+     * A record value's stored field, read in its slot: undefined for an
+     * owner of no struct, a property no field stores, an accessor, or a
+     * class's member, which the class lowerer owns.
+     */
+    public storedFieldRead(
+        owner: Value,
+        property: string,
+        node: ts.Node,
+    ): Value | undefined {
+        const type = owner.dataType;
+        if (
+            type?.kind !== "struct" ||
+            this.context.dataTypes.isClassStruct(type.name)
+        )
+            return undefined;
+        const field = this.context.dataTypes.findStructField(
+            type.name,
+            property,
+            node,
+        );
+        return field && !field.accessor
+            ? this.leafValue(
+                  this.fieldSlot(owner.cpp, type.name, field.name),
+                  field.type,
+              )
+            : undefined;
+    }
+
     /**
      * Continues a data path whose owner was produced by another lowering
      * surface (for example, a dynamically indexed compile-time record).
@@ -6070,9 +6110,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     access,
                     "accessors",
                 );
-            const slot = this.context.dataTypes.isReferenceStruct(dataType.name)
-                ? `${owner.cpp}->${field.name}`
-                : `${owner.cpp}.${field.name}`;
+            const slot = this.fieldSlot(owner.cpp, dataType.name, field.name);
             // Authored getters do not expose a stored field snapshot.
             if (field.accessor && !field.accessorReceiver)
                 return {

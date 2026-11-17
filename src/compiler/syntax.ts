@@ -1170,6 +1170,25 @@ export interface WriteSite {
 }
 
 /**
+ * Whether an array or object literal is a destructuring pattern: the left
+ * side of `=` or a for-of or for-in loop's target, or one nested in such.
+ */
+export function isDestructuringPattern(
+    literal: ts.ArrayLiteralExpression | ts.ObjectLiteralExpression,
+): boolean {
+    if (inDestructuringPattern(literal)) return true;
+    const root = outermostWrapper(literal);
+    const consumer = root.parent;
+    return (
+        (ts.isBinaryExpression(consumer) &&
+            consumer.left === root &&
+            consumer.operatorToken.kind === ts.SyntaxKind.EqualsToken) ||
+        ((ts.isForOfStatement(consumer) || ts.isForInStatement(consumer)) &&
+            consumer.initializer === root)
+    );
+}
+
+/**
  * Whether a node sits inside a destructuring pattern: an array or object
  * literal that is, through the patterns around it, the left side of `=` or
  * the target of a for-of or for-in loop.
@@ -2467,6 +2486,30 @@ export function functionOfDeclaration(
             ts.isFunctionExpression(initializer))
         ? initializer
         : undefined;
+}
+
+/**
+ * Whether a declaration is a module constant: a source file's own top-level
+ * `const` binding one name to an initializer.
+ */
+export function isModuleConstDeclaration(
+    declaration: ts.Node | undefined,
+): declaration is ts.VariableDeclaration & {
+    readonly name: ts.Identifier;
+    readonly initializer: ts.Expression;
+} {
+    const statement = declaration?.parent?.parent;
+    return (
+        declaration !== undefined &&
+        ts.isVariableDeclaration(declaration) &&
+        declaration.initializer !== undefined &&
+        ts.isIdentifier(declaration.name) &&
+        statement !== undefined &&
+        ts.isVariableStatement(statement) &&
+        ts.isSourceFile(statement.parent) &&
+        !statement.parent.isDeclarationFile &&
+        variableKind(statement.declarationList) === "const"
+    );
 }
 
 /**
