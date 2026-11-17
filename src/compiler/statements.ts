@@ -5739,64 +5739,96 @@ export class StatementLowerer {
         context.expectKind(mesh, "mesh", argumentAt(call, offset));
         context.expectSameEngine(task, mesh, call);
         const engine = context.requireEngine(task, call);
-        // The pin's own `opts.material ?? mesh.material`: a call with no
+        // The pin's own `opts?.material ?? mesh.material`: a call with no
         // override draws the mesh with the material it already carries.
-        let materialCpp = `${recordAt(`${engine}.meshes`, mesh.cpp)}.material`;
-        let materialOverride = false;
-        if (call.arguments.length === 2 + offset) {
-            const options = context.expectObjectLiteral(
-                argumentAt(call, 1 + offset),
-            );
-            const materialExpression = context.objectProperty(
-                options,
-                "material",
-            );
-            if (!materialExpression || options.properties.length !== 1) {
-                context.fail(
+        const add = (optionsExpression: ts.Expression | undefined): void => {
+            let materialCpp = `${recordAt(`${engine}.meshes`, mesh.cpp)}.material`;
+            let materialOverride = false;
+            if (
+                optionsExpression &&
+                !context.symbols.isGlobalUndefined(
+                    context.unwrap(optionsExpression),
+                )
+            ) {
+                const options = context.expectObjectLiteral(optionsExpression);
+                const materialExpression = context.objectProperty(
                     options,
-                    "Reached RenderTask.addMesh requires only a material override.",
+                    "material",
                 );
-            }
-            const material = context.compileValue(materialExpression);
-            context.expectKind(material, "material", materialExpression);
-            context.expectSameEngine(task, material, call);
-            materialCpp = material.cpp;
-            materialOverride = true;
-            const meshProfile =
-                mesh.sceneMeshIndex ?? mesh.sceneMeshProfileIndex;
-            context.sceneManifest.recordSceneShaderMaterialDraw(
-                meshProfile,
-                material,
-            );
-            if (material.scenePbrMaterialIndex !== undefined) {
-                if (meshProfile === undefined) {
-                    context.sceneManifest.recordUnknownSceneMeshMaterial(
-                        material.scenePbrMaterialIndex,
+                if (!materialExpression || options.properties.length !== 1) {
+                    context.fail(
+                        options,
+                        "Reached RenderTask.addMesh requires only a material override.",
                     );
-                } else {
-                    context.sceneManifest.recordScenePbrMaterialMesh(
-                        material.scenePbrMaterialIndex,
+                }
+                const material = context.compileValue(materialExpression);
+                context.expectKind(material, "material", materialExpression);
+                context.expectSameEngine(task, material, call);
+                materialCpp = material.cpp;
+                materialOverride = true;
+                const meshProfile =
+                    mesh.sceneMeshIndex ?? mesh.sceneMeshProfileIndex;
+                context.sceneManifest.recordSceneShaderMaterialDraw(
+                    meshProfile,
+                    material,
+                );
+                if (material.scenePbrMaterialIndex !== undefined) {
+                    if (meshProfile === undefined) {
+                        context.sceneManifest.recordUnknownSceneMeshMaterial(
+                            material.scenePbrMaterialIndex,
+                        );
+                    } else {
+                        context.sceneManifest.recordScenePbrMaterialMesh(
+                            material.scenePbrMaterialIndex,
+                            meshProfile,
+                        );
+                    }
+                } else if (
+                    !material.standardMaterial &&
+                    material.nodeMaterialIndex === undefined &&
+                    material.shaderVariant === undefined &&
+                    material.sceneShaderVariant === undefined &&
+                    !material.possibleSceneShaderVariants?.length &&
+                    !material.assetPbrMaterial
+                ) {
+                    context.sceneManifest.recordUnknownSceneMaterialAssignment(
                         meshProfile,
                     );
                 }
-            } else if (
-                !material.standardMaterial &&
-                material.nodeMaterialIndex === undefined &&
-                material.shaderVariant === undefined &&
-                material.sceneShaderVariant === undefined &&
-                !material.possibleSceneShaderVariants?.length &&
-                !material.assetPbrMaterial
-            ) {
-                context.sceneManifest.recordUnknownSceneMaterialAssignment(
-                    meshProfile,
+                context.reachFeature(
+                    "frame-graph:task-material-override",
+                    call,
                 );
             }
-            context.reachFeature("frame-graph:task-material-override", call);
+            context.emit({
+                kind: "expression",
+                code: `bbl::add_render_task_mesh(${engine}, ${task.cpp}, ${mesh.cpp}, ${materialCpp}, ${materialOverride});`,
+            });
+        };
+        const optionsExpression =
+            call.arguments.length === 2 + offset
+                ? argumentAt(call, 1 + offset)
+                : undefined;
+        const selected = optionsExpression && context.unwrap(optionsExpression);
+        // Options a condition selects (`view ? { material: view } : undefined`)
+        // add the mesh as the selected arm does.
+        if (selected && ts.isConditionalExpression(selected)) {
+            const condition = context.conditions.compileCondition(
+                selected.condition,
+            );
+            const known = knownCondition(condition);
+            if (known !== undefined) {
+                add(known ? selected.whenTrue : selected.whenFalse);
+                return true;
+            }
+            context.emit({ kind: "open", code: `if (${condition}) {` });
+            this.inRuntimeControlFlow(context, () => add(selected.whenTrue));
+            context.emit({ kind: "branch", code: "} else {" });
+            this.inRuntimeControlFlow(context, () => add(selected.whenFalse));
+            context.emit({ kind: "close", code: "}" });
+            return true;
         }
-        context.emit({
-            kind: "expression",
-            code: `bbl::add_render_task_mesh(${engine}, ${task.cpp}, ${mesh.cpp}, ${materialCpp}, ${materialOverride});`,
-        });
+        add(optionsExpression);
         return true;
     }
 }
