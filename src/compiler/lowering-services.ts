@@ -861,4 +861,9 @@ export interface LoweringServices {
         message: string,
         reason?: import("./compile-error.js").CompileError["reason"],
     ): never;
+    refuseWithDemand(
+        node: ts.Node,
+        message: string,
+        demand: import("./storage-demand.js").StorageDemand,
+    ): never;
 }

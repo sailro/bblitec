@@ -1353,6 +1353,17 @@ function unionPresence(
 }
 
 /**
+ * Whether a struct field is a property of the object, which a document
+ * view of it lists and reads: a private name's slot (`#x`) is none.
+ */
+function isPropertyField(field: DataStructField): boolean {
+    return !(field.declarations ?? []).some((declaration) => {
+        const name = ts.getNameOfDeclaration(declaration);
+        return name !== undefined && ts.isPrivateIdentifier(name);
+    });
+}
+
+/**
  * The C++ spelling of a class field. A private name's sigil is not an
  * identifier character, and the prefix keeps `#x` apart from a public `_x`
  * on the same class; readers find fields by their source name, so this is
@@ -1946,6 +1957,11 @@ export class DataTypeRegistry {
         const key = this.computePhantomBrandKey(type);
         this.phantomBrandKeys.set(type, key ?? null);
         return key;
+    }
+
+    /** Whether a checked type is a phantom brand, which no object has without an assertion. */
+    public isPhantomBrand(type: ts.Type): boolean {
+        return this.phantomBrandKey(type) !== undefined;
     }
 
     /** @unjournaled Whether a checked type is a phantom brand, from source alone. */
@@ -9747,10 +9763,17 @@ export class DataTypeRegistry {
      * construction. Returns when the replay already does.
      */
     public requireSharedClass(declaration: ts.ClassLikeDeclaration): void {
-        if (!this.isSharedClass(declaration))
-            throw new SharedClassStorageRequired(
-                this.sharedClassKey(declaration),
-            );
+        const demand = this.sharedClassDemand(declaration);
+        if (demand) throw demand;
+    }
+
+    /** The replay sharing the class from its first construction, unless this one does. */
+    public sharedClassDemand(
+        declaration: ts.ClassLikeDeclaration,
+    ): SharedClassStorageRequired | undefined {
+        return this.isSharedClass(declaration)
+            ? undefined
+            : new SharedClassStorageRequired(this.sharedClassKey(declaration));
     }
 
     /** Whether a replay shares the class from its first construction. */
@@ -11359,7 +11382,11 @@ export class DataTypeRegistry {
             }
         this.jsonBoxedStructs.set(type.name, node);
         this.cppType(type);
-        for (const field of this.structFields(type.name, node, "accessors")) {
+        for (const field of this.structFields(
+            type.name,
+            node,
+            "accessors",
+        ).filter(isPropertyField)) {
             // The view lists a field among its own keys while it is one.
             this.ownPresence(type.name, field, "value", "->", node);
             if (
@@ -11382,7 +11409,9 @@ export class DataTypeRegistry {
             `inline bbl::js::Array<std::string> json_value_keys(const ${name}& value);`,
         ]);
         for (const name of names) {
-            const fields = this.structsByName.get(name)!.fields;
+            const fields = this.structsByName
+                .get(name)!
+                .fields.filter(isPropertyField);
             const node = this.jsonBoxedStructs.get(name)!;
             const presences = fields.map((field) =>
                 this.ownPresence(name, field, "value", "->", node),

@@ -1273,6 +1273,11 @@ throw_nullish_access(const char* message = "Cannot read properties of null or un
     throw NamedError("TypeError", message);
 }
 
+/** A value asserted to a class it is no instance of: TypeError, as a private member read throws. */
+template <typename T = void> [[noreturn]] T throw_not_an_instance() {
+    throw NamedError("TypeError", "Value is not an instance of the asserted class");
+}
+
 template <typename T> inline constexpr bool is_ref_v = false;
 template <typename T> inline constexpr bool is_ref_v<Ref<T>> = true;
 

@@ -554,7 +554,12 @@ export function compileJsonRead(
         const bound = context.bindings.lookupOptional(unwrapped);
         return isJsonValue(bound) ? bound : undefined;
     }
-    if (ts.isPropertyAccessExpression(unwrapped)) {
+    // A private name is no property of a document: the read asserts the
+    // instance the document holds first.
+    if (
+        ts.isPropertyAccessExpression(unwrapped) &&
+        !ts.isPrivateIdentifier(unwrapped.name)
+    ) {
         const owner = compileJsonRead(context, unwrapped.expression);
         if (!isJsonValue(owner)) {
             return undefined;

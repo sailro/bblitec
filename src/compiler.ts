@@ -7660,6 +7660,16 @@ class Compiler implements LoweringServices {
             const result = this.emissionTransaction(probe, answered);
             kept = answered(result);
             return result;
+        } catch (error) {
+            // A refusal leaving the outermost probe is the lowering's own:
+            // the storage it names replays.
+            if (
+                this.probeDepth === 1 &&
+                error instanceof CompileError &&
+                error.demand
+            )
+                throw error.demand;
+            throw error;
         } finally {
             this.probeDepth--;
             survey?.probed(kept, performance.now() - started);
@@ -11601,6 +11611,22 @@ class Compiler implements LoweringServices {
         reason: CompileError["reason"] = "unsupported",
     ): never {
         throw this.refusal(node, message, reason, node);
+    }
+
+    /**
+     * A refusal the storage `demand` names would lower: a committed lowering
+     * replays with it; a probe refuses, and the demand replays once the
+     * refusal leaves every probe (`probeEmission`).
+     */
+    public refuseWithDemand(
+        node: ts.Node,
+        message: string,
+        demand: StorageDemand,
+    ): never {
+        if (!this.speculating) throw demand;
+        const refusal = this.refusal(node, message, "unsupported", node);
+        refusal.demand = demand;
+        throw refusal;
     }
 
     private refusal(

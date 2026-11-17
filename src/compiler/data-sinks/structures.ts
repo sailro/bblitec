@@ -45,6 +45,7 @@ import {
     unionMembers,
 } from "../type-facts.js";
 import { knownCondition } from "../values/model.js";
+import { declaredPrivateNames } from "../classes.js";
 
 function expressionEnum(
     dataType: DataType<"enum">,
@@ -139,6 +140,17 @@ function expressionStruct(
     ) {
         return `${lowerer.context.dataTypes.cppType(dataType)}{}`;
     }
+    const sharedClass = lowerer.context.dataTypes.classStruct(dataType.name);
+    if (
+        ts.isObjectLiteralExpression(unwrapped) &&
+        sharedClass &&
+        storesOnlyInstances(lowerer, sharedClass.declaration, expression)
+    )
+        return assertedNonInstance(
+            lowerer,
+            dataType,
+            lowerer.context.compileValue(unwrapped),
+        );
     if (ts.isObjectLiteralExpression(unwrapped)) {
         refuseForeignClassView(lowerer, expression);
         if (
@@ -480,20 +492,32 @@ function valueStruct(
         return value.ownedCpp ?? value.cpp;
     }
     const sharedClass = lowerer.context.dataTypes.classStruct(dataType.name);
+    if (
+        sharedClass &&
+        value.kind === "record" &&
+        !(
+            value.classDeclaration !== undefined &&
+            lowerer.context.dataTypes.sharesClassStruct(
+                value.classDeclaration,
+                sharedClass.declaration,
+            )
+        ) &&
+        storesOnlyInstances(lowerer, sharedClass.declaration, node)
+    )
+        return assertedNonInstance(lowerer, dataType, value);
     if (sharedClass && value.kind === "record") {
         refuseForeignClassView(lowerer, node, value.classDeclaration);
-        // A probe declines on the refusal; a committed store replays shared.
-        if (!lowerer.context.speculating)
-            lowerer.context.dataTypes.requireSharedClass(
-                sharedClass.declaration,
-            );
-        lowerer.context.fail(
-            node,
+        const message =
             `An instance of '${dataType.name}' constructed before ` +
-                "anything stored one is a compile-time record; " +
-                "storing it here would mint a second object with " +
-                "the same fields rather than share this one.",
+            "anything stored one is a compile-time record; " +
+            "storing it here would mint a second object with " +
+            "the same fields rather than share this one.";
+        // The store replays with the class shared from its first construction.
+        const demand = lowerer.context.dataTypes.sharedClassDemand(
+            sharedClass.declaration,
         );
+        if (demand) lowerer.context.refuseWithDemand(node, message, demand);
+        lowerer.context.fail(node, message);
     }
     if (
         (value.kind === "json-null" || value.dataType?.kind === "null") &&
@@ -1109,6 +1133,42 @@ function refuseClassRecordCopy(
         node,
         `A '${symbol.name}' instance stored as '${target ? checker.typeToString(target) : dataType.name}' would be a copy of the one object JavaScript keeps, and ${observed}.`,
     );
+}
+
+/**
+ * Whether only an instance of `declaration` has the type stored at `node`
+ * without an assertion: a phantom brand, which no object has, or a class
+ * of the stored struct that keys a private member (`#name`).
+ */
+function storesOnlyInstances(
+    lowerer: DataSinkHost,
+    declaration: ts.ClassLikeDeclaration,
+    node: ts.Node,
+): boolean {
+    const checker = lowerer.context.checker;
+    const dataTypes = lowerer.context.dataTypes;
+    const type = checker.getNonNullableType(checker.getTypeAtLocation(node));
+    if (dataTypes.isPhantomBrand(type)) return true;
+    const instance = classInstanceDeclaration(type);
+    return (
+        instance !== undefined &&
+        dataTypes.sharesClassStruct(instance, declaration) &&
+        declaredPrivateNames(instance).size > 0
+    );
+}
+
+/**
+ * A value that is no instance stored as one, which only an assertion
+ * stores: it throws TypeError where it is made (docs/fidelity.md).
+ */
+function assertedNonInstance(
+    lowerer: DataSinkHost,
+    dataType: DataType<"struct">,
+    value: Value,
+): string {
+    lowerer.context.emitDiscardedValue(value);
+    lowerer.context.reachJsData();
+    return `bbl::js::throw_not_an_instance<${lowerer.context.dataTypes.cppType(dataType)}>()`;
 }
 
 /**

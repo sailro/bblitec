@@ -3669,6 +3669,106 @@ check(
 );
 
 check(
+    "phantom-brand-capabilities-store-their-issuing-class",
+    `
+    declare const slitIdBrand: unique symbol;
+    type SlitId = Readonly<{ readonly [slitIdBrand]: true }>;
+    const capability = (() => {
+        const constructorToken = {};
+        let issue!: (value: number) => SlitId;
+        let value!: (id: SlitId) => number;
+        class Capability {
+            readonly #value: number;
+            constructor(token: object, durableValue: number) {
+                if (token !== constructorToken) throw new TypeError("private constructor token");
+                this.#value = durableValue;
+                Object.freeze(this);
+            }
+            static {
+                issue = (durableValue) => new Capability(constructorToken, durableValue) as unknown as SlitId;
+                value = (id) => (id as unknown as Capability).#value;
+            }
+        }
+        void Capability;
+        return { issue, value } as const;
+    })();
+    function keyOf(id: unknown): number | null {
+        if ((typeof id !== "object" && typeof id !== "function") || id === null) return null;
+        try { return capability.value(id as SlitId); } catch { return null; }
+    }
+    function same(a: unknown, b: unknown): boolean { return a === b && keyOf(a) !== null; }
+    function serialize(id: SlitId): number {
+        const key = keyOf(id);
+        if (key === null) throw new TypeError("invalid live slit identity");
+        return key;
+    }
+    const first = capability.issue(7);
+    const second = capability.issue(8);
+    if (keyOf(first) !== 7 || keyOf(second) !== 8) throw new Error("issued keys");
+    if (keyOf({}) !== null || keyOf(7) !== null || keyOf(null) !== null) throw new Error("forged keys");
+    if (!same(first, first) || same(first, second) || same({}, {})) throw new Error("identity");
+    const rows: { readonly id: SlitId; height: number }[] = [{ id: first, height: 1 }, { id: second, height: 2 }];
+    rows.push({ id: capability.issue(9), height: 3 });
+    const byId = new Map<SlitId, number>(rows.map((row) => [row.id, row.height]));
+    if (byId.get(second) !== 2 || byId.get(capability.issue(8)) !== undefined) throw new Error("identity keys");
+    const found = rows.findIndex((row) => same(row.id, second));
+    if (found !== 1 || serialize(rows[2]!.id) !== 9) throw new Error("collection identity");
+    let forged = "";
+    try { serialize({} as SlitId); } catch (error) { forged = error instanceof TypeError ? "TypeError" : "other"; }
+    if (forged !== "TypeError") throw new Error("forged serialize");
+    let direct = "";
+    try { capability.value({} as SlitId); } catch (error) { direct = error instanceof TypeError ? "TypeError" : "other"; }
+    if (direct !== "TypeError") throw new Error("forged private read");
+`,
+);
+
+check(
+    "private-names-read-only-the-instances-documents-hold",
+    `
+    class Key {
+        readonly #value: number;
+        readonly label: string;
+        constructor(value: number) { this.#value = value; this.label = "k" + value; }
+        static read(candidate: unknown): number { return (candidate as Key).#value; }
+    }
+    const held: unknown[] = [];
+    for (let index = 1; index <= 3; index++) held.push(index === 2 ? { "#value": 5 } : new Key(index * 10));
+    let reads = "";
+    for (const candidate of held) {
+        try { reads += Key.read(candidate) + ","; } catch (error) { reads += error instanceof TypeError ? "T," : "E,"; }
+    }
+    if (reads !== "10,T,30,") throw new Error("reads " + reads);
+    if (Object.keys(held[0] as object).join(",") !== "label") throw new Error("keys " + Object.keys(held[0] as object).join(","));
+    if (JSON.stringify(held[2]) !== '{"label":"k30"}') throw new Error("json " + JSON.stringify(held[2]));
+    let forged = "";
+    try { Key.read({}); } catch (error) { forged = error instanceof TypeError ? "T" : "E"; }
+    if (forged !== "T") throw new Error("forged read");
+    class Tally {
+        #total = 1;
+        static read(candidate: unknown): number { return (candidate as Tally).#total; }
+    }
+    let counted = 0;
+    try { counted = Tally.read({}); } catch (error) { counted = error instanceof TypeError ? -1 : -2; }
+    if (counted !== -1 || Tally.read(new Tally()) !== 1) throw new Error("initialized private read");
+`,
+);
+
+test("a phantom brand asserted from two classes keeps its refusal", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+    declare const brand: unique symbol;
+    type Token = Readonly<{ readonly [brand]: true }>;
+    class A { readonly #a = 1; static read(t: Token): number { return (t as unknown as A).#a; } }
+    class B { readonly #b = 2; }
+    const tokens: Token[] = [new A() as unknown as Token, new B() as unknown as Token];
+    if (A.read(tokens[0]!) !== 1) throw new Error("two classes");
+`),
+        /Compile-time record is missing required field/,
+    );
+});
+
+check(
     "closed-record-own-keys-and-keyed-literals",
     `
     const KINDS = ["deer", "rabbit", "fox"] as const;

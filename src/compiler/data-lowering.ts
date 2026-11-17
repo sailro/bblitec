@@ -741,6 +741,7 @@ interface DataLoweringContext extends Pick<
     | "selectResourceOwner"
     | "refuseBorrowedPlatformEventEscape"
     | "fail"
+    | "refuseWithDemand"
     | "dynamicBindings"
     | "parameterObjects"
     | "storageTakenDuringAttempt"
@@ -6034,6 +6035,22 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 access,
             );
             if (element) return element;
+        }
+        if (dataType.kind === "json" && ts.isPrivateIdentifier(access.name)) {
+            // A private name is no property of a document: the read is of
+            // the class instance the document holds, which it asserts. The
+            // class takes its stored struct, which a document holds boxed.
+            const instance = this.context.dataTypes.fromStoredTsType(
+                this.context.checker.getTypeAtLocation(access.expression),
+                access.expression,
+            );
+            return instance?.kind === "struct" &&
+                this.context.dataTypes.isClassStruct(instance.name)
+                ? this.propertyRead(
+                      this.assertedInstance(owner, instance),
+                      access,
+                  )
+                : undefined;
         }
         if (dataType.kind === "json") {
             const packaged = this.packagedPrimitive(access);
@@ -13444,6 +13461,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return member?.owner === "Array" && member.name === "from";
     }
 
+    /** The class instance a document holds; any other document throws TypeError. */
+    public assertedInstance(value: Value, dataType: DataType<"struct">): Value {
+        return {
+            kind: "data",
+            cpp: `${value.cpp}.asserted_instance<${this.context.dataTypes.cppType(dataType)}>()`,
+            dataType,
+        };
+    }
+
     public requireDataValue(
         expression: ts.Expression,
         dataType: DataType,
@@ -13536,11 +13562,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             dataType.kind === "struct" &&
             this.context.dataTypes.isClassStruct(dataType.name)
         )
-            return {
-                kind: "data",
-                cpp: `${value.cpp}.asserted_instance<${this.context.dataTypes.cppType(dataType)}>()`,
-                dataType,
-            };
+            return this.assertedInstance(value, dataType);
         // A parsed array is stored as the array sink stores it: parsed
         // records stay documents, every other element converts.
         if (isJsonValue(value) && dataType.kind === "vector")

@@ -1516,7 +1516,7 @@ inline JsonValue json_value(const U8Array& value) { return JsonValue::from_nativ
  */
 template <typename T> const T& JsonValue::asserted_instance() const {
     if (!instance_of<T>())
-        throw NamedError("TypeError", "Value is not an instance of the asserted class");
+        throw_not_an_instance();
     return static_cast<const JsonNativeBox<T>&>(*native_).value;
 }
 

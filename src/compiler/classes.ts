@@ -309,7 +309,7 @@ function staticFieldAssignedBeforeRead(
 }
 
 /** The private names one class body declares. */
-function declaredPrivateNames(
+export function declaredPrivateNames(
     declaration: ts.ClassLikeDeclaration,
 ): Map<string, ts.PrivateIdentifier> {
     const names = new Map<string, ts.PrivateIdentifier>();

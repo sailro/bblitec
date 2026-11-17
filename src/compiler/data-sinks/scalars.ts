@@ -242,6 +242,21 @@ function valueJson(
         );
         if (demand) throw new NativeRecordStorageRequired(demand);
     }
+    // A class instance built as a compile-time record is one object a
+    // document holds boxed: the store replays with the class shared from
+    // its first construction.
+    const shared =
+        value.kind === "record" && value.classDeclaration !== undefined
+            ? lowerer.context.dataTypes.sharedClassDemand(
+                  value.classDeclaration,
+              )
+            : undefined;
+    if (shared)
+        lowerer.context.refuseWithDemand(
+            node,
+            "A class instance built as a compile-time record is stored in a document once its class is shared from its first construction.",
+            shared,
+        );
     const errorExpression =
         value.dataType?.kind === "error"
             ? lowerer.convertedExpression(node)

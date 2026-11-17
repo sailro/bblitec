@@ -1,4 +1,5 @@
 import type ts from "typescript";
+import type { StorageDemand } from "./storage-demand.js";
 
 /**
  * A refusal the compiler raises at a scene-source location: what `fail`
@@ -14,6 +15,11 @@ export class CompileError extends Error {
     public readonly detail: string;
     /** The node the refusal was raised at, when the raiser had one. */
     public readonly subject: ts.Node | undefined;
+    /**
+     * The storage that would lower the refused construct: a probe declines
+     * on the refusal, and one that leaves every probe replays with it.
+     */
+    public demand: StorageDemand | undefined;
 
     public constructor(
         fileName: string,
