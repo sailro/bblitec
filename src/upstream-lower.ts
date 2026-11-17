@@ -147,6 +147,10 @@ import {
     pinnedTaskTransmissionHeader,
     pinnedTextureHeader,
 } from "./lowering/pinned-texture.js";
+import {
+    pinnedDepthResolveHeader,
+    pinnedDepthResolveModule,
+} from "./lowering/pinned-depth-resolve.js";
 import { pinnedRgbdHeader } from "./lowering/pinned-rgbd.js";
 import { pinnedMatrixHeader } from "./lowering/pinned-matrix.js";
 import { pinnedMat4InvertHeader } from "./lowering/pinned-mat4-invert.js";
@@ -1048,6 +1052,11 @@ class GeneratedSourceWriter {
             options.nodeParticleRegistrations ?? [],
         );
         const transmission = options.transmission;
+        // `buildRenderTarget` allocates `_colorTexture` where it sets
+        // `_colorView`, so an identity read records both.
+        const colorViewState =
+            features.includes("frame-graph:color-view-state") ||
+            features.includes("frame-graph:color-texture-identity");
         // Every binding-derived material capability -- a composed Standard
         // variant binding the pin's 2D reflection pair (`rT`) or bump pair
         // (`bT`), a PBR variant binding a lightmap or metallic-reflectance
@@ -1141,6 +1150,11 @@ class GeneratedSourceWriter {
             this.tree.write(
                 "upstream/include/bblite/upstream/pinned_task_transmission.hpp",
                 pinnedTaskTransmissionHeader(context),
+            );
+        if (features.includes("frame-graph:depth-resolve"))
+            this.tree.write(
+                "upstream/include/bblite/upstream/pinned_depth_resolve.hpp",
+                pinnedDepthResolveHeader(context),
             );
         this.tree.write(
             "upstream/include/bblite/upstream/pinned_rgbd.hpp",
@@ -1456,9 +1470,7 @@ ${lowerThinInstanceSync(context)}
                 ssaoTasks: features.includes("renderer:ssao"),
                 effectTasks: features.includes("effect:task"),
                 liveTaskAdd: features.includes("frame-graph:live-task-add"),
-                colorViewState: features.includes(
-                    "frame-graph:color-view-state",
-                ),
+                colorViewState,
                 taskRemoval: features.includes("frame-graph:task-removal"),
                 taskDisposal: features.includes("frame-graph:task-disposal"),
                 taskMethodSlots: features.includes(
@@ -1489,7 +1501,10 @@ ${lowerThinInstanceSync(context)}
             new RenderTargetLowerer(context, {
                 surface: features.includes("frame-graph:surface-target"),
                 disposal: features.includes("frame-graph:target-disposal"),
-                colorView: features.includes("frame-graph:color-view-state"),
+                colorView: colorViewState,
+                colorTexture: features.includes(
+                    "frame-graph:color-texture-identity",
+                ),
             }).lower(),
         );
         emitReached("upstream/src/frame_graph_context.cpp", () =>
@@ -3314,6 +3329,8 @@ ${wgsl}`,
             if (features.includes("frame-graph:render-task-transmission"))
                 for (const module of pinnedTaskTransmissionModules())
                     deployUtility(module);
+            if (features.includes("frame-graph:depth-resolve"))
+                deployUtility(pinnedDepthResolveModule());
             if (options.shaderPrograms.length > 0) {
                 this.tree.write(
                     "upstream/shaders/shader-material-reflection.json",

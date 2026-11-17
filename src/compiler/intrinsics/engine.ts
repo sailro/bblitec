@@ -854,6 +854,28 @@ export function compileEngineIntrinsic(
             };
         }
 
+        case "createDepthResolveTask": {
+            context.expectArgumentCount(call, 3, 3);
+            const engine = context.compileValue(argumentAt(call, 1));
+            const scene = context.compileValue(argumentAt(call, 2));
+            context.expectKind(engine, "engine", argumentAt(call, 1));
+            context.expectKind(scene, "scene", argumentAt(call, 2));
+            context.expectSameEngine(engine, scene, call);
+            const options =
+                context.intrinsicOptions.compileDepthResolveTaskOptions(
+                    argumentAt(call, 0),
+                );
+            reachRenderer(context, call);
+            context.reachFeature("frame-graph:depth-resolve", call);
+            return {
+                kind: "task",
+                cpp:
+                    `bbl::create_depth_resolve_task(` +
+                    `${engine.cpp}, ${scene.cpp}, ${options})`,
+                engineCpp: engine.engineCpp ?? engine.cpp,
+            };
+        }
+
         default:
             if (isScreenSpaceIntrinsic(importedName)) {
                 return compileScreenSpaceIntrinsic(context, importedName, call);

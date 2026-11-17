@@ -2,6 +2,7 @@ import { EmissionSet } from "../emission-transaction.js";
 import { nativeTextureFormats } from "../../native-texture-format.js";
 import { sharedPinnedContext } from "../../lowering/context.js";
 import { geometryAttachmentDefaultFormat } from "../../pinned-shader-composer.js";
+import { pinnedDepthResolveTaskName } from "../../lowering/pinned-depth-resolve.js";
 import {
     nativeDepthCompare,
     pinnedDepthClearValue,
@@ -760,6 +761,36 @@ export function compileCopyTaskOptions(
     return owns && knownCondition(owns) !== false && target && targetExpression
         ? `bbl::copy_task_owning_target(${context.requireEngine(target, targetExpression)}, ${options}, ${owns})`
         : options;
+}
+
+/**
+ * `createDepthResolveTask`'s config: its two render targets and its name,
+ * the pin's default when unnamed, where its refusals quote the config's.
+ */
+export function compileDepthResolveTaskOptions(
+    context: EngineOptionContext,
+    expression: ts.Expression,
+): string {
+    const object = context.expectObjectLiteral(expression);
+    validateObjectProperties(
+        context,
+        object,
+        ["name", "sourceTexture", "targetTexture"],
+        "Reached depth-resolve tasks support name, sourceTexture and targetTexture.",
+    );
+    const nameExpression = context.objectProperty(object, "name");
+    const name = nameExpression
+        ? context.compileStringLiteral(nameExpression)
+        : pinnedDepthResolveTaskName(sharedPinnedContext());
+    const target = (property: string): string => {
+        const value = context.objectProperty(object, property);
+        if (!value)
+            context.fail(object, `A depth-resolve task requires ${property}.`);
+        const compiled = context.compileValue(value);
+        context.expectKind(compiled, "render-target", value);
+        return compiled.cpp;
+    };
+    return `bbl::DepthResolveTaskOptions{${context.cppString(name)}, ${nameExpression ? "true" : "false"}, ${target("sourceTexture")}, ${target("targetTexture")}}`;
 }
 
 function compileGeometryTextureType(

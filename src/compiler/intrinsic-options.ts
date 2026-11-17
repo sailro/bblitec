@@ -9,6 +9,7 @@ import {
 } from "./intrinsics/asset-options.js";
 import {
     compileCopyTaskOptions,
+    compileDepthResolveTaskOptions,
     compileGeometryTaskOptions,
     compileRenderTargetOptions,
     compileRenderTaskOptions,
@@ -125,6 +126,10 @@ export class IntrinsicOptions {
 
     public compileCopyTaskOptions(expression: ts.Expression): string {
         return compileCopyTaskOptions(this.context, expression);
+    }
+
+    public compileDepthResolveTaskOptions(expression: ts.Expression): string {
+        return compileDepthResolveTaskOptions(this.context, expression);
     }
 
     public compileGroundOptions(

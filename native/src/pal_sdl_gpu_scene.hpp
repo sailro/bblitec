@@ -22,6 +22,7 @@
 #include <bblite/features/has_text.hpp>
 #include <bblite/features/has_ui.hpp>
 #include <bblite/features/render_task_transmission.hpp>
+#include <bblite/features/depth_resolve_task.hpp>
 #include <bblite/features/mesh_geometry_update.hpp>
 #include <bblite/features/mesh_opacity.hpp>
 #include <bblite/features/offscreen_surfaces.hpp>
@@ -914,6 +915,10 @@ struct GpuState : SdlGpuDevice {
     /** The depth grab's nearest sampler. */
     SDL_GPUSampler* task_depth_grab_sampler = nullptr;
 #endif
+#if BBLITE_DEPTH_RESOLVE_TASK
+    /** `createDepthResolveTask`'s pipeline, one per target depth format. */
+    std::vector<std::pair<SDL_GPUTextureFormat, OwnedSdlPipeline>> depth_resolve_pipelines;
+#endif
     SDL_GPUSampler* sampler = nullptr;
     SDL_GPUSampler* background_sampler = nullptr;
     SDL_GPUSampler* ground_sampler = nullptr;
@@ -1290,6 +1295,15 @@ SDL_GPUGraphicsPipeline* create_fullscreen_pipeline(SDL_GPUDevice* device,
 void encode_grab_pass(SDL_GPUCommandBuffer* command, SDL_GPUGraphicsPipeline* pipeline,
                       SDL_GPUTexture* target, const SDL_GPUTextureSamplerBinding* sampled,
                       SDL_GPUTexture* storage = nullptr);
+#endif
+
+#if BBLITE_DEPTH_RESOLVE_TASK
+/**
+ * `createDepthResolveTask`'s execute: a depth-only pass over the target,
+ * the pinned module writing sample 0 of the source's multisampled depth.
+ */
+void encode_depth_resolve(GpuState& state, const Engine& engine, SDL_GPUCommandBuffer* command,
+                          const FrameTaskRecord& task);
 #endif
 
 #if BBLITE_RENDER_TASK_TRANSMISSION

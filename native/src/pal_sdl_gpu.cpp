@@ -1,6 +1,7 @@
 #include <bblite/features/geometry_velocity.hpp>
 #include <bblite/features/mesh_opacity.hpp>
 #include <bblite/features/render_task_transmission.hpp>
+#include <bblite/features/depth_resolve_task.hpp>
 #include <bblite/features/thin_instances.hpp>
 // The SDL_GPU scene renderer's driver: the pass helpers, the state's
 // release and the frame run. The feature families it draws through are
@@ -123,6 +124,9 @@ void release(GpuState& state) {
     release_frame_graph_textures(state);
 #if BBLITE_RENDER_TASK_TRANSMISSION
     release_task_transmissions(state);
+#endif
+#if BBLITE_DEPTH_RESOLVE_TASK
+    state.depth_resolve_pipelines.clear();
 #endif
 #if BBLITE_HAS_SCREEN_SPACE
     // The screen-space programs key only the generated stage table's
@@ -3681,6 +3685,14 @@ public:
                             if (target_record.swapchain) {
                                 capture_texture = effect_target.texture;
                             }
+                            continue;
+                        }
+#endif
+#if BBLITE_DEPTH_RESOLVE_TASK
+                        if (task.kind == FrameTaskKind::depth_resolve) {
+                            const auto resolve_timing =
+                                sdl_timed_pass(command, timing_sequence.pass());
+                            encode_depth_resolve(state, engine, command, task);
                             continue;
                         }
 #endif

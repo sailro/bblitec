@@ -5,6 +5,7 @@
 #include <bblite/features/has_browser_file.hpp>
 #include <bblite/features/has_gamepad.hpp>
 #include <bblite/features/workers.hpp>
+#include <bblite/features/color_texture_identity.hpp>
 
 #include <bblite/runtime.hpp>
 #include <bblite/pal_offscreen.hpp>
@@ -905,7 +906,7 @@ inline bool update_engine_canvas_metrics(Engine& engine, int width, int height,
  * on macOS. Neither universally equals CSS pixels: those follow the window's
  * display scale, just like the retained UI's density-independent pixels.
  */
-inline bool sync_engine_canvas_size(SDL_Window* window, Engine& engine) {
+inline bool sync_engine_canvas_extent(SDL_Window* window, Engine& engine) {
     if (const auto* offscreen = OffscreenRun::current()) {
         // The pin's render loop resizes each surface at the head of every frame.
         if (engine.update_surface_layout)
@@ -942,6 +943,22 @@ inline bool sync_engine_canvas_size(SDL_Window* window, Engine& engine) {
         return changed;
     }
     return false;
+}
+
+/**
+ * `sync_engine_canvas_extent`, and `setSurfaceSize`'s rebuild of the
+ * registered scenes' frame graphs when the drawing buffer's pixels changed.
+ */
+inline bool sync_engine_canvas_size(SDL_Window* window, Engine& engine) {
+#if BBLITE_COLOR_TEXTURE_IDENTITY
+    const std::pair pixels{engine.options.width, engine.options.height};
+    const bool changed = sync_engine_canvas_extent(window, engine);
+    if (pixels != std::pair{engine.options.width, engine.options.height})
+        rebuild_canvas_task_targets(engine);
+    return changed;
+#else
+    return sync_engine_canvas_extent(window, engine);
+#endif
 }
 
 /** Translate SDL's button masks to PointerEvent.buttons. */

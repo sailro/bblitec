@@ -9,6 +9,7 @@
 #include <bblite/features/geometry_velocity.hpp>
 #include <bblite/features/has_billboards.hpp>
 #include <bblite/features/render_task_transmission.hpp>
+#include <bblite/features/depth_resolve_task.hpp>
 #include <bblite/features/has_clustered_lights.hpp>
 #include <bblite/features/has_detailed_picking.hpp>
 #include <bblite/features/has_effect_task.hpp>
@@ -1112,6 +1113,10 @@ struct DawnState : DawnDevice {
     /** The pin's single-sample `BLIT_SHADER` and `DEPTH_GRAB_SHADER` passes. */
     DawnRenderPipeline task_grab_pipeline;
     DawnRenderPipeline task_depth_grab_pipeline;
+#endif
+#if BBLITE_DEPTH_RESOLVE_TASK
+    /** `createDepthResolveTask`'s pipeline, one per target depth format. */
+    std::vector<std::pair<WGPUTextureFormat, DawnRenderPipeline>> depth_resolve_pipelines;
 #endif
     WGPUShaderModule image_processing_module = nullptr;
     WGPURenderPipeline image_processing_pipeline = nullptr;
@@ -3427,6 +3432,15 @@ void encode_task_transmission_grab(DawnState& state, const Engine& engine,
 std::pair<WGPUTextureView, WGPUSampler>
 task_transmission_binding(DawnState& state, const Engine& engine,
                           const RenderTextureRef& reference);
+#endif
+
+#if BBLITE_DEPTH_RESOLVE_TASK
+/**
+ * `createDepthResolveTask`'s execute: a depth-only pass over the target,
+ * the pinned module writing sample 0 of the source's multisampled depth.
+ */
+void encode_depth_resolve(DawnState& state, const Engine& engine, WGPUCommandEncoder encoder,
+                          const FrameTaskRecord& task, const WGPUPassTimestampWrites* timestamps);
 #endif
 
 // The pinned final pass: per-sample image processing of the linear

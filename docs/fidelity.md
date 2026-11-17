@@ -72,6 +72,8 @@ anything not listed here must match it.
 - Native Euler/quaternion storage differs from the pin's rotation proxy; mixed writes are bounded.
 - Replacing a material wrapper does not retarget an old pointer writer. CPU-only VAT seeks upload nothing.
 - Native texture recreation can reset TAA history the browser kept.
+- A depth-resolve task's build refusals throw at its first execute, where its record (registration,
+  `buildFrameGraphTask`) throws them in the browser.
 - Picking throws natively when primitive-index capability is missing.
 - Flow-graph selection readback is synchronous and can dispatch one frame earlier than the browser.
 

@@ -503,6 +503,9 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
   it is when read; another target's refuses when read. Its `_colorView`, read through a cast, is tested only for
   presence: set for the swapchain, an eager target, and a target the frame graph's registration or
   `buildFrameGraphTask` built (render, effect, copy, geometry and post-process task outputs), until it is disposed.
+  Its `_colorTexture` is that colour texture's identity: null while `_colorView` is, fixed for a fixed eager target,
+  and new at each build of another, including each registered scene's rebuild when the canvas's pixels change. The
+  swapchain's and a surface render-target texture's refuse when read.
 - A render target's `samples` may be decided at run time (1 or 4). An option written `undefined` is that option unset.
 - A `RenderTargetTextureResult` is storable data and a parameter type (`<T extends RenderTargetTextureResult>`).
   Engine resources joined by `??` keep the engine each operand names.
@@ -524,6 +527,9 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
 - Without it, a LINEAR_VELOCITY task's preload (at registration, or when a material family first reaches the task)
   loads the previous bones and morph weights for Standard views once its scene lists a skinned or morphed mesh; a
   Standard view of a deformed mesh built before that refuses, as the pin does.
+- `createDepthResolveTask` writes sample 0 of a multisampled target's depth into a single-sample target's depth
+  through the pinned module, refusing as the pin's build does. A source the multisample gate draws single-sampled, and
+  a target with stencil or more than one layer, refuse.
 - `enableRenderTaskTransmission` with `linear: false` on a single-sample, non-swapchain render task: the pass breaks
   before transmissive transparent draws (`copyCount`) to grab colour, and with `grabDepth` depth (set before recording);
   `grab.texture`/`depthTexture` read live for `setShaderTexture`. The linear arm and multisampled targets refuse.

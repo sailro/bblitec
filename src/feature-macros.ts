@@ -117,6 +117,16 @@ export const featureMacros: readonly FeatureMacro[] = [
         macro: "BBLITE_RENDER_TASK_TRANSMISSION",
         anyOf: ["frame-graph:render-task-transmission"],
     },
+    // A task resolving a multisampled depth into a single-sample one.
+    {
+        macro: "BBLITE_DEPTH_RESOLVE_TASK",
+        anyOf: ["frame-graph:depth-resolve"],
+    },
+    // A canvas resize rebuilds each registered scene's task targets.
+    {
+        macro: "BBLITE_COLOR_TEXTURE_IDENTITY",
+        anyOf: ["frame-graph:color-texture-identity"],
+    },
     // A disposed task refuses to execute.
     {
         macro: "BBLITE_TASK_DISPOSAL",

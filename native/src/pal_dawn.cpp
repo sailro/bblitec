@@ -1,5 +1,6 @@
 #include <bblite/features/geometry_velocity.hpp>
 #include <bblite/features/render_task_transmission.hpp>
+#include <bblite/features/depth_resolve_task.hpp>
 #include <bblite/features/thin_instances.hpp>
 // The Dawn scene renderer's driver: the pass helpers, the pipelines the
 // frame run builds and the frame run itself. The feature families it draws
@@ -4097,6 +4098,14 @@ public:
                                     frame_graph_presented = true;
                                 }
                             }
+                            continue;
+                        }
+#endif
+#if BBLITE_DEPTH_RESOLVE_TASK
+                        if (task.kind == FrameTaskKind::depth_resolve) {
+                            const DawnPassTimestamps resolve_timestamps{timing_sequence.pass()};
+                            encode_depth_resolve(state, engine, encoder, task,
+                                                 resolve_timestamps.get());
                             continue;
                         }
 #endif

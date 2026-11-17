@@ -1000,6 +1000,23 @@ export const propertyRules: readonly PropertyRule[] = [
         helperArgument: String(property === "_height"),
         impure: true,
     })),
+    // A render target's `_colorTexture`, read through a cast: null until a
+    // build allocated it and after disposal, and a new object at each
+    // allocation `buildRenderTarget` makes.
+    {
+        owner: "render-target",
+        property: "_colorTexture",
+        value: "data",
+        dataType: {
+            kind: "optional",
+            inner: { kind: "handle", handle: "gpu-texture" },
+        },
+        helper: "bbl::render_target_color_texture",
+        helperTakesEngine: true,
+        helperReturnsFreshData: true,
+        impure: true,
+        feature: "frame-graph:color-texture-identity",
+    },
     {
         owner: "camera",
         property: "alpha",

@@ -1882,6 +1882,30 @@ enum class FrameTaskKind {
     post_process,
     effect,
     ssao,
+    depth_resolve,
+};
+
+/**
+ * `createDepthResolveTask`'s config: sample 0 of the source's multisampled
+ * depth written into the target's single-sample depth. `name` is the task's
+ * (`config.name ?? <default>`); the pin's refusals quote `config.name`.
+ */
+struct DepthResolveTaskOptions {
+    std::string name;
+    bool named = false;
+    RenderTargetHandle source{};
+    RenderTargetHandle target{};
+};
+
+/**
+ * When `buildRenderTarget` allocates a target's attachments: at each record
+ * that builds it, or eagerly (`rt._eager`) once, at a fixed size or sized
+ * from its surface.
+ */
+enum class TargetAllocation : std::uint8_t {
+    record,
+    fixed,
+    surface,
 };
 
 /** GPU attachment ownership bridges to the source-generated resize protocol. */
@@ -1955,6 +1979,18 @@ struct RenderTargetRecord {
      * once a task's record built it otherwise (`record_task_color_views`).
      */
     bool color_view = false;
+    /**
+     * The pin's `_colorTexture` object, published with each colour
+     * allocation `buildRenderTarget` makes; read while `_colorView` is set.
+     */
+    GpuTextureIdentity color_texture{};
+    TargetAllocation allocation = TargetAllocation::record;
+    /**
+     * A shader reads the depth attachment without a sampled facade (a
+     * depth-resolve source): the pin's every depth attachment carries
+     * `TEXTURE_BINDING`.
+     */
+    bool depth_binding = false;
 };
 
 /** The pin's mixed cache tuple, named by its seven identity/value inputs. */
@@ -2028,6 +2064,7 @@ struct FrameTaskRecord {
     EffectTaskOptions effect;
     ScreenSpaceTaskOptions screen_space;
     SsaoTaskOptions ssao;
+    DepthResolveTaskOptions depth_resolve;
     /** The task retains the scene passed to its factory, independent of registration. */
     std::shared_ptr<SceneState> source_scene{};
     /** Allocated only for a source whose retained UBO is reached by TAA. */
@@ -5868,12 +5905,19 @@ inline GpuSampler stored_texture_gpu_sampler(Engine& engine, const StoredTexture
  * The colour attachments a task's record builds (`buildRenderTarget`): a
  * render task its own target and, under MSAA, its resolve target unless the
  * target is shared; an effect task its target; a copy task its target and
- * resolve target; a geometry task its target; a post-process task its output.
+ * resolve target; a geometry task its target; a post-process task its
+ * output; a depth-resolve task its target while that has no depth texture.
+ * Each build of a target the records allocate is a new colour texture.
  */
 inline void record_task_color_views(Engine& engine, const FrameTaskRecord& task) {
     const auto build = [&engine](RenderTargetHandle target) {
-        if (auto* record = handle_find(engine.render_targets, target))
-            record->color_view = record->has_color;
+        auto* record = handle_find(engine.render_targets, target);
+        if (!record)
+            return;
+        record->color_view = record->has_color;
+        if (record->has_color && !record->swapchain &&
+            record->allocation == TargetAllocation::record)
+            record->color_texture = publish_gpu_texture_identity(engine);
     };
     switch (task.kind) {
     case FrameTaskKind::render:
@@ -5897,6 +5941,12 @@ inline void record_task_color_views(Engine& engine, const FrameTaskRecord& task)
     case FrameTaskKind::post_process:
         build(task.post_process.output_target);
         return;
+    case FrameTaskKind::depth_resolve:
+        // `!target._depthTexture`: none declared, or not yet allocated.
+        if (const auto* target = handle_find(engine.render_targets, task.depth_resolve.target);
+            target && (!target->has_depth || !target->color_view))
+            build(task.depth_resolve.target);
+        return;
     default:
         return;
     }
@@ -5906,6 +5956,24 @@ inline void record_task_color_views(Engine& engine, const FrameTaskRecord& task)
                                                        RenderTargetHandle target) {
     const auto& record = handle_at(engine.render_targets, target);
     return !record.retired && record.has_color && (record.swapchain || record.color_view);
+}
+/**
+ * `rt._colorTexture`: null until a build allocated it and after disposal,
+ * set with `_colorView`. The swapchain's is the texture each frame acquires
+ * and a surface target's follows its resize replacements; neither is
+ * represented.
+ */
+[[nodiscard]] inline js::Nullable<GpuTextureIdentity>
+render_target_color_texture(const Engine& engine, RenderTargetHandle target) {
+    const auto& record = handle_at(engine.render_targets, target);
+    if (!record.retired && record.swapchain)
+        throw std::runtime_error("The swapchain target's _colorTexture is not represented.");
+    if (!record.retired && record.allocation == TargetAllocation::surface)
+        throw std::runtime_error(
+            "A surface render-target texture's _colorTexture is not represented.");
+    if (!render_target_color_view_set(engine, target))
+        return std::nullopt;
+    return record.color_texture;
 }
 /** `texture.sampler = sampler` on a render target's texture or depth facade. */
 inline void set_render_texture_sampler(Engine& engine, const RenderTextureRef& texture,
@@ -7379,6 +7447,44 @@ inline Scene configure_scene_render_defaults(Scene scene, bool enabled, std::uin
                                            std::optional<UiElementHandle> surface) {
     return scene.surface_canvas.has_value() == surface.has_value() &&
            (!surface || scene.surface_canvas->value == surface->value);
+}
+
+/**
+ * `setSurfaceSize`'s `_resize` on the engine's own canvas: each scene
+ * registered there rebuilds its frame graph, whose record of every task
+ * reallocates the targets those records build. A task awaiting
+ * `buildFrameGraphTask` keeps waiting.
+ */
+inline void rebuild_canvas_task_targets(Engine& engine) {
+    for (const std::shared_ptr<Scene>& scene : engine.scenes()) {
+        if (!scene || !scene_on_surface(*scene, std::nullopt))
+            continue;
+        for (const TaskHandle handle : scene->frame_passes()) {
+            const FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
+            if (task.record_state != FrameTaskRecordState::pending_build)
+                record_task_color_views(engine, task);
+        }
+    }
+}
+
+/**
+ * `createDepthResolveTask` over two existing targets. The pass reads the
+ * source's depth through a depth-only view, so its attachment carries the
+ * binding every pinned depth attachment has; targets already allocated
+ * without it are rebuilt.
+ */
+inline TaskHandle create_depth_resolve_task(Engine& engine, Scene&,
+                                            DepthResolveTaskOptions options) {
+    RenderTargetRecord& source = handle_at(engine.render_targets, options.source);
+    (void)handle_at(engine.render_targets, options.target);
+    if (source.has_depth && !source.depth_binding) {
+        source.depth_binding = true;
+        ++engine.render_targets_version;
+    }
+    FrameTaskRecord task;
+    task.kind = FrameTaskKind::depth_resolve;
+    task.depth_resolve = std::move(options);
+    return append_frame_task(engine, std::move(task));
 }
 
 /**

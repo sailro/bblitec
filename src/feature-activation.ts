@@ -1692,6 +1692,18 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "(executePassWithTransmission, transmission-depth-grab.ts)",
         consumers: CMAKE,
     },
+    "frame-graph:depth-resolve": {
+        provenance:
+            "src/frame-graph/depth-resolve-task.ts createDepthResolveTask",
+        consumers: CMAKE,
+    },
+    "frame-graph:color-texture-identity": {
+        provenance:
+            "src/engine/render-target.ts buildRenderTarget/disposeRenderTarget " +
+            "(RenderTarget._colorTexture, read through a cast; " +
+            "src/engine/surface.ts setSurfaceSize's _resize)",
+        consumers: CMAKE,
+    },
     "frame-graph:task-material-override": {
         provenance:
             "src/frame-graph/render-task.ts addMeshToTask (opts.material)",
