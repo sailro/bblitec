@@ -14010,6 +14010,49 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
     }
 
+    /**
+     * The members a spread of document `source` gives a record whose keys
+     * are `keys`: the spread copies the document's own enumerable
+     * properties into a dictionary where it runs, and each key is a member
+     * while that copy holds it (`Value.conditionalOwnKey`), read from it.
+     */
+    public documentSpreadMembers(
+        source: Value,
+        keys: readonly string[],
+        property: ts.SpreadAssignment,
+    ): Array<[string, Value]> {
+        const json: DataType = { kind: "json" };
+        const dictionary: DataType = {
+            kind: "map",
+            key: { kind: "string" },
+            value: json,
+            dictionary: true,
+        };
+        const copy = this.context.allocateTemporaryCppName("document_spread");
+        this.context.reachJson();
+        this.context.emit(
+            `${this.context.dataTypes.cppType(dictionary)} ${copy};`,
+        );
+        const binding = this.context.registerNativeBinding(copy);
+        this.context.emit({
+            kind: "expression",
+            code: `bbl::js::json_spread_into(${copy}, ${this.compileKnownValueForSink(source, json, property)});`,
+        });
+        this.registerLocal(copy, "owned");
+        return keys.map((key) => [
+            key,
+            {
+                ...this.mapPropertyValue(
+                    copy,
+                    this.context.cppString(key),
+                    json,
+                ),
+                conditionalOwnKey: true,
+                nativeCaptures: [binding],
+            },
+        ]);
+    }
+
     public openRecordLiteral(
         literal: ts.ObjectLiteralExpression,
         dataType: DataType & { kind: "map" },

@@ -94,6 +94,7 @@ import {
     borrowedPrototypeMethod,
     forwardedCallShape,
     declaredGlobalTypeof,
+    isSymbolPropertyKey,
 } from "./symbols.js";
 import {
     CRYPTO_GET_RANDOM_VALUES,
@@ -280,7 +281,11 @@ import {
     recordMethodValue,
 } from "./types.js";
 import { recordAt } from "./record-access.js";
-import { recordFieldIsWritten } from "./record-observations.js";
+import { isPlainRecord } from "./record-components.js";
+import {
+    argumentOnlyRead,
+    recordFieldIsWritten,
+} from "./record-observations.js";
 import { pinOperand } from "./evaluation-order.js";
 import { someAnalysisNode } from "./analysis-walk.js";
 import { renderClosure, type NativeExpression } from "./closure-captures.js";
@@ -6528,12 +6533,18 @@ export class ExpressionLowerer {
                       this.compileStaticObjectValue(unwrapped, "run-time-keys"),
                   );
             if (record) return record;
-            const typed = this.compileTypedObjectValue(
-                unwrapped,
-                dynamicSpread,
-                optionalKeysSpread,
-                runtimeKeyed,
-            );
+            const typed =
+                dynamicSpread && !runtimeKeyed
+                    ? this.compileDocumentSpreadObject(
+                          unwrapped,
+                          optionalKeysSpread,
+                      )
+                    : this.compileTypedObjectValue(
+                          unwrapped,
+                          dynamicSpread,
+                          optionalKeysSpread,
+                          runtimeKeyed,
+                      );
             if (typed) return typed;
         }
         if (!unwrapped.properties.some(ts.isSpreadAssignment))
@@ -6649,6 +6660,71 @@ export class ExpressionLowerer {
             );
         }
         return undefined;
+    }
+
+    /**
+     * A literal spreading a document: the dictionary of its members
+     * (`compileTypedObjectValue`), or, where that dictionary refuses (a
+     * member it holds no storage for, such as a handle or a class instance),
+     * the closed record type its position names (`documentSpreadRecord`).
+     */
+    private compileDocumentSpreadObject(
+        unwrapped: ts.ObjectLiteralExpression,
+        optionalKeysSpread: boolean,
+    ): Value | undefined {
+        const dictionary = this.context.keptEmission(
+            (): { value: Value | undefined } | { refusal: CompileError } => {
+                try {
+                    return {
+                        value: this.compileTypedObjectValue(
+                            unwrapped,
+                            true,
+                            optionalKeysSpread,
+                            false,
+                        ),
+                    };
+                } catch (error) {
+                    if (!(error instanceof CompileError)) throw error;
+                    return { refusal: error };
+                }
+            },
+            (result) => "value" in result,
+        );
+        if ("value" in dictionary) return dictionary.value;
+        const record = this.documentSpreadRecord(unwrapped);
+        if (!record) throw dictionary.refusal;
+        return record;
+    }
+
+    /**
+     * A literal spreading a document as the closed record type its position
+     * names (`isPlainRecord`): each key the type declares holds its last
+     * writer in source order, a document while it holds the key. The record
+     * holds no key the type does not declare, so it is built only as an
+     * argument its callee only reads (`argumentOnlyRead`), where nothing
+     * enumerates it. Undefined where the position names no closed record
+     * type.
+     */
+    private documentSpreadRecord(
+        unwrapped: ts.ObjectLiteralExpression,
+    ): Value | undefined {
+        const checker = this.context.checker;
+        const contextual = checker.getContextualType(unwrapped);
+        const record = contextual && checker.getNonNullableType(contextual);
+        if (!record || !isPlainRecord(checker, record)) return undefined;
+        if (!argumentOnlyRead(checker, unwrapped))
+            this.context.fail(
+                unwrapped,
+                `A document spread into the closed record type '${checker.typeToString(record)}' holds only the keys it declares: it is built as an argument its callee only reads, which cannot enumerate it.`,
+            );
+        return this.compileStaticObjectValue(
+            unwrapped,
+            undefined,
+            checker
+                .getPropertiesOfType(record)
+                .map((property) => property.name)
+                .filter((key) => !isSymbolPropertyKey(key)),
+        );
     }
 
     /**
@@ -6877,11 +6953,13 @@ export class ExpressionLowerer {
      * undefined where a spread's keys are known only at run time:
      * `"dictionary"` for a dictionary, a document or a scalar, and
      * `"run-time-keys"` for those and a struct whose `?` fields decide its
-     * keys.
+     * keys. With `documentKeys`, a document spread gives the record those
+     * of these keys it holds (`documentSpreadMembers`).
      */
     private compileStaticObjectValue(
         unwrapped: ts.ObjectLiteralExpression,
         declines?: "dictionary" | "run-time-keys",
+        documentKeys?: readonly string[],
     ): Value | undefined {
         const properties: Record<string, Value> = {};
         const methods: Record<
@@ -7073,6 +7151,21 @@ export class ExpressionLowerer {
                             "Spreading a void result requires a proven undefined completion.",
                         );
                     this.context.emitDiscardedValue(spread);
+                    continue;
+                }
+                if (documentKeys && isJsonValue(spread)) {
+                    for (const [
+                        key,
+                        value,
+                    ] of this.context.dataLowerer.documentSpreadMembers(
+                        spread,
+                        documentKeys,
+                        property,
+                    )) {
+                        if (ownKeys.has(key))
+                            replaceWhileOwn(key, value, property);
+                        else storeProperty(key, value);
+                    }
                     continue;
                 }
                 if (

@@ -9414,6 +9414,36 @@ test("keeps a complete snapshot when a const object is materialized then spread"
     assert.match(result.cpp, /1\.0/);
 });
 
+test("a document spread with a member no dictionary holds is the record its callee only reads", () => {
+    // Each key the parameter's type declares reads one copy of the
+    // document's own properties; a record held past the call refuses.
+    const source = (use: string): string => `
+        import { createBox, createEngine, type Mesh } from "@babylonjs/lite";
+        interface Options { a?: number; c?: number; sink?: Mesh }
+        const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+        const doc = JSON.parse('{"a":1,"z":2}') as { a: number };
+        function read(options: Options): number { return (options.a ?? 0) + (options.c ?? 0); }
+        ${use}
+    `;
+    const result = compileSource(
+        source("const total = read({ ...doc, sink: createBox(engine) });"),
+    );
+    assert.match(
+        result.cpp,
+        /bbl::js::json_spread_into\(v_bblite_document_spread_\d+, v_doc\);/,
+    );
+    assert.match(result.cpp, /v_bblite_document_spread_\d+\.get\("c"\)/);
+    assert.throws(
+        () =>
+            compileSource(
+                source(
+                    "const options: Options = { ...doc, sink: createBox(engine) };\nconst total = read(options);",
+                ),
+            ),
+        /A document spread into the closed record type 'Options' holds only the keys it declares: it is built as an argument its callee only reads/,
+    );
+});
+
 test("shares a static element snapshot through a const array alias", () => {
     const result = compileSource(`
         interface Row { value: number }

@@ -4663,6 +4663,31 @@ check(
 `,
 );
 
+check(
+    "a document spread beside a class instance keeps each last writer and the instance its callee calls",
+    `
+    interface Base { a: number; b: string }
+    class Sink { total = 0; add(v: number): void { this.total += v; } }
+    interface Opts { a?: number; b?: string; c?: number; d?: [number, number]; sink?: Sink; e?: number }
+    function run(o: Opts = {}): string {
+        o.sink?.add(o.a ?? -1);
+        return String(o.a ?? "none") + "|" + (o.b ?? "none") + "|" + String(o.c ?? 7) + "|" + String(o.d?.[1] ?? 0) + "|" + String(o.e ?? 5);
+    }
+    const plain: Opts = { a: 1 };
+    if (Object.keys(plain).join() !== "a") throw new Error("plain keys");
+    const doc = JSON.parse('{"a":1,"b":"x","c":3,"z":9}') as Base & { c: number };
+    const base: Base = doc;
+    const sink = new Sink();
+    const copied = run({ ...base, d: [1, 2], sink, e: (doc.c = 50) });
+    if (copied !== "1|x|3|2|50" || sink.total !== 1) throw new Error("copied where spread " + copied + " " + sink.total);
+    const missing = JSON.parse('{"b":"y"}') as Base;
+    const kept = run({ a: 4, c: 8, ...missing, sink });
+    if (kept !== "4|y|8|0|5" || sink.total !== 5) throw new Error("earlier writer kept " + kept + " " + sink.total);
+    const replaced = run({ ...base, a: 10, sink });
+    if (replaced !== "10|x|50|0|5" || sink.total !== 15) throw new Error("later writer " + replaced + " " + sink.total);
+`,
+);
+
 test("an open record projected into fields of another entry type refuses", () => {
     assert.throws(
         () =>
