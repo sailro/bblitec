@@ -8193,6 +8193,7 @@ MaterialHandle create_pbr_no_color_material_view(Engine& engine, MaterialHandle 
 MaterialHandle create_shader_no_color_material_view(Engine& engine, MaterialHandle source);
 MaterialHandle create_node_no_color_material_view(Engine& engine, MaterialHandle source);
 void mark_material_ubo_dirty(Engine& engine, MaterialHandle material);
+void release_material_view_gpu(Engine& engine, MaterialHandle view);
 void set_standard_emissive_texture(Engine& engine, MaterialHandle material,
                                    RenderTextureRef texture);
 void set_standard_emissive_file_texture(Engine& engine, MaterialHandle material,

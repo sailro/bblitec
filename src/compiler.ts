@@ -1075,6 +1075,11 @@ class Compiler implements LoweringServices {
     private readonly deferredResourceCaptureDepths = new EmissionSet<number>();
     private readonly collectionCardinalities =
         new EmissionSet<CollectionCardinality>();
+    /** Where each compile-time list was first bound, by its elements. */
+    private readonly listCreationSites = new EmissionWeakMap<
+        readonly Value[],
+        CollectionSite
+    >();
     @journaled public accessor jsDataReached = false;
     @journaled public accessor fileReaderReached = false;
     /** Whether the entry body itself decodes an image (drawn-atlas records). */
@@ -10506,6 +10511,15 @@ class Compiler implements LoweringServices {
             writable(owner).collectionCardinality = cardinality;
             this.collectionCardinalities.add(cardinality);
         }
+        if (
+            value.kind === "tuple" &&
+            value.tupleElements &&
+            !this.listCreationSites.has(value.tupleElements)
+        )
+            this.listCreationSites.set(
+                value.tupleElements,
+                this.collectionSite(),
+            );
     }
 
     /** Read carried facts only; accessors and runtime expressions are not evaluated. */
@@ -10673,8 +10687,23 @@ class Compiler implements LoweringServices {
         const state =
             (value.staticElementsOwner ?? value).collectionCardinality ??
             value.collectionCardinality;
-        const created = state?.createdAt;
-        if (!created || state.untrackedAliases) return false;
+        return (
+            !state?.untrackedAliases && this.atCollectionSite(state?.createdAt)
+        );
+    }
+
+    /**
+     * Whether a push here onto the compile-time list `elements` runs
+     * whenever its binding did; a list no declaration bound has no site to
+     * leave.
+     */
+    public mutatesListWhereCreated(elements: readonly Value[]): boolean {
+        const created = this.listCreationSites.get(elements);
+        return !created || this.atCollectionSite(created);
+    }
+
+    private atCollectionSite(created: CollectionSite | undefined): boolean {
+        if (!created) return false;
         const here = this.collectionSite();
         return (
             created.control === here.control &&

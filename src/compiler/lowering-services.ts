@@ -795,6 +795,8 @@ export interface LoweringServices {
     declaredCollection(value: Value): void;
     /** Whether a mutation here runs whenever `value`'s collection was created. */
     mutatesWhereCreated(value: Value): boolean;
+    /** Whether a push here onto the compile-time list `elements` runs whenever its binding did. */
+    mutatesListWhereCreated(elements: readonly Value[]): boolean;
     recordCollectionKey(value: Value, key: Value, removed?: boolean): void;
     recordCollectionClear(value: Value): void;
     expectKind(value: Value, kind: ValueKind, node: ts.Node): void;

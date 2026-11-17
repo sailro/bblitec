@@ -9896,6 +9896,66 @@ test("dense arrays refuse sparse length growth", { skip: !native }, () => {
     );
 });
 
+// `ShaderMaterial & MaterialView` is one engine material: a list of them is a
+// native array of handles, which closures read and truncate.
+check(
+    "pinned-intersection-lists-hold-native-handles",
+    `
+    type ShaderMaterialView = import("@babylonjs/lite").ShaderMaterial &
+        import("@babylonjs/lite").MaterialView;
+    const views: ShaderMaterialView[] = [];
+    const seen: number[] = [];
+    const observe = (): void => {
+        seen.push(views.length);
+        for (const view of views) seen.push(view ? -1 : -2);
+    };
+    const clear = (): void => {
+        views.length = 0;
+        observe();
+    };
+    observe();
+    clear();
+    if (seen.join(",") !== "0,0" || views.length !== 0) throw new Error("views");
+`,
+);
+
+test("a compile-time handle list holds only pushes that run where it was bound", () => {
+    const program = (calls: string): string => `
+        import { createBox, createEngine, createSceneContext, createShaderMaterial, createShaderNoColorMaterialView, onSceneDispose } from "@babylonjs/lite";
+        const engine = await createEngine({});
+        const scene = createSceneContext(engine);
+        const views: any[] = [];
+        const material = createShaderMaterial({
+            vertexSource: "struct VertexOutput{@builtin(position) position:vec4<f32>,};@vertex fn mainVertex(input:VertexInput)->VertexOutput{var out:VertexOutput;out.position=shaderSystem.worldViewProjection*vec4<f32>(input.position,1.0);return out;}",
+            fragmentSource: "@fragment fn mainFragment()->@location(0) vec4<f32>{return vec4<f32>(1.0);}",
+            attributes: ["position"], uniforms: ["worldViewProjection"],
+        });
+        const box = createBox(engine);
+        const register = (): void => { views.push(createShaderNoColorMaterialView(material)); };
+        ${calls}
+        onSceneDispose(scene, () => { for (const view of views) box.material = view; });
+    `;
+    // Each call's view is made at its call, where the dispose callback's
+    // capture of it can name it.
+    const { cpp } = compileSource(program("register(); register();"));
+    const entry = cpp.slice(cpp.indexOf("int main()"));
+    assert.equal(
+        entry.match(
+            /auto v_bblite_pushed_element_\d+ = bbl::create_shader_no_color_material_view/g,
+        )?.length,
+        2,
+    );
+    assert.doesNotMatch(
+        cpp.slice(0, cpp.indexOf("int main()")),
+        /auto v_bblite_pushed_element_/,
+    );
+    // A timer pushes at run time, which no generation-known list holds.
+    assert.throws(
+        () => compileSource(program("setTimeout(() => register(), 10);")),
+        /A runtime-grown handle list requires native array storage/,
+    );
+});
+
 check(
     "a generic call binds its type parameter through a discriminated union alias",
     `

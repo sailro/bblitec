@@ -98,6 +98,8 @@ Rules:
   function there.
 - Sparse array growth, named array properties and a `const` alias of an array field used after it resizes refuse; a length
   write grows an array of non-nullable objects with default slots.
+- An intersection of the pin's types of one engine object (`ShaderMaterial & MaterialView`) stores that object's handle.
+  A list with no native element type (`any[]`) refuses a handle a callback creates and pushes.
 - Static expansion: 4,096 iterations / 1 MiB; composition tables: 65,536 records.
 - `import.meta.env`: `MODE="production"`, `PROD=true`, `DEV=false`, `SSR=false`, `BASE_URL` from deployment; custom
   strings via `--env NAME=value` or `CompileOptions.environment`. No dotenv or host variables.
@@ -353,6 +355,7 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
   over the names; other uses of an entry or the list refuse.
   `createShaderNoColorMaterialView` shares source uniforms and resource bindings. Depth-only render tasks use each
   material's pipeline, including custom vertex transforms and `depthOnlyFragment` discards.
+  `releaseMaterialViewGpu` drops a shader view's own packed custom uniforms; a later draw repacks them.
   `screenSize` uses the current pass dimensions. Static descriptor arrays may use closed ECMAScript calls and callbacks.
   Reads of `scene.view`, `scene.viewProjection` and `scene.vEyePosition` are supported. Fragment entry points may
   return no value; vertex entry points may return `@builtin(position) vec4<f32>` directly.

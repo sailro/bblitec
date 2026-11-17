@@ -179,6 +179,7 @@ export const featureSources: Record<Feature, string[]> = {
     "material:parallax-occlusion": [],
     "material:runtime-rebuild": [],
     "material:ubo-dirty": [],
+    "material:view-gpu-release": [],
     "material:standard-vertex-colors": [],
     "material:standard-skeleton": [],
     "material:standard-uv-offset": [],

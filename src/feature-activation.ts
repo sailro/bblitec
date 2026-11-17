@@ -1286,6 +1286,11 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/material/material-dirty.ts markMaterialUboDirty",
         consumers: CMAKE,
     },
+    "material:view-gpu-release": {
+        provenance:
+            "src/material/shader/shader-material-view-gpu.ts releaseMaterialViewGpu",
+        consumers: CMAKE,
+    },
     "material:runtime-rebuild": {
         provenance:
             "src/material/material-rebuild.ts rebuildMaterial after startEngine",

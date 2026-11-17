@@ -1938,6 +1938,7 @@ ${lowerThinInstanceSync(context)}
                 features.includes("shadow:esm"),
                 nodeEsmCasters,
                 nodePcfCasters,
+                features.includes("material:view-gpu-release"),
             ),
         );
         this.emitMeshFactories(features, factories, generated);

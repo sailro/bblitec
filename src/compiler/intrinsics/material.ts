@@ -1107,6 +1107,24 @@ function compileMarkMaterialUboDirty(
     };
 }
 
+function compileReleaseMaterialViewGpu(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
+    context.expectArgumentCount(call, 2, 2);
+    const engine = context.compileValue(argumentAt(call, 0));
+    context.expectKind(engine, "engine", argumentAt(call, 0));
+    const view = context.compileValue(argumentAt(call, 1));
+    context.expectKind(view, "material", argumentAt(call, 1));
+    context.expectSameEngine(engine, view, call);
+    // Defined beside the material views (`material_views.cpp`).
+    context.reachFeature("material:view-gpu-release", call);
+    return {
+        kind: "void",
+        cpp: `bbl::release_material_view_gpu(${context.requireEngine(view, call)}, ${view.cpp})`,
+    };
+}
+
 function compileCreateShaderMaterial(
     context: MaterialIntrinsicContext,
     call: ts.CallExpression,
@@ -2548,6 +2566,7 @@ const materialIntrinsicHandlers = new EmissionMap<
         (context, call) => compileSetParallaxOcclusion(context, call, "pbr"),
     ],
     ["markMaterialUboDirty", compileMarkMaterialUboDirty],
+    ["releaseMaterialViewGpu", compileReleaseMaterialViewGpu],
     ["createShaderMaterial", compileCreateShaderMaterial],
     ["createStorageBuffer", compileCreateStorageBuffer],
     ["updateStorageBuffer", compileUpdateStorageBuffer],

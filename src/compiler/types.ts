@@ -3726,6 +3726,7 @@ export type Feature =
     | "material:parallax-occlusion"
     | "material:runtime-rebuild"
     | "material:ubo-dirty"
+    | "material:view-gpu-release"
     | "texture:file"
     | "texture:compressed"
     | "texture:ktx2"

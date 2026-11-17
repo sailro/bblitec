@@ -2037,10 +2037,60 @@ MaterialHandle create_standard_material(Engine& engine) {
         };
     }
 
+    /**
+     * `releaseMaterialViewGpu`: a shader material view drops the custom
+     * uniform state it does not share with its source, and its next use
+     * repacks from zero bytes, as `ensureCustomUbo` recreates the buffer.
+     */
+    private lowerMaterialViewGpuRelease(): string {
+        const module = "src/material/shader/shader-material-view-gpu.ts";
+        const { declaration: release } = this.context.functionDeclaration(
+            module,
+            "releaseMaterialViewGpu",
+        );
+        this.context.assertStatementShapes(
+            release,
+            release.body!.statements,
+            "if (isMaterialView(view) && isShaderMaterial(view)) { _retireShaderMaterialViewGpu(engine, view); }",
+            "Material view GPU release",
+        );
+        const { declaration: retire } = this.context.functionDeclaration(
+            module,
+            "_retireShaderMaterialViewGpu",
+        );
+        this.context.assertStatementShapes(
+            retire,
+            retire.body!.statements,
+            'if (!Object.hasOwn(view, "_shaderCustomUbo") || !view._shaderCustomUbo) { return; } const buffer = view._shaderCustomUbo; const owner = Object.hasOwn(view, "_shaderCustomEngine") ? view._shaderCustomEngine : undefined; view._shaderCustomUbo = null; view._shaderCustomData = null; view._shaderCustomBytes = null; view._shaderCustomVersion = -1; view._shaderCustomEngine = undefined; retireGpuResources(owner ?? engine, () => buffer.destroy());',
+            "Shader material view custom buffer retirement",
+        );
+        return `
+
+// ${this.context.provenance(module, "releaseMaterialViewGpu", `${module}#_retireShaderMaterialViewGpu`)}
+// Neither backend holds a custom uniform buffer of the view's own: SDL_GPU
+// pushes the packed block per draw, and Dawn writes it into the drawing
+// mesh's bindings, released with the mesh.
+void release_material_view_gpu(
+    Engine& engine,
+    MaterialHandle view) {
+    MaterialRecord& record = ${recordAt("engine.materials", "view")};
+    if (record.source_material.value == invalid_handle || !record.shader_material) {
+        return;
+    }
+    const MaterialRecord& source = ${recordAt("engine.materials", "record.source_material")};
+    if (!record.shader_uniform_upload ||
+        record.shader_uniform_upload == source.shader_uniform_upload) {
+        return;
+    }
+    record.shader_uniform_upload.reset();
+}`;
+    }
+
     public lowerNoColorMaterialViews(
         esmShadows = false,
         nodeEsmCasters = false,
         nodePcfCasters = false,
+        viewGpuRelease = false,
     ): LoweredSource {
         const nodeCasters = nodeEsmCasters || nodePcfCasters;
         const standardModule = "src/material/standard/no-color-view.ts";
@@ -2156,7 +2206,8 @@ MaterialHandle create_standard_material(Engine& engine) {
                       "createPbrEsmShadowMaterialView"
                     : "") +
                 (nodeEsmCasters ? ",createNodeEsmShadowMaterialView" : "") +
-                (nodeCasters ? ",createNodeNoColorMaterialView" : ""),
+                (nodeCasters ? ",createNodeNoColorMaterialView" : "") +
+                (viewGpuRelease ? ",releaseMaterialViewGpu" : ""),
             header: "",
             source: `// ${this.context.provenance(
                 viewModule,
@@ -2340,7 +2391,7 @@ void mark_material_ubo_dirty(
     }
     const MaterialHandle source = ${recordAt("engine.materials", "material")}.source_material;
     ++${recordAt("engine.materials", "source.value == invalid_handle ? material : source")}.ubo_version;
-}
+}${viewGpuRelease ? this.lowerMaterialViewGpuRelease() : ""}
 
 } // namespace bbl
 `,

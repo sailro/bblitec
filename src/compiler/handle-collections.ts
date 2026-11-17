@@ -540,6 +540,7 @@ interface HandleCollectionsContext
             | "emitStatement"
             | "libraryGlobal"
             | "isInRuntimeControlFlow"
+            | "mutatesListWhereCreated"
             | "conditions"
             | "compileStringLiteral"
             | "cppString"
@@ -1928,7 +1929,18 @@ export class HandleCollections {
             );
         }
         if (!compileTimeListKinds.includes(pushed.kind)) return undefined;
-        if (this.context.isInRuntimeControlFlow()) {
+        // A handle the push makes is held as a local of the push's own body,
+        // which the list names only where it runs whenever the list's
+        // binding did: a body run apart from it grows the list at run time.
+        const pinned =
+            isHandleKind(pushed.kind) &&
+            expressionHasEffects(argumentAt(call, 0)) &&
+            !pushed.nativeBinding;
+        if (
+            this.context.isInRuntimeControlFlow() ||
+            (pinned &&
+                !this.context.mutatesListWhereCreated(tuple.tupleElements))
+        ) {
             const declaration = this.listDeclaration(owner);
             if (
                 declaration &&
@@ -1961,9 +1973,7 @@ export class HandleCollections {
         // The list holds the pushed handle, not its expression: a factory
         // call or any other effect runs once, at the push.
         writable(tuple.tupleElements).push(
-            isHandleKind(pushed.kind) &&
-                expressionHasEffects(argumentAt(call, 0)) &&
-                !pushed.nativeBinding
+            pinned
                 ? this.context.bindings.pinValueToTemporary(
                       pushed,
                       "pushed_element",

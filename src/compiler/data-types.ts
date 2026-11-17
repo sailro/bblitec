@@ -368,6 +368,8 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
     ComputeBindingSet: "compute-binding-set",
     ComputeUniformLayout: "compute-uniform-layout",
     Material: "material",
+    // Every view the native factories make is a material record of its own.
+    MaterialView: "material",
     PhysicsWorld: "physics-world",
     PhysicsBody: "physics-body",
     PhysicsConstraint: "physics-constraint",
@@ -5097,6 +5099,17 @@ export class DataTypeRegistry {
         const concrete = this.resolveTypeParameter(type);
         const direct = pinnedHandleKind(concrete);
         if (direct) return direct;
+        // Pinned types of one engine object (`ShaderMaterial & MaterialView`)
+        // intersect to that object.
+        if (concrete.isIntersection()) {
+            const kinds = new Set(
+                concrete.types.map((member) =>
+                    pinnedHandleKind(this.resolveTypeParameter(member)),
+                ),
+            );
+            const [kind] = kinds;
+            if (kinds.size === 1 && kind) return kind;
+        }
         const sources = concrete.isIntersection()
             ? concrete.types
             : (concrete.flags & ts.TypeFlags.Object) !== 0 &&

@@ -345,6 +345,7 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         features: [
             "material:no-color-view",
             "material:ubo-dirty",
+            "material:view-gpu-release",
             ...shadowGeneratorFeatures,
         ],
     },
