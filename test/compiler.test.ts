@@ -17613,6 +17613,35 @@ test("carries explicit alpha blending and mesh render order", () => {
     assert.match(result.cpp, /\.has_render_order = true/);
 });
 
+test("reads a mesh's renderOrder and copies it, undefined until assigned", () => {
+    // The pin's draw reads `mesh.renderOrder ?? default`: copying an
+    // unassigned order leaves the copy on its family default.
+    const result = compileSource(`
+        import { addToScene, createBox, createEngine, createSceneContext } from "@babylonjs/lite";
+        const engine = await createEngine({});
+        const scene = createSceneContext(engine);
+        const base = createBox(engine);
+        const patch = createBox(engine);
+        if (Math.random() > 0.5) base.renderOrder = 110;
+        patch.renderOrder = base.renderOrder;
+        addToScene(scene, base);
+        addToScene(scene, patch);
+    `);
+
+    assert.match(
+        result.cpp,
+        /const std::optional<double> (v_bblite_render_order_\d+) = [^\n]*bbl::handle_at\(v_engine\.meshes, v_base\)\.render_order_value\(\)/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::handle_at\(v_engine\.meshes, v_patch\)\.render_order = v_bblite_render_order_\d+\.value_or\(0\.0\);/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::handle_at\(v_engine\.meshes, v_patch\)\.has_render_order = v_bblite_render_order_\d+\.has_value\(\);/,
+    );
+});
+
 test("folds module-relative demo asset URLs to the pinned public root", () => {
     const result = compileSource(
         `

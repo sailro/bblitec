@@ -4038,13 +4038,39 @@ function emitRenderOrderAssignment(
     if (target.kind === "mesh" && property === "renderOrder") {
         requireSimpleAssignment(context, expression, "mesh renderOrder");
         const engine = context.requireEngine(target, expression);
+        const record = recordAt(`${engine}.meshes`, target.cpp);
+        // An undefined order leaves the renderer's family default, as the
+        // pin's draw reads `mesh.renderOrder ?? default`.
+        const right = context.compileValue(expression.right);
+        if (right.dataType?.kind === "optional") {
+            const order = context.allocateTemporaryCppName("render_order");
+            context.emit({
+                kind: "declaration",
+                type: "const std::optional<double>",
+                name: order,
+                initializer: `bbl::js::Nullable<double>(${context.dataLowerer.compileKnownValueForSink(
+                    right,
+                    { kind: "optional", inner: { kind: "number" } },
+                    expression.right,
+                )}).to_optional()`,
+            });
+            context.emit({
+                kind: "expression",
+                code: `${record}.render_order = ${order}.value_or(0.0);`,
+            });
+            context.emit({
+                kind: "expression",
+                code: `${record}.has_render_order = ${order}.has_value();`,
+            });
+            return true;
+        }
         context.emit({
             kind: "expression",
-            code: `${recordAt(`${engine}.meshes`, target.cpp)}.render_order = ${context.compileNumber(expression.right, "double")};`,
+            code: `${record}.render_order = ${context.compileNumber(expression.right, "double")};`,
         });
         context.emit({
             kind: "expression",
-            code: `${recordAt(`${engine}.meshes`, target.cpp)}.has_render_order = true;`,
+            code: `${record}.has_render_order = true;`,
         });
         return true;
     }

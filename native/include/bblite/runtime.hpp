@@ -3104,6 +3104,10 @@ struct MeshRecord {
     // default only when this field was never assigned.
     bool has_render_order = false;
     double render_order = 0.0;
+    /** `Mesh.renderOrder` as a read sees it: undefined until assigned. */
+    [[nodiscard]] std::optional<double> render_order_value() const {
+        return has_render_order ? std::optional<double>(render_order) : std::nullopt;
+    }
     // Mesh.renderOnTop: the transparent draw list keeps a flagged mesh after
     // every other, whatever its camera distance.
     bool render_on_top = false;

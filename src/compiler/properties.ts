@@ -1212,6 +1212,15 @@ export const propertyRules: readonly PropertyRule[] = [
         record: ["meshes", "render_on_top"],
     },
     {
+        // The pin's optional field: undefined until a program assigns it.
+        owner: "mesh",
+        property: "renderOrder",
+        value: "data",
+        dataType: { kind: "optional", inner: { kind: "number" } },
+        record: ["meshes", "render_order_value()"],
+        nativeOptionalScalar: "double",
+    },
+    {
         owner: "texture",
         property: "texture",
         value: "texture",
