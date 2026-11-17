@@ -19410,8 +19410,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (isJsonValue(value)) {
             // A parsed document is JavaScript-falsy exactly where the
             // browser says: `null`, an absent property, `false`, `0`, NaN
-            // and the empty string.
-            return `${value.cpp}.truthy()`;
+            // and the empty string; a value stating its truthiness (an arm
+            // of a run-time case split) is what it states.
+            return statedTruthinessCpp(value) ?? `${value.cpp}.truthy()`;
         }
         if (isStringValue(value)) {
             if (value.staticString !== undefined) {
@@ -19682,6 +19683,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         loose: boolean,
     ): string | undefined {
         if (isJsonValue(value)) {
+            // A truthy document value is neither null nor undefined.
+            if (knownCondition(statedTruthinessCpp(value)) === true) {
+                this.context.emitDiscardedValue(value);
+                return negated ? "true" : "false";
+            }
             const temporary = this.context.allocateTemporaryCppName(
                 "json_absence_compare",
             );

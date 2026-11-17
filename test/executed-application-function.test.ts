@@ -321,6 +321,40 @@ test("selects a material per outcome of a named record's members", (t) => {
     );
 });
 
+test("selects a material per outcome of a parsed document member's presence", () => {
+    // Each arm finds `settings.light` an object or absent, so the callee's
+    // `opts.light !== undefined` and `opts.light ?` settle in both.
+    const compiled = compileSource(`
+        import { createEngine, createSceneContext, createShaderMaterial, wgsl } from "@babylonjs/lite";
+        interface Settings { light?: { strength: number } }
+        const VERTEX = \`${POSITION_VERTEX_WGSL}\`;
+        function material(opts: { light?: { strength: number } }) {
+            const prelude = opts.light !== undefined ? "fn lit() -> f32 { return 1.0; }" : "fn lit() -> f32 { return 0.0; }";
+            const gain = opts.light ? "2.0" : "3.0";
+            return createShaderMaterial({ name: "m", vertexSource: wgsl\`\${VERTEX}\`, fragmentSource: wgsl\`\${prelude}
+@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(lit() * \${gain}); }\`, attributes: ["position"], uniforms: ["worldViewProjection"] });
+        }
+        async function main(): Promise<void> {
+            const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+            createSceneContext(engine);
+            const settings = JSON.parse(String(Date.now())) as Settings;
+            console.log(material({ light: settings.light }) !== undefined);
+        }
+        void main();
+    `);
+    assert.deepEqual(
+        compiled.manifest.customShaderPrograms
+            .map((program) =>
+                /return ([01])\.0; \}[^]*lit\(\) \* ([23])\.0/
+                    .exec(program.fragmentSource)
+                    ?.slice(1)
+                    .join(" "),
+            )
+            .sort(),
+        ["0 3", "1 2"],
+    );
+});
+
 test("names the run-time tests a call compiles too many outcomes of", () => {
     assert.match(
         refusal(
