@@ -319,18 +319,13 @@ function valueVector(
         lowerer.markEscaped(value);
         return `bbl::js::Array<double>{(${value.cpp}).retained_storage()}`;
     }
-    if (
-        value.kind === "handle-collection" &&
-        value.handleCollection &&
-        dataType.element.kind === "handle" &&
-        value.handleCollection.elementKind === dataType.element.handle
-    ) {
-        lowerer.context.reachJsData();
-        return (
-            `bbl::js::array_from_iterable<${lowerer.context.dataTypes.cppType(dataType.element)}>(` +
-            `${value.handleCollection.containerCpp})`
-        );
-    }
+    const collection = handleCollectionElements(
+        lowerer,
+        value,
+        dataType.element,
+        node,
+    );
+    if (collection) return collection;
     if (value.kind === "tuple") {
         lowerer.context.reachJsData();
         const elements = value.tupleElements ?? [];
@@ -714,24 +709,46 @@ function valueMap(
     return undefined;
 }
 
+/**
+ * A live engine collection's handles, in their current order, as `element`
+ * storage: each paired with the collection's engine when the storage owns
+ * one. Undefined for any other value.
+ */
+function handleCollectionElements(
+    lowerer: DataSinkHost,
+    value: Value,
+    element: DataType,
+    node: ts.Node,
+): string | undefined {
+    if (
+        value.kind !== "handle-collection" ||
+        !value.handleCollection ||
+        element.kind !== "handle" ||
+        value.handleCollection.elementKind !== element.handle
+    )
+        return undefined;
+    lowerer.context.reachJsData();
+    const cpp = lowerer.context.dataTypes.cppType(element);
+    const container = value.handleCollection.containerCpp;
+    if (!element.ownedEngine)
+        return `bbl::js::array_from_iterable<${cpp}>(${container})`;
+    const engine = lowerer.context.storedResourceEngine(value, node);
+    return `bbl::js::array_from_iterable<${cpp}>(${container}, [&](const auto& handle) { return ${cpp}{${engine}, handle}; })`;
+}
+
 function valueSpan(
     dataType: DataType<"span">,
     lowerer: DataSinkHost,
     value: Value,
     node: ts.Node,
 ): string | undefined {
-    if (
-        value.kind === "handle-collection" &&
-        value.handleCollection &&
-        dataType.element.kind === "handle" &&
-        value.handleCollection.elementKind === dataType.element.handle
-    ) {
-        lowerer.context.reachJsData();
-        return (
-            `bbl::js::array_from_iterable<${lowerer.context.dataTypes.cppType(dataType.element)}>(` +
-            `${value.handleCollection.containerCpp})`
-        );
-    }
+    const collection = handleCollectionElements(
+        lowerer,
+        value,
+        dataType.element,
+        node,
+    );
+    if (collection) return collection;
     if (value.kind === "tuple") {
         lowerer.context.reachJsData();
         if ((value.tupleElements?.length ?? 0) === 0)

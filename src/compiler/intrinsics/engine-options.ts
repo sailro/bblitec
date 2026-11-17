@@ -29,6 +29,7 @@ import {
     compileOptionalStaticBoolean,
     compilePositiveInteger,
     compileStaticNumber,
+    engineSampleCount,
     staticNumberValue,
     pinnedEnumMemberName,
     validateObjectProperties,
@@ -133,6 +134,7 @@ export interface EngineOptionContext
             | "compileValue"
             | "expectKind"
             | "expectSameEngine"
+            | "requireEngine"
             | "expectObjectLiteral"
             | "dataLowerer"
             | "objectProperty"
@@ -417,9 +419,13 @@ export function compileRenderTargetOptions(
         selectedScale = `if (${context.conditions.compileCondition(selection.condition)}) { ${armScale(first, first.surface)} } else { ${armScale(second, second.surface)} }`;
     } else sized = renderTargetSize(context, size);
     const { width, height, surface, scale } = sized;
-    const sampleCount = samples
-        ? compilePositiveInteger(context, samples)
-        : "1u";
+    // A count the run decides is checked where the target is made.
+    const sampleCount = !samples
+        ? "1u"
+        : (engineSampleCount(context, samples) ??
+          (staticNumberValue(context, samples) === undefined
+              ? `bbl::render_target_sample_count(${context.compileNumber(samples, "double")})`
+              : compilePositiveInteger(context, samples)));
     const format = colorFormat && context.unwrap(colorFormat);
     const surfaceFormat =
         !!format &&
@@ -711,8 +717,9 @@ export function compileCopyTaskOptions(
             "targetTexture",
             "resolveTexture",
             "viewport",
+            "ownsTargetTexture",
         ],
-        "Reached copy tasks support name, sourceTexture, targetTexture, resolveTexture, and viewport.",
+        "Reached copy tasks support name, sourceTexture, targetTexture, resolveTexture, viewport, and ownsTargetTexture.",
     );
     const nameExpression = context.objectProperty(object, "name");
     const name = nameExpression
@@ -746,7 +753,13 @@ export function compileCopyTaskOptions(
         const viewportObject = context.expectObjectLiteral(viewportExpression);
         viewport = `bbl::NormalizedViewport{${requiredObjectNumber(context, viewportObject, "x", "double")}, ${requiredObjectNumber(context, viewportObject, "y", "double")}, ${requiredObjectNumber(context, viewportObject, "width", "double")}, ${requiredObjectNumber(context, viewportObject, "height", "double")}}`;
     }
-    return `bbl::CopyTaskOptions{${context.cppString(name)}, ${sourceCpp}, ${target?.cpp ?? "bbl::RenderTargetHandle{}"}, ${resolveTarget?.cpp ?? "bbl::RenderTargetHandle{}"}, ${viewportExpression ? "true" : "false"}, ${viewport}}`;
+    const options = `bbl::CopyTaskOptions{${context.cppString(name)}, ${sourceCpp}, ${target?.cpp ?? "bbl::RenderTargetHandle{}"}, ${resolveTarget?.cpp ?? "bbl::RenderTargetHandle{}"}, ${viewportExpression ? "true" : "false"}, ${viewport}}`;
+    // `ownsTargetTexture`: the task rebuilds its target at every graph build.
+    const ownsExpression = context.objectProperty(object, "ownsTargetTexture");
+    const owns = ownsExpression && context.compileBoolean(ownsExpression);
+    return owns && knownCondition(owns) !== false && target && targetExpression
+        ? `bbl::copy_task_owning_target(${context.requireEngine(target, targetExpression)}, ${options}, ${owns})`
+        : options;
 }
 
 function compileGeometryTextureType(
@@ -832,7 +845,12 @@ export function optionalRenderTarget(
         return { cpp: "bbl::RenderTargetHandle{}" };
     }
     const value = context.compileValue(expression);
-    if (nullable && value.kind === "json-null")
+    // An option written `undefined` is the option left out, as the pin
+    // reads it (`config.rst`).
+    if (
+        absenceOf(value) === "undefined" ||
+        (nullable && value.kind === "json-null")
+    )
         return { cpp: "bbl::RenderTargetHandle{}" };
     const inner =
         value.kind === "data" && value.dataType?.kind === "optional"

@@ -4142,7 +4142,8 @@ export class PropertyAccessLowerer {
         // collection concept resolves the owner itself.
         if (
             owner.kind === "asset" ||
-            owner.kind === "hierarchy-instance-pool"
+            owner.kind === "hierarchy-instance-pool" ||
+            owner.kind === "scene"
         ) {
             const collection =
                 this.context.handleCollections.resolveCollectionRead(

@@ -125,7 +125,7 @@ Rules:
 | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | Numbers         | Math, Number predicates/coercions, `**`, BigInt (incl. `asIntN`/`asUintN`)                                                                     | BigInt mixed with Number, BigInt JSON/clone/`toLocaleString`                                                       |
 | Arrays/tuples   | ES2023 methods incl. `toSorted`/`with`/`flat`/`flatMap`, typed `Array.from`                                                                    | Callback `thisArg`; callbacks removing unvisited elements (runtime)                                                |
-| Map/Set/WeakMap | Full API, live cursors; WeakMap with record, callback, mesh or DOM keys                                                                        | `Set<object>` of Promises; other WeakMap key kinds                                                                 |
+| Map/Set/WeakMap | Full API, live cursors, copies of `scene.meshes`; WeakMap with record, callback, mesh or DOM keys                                              | `Set<object>` of Promises; other WeakMap key kinds                                                                 |
 | Iterators       | Arrays, Map/Set cursors, class generator `[Symbol.iterator]`                                                                                   | Other `[Symbol.iterator]` implementations                                                                          |
 | Strings         | UTF-16 API, URI encode/decode, `btoa`/`atob`, tagged templates, `String.raw`                                                                   | Method tags                                                                                                        |
 | RegExp          | `g`/`i`/`u`, replacement callbacks, captured `split`; unmatched captures are `undefined`; literal non-`g` `test`/`exec` fold at generation     | `replaceAll` with string replacement; under `u`: lookbehind, named groups, `i` with backreferences/word boundaries |
@@ -483,7 +483,12 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
   `FrameGraph._tasks` list refuses (its native indices differ), except a `const` view whose `indexOf(task)` position
   is only tested `>= 0` and spliced out at once (`splice(i, 1)`), which removes that registration.
 - A render target's private `_width`/`_height`, read through a cast, is the swapchain target's canvas backing store as
-  it is when read; another target's refuses when read.
+  it is when read; another target's refuses when read. Its `_colorView`, read through a cast, is tested only for
+  presence: set for the swapchain, an eager target, and a target the frame graph's registration or
+  `buildFrameGraphTask` built (render, effect, copy, geometry and post-process task outputs), until it is disposed.
+- A render target's `samples` may be decided at run time (1 or 4). An option written `undefined` is that option unset.
+- A copy task's `ownsTargetTexture: true` takes a surface-sized target (rebuilt at each resize); a fixed one refuses
+  at run time.
 - Render and effect render task `dispose()` releases owned targets (not the swapchain's); executing a disposed task refuses.
   An effect task's `record`/`dispose` can be read, bound and replaced; the frame graph calls the replacements.
 - An effect render task's `scissor` takes a run-time `NormalizedViewport` or null; the native task copies its lanes. A

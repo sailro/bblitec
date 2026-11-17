@@ -56,6 +56,7 @@ export function lowerFrameGraphTaskBuild(
     renderTaskRecord: string,
     reached: Readonly<Partial<Record<RecordedTaskKind, boolean | undefined>>>,
     taskMethodSlots = false,
+    colorViewState = false,
 ): string {
     const kinds = (
         Object.keys(RECORDED_TASK_KINDS) as RecordedTaskKind[]
@@ -175,6 +176,9 @@ export function lowerFrameGraphTaskBuild(
                 return [
                     `${indent}task.record_state = FrameTaskRecordState::recorded;`,
                     `${indent}++engine.draw_list_epoch;`,
+                    ...(colorViewState
+                        ? [`${indent}record_task_color_views(engine, task);`]
+                        : []),
                 ];
             return undefined;
         },

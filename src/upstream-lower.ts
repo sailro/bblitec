@@ -1456,6 +1456,9 @@ ${lowerThinInstanceSync(context)}
                 ssaoTasks: features.includes("renderer:ssao"),
                 effectTasks: features.includes("effect:task"),
                 liveTaskAdd: features.includes("frame-graph:live-task-add"),
+                colorViewState: features.includes(
+                    "frame-graph:color-view-state",
+                ),
                 taskRemoval: features.includes("frame-graph:task-removal"),
                 taskDisposal: features.includes("frame-graph:task-disposal"),
                 taskMethodSlots: features.includes(
@@ -1486,6 +1489,7 @@ ${lowerThinInstanceSync(context)}
             new RenderTargetLowerer(context, {
                 surface: features.includes("frame-graph:surface-target"),
                 disposal: features.includes("frame-graph:target-disposal"),
+                colorView: features.includes("frame-graph:color-view-state"),
             }).lower(),
         );
         emitReached("upstream/src/frame_graph_context.cpp", () =>

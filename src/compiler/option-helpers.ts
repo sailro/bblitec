@@ -576,20 +576,31 @@ export function foldingNoRecordFields(
     };
 }
 
-export function compilePositiveInteger(
+/** `engine.msaaSamples`: the engine's own sample count; undefined for another expression. */
+export function engineSampleCount(
     context: StaticFoldContext,
     expression: ts.Expression,
-): string {
+): string | undefined {
     const unwrapped = context.resolveStaticExpression(expression);
     if (
         ts.isPropertyAccessExpression(unwrapped) &&
         ts.isIdentifier(unwrapped.expression) &&
         unwrapped.name.text === "msaaSamples" &&
         context.bindings.lookup(unwrapped.expression).kind === "engine"
-    ) {
-        const engine = context.bindings.lookup(unwrapped.expression);
-        return engineSampleCountCpp(engine);
-    }
+    )
+        return engineSampleCountCpp(
+            context.bindings.lookup(unwrapped.expression),
+        );
+    return undefined;
+}
+
+export function compilePositiveInteger(
+    context: StaticFoldContext,
+    expression: ts.Expression,
+): string {
+    const engineCount = engineSampleCount(context, expression);
+    if (engineCount) return engineCount;
+    const unwrapped = context.resolveStaticExpression(expression);
     const value = compileStaticNumber(context, unwrapped, "A count");
     if (!Number.isInteger(value) || value <= 0) {
         context.fail(unwrapped, "Expected a positive integer literal.");

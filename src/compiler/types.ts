@@ -3750,6 +3750,7 @@ export type Feature =
     | "frame-graph:resources"
     | "frame-graph:surface-target"
     | "frame-graph:target-disposal"
+    | "frame-graph:color-view-state"
     | "frame-graph:task-mesh-removal"
     | "frame-graph:task-mesh-refresh"
     | "frame-graph:render-task-transmission"

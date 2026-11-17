@@ -1665,6 +1665,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "(src/engine/render-target.ts disposeRenderTarget)",
         consumers: CMAKE,
     },
+    "frame-graph:color-view-state": {
+        provenance:
+            "src/engine/render-target.ts buildRenderTarget/disposeRenderTarget " +
+            "(RenderTarget._colorView, read through a cast)",
+        consumers: CMAKE,
+    },
     "frame-graph:task-mesh-removal": {
         provenance:
             "src/frame-graph/render-task.ts removeMeshFromTask " +

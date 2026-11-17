@@ -150,6 +150,8 @@ interface SceneCoreOptions {
     effectTasks?: boolean;
     /** A task may be added to a registered scene. */
     liveTaskAdd?: boolean;
+    /** A render target's `_colorView` presence is read. */
+    colorViewState?: boolean;
     /** A task may be removed from a graph (`removeTask`). */
     taskRemoval?: boolean;
     /** A render or effect task may be disposed. */
@@ -2932,6 +2934,7 @@ ${
     // resolvePendingTaskMeshes constructs the queued explicit task renderables there.
     for (const auto task_handle : scene.frame_passes()) {
         auto& task = ${recordAt("scene.engine->frame_tasks", "task_handle")};
+${options.colorViewState ? "        record_task_color_views(*scene.engine, task);\n" : ""}\
 ${
     options.taskMethodSlots
         ? `        // The build records every task: one scene code wrapped runs its record.
@@ -3078,7 +3081,7 @@ ${
 
 ${
     options.taskBuild
-        ? `${lowerFrameGraphTaskBuild(this.context, this.renderTaskRecordSource(options), { effect: options.effectTasks, ssao: options.ssaoTasks }, options.taskMethodSlots ?? false)}
+        ? `${lowerFrameGraphTaskBuild(this.context, this.renderTaskRecordSource(options), { effect: options.effectTasks, ssao: options.ssaoTasks }, options.taskMethodSlots ?? false, options.colorViewState ?? false)}
 `
         : ""
 }${options.liveTaskAdd ? this.liveTaskAddSource(options.taskRemoval === true) : ""}${options.taskRemoval ? lowerTaskRemoval(this.context) : ""}${

@@ -358,6 +358,7 @@ export const featureSources: Record<Feature, string[]> = {
     "frame-graph:resources": [],
     "frame-graph:surface-target": [],
     "frame-graph:target-disposal": [],
+    "frame-graph:color-view-state": [],
     "frame-graph:task-mesh-removal": [],
     "frame-graph:task-mesh-refresh": [],
     "frame-graph:render-task-transmission": [],

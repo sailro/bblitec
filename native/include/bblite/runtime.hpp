@@ -1950,6 +1950,11 @@ struct RenderTargetRecord {
      * default otherwise.
      */
     std::optional<TextureSamplerState> sampler{}, depth_sampler{};
+    /**
+     * The pin's `_colorView` is set: from creation for an eager target, and
+     * once a task's record built it otherwise (`record_task_color_views`).
+     */
+    bool color_view = false;
 };
 
 /** The pin's mixed cache tuple, named by its seven identity/value inputs. */
@@ -5857,6 +5862,49 @@ inline GpuSampler stored_texture_gpu_sampler(Engine& engine, const StoredTexture
     return {gpu_device_identity(engine), *reference->record_sampler,
             reference->record_sampler_object};
 }
+/**
+ * The colour attachments a task's record builds (`buildRenderTarget`): a
+ * render task its own target and, under MSAA, its resolve target unless the
+ * target is shared; an effect task its target; a copy task its target and
+ * resolve target; a geometry task its target; a post-process task its output.
+ */
+inline void record_task_color_views(Engine& engine, const FrameTaskRecord& task) {
+    const auto build = [&engine](RenderTargetHandle target) {
+        if (auto* record = handle_find(engine.render_targets, target))
+            record->color_view = record->has_color;
+    };
+    switch (task.kind) {
+    case FrameTaskKind::render:
+        if (task.render.shared_target)
+            return;
+        build(task.render.target);
+        if (const auto* target = handle_find(engine.render_targets, task.render.target);
+            target && target->samples > 1)
+            build(task.render.resolve_target);
+        return;
+    case FrameTaskKind::effect:
+        build(task.effect.target);
+        return;
+    case FrameTaskKind::copy:
+        build(task.copy.target);
+        build(task.copy.resolve_target);
+        return;
+    case FrameTaskKind::geometry:
+        build(task.geometry.target);
+        return;
+    case FrameTaskKind::post_process:
+        build(task.post_process.output_target);
+        return;
+    default:
+        return;
+    }
+}
+/** `rt._colorView`'s presence: the swapchain's always, another's once built, none once disposed. */
+[[nodiscard]] inline bool render_target_color_view_set(const Engine& engine,
+                                                       RenderTargetHandle target) {
+    const auto& record = handle_at(engine.render_targets, target);
+    return !record.retired && record.has_color && (record.swapchain || record.color_view);
+}
 /** `texture.sampler = sampler` on a render target's texture or depth facade. */
 inline void set_render_texture_sampler(Engine& engine, const RenderTextureRef& texture,
                                        const GpuSampler& sampler) {
@@ -8564,6 +8612,26 @@ RenderTargetHandle swapchain_render_target(Engine& engine);
 TaskHandle create_render_task(Engine& engine, Scene& scene, RenderTaskOptions options);
 TaskHandle create_geometry_renderer_task(Engine& engine, Scene& scene, GeometryTaskOptions options);
 TaskHandle create_copy_to_texture_task(Engine& engine, Scene& scene, CopyTaskOptions options);
+/** A render target's run-time `samples`: a render attachment's WebGPU sample counts, 1 or 4. */
+inline std::uint32_t render_target_sample_count(double samples) {
+    if (samples != 1.0 && samples != 4.0)
+        throw std::runtime_error("A render target's sample count is 1 or 4.");
+    return static_cast<std::uint32_t>(samples);
+}
+/**
+ * `ownsTargetTexture`: the pin's copy task rebuilds its target at every
+ * frame-graph build. A surface-sized target is reallocated at each resize,
+ * which is that rebuild; a fixed-size target's rebuild would clear it, which
+ * is not represented.
+ */
+inline CopyTaskOptions copy_task_owning_target(const Engine& engine, CopyTaskOptions options,
+                                               bool owns) {
+    if (owns && handle_at(engine.render_targets, options.target).width != 0)
+        throw std::runtime_error(
+            "A copy task owning a fixed-size target clears it at each frame-graph build; only "
+            "surface-sized owned targets are represented.");
+    return options;
+}
 TaskHandle create_post_process_task(Engine& engine, PostProcessTaskOptions options);
 void update_post_process_uniforms(Engine& engine, TaskHandle task);
 /**
