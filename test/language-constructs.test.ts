@@ -414,6 +414,30 @@ check(
 );
 
 check(
+    "nullish-coalesce-over-a-returned-callback",
+    `
+    interface Hooks { suspend?: () => () => void; }
+    const order: string[] = [];
+    function fallback(): (() => void) | null { order.push("fallback"); return null; }
+    function visit(hooks: Hooks): { show(): void; hide(): void } {
+        let resume: (() => void) | null = null;
+        return {
+            show(): void { resume = hooks.suspend?.() ?? fallback(); },
+            hide(): void { const run = resume; resume = null; run?.(); },
+        };
+    }
+    const suspended = visit({ suspend: () => { order.push("suspend"); return () => { order.push("resume"); }; } });
+    suspended.show();
+    suspended.hide();
+    suspended.hide();
+    const plain = visit({});
+    plain.show();
+    plain.hide();
+    if (order.join(",") !== "suspend,resume,fallback") throw new Error(order.join(","));
+`,
+);
+
+check(
     "destructured-parameter-readonly-and-writable-facts",
     `
     const entries = Object.entries({left: 1, right: "saved", callback: () => 3});

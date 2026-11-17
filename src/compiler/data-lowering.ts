@@ -5809,10 +5809,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ? { ...selected, freshData: true }
                 : selected;
         }
+        // A non-nullish left is the result, a function the generation holds
+        // (one an optional call of a present callback returned) included.
         if (
             left.kind === "number" ||
             left.kind === "boolean" ||
             left.kind === "string" ||
+            left.kind === "callback" ||
             left.dataType?.kind === "handle" ||
             (left.kind === "data" && left.dataType !== undefined)
         ) {
