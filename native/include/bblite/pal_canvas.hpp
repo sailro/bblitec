@@ -11,7 +11,6 @@
 #include <bblite/pal_host_services.hpp>
 
 #include <thread>
-#include <cmath>
 #include <optional>
 #include <string>
 #include <utility>
@@ -64,14 +63,12 @@ public:
         require_owner();
         return detached_;
     }
+    /** A width or height as WebIDL [EnforceRange] unsigned long long converts it. */
     static std::uint64_t dimension(double value) {
-        // WebIDL [EnforceRange] unsigned long long: truncate before checking
-        // the range, and check before any floating-to-integer conversion.
-        const double integer = std::trunc(value);
-        if (!std::isfinite(integer) || integer < 0 || integer >= 0x1p64) {
+        const auto integer = js::enforce_range<std::uint64_t>(value);
+        if (!integer)
             throw CanvasRangeError("Canvas dimension is outside the unsigned long long range.");
-        }
-        return static_cast<std::uint64_t>(integer);
+        return *integer;
     }
     void set_width(double value) {
         const auto width = dimension(value);
@@ -88,7 +85,7 @@ public:
 
     /** A dimension native rendering and encoding admit: [1, 16384]. */
     static std::uint32_t rendering_dimension(std::uint64_t value) {
-        if (value == 0 || value > 16384)
+        if (value == 0 || value > maximum_native_extent)
             throw InvalidCanvasState("Native rendering requires canvas dimensions in [1, 16384].");
         return static_cast<std::uint32_t>(value);
     }

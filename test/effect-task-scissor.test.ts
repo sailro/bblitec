@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { compileSource } from "../src/compiler.js";
@@ -19,6 +19,7 @@ import {
     runFixtureExecutable,
     runGeneratedProgram,
     runNativeFixtureCompiler,
+    writeFixtureHeaders,
 } from "./native-fixture.js";
 
 /**
@@ -365,15 +366,12 @@ function writeCases(
     scissors: readonly (Scissor | null)[],
     lifted?: string,
 ): string {
-    const directory = resolve("artifacts/test-effect-task-scissor", name);
-    mkdirSync(directory, { recursive: true });
-    writeFileSync(join(directory, "cases.hpp"), casesHeader(scissors));
-    if (lifted !== undefined)
-        writeFileSync(
-            join(directory, "lifted.hpp"),
-            `#pragma once\n${sharedDraw()}${lifted}`,
-        );
-    return directory;
+    return writeFixtureHeaders(`test-effect-task-scissor/${name}`, {
+        "cases.hpp": casesHeader(scissors),
+        ...(lifted === undefined
+            ? {}
+            : { "lifted.hpp": `#pragma once\n${sharedDraw()}${lifted}` }),
+    });
 }
 
 /** Each case's pixels, as the fixture prints them (`print_case`), from the pin's rectangles. */
@@ -406,16 +404,14 @@ function printedCases(output: string, backend: string): string[] {
     return lines.slice(0, -1);
 }
 
-/** A backend's own scissor setter and effect task pass, lifted from their files. */
+/** A backend's own functions, lifted from their files in order. */
 function liftedBackend(
-    setter: readonly [file: string, signature: string],
-    pass: readonly [file: string, signature: string],
+    ...functions: readonly (readonly [file: string, signature: string])[]
 ): string {
     const lift = ([file, signature]: readonly [string, string]): string =>
         cppFunction(readFileSync(file, "utf8"), signature);
     return `namespace bbl::pal {
-${lift(setter)}
-${lift(pass)}
+${functions.map(lift).join("\n")}
 } // namespace bbl::pal
 `;
 }
@@ -506,21 +502,17 @@ test("both backends rasterize only an effect task's scissor and keep its clear w
         const directory = writeCases(
             "dawn",
             GPU_CASES,
-            liftedBackend(
-                [
-                    "native/src/pal_dawn_resources.hpp",
-                    "inline void set_pass_scissor(WGPURenderPassEncoder pass,",
-                ],
-                [
-                    "native/src/pal_dawn_effect.hpp",
-                    "inline void record_dawn_effect_task_pass(",
-                ],
-            ),
+            // The harness's device includes the scissor setter's own header.
+            liftedBackend([
+                "native/src/pal_dawn_effect.hpp",
+                "inline void record_dawn_effect_task_pass(",
+            ]),
         );
         const executable = join(directory, "check.exe");
         runNativeFixtureCompiler(tools, [
             "/DBBLITE_EFFECT_TASK_SCISSOR=1",
             `/external:I${join(dawn, "include")}`,
+            `/I${resolve("native/src")}`,
             `/I${fixtures}`,
             `/I${directory}`,
             `/Fo:${directory}/`,

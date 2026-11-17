@@ -375,6 +375,17 @@ inline std::shared_ptr<const UiElementRecord::CanvasBitmap> canvas_bitmap(Decode
     return bitmap;
 }
 
+/**
+ * A rectangle's axis with a negative `extent` spanned the other way, as canvas
+ * and ImageBitmap rectangles normalize: it does not mirror.
+ */
+template <typename Number> void normalize_extent(Number& start, Number& extent) {
+    if (extent < 0) {
+        start += extent;
+        extent = -extent;
+    }
+}
+
 /** A drawImage source: a canvas, or an image's pixels captured now. */
 struct CanvasImageSource {
     UiElementHandle canvas{};
@@ -397,17 +408,11 @@ inline bool retain_canvas_image(UiElementRecord::CanvasState& canvas,
     if (sw == 0.0 || sh == 0.0 || dw == 0.0 || dh == 0.0 || image.width <= 0.0 ||
         image.height <= 0.0)
         return false;
-    // Both rectangles normalize, as in Chromium: a negative extent does not mirror.
-    const auto normalize = [](double& start, double& extent) {
-        if (extent < 0.0) {
-            start += extent;
-            extent = -extent;
-        }
-    };
-    normalize(sx, sw);
-    normalize(sy, sh);
-    normalize(dx, dw);
-    normalize(dy, dh);
+    // Both rectangles normalize, as in Chromium.
+    normalize_extent(sx, sw);
+    normalize_extent(sy, sh);
+    normalize_extent(dx, dw);
+    normalize_extent(dy, dh);
     // The source rectangle clips to the image, the destination in proportion.
     const double left = std::max(sx, 0.0);
     const double top = std::max(sy, 0.0);
@@ -438,6 +443,19 @@ inline bool retain_canvas_image(UiElementRecord::CanvasState& canvas,
     draw.nearest_sampling = !canvas.drawing.image_smoothing_enabled;
     canvas.draws.push_back(std::move(draw));
     return true;
+}
+
+/** `drawImage(image, dx, dy, dw, dh)`: the whole image into that rectangle. */
+inline bool retain_canvas_image(UiElementRecord::CanvasState& canvas,
+                                const CanvasImageSource& image, double dx, double dy, double dw,
+                                double dh) {
+    return retain_canvas_image(canvas, image, 0.0, 0.0, image.width, image.height, dx, dy, dw, dh);
+}
+
+/** `drawImage(image, dx, dy)`: the whole image at its size. */
+inline bool retain_canvas_image(UiElementRecord::CanvasState& canvas,
+                                const CanvasImageSource& image, double dx, double dy) {
+    return retain_canvas_image(canvas, image, dx, dy, image.width, image.height);
 }
 
 /** `getImageData`'s result: the rectangle's unpremultiplied RGBA rows. */
@@ -477,32 +495,31 @@ inline CanvasImageData compose_canvas_image_data(const UiElementRecord::CanvasSt
                                                  "'CanvasRenderingContext2D': The source ") +
                                          (width == 0 ? "width" : "height") + " is 0.",
                                      "IndexSizeError");
-    if (width < 0) {
-        x += width;
-        width = -width;
-    }
-    if (height < 0) {
-        y += height;
-        height = -height;
-    }
+    normalize_extent(x, width);
+    normalize_extent(y, height);
     const auto columns = static_cast<std::size_t>(width);
     const auto rows = static_cast<std::size_t>(height);
     const auto backing_width = static_cast<long long>(std::floor(canvas.width));
     const auto backing_height = static_cast<long long>(std::floor(canvas.height));
+    // Only the requested rectangle within the backing composes: [left, right) x [top, bottom).
+    const long long left = std::max(x, 0LL);
+    const long long top = std::max(y, 0LL);
+    const long long right = std::min(x + width, backing_width);
+    const long long bottom = std::min(y + height, backing_height);
+    // The pixels from `start` up to `end` along one axis, clamped to [low, high).
+    const auto axis_pixels = [](double start, double end, long long low, long long high) {
+        return std::pair{static_cast<long long>(std::max(start, static_cast<double>(low))),
+                         static_cast<long long>(std::min(end, static_cast<double>(high)))};
+    };
     // Premultiplied RGBA in [0, 1], stored as 8-bit after every draw as a canvas bitmap is.
     std::vector<float> pixels(columns * rows * 4, 0.0f);
     const auto at = [&](long long px, long long py) -> float* {
-        if (px < x || py < y || px >= x + width || py >= y + height || px < 0 || py < 0 ||
-            px >= backing_width || py >= backing_height)
-            return nullptr;
         return &pixels[(static_cast<std::size_t>(py - y) * columns +
                         static_cast<std::size_t>(px - x)) *
                        4];
     };
     const auto blend = [&](long long px, long long py, const std::array<float, 4>& source) {
         float* pixel = at(px, py);
-        if (!pixel)
-            return;
         const float keep = 1.0f - source[3];
         for (std::size_t channel = 0; channel < 4; ++channel)
             pixel[channel] =
@@ -511,8 +528,8 @@ inline CanvasImageData compose_canvas_image_data(const UiElementRecord::CanvasSt
                 255.0f;
     };
     if (!canvas.pixels.empty())
-        for (long long py = std::max(y, 0LL); py < std::min(y + height, backing_height); ++py)
-            for (long long px = std::max(x, 0LL); px < std::min(x + width, backing_width); ++px) {
+        for (long long py = top; py < bottom; ++py)
+            for (long long px = left; px < right; ++px) {
                 const std::size_t offset =
                     (static_cast<std::size_t>(py) * static_cast<std::size_t>(backing_width) +
                      static_cast<std::size_t>(px)) *
@@ -541,8 +558,12 @@ inline CanvasImageData compose_canvas_image_data(const UiElementRecord::CanvasSt
                     std::array<float, 4> source{};
                     for (std::size_t channel = 0; channel < 4; ++channel)
                         source[channel] = premultiplied[channel] * coverage;
-                    for (auto py = static_cast<long long>(band_y.start); py < band_y.end; ++py)
-                        for (auto px = static_cast<long long>(band_x.start); px < band_x.end; ++px)
+                    const auto [first_row, end_row] =
+                        axis_pixels(band_y.start, band_y.end, top, bottom);
+                    const auto [first_column, end_column] =
+                        axis_pixels(band_x.start, band_x.end, left, right);
+                    for (auto py = first_row; py < end_row; ++py)
+                        for (auto px = first_column; px < end_column; ++px)
                             blend(px, py, source);
                 }
             continue;
@@ -588,21 +609,14 @@ inline CanvasImageData compose_canvas_image_data(const UiElementRecord::CanvasSt
         const double determinant = ux * vy - uy * vx;
         if (std::abs(determinant) < 1e-12)
             continue;
-        double left = origin.x;
-        double top = origin.y;
-        double right = origin.x;
-        double bottom = origin.y;
-        for (const auto& point : draw.points) {
-            left = std::min(left, point.x);
-            top = std::min(top, point.y);
-            right = std::max(right, point.x);
-            bottom = std::max(bottom, point.y);
-        }
+        const auto bounds = canvas_draw_bounds(draw);
         // Pixels whose centres the quad covers, as the UI compositor rasterizes it.
-        for (auto py = static_cast<long long>(std::floor(top)); py < std::ceil(bottom); ++py)
-            for (auto px = static_cast<long long>(std::floor(left)); px < std::ceil(right); ++px) {
-                if (!at(px, py))
-                    continue;
+        const auto [first_row, end_row] =
+            axis_pixels(std::floor(bounds->top), std::ceil(bounds->bottom), top, bottom);
+        const auto [first_column, end_column] =
+            axis_pixels(std::floor(bounds->left), std::ceil(bounds->right), left, right);
+        for (auto py = first_row; py < end_row; ++py)
+            for (auto px = first_column; px < end_column; ++px) {
                 const double dx = px + 0.5 - origin.x;
                 const double dy = py + 0.5 - origin.y;
                 const double u = (dx * vy - dy * vx) / determinant;

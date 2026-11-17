@@ -16,6 +16,7 @@
 #include "pal_owned_gpu_record.hpp"
 #include "pal_device_options.hpp"
 #include "pal_gpu_common.hpp"
+#include "pal_gpu_images.hpp"
 #include "pal_gpu_shader_path.hpp"
 #include "pal_dawn_completion.hpp"
 #include "pal_dawn_formats.hpp"
@@ -1571,7 +1572,7 @@ inline DawnSurfaceCapture begin_dawn_surface_capture(WGPUDevice device, WGPUComm
                                                      WGPUTexture surface, std::uint32_t width,
                                                      std::uint32_t height) {
     return record_dawn_texture_copy(device, encoder, surface, width, height,
-                                    (width * 4 + 255) & ~255u);
+                                    readback_bytes_per_row(width * 4));
 }
 
 inline void save_capture_png(std::span<const std::uint8_t> pixels, std::uint32_t width,

@@ -1281,12 +1281,19 @@ inline SDL_GPUGraphicsPipeline* shader_task_pipeline(GpuState& state, std::uint3
         state.shader_pipelines.at(slot), state.shader_a2c_pipelines.at(slot));
 }
 
-#if BBLITE_RENDERER_TRANSMISSION || BBLITE_RENDER_TASK_TRANSMISSION
-/** A single-sample fullscreen triangle into one colour target: the pin's utility passes. */
+#if BBLITE_RENDERER_TRANSMISSION || BBLITE_RENDER_TASK_TRANSMISSION || BBLITE_DEPTH_RESOLVE_TASK
+/**
+ * A single-sample fullscreen triangle, the pin's utility passes: into one colour target of
+ * `format`, or with `depth` into a depth target of `format` alone, written under `always`.
+ */
 SDL_GPUGraphicsPipeline* create_fullscreen_pipeline(SDL_GPUDevice* device,
                                                     const PinnedStage& vertex,
                                                     const PinnedStage& fragment,
-                                                    SDL_GPUTextureFormat format, const char* label);
+                                                    SDL_GPUTextureFormat format, const char* label,
+                                                    bool depth = false);
+#endif
+
+#if BBLITE_RENDERER_TRANSMISSION || BBLITE_RENDER_TASK_TRANSMISSION
 /**
  * One grab pass (`blitToTransmission`, the depth grab's resolve): the
  * pipeline's triangle into the target's top level, reading a sampled source

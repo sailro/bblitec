@@ -1,7 +1,7 @@
 #pragma once
-// The texels of texture records: the pinned upload transforms, the decode a
-// `loadTexture2D` load runs, the hand-off that shares it with the first
-// readers, and its release. The codec itself is pal_image.hpp's.
+// The texels of texture records: the decode a `loadTexture2D` load runs, the
+// hand-off that shares it with the first readers, and its release. The codec
+// and the pinned upload transforms are pal_image.hpp's.
 
 #include <bblite/features/has_image_decoder.hpp>
 #include <bblite/pal.hpp>
@@ -20,23 +20,6 @@
 #include <vector>
 
 namespace bbl::pal {
-
-/**
- * The pin's upload transforms of decoded texels, the one owner of their
- * rule: `premultiplyAlpha` premultiplies (`createImageBitmap`), and
- * `invertY` flips the rows (`copyExternalImageToTexture`'s `flipY`).
- */
-inline void orient_image(DecodedImage& image, bool invert_y, bool premultiply_alpha) {
-    if (premultiply_alpha)
-        premultiply_image_alpha(image);
-    if (!invert_y)
-        return;
-    const auto row_bytes = static_cast<std::ptrdiff_t>(image.width) * 4;
-    for (int top = 0, bottom = image.height - 1; top < bottom; ++top, --bottom) {
-        const auto first = image.rgba.begin() + top * row_bytes;
-        std::swap_ranges(first, first + row_bytes, image.rgba.begin() + bottom * row_bytes);
-    }
-}
 
 /** A texture's encoded `bytes`, decoded with its upload transforms. */
 inline DecodedImage decode_texture_image(const TextureData& data) {

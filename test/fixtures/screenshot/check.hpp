@@ -4,21 +4,17 @@
 // generates (`cases.hpp`: `width`, `height` and `texels`, tightly packed in
 // memory order), and the line a format's readback prints.
 
+#include "../webgpu-subset/fixture-require.hpp"
+
 #include <bblite/pal_screenshot.hpp>
 
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <span>
-#include <stdexcept>
 #include <string>
 
 namespace screenshot_check {
-
-inline void require(bool condition, const std::string& message) {
-    if (!condition)
-        throw std::runtime_error("screenshot check: " + message);
-}
 
 /** Prints `<label> <hex>`: the unpacked image of a readback of `bytes_per_row`-byte rows. */
 inline void print_unpacked(const char* label, std::span<const std::uint8_t> rows,

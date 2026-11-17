@@ -27,6 +27,9 @@
 
 namespace bbl::pal {
 
+/** The largest side, in pixels, a native canvas or offscreen surface allocates. */
+inline constexpr std::uint32_t maximum_native_extent = 16384;
+
 class AnimationFrameSource;
 using ComputeCommand = std::variant<ComputeDispatch, ComputeMipmapDraw, GpuTimestampWrite>;
 
@@ -231,7 +234,7 @@ private:
     friend class OffscreenRun;
     static Extent checked_extent(std::uint32_t width, std::uint32_t height) {
         // Bound native GPU allocations; this is not a WebIDL conversion.
-        if (!width || !height || width > 16384 || height > 16384) {
+        if (!width || !height || width > maximum_native_extent || height > maximum_native_extent) {
             throw std::runtime_error("Offscreen extent must be in [1, 16384].");
         }
         return {width, height};

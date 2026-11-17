@@ -308,7 +308,7 @@ struct WindowServices final : CanvasProvider {
     }
     std::shared_ptr<CanvasEndpoint> create_endpoint(std::uint64_t width,
                                                     std::uint64_t height) override {
-        if (width > 16384 || height > 16384)
+        if (width > maximum_native_extent || height > maximum_native_extent)
             throw InvalidCanvasState("Native canvas allocation exceeds 16384 pixels.");
         auto endpoint = std::make_shared<CanvasEndpoint>(
             std::make_shared<OffscreenSurface>(
@@ -955,8 +955,8 @@ void dispatch_canvas_input(const WindowPointerEvent& packet) {
                                        .client_y = event.button.y};
         dispatch_platform_mouse_button(*engine, mouse, event.type == SDL_EVENT_MOUSE_BUTTON_DOWN);
     } else if (event.type == SDL_EVENT_MOUSE_WHEEL) {
-        dispatch_platform_wheel_event(*engine, dom_wheel_delta_y(event.wheel), event.wheel.mouse_x,
-                                      event.wheel.mouse_y);
+        dispatch_platform_wheel_event(*engine, dom_wheel_delta(event.wheel, DomWheelAxis::y),
+                                      event.wheel.mouse_x, event.wheel.mouse_y);
     }
 #if BBLITE_HAS_PBR_RENDERER
     dispatch_camera_input(*engine, event, target->second);

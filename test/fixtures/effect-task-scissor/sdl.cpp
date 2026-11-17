@@ -35,7 +35,7 @@ inline void record_effect_pass(SDL_GPUCommandBuffer*, SDL_GPURenderPass* render_
 #include "cases.hpp"
 
 namespace {
-using effect_task_scissor::require;
+using webgpu_fixture::require;
 
 // A readback row of 64 RGBA8 pixels is the 256 bytes Direct3D 12 aligns rows to.
 constexpr Uint32 row_pixels = 64;

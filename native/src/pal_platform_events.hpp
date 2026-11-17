@@ -1039,19 +1039,19 @@ inline void end_withheld_ui_press(Engine& engine, const SDL_Event& event) {
  */
 inline constexpr double browser_pixels_per_scroll_increment = 100.0;
 
-inline double dom_wheel_delta_y(const SDL_MouseWheelEvent& event) {
-    const double increment = event.direction == SDL_MOUSEWHEEL_FLIPPED
-                                 ? static_cast<double>(event.y)
-                                 : -static_cast<double>(event.y);
-    return increment * browser_pixels_per_scroll_increment;
-}
+/** The axis of a `WheelEvent` delta. */
+enum class DomWheelAxis { x, y };
 
-/** `WheelEvent.deltaX` in the same pixel mode: SDL's and the browser's horizontal axes both point right. */
-inline double dom_wheel_delta_x(const SDL_MouseWheelEvent& event) {
-    const double increment = event.direction == SDL_MOUSEWHEEL_FLIPPED
-                                 ? -static_cast<double>(event.x)
-                                 : static_cast<double>(event.x);
-    return increment * browser_pixels_per_scroll_increment;
+/**
+ * `WheelEvent.deltaX` or `deltaY` in that pixel mode: SDL's and the browser's horizontal axes
+ * both point right, while SDL's vertical increment is positive away from the user and the
+ * browser's delta positive toward the page's end.
+ */
+inline double dom_wheel_delta(const SDL_MouseWheelEvent& event, DomWheelAxis axis) {
+    const double increment =
+        axis == DomWheelAxis::x ? static_cast<double>(event.x) : -static_cast<double>(event.y);
+    return (event.direction == SDL_MOUSEWHEEL_FLIPPED ? -increment : increment) *
+           browser_pixels_per_scroll_increment;
 }
 
 inline void apply_pointer_lock_cursor(bool locked) {
@@ -1326,7 +1326,7 @@ inline void handle_platform_event(const SDL_Event& event, Engine& engine, bool i
     if (event.type == SDL_EVENT_MOUSE_WHEEL) {
         // DOM deltaY is positive when scrolling down. SDL's normalized Y is
         // positive away from the user; natural-scroll devices mark FLIPPED.
-        const double delta_y = dom_wheel_delta_y(event.wheel);
+        const double delta_y = dom_wheel_delta(event.wheel, DomWheelAxis::y);
         dispatch_platform_wheel_event(engine, delta_y,
                                       event.wheel.mouse_x * engine.canvas_window_to_client_scale,
                                       event.wheel.mouse_y * engine.canvas_window_to_client_scale,
@@ -1535,8 +1535,8 @@ inline std::shared_ptr<DomEventBatch> prepare_dom_platform_input(Engine& engine,
                         engine.canvas_window_to_client_scale,
             .movement_x = move ? static_cast<double>(event.motion.xrel) : 0,
             .movement_y = move ? static_cast<double>(event.motion.yrel) : 0,
-            .delta_x = wheel ? dom_wheel_delta_x(event.wheel) : 0,
-            .delta_y = wheel ? dom_wheel_delta_y(event.wheel) : 0,
+            .delta_x = wheel ? dom_wheel_delta(event.wheel, DomWheelAxis::x) : 0,
+            .delta_y = wheel ? dom_wheel_delta(event.wheel, DomWheelAxis::y) : 0,
             .detail = move || wheel ? 0.0 : static_cast<double>(event.button.clicks),
             .pressure = tracked_mouse_buttons() == 0 ? 0.0 : 0.5,
         };

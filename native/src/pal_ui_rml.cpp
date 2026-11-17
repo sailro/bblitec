@@ -1109,13 +1109,16 @@ std::string ui_computed_style(Engine& engine, UiElementHandle element, std::stri
         throw std::runtime_error("SVG shape computed styles require SVG DOM layout.");
     UiElementRecord& record = ui_element(engine, element);
     const bool custom = property.starts_with("--");
-    const bool named = !custom || std::find(record.computed_custom_properties.begin(),
-                                            record.computed_custom_properties.end(),
-                                            property) != record.computed_custom_properties.end();
+    const bool transform = property == "transform";
+    const bool named = custom ? std::find(record.computed_custom_properties.begin(),
+                                          record.computed_custom_properties.end(),
+                                          property) != record.computed_custom_properties.end()
+                              : !transform || record.computed_transform_requested;
     if (!record.computed_style_requested || !named) {
         record.computed_style_requested = true;
-        if (!named)
+        if (custom && !named)
             record.computed_custom_properties.emplace_back(property);
+        record.computed_transform_requested = record.computed_transform_requested || transform;
         // A Window display learns of the request through the next document snapshot.
         if (engine.ui_measure_element)
             ++engine.ui_revision;
@@ -1128,7 +1131,7 @@ std::string ui_computed_style(Engine& engine, UiElementHandle element, std::stri
         return style.display;
     if (property == "opacity")
         return style.opacity;
-    if (property == "transform")
+    if (transform)
         return style.transform;
     if (property == "visibility")
         return style.visibility;
@@ -2526,69 +2529,55 @@ UiElementHandle ui_sibling_parent(Engine& engine, UiElementHandle node) {
     return record.parent;
 }
 
+/** Which `ChildNode` insertion beside a node: `before()`, `after()` or `replaceWith()`. */
+enum class UiSiblingInsertion { before, after, replace };
+
+/**
+ * `before`, `after` and `replaceWith` over `node`'s parent: each of `nodes` must be insertable,
+ * and they go before the DOM's viable sibling, the first sibling none of them is that follows
+ * `node` (after, replaceWith) or that follows the last such sibling preceding it (before), the
+ * parent's first such child where none precedes. `replaceWith` removes `node` unless it is one
+ * of them.
+ */
+void ui_insert_beside(Engine& engine, UiElementHandle node,
+                      std::initializer_list<UiElementHandle> nodes, UiSiblingInsertion insertion) {
+    const auto parent = ui_sibling_parent(engine, node);
+    if (parent.value == invalid_handle)
+        return;
+    for (const auto inserted : nodes)
+        require_insertable(engine, parent, inserted);
+    const auto listed = [&](UiElementHandle candidate) {
+        return std::find(nodes.begin(), nodes.end(), candidate) != nodes.end();
+    };
+    const auto& siblings = ui_element(engine, parent).children;
+    const auto at = std::find(siblings.begin(), siblings.end(), node);
+    auto from = siblings.begin();
+    if (insertion != UiSiblingInsertion::before) {
+        from = std::next(at);
+    } else {
+        for (auto cursor = siblings.begin(); cursor != at; ++cursor)
+            if (!listed(*cursor))
+                from = std::next(cursor);
+    }
+    const auto viable = std::find_if_not(from, siblings.end(), listed);
+    const UiElementHandle reference = viable == siblings.end() ? UiElementHandle{} : *viable;
+    if (insertion == UiSiblingInsertion::replace && !listed(node))
+        ui_remove(engine, node);
+    for (const auto inserted : nodes)
+        static_cast<void>(ui_insert_child(engine, parent, inserted, reference));
+}
+
 } // namespace
 
 void ui_replace_with(Engine& engine, UiElementHandle node,
                      std::initializer_list<UiElementHandle> nodes) {
-    const auto parent = ui_sibling_parent(engine, node);
-    if (parent.value == invalid_handle)
-        return;
-    for (const auto inserted : nodes)
-        require_insertable(engine, parent, inserted);
-    const auto listed = [&](UiElementHandle candidate) {
-        return std::find(nodes.begin(), nodes.end(), candidate) != nodes.end();
-    };
-    // The viable next sibling: the first following sibling that is not itself inserted.
-    UiElementHandle next{};
-    const auto& siblings = ui_element(engine, parent).children;
-    for (auto cursor = std::next(std::find(siblings.begin(), siblings.end(), node));
-         cursor != siblings.end(); ++cursor)
-        if (!listed(*cursor)) {
-            next = *cursor;
-            break;
-        }
-    if (!listed(node))
-        ui_remove(engine, node);
-    for (const auto inserted : nodes)
-        static_cast<void>(ui_insert_child(engine, parent, inserted, next));
+    ui_insert_beside(engine, node, nodes, UiSiblingInsertion::replace);
 }
 
 void ui_insert_siblings(Engine& engine, UiElementHandle node,
                         std::initializer_list<UiElementHandle> nodes, bool after) {
-    const auto parent = ui_sibling_parent(engine, node);
-    if (parent.value == invalid_handle)
-        return;
-    for (const auto inserted : nodes)
-        require_insertable(engine, parent, inserted);
-    const auto listed = [&](UiElementHandle candidate) {
-        return std::find(nodes.begin(), nodes.end(), candidate) != nodes.end();
-    };
-    // The DOM's viable sibling: the nodes go before the first following sibling none
-    // of them is (after), or before the first such sibling after the last preceding
-    // one (before), the parent's first such child where none precedes.
-    const auto& siblings = ui_element(engine, parent).children;
-    const auto at = std::find(siblings.begin(), siblings.end(), node);
-    UiElementHandle reference{};
-    if (after) {
-        for (auto cursor = std::next(at); cursor != siblings.end(); ++cursor)
-            if (!listed(*cursor)) {
-                reference = *cursor;
-                break;
-            }
-    } else {
-        auto viable = siblings.end();
-        for (auto cursor = siblings.begin(); cursor != at; ++cursor)
-            if (!listed(*cursor))
-                viable = cursor;
-        for (auto cursor = viable == siblings.end() ? siblings.begin() : std::next(viable);
-             cursor != siblings.end(); ++cursor)
-            if (!listed(*cursor)) {
-                reference = *cursor;
-                break;
-            }
-    }
-    for (const auto inserted : nodes)
-        static_cast<void>(ui_insert_child(engine, parent, inserted, reference));
+    ui_insert_beside(engine, node, nodes,
+                     after ? UiSiblingInsertion::after : UiSiblingInsertion::before);
 }
 
 js::Nullable<UiElementHandle> ui_insert_adjacent_element(Engine& engine, UiElementHandle target,
@@ -3442,11 +3431,15 @@ std::optional<pal::CanvasImageSource> canvas_image_source(Engine& engine, UiElem
 #endif
 }
 
-void retain_canvas_image(Engine& engine, UiElementHandle destination,
-                         const pal::CanvasImageSource& image, double sx, double sy, double sw,
-                         double sh, double dx, double dy, double dw, double dh) {
+/** `drawImage(source, ...)` with 2, 4 or 8 numbers, as `pal::retain_canvas_image` takes them. */
+template <typename... Numbers>
+void retain_canvas_image(Engine& engine, UiElementHandle destination, UiElementHandle source,
+                         Numbers... numbers) {
+    const auto image = canvas_image_source(engine, source);
+    if (!image)
+        return;
     auto& canvas = ui_canvas(engine, destination);
-    if (pal::retain_canvas_image(canvas, image, sx, sy, sw, sh, dx, dy, dw, dh))
+    if (pal::retain_canvas_image(canvas, *image, numbers...))
         mark_canvas_changed(engine, canvas);
 }
 
@@ -3454,23 +3447,18 @@ void retain_canvas_image(Engine& engine, UiElementHandle destination,
 
 void ui_canvas_draw_image(Engine& engine, UiElementHandle destination, UiElementHandle source,
                           double x, double y) {
-    if (const auto image = canvas_image_source(engine, source))
-        retain_canvas_image(engine, destination, *image, 0.0, 0.0, image->width, image->height, x,
-                            y, image->width, image->height);
+    retain_canvas_image(engine, destination, source, x, y);
 }
 
 void ui_canvas_draw_image(Engine& engine, UiElementHandle destination, UiElementHandle source,
                           double x, double y, double width, double height) {
-    if (const auto image = canvas_image_source(engine, source))
-        retain_canvas_image(engine, destination, *image, 0.0, 0.0, image->width, image->height, x,
-                            y, width, height);
+    retain_canvas_image(engine, destination, source, x, y, width, height);
 }
 
 void ui_canvas_draw_image(Engine& engine, UiElementHandle destination, UiElementHandle source,
                           double sx, double sy, double sw, double sh, double dx, double dy,
                           double dw, double dh) {
-    if (const auto image = canvas_image_source(engine, source))
-        retain_canvas_image(engine, destination, *image, sx, sy, sw, sh, dx, dy, dw, dh);
+    retain_canvas_image(engine, destination, source, sx, sy, sw, sh, dx, dy, dw, dh);
 }
 
 UiCanvasImageData ui_canvas_get_image_data(Engine& engine, UiElementHandle element, double sx,
@@ -3657,12 +3645,13 @@ private:
 };
 
 /**
- * CSS serializations of the computed values getComputedStyle reads; an
- * element an open select's top layer raised reads its authored z-index.
+ * CSS serializations of the computed values getComputedStyle reads, `transform` only once
+ * read; an element an open select's top layer raised reads its authored z-index.
  */
 UiComputedStyle ui_serialized_computed_style(Rml::Element& element,
                                              const UiSelectTopLayer& top_layer,
-                                             const std::vector<std::string>& custom_properties) {
+                                             const std::vector<std::string>& custom_properties,
+                                             bool transform) {
     static constexpr std::array<std::string_view, 16> displays{"none",
                                                                "block",
                                                                "inline",
@@ -3683,7 +3672,8 @@ UiComputedStyle ui_serialized_computed_style(Rml::Element& element,
     UiComputedStyle style;
     style.display = displays.at(static_cast<std::size_t>(computed.display()));
     style.opacity = pal::detail::css_serialized_number(computed.group_opacity());
-    style.transform = pal::ui_serialized_transform(element);
+    if (transform)
+        style.transform = pal::ui_serialized_transform(element);
     style.visibility =
         computed.visibility() == Rml::Style::Visibility::Hidden ? "hidden" : "visible";
     const auto z_index = top_layer.authored_z_index(element).value_or(computed.z_index());
@@ -8757,7 +8747,8 @@ struct UiRmlRuntime {
             if (record.computed_style_requested)
                 record.computed_style =
                     element ? ui_serialized_computed_style(*element, select_top_layer,
-                                                           record.computed_custom_properties)
+                                                           record.computed_custom_properties,
+                                                           record.computed_transform_requested)
                             : UiComputedStyle{};
             if (!all_elements && !record.client_rect_requested)
                 continue;

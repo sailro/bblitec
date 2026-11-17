@@ -657,6 +657,21 @@ export function runGeneratedProgram(
     return output;
 }
 
+/**
+ * Writes the headers a fixture includes from its generated folder,
+ * `artifacts/<name>`, each by file name; returns that folder.
+ */
+export function writeFixtureHeaders(
+    name: string,
+    headers: Readonly<Record<string, string>>,
+): string {
+    const directory = resolve("artifacts", name);
+    mkdirSync(directory, { recursive: true });
+    for (const [file, text] of Object.entries(headers))
+        writeFileSync(join(directory, file), text);
+    return directory;
+}
+
 /** An application realm on the native event loop, without a display. */
 export function headlessRealmHost(): string {
     return `

@@ -85,6 +85,32 @@ record_sdl_texture_download(SDL_GPUDevice* device, SDL_GPUCommandBuffer* command
     return download;
 }
 
+/** A download's mapping once its copy has completed; every exit unmaps it. */
+class SdlReadbackMap {
+public:
+    /** Waits on `completion`, a fence past the copy into `transfer`, then maps `size` bytes. */
+    SdlReadbackMap(SDL_GPUDevice* device, SDL_GPUFence* completion, SDL_GPUTransferBuffer* transfer,
+                   std::size_t size)
+        : device_(device), transfer_(transfer) {
+        if (!wait_sdl_gpu_fence(device, completion))
+            gpu_error("SDL_WaitForGPUFences readback");
+        const auto* bytes =
+            static_cast<const std::uint8_t*>(SDL_MapGPUTransferBuffer(device, transfer, false));
+        if (!bytes)
+            gpu_error("SDL_MapGPUTransferBuffer readback");
+        bytes_ = {bytes, size};
+    }
+    SdlReadbackMap(const SdlReadbackMap&) = delete;
+    SdlReadbackMap& operator=(const SdlReadbackMap&) = delete;
+    ~SdlReadbackMap() { SDL_UnmapGPUTransferBuffer(device_, transfer_); }
+    [[nodiscard]] std::span<const std::uint8_t> bytes() const { return bytes_; }
+
+private:
+    SDL_GPUDevice* device_;
+    SDL_GPUTransferBuffer* transfer_;
+    std::span<const std::uint8_t> bytes_;
+};
+
 #if BBLITE_VISUAL_CAPTURE
 inline void save_texture_png(SDL_GPUDevice* device, SdlGpuCommand& command,
                              SDL_GPUTexture* swapchain, SDL_GPUTextureFormat format,
@@ -93,35 +119,13 @@ inline void save_texture_png(SDL_GPUDevice* device, SdlGpuCommand& command,
     const auto bytes_per_pixel =
         static_cast<std::uint32_t>(webgpu_texel_layout(sdl_webgpu_format_name(format)).bytes);
     const std::uint32_t source_row_bytes = width * bytes_per_pixel;
-    const std::uint32_t aligned_row_bytes = (source_row_bytes + 255u) & ~255u;
+    const std::uint32_t aligned_row_bytes = readback_bytes_per_row(source_row_bytes);
     const SdlTextureDownload download = record_sdl_texture_download(
         device, command, swapchain, width, height, bytes_per_pixel, aligned_row_bytes);
-    const OwnedSdlTransfer& transfer = download.transfer;
     OwnedSdlFence fence{command.submit_with_fence(), {device}};
     if (!fence) {
         gpu_error("SDL_SubmitGPUCommandBufferAndAcquireFence");
     }
-    if (!wait_sdl_gpu_fence(device, fence.get())) {
-        gpu_error("SDL_WaitForGPUFences");
-    }
-
-    const auto* mapped =
-        static_cast<const std::uint8_t*>(SDL_MapGPUTransferBuffer(device, transfer.get(), false));
-    if (!mapped) {
-        gpu_error("SDL_MapGPUTransferBuffer screenshot");
-    }
-    const auto unmap = js::finally([&] {
-        if (mapped)
-            SDL_UnmapGPUTransferBuffer(device, transfer.get());
-    });
-    if (!raw_path.empty() && format == SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT) {
-        std::ofstream raw(raw_path, std::ios::binary);
-        if (!raw) {
-            throw std::runtime_error("Unable to open HDR diagnostic output '" + raw_path + "'.");
-        }
-        write_readback_raw_rows(raw, mapped, height, aligned_row_bytes, source_row_bytes);
-    }
-    const std::uint32_t output_row_bytes = width * 4;
     // The shared row conversion (shared GPU helpers); only the SDL_GPU
     // format enum is translated here.
     const ReadbackFormatClass format_class =
@@ -131,10 +135,22 @@ inline void save_texture_png(SDL_GPUDevice* device, SdlGpuCommand& command,
                 format == SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB
             ? ReadbackFormatClass::bgra8
             : ReadbackFormatClass::rgba8;
-    std::vector<std::uint8_t> rgba =
-        convert_readback_rows(mapped, width, height, aligned_row_bytes, format_class);
-    SDL_UnmapGPUTransferBuffer(device, transfer.get());
-    mapped = nullptr;
+    std::vector<std::uint8_t> rgba;
+    {
+        const SdlReadbackMap mapping(device, fence.get(), download.transfer.get(),
+                                     static_cast<std::size_t>(aligned_row_bytes) * height);
+        const auto* mapped = mapping.bytes().data();
+        if (!raw_path.empty() && format == SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT) {
+            std::ofstream raw(raw_path, std::ios::binary);
+            if (!raw) {
+                throw std::runtime_error("Unable to open HDR diagnostic output '" + raw_path +
+                                         "'.");
+            }
+            write_readback_raw_rows(raw, mapped, height, aligned_row_bytes, source_row_bytes);
+        }
+        rgba = convert_readback_rows(mapped, width, height, aligned_row_bytes, format_class);
+    }
+    const std::uint32_t output_row_bytes = width * 4;
     SDL_Surface* surface = SDL_CreateSurfaceFrom(static_cast<int>(width), static_cast<int>(height),
                                                  SDL_PIXELFORMAT_RGBA32, rgba.data(),
                                                  static_cast<int>(output_row_bytes));

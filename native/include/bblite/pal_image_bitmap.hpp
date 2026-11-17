@@ -44,28 +44,82 @@ struct ImageBitmapOptionsInit {
     js::Nullable<std::string> image_orientation;
 };
 
+namespace image_bitmap_detail {
+
+/** An ImageBitmapOptions enum member: its value, `fallback` when absent; another throws TypeError. */
+inline std::string enum_member(const js::Nullable<std::string>& value, const char* member,
+                               std::initializer_list<const char*> values, const char* fallback) {
+    if (!value)
+        return fallback;
+    for (const char* admitted : values)
+        if (*value == admitted)
+            return *value;
+    throw js::NamedError("TypeError", std::string("Failed to execute 'createImageBitmap': The ") +
+                                          member + " value '" + *value + "' is not valid.");
+}
+
+/** An [EnforceRange] unsigned long member: a non-finite or out-of-range value throws TypeError. */
+inline std::uint32_t enforced_unsigned_long(double value, const char* member) {
+    const auto integer = js::enforce_range<std::uint32_t>(value);
+    if (!integer)
+        throw js::NamedError("TypeError", std::string("Failed to execute 'createImageBitmap': ") +
+                                              member + " is outside the unsigned long range.");
+    return *integer;
+}
+
+/** Pixels beyond which a native ImageBitmap is not allocated: a largest native canvas's. */
+inline constexpr std::uint64_t maximum_pixels =
+    std::uint64_t{maximum_native_extent} * maximum_native_extent;
+
+} // namespace image_bitmap_detail
+
+/** What the `ImageBitmapOptions` enum members ask of a bitmap's pixels. */
+struct ImageBitmapTransforms {
+    /** `imageOrientation: "flipY"`. */
+    bool flip = false;
+    /** `premultiplyAlpha: "premultiply"`. */
+    bool premultiply = false;
+};
+
 /**
- * The decode policy: `premultiplyAlpha` `"none"` or `"premultiply"` and `colorSpaceConversion`
- * `"none"`, each explicit (the native decode applies no defaults), and `imageOrientation`
- * absent, `"none"` or `"from-image"` (orientation metadata is not applied). Anything else
- * throws a NotSupportedError DOMException.
+ * The dictionary's enum members as WebIDL converts them, in name order: an absent member takes
+ * its default, an unknown value throws TypeError.
+ */
+[[nodiscard]] inline ImageBitmapTransforms
+image_bitmap_transforms(const ImageBitmapOptionsInit& init) {
+    using image_bitmap_detail::enum_member;
+    enum_member(init.color_space_conversion, "colorSpaceConversion", {"none", "default"},
+                "default");
+    const bool flip = enum_member(init.image_orientation, "imageOrientation",
+                                  {"from-image", "flipY", "none"}, "from-image") == "flipY";
+    const bool premultiply =
+        enum_member(init.premultiply_alpha, "premultiplyAlpha", {"none", "premultiply", "default"},
+                    "default") == "premultiply";
+    return {flip, premultiply};
+}
+
+/**
+ * The decode policy over the converted dictionary (`image_bitmap_transforms`):
+ * `premultiplyAlpha` `"none"` or `"premultiply"` and `colorSpaceConversion` `"none"`, each
+ * explicit (the native decode applies no defaults), and `imageOrientation` other than
+ * `"flipY"` (orientation metadata is not applied). Another value throws a NotSupportedError
+ * DOMException.
  */
 [[nodiscard]] inline ImageBitmapOptions image_bitmap_options(const ImageBitmapOptionsInit& init) {
+    const ImageBitmapTransforms converted = image_bitmap_transforms(init);
     const auto unsupported = [](const char* member, const js::Nullable<std::string>& value) {
         return js::make_dom_exception(std::string("createImageBitmap ") + member + " " +
                                           (value ? "\"" + *value + "\"" : "undefined") +
                                           " is not supported natively.",
                                       "NotSupportedError");
     };
-    if (!init.premultiply_alpha ||
-        (*init.premultiply_alpha != "none" && *init.premultiply_alpha != "premultiply"))
+    if (!init.premultiply_alpha || *init.premultiply_alpha == "default")
         throw unsupported("premultiplyAlpha", init.premultiply_alpha);
     if (!init.color_space_conversion || *init.color_space_conversion != "none")
         throw unsupported("colorSpaceConversion", init.color_space_conversion);
-    if (init.image_orientation && *init.image_orientation != "none" &&
-        *init.image_orientation != "from-image")
+    if (converted.flip)
         throw unsupported("imageOrientation", init.image_orientation);
-    return {*init.premultiply_alpha == "premultiply"};
+    return {converted.premultiply};
 }
 
 /** Whether `bytes` start with the RIFF/WEBP container signature. */
@@ -110,19 +164,29 @@ struct ImageBitmapOptionsInit {
  */
 class ImageBitmap {
 public:
+    using Bitmap = std::shared_ptr<const UiElementRecord::CanvasBitmap>;
+
     ImageBitmap() = default;
     ImageBitmap(DecodedImage image, bool premultiplied)
-        : state_(std::make_shared<State>(
-              State{image.width, image.height,
-                    std::make_shared<const std::vector<std::uint8_t>>(std::move(image.rgba)),
-                    premultiplied})) {}
+        : state_(std::make_shared<State>(State{
+              std::make_shared<const UiElementRecord::CanvasBitmap>(
+                  UiElementRecord::CanvasBitmap{image.width, image.height, std::move(image.rgba)}),
+              {},
+              premultiplied})) {}
 
     /** `bitmap.width` (0 once closed). */
-    [[nodiscard]] double width() const { return state().pixels ? state().width : 0.0; }
+    [[nodiscard]] double width() const {
+        return state().pixels ? static_cast<double>(state().pixels->width) : 0.0;
+    }
     /** `bitmap.height` (0 once closed). */
-    [[nodiscard]] double height() const { return state().pixels ? state().height : 0.0; }
+    [[nodiscard]] double height() const {
+        return state().pixels ? static_cast<double>(state().pixels->height) : 0.0;
+    }
     /** `bitmap.close()`. */
-    void close() const { state().pixels.reset(); }
+    void close() const {
+        state().pixels.reset();
+        state().drawn.reset();
+    }
     [[nodiscard]] bool closed() const { return !state().pixels; }
     /** Whether the pixels are premultiplied (`premultiplyAlpha: "premultiply"`). */
     [[nodiscard]] bool premultiplied() const { return state().premultiplied; }
@@ -130,10 +194,23 @@ public:
      * The decoded pixels: width * height RGBA8 texels, rows top to bottom, straight alpha unless
      * `premultiplied()`. A closed bitmap throws an InvalidStateError DOMException.
      */
-    [[nodiscard]] const std::shared_ptr<const std::vector<std::uint8_t>>& pixels() const {
-        if (!state().pixels)
-            throw js::make_dom_exception("The ImageBitmap is closed.", "InvalidStateError");
-        return state().pixels;
+    [[nodiscard]] std::shared_ptr<const std::vector<std::uint8_t>> pixels() const {
+        const Bitmap& held = open_pixels();
+        return {held, &held->pixels};
+    }
+    /**
+     * A canvas draw's source over the premultiplied pixels, which the first draw of straight
+     * ones makes and later draws share. A closed bitmap throws an InvalidStateError DOMException.
+     */
+    [[nodiscard]] CanvasImageSource canvas_source() const {
+        const Bitmap& held = open_pixels();
+        State& current = state();
+        if (!current.drawn)
+            current.drawn =
+                current.premultiplied
+                    ? held
+                    : canvas_bitmap(DecodedImage{held->width, held->height, held->pixels});
+        return {{}, current.drawn, width(), height()};
     }
 
     [[nodiscard]] const void* get() const noexcept { return state_.get(); }
@@ -145,15 +222,20 @@ public:
 
 private:
     struct State {
-        int width = 0;
-        int height = 0;
-        std::shared_ptr<const std::vector<std::uint8_t>> pixels;
+        Bitmap pixels;
+        /** The premultiplied pixels canvas draws blit, once one has. */
+        Bitmap drawn;
         bool premultiplied = false;
     };
     State& state() const {
         if (!state_)
             throw std::runtime_error("ImageBitmap receiver is absent.");
         return *state_;
+    }
+    const Bitmap& open_pixels() const {
+        if (!state().pixels)
+            throw js::make_dom_exception("The ImageBitmap is closed.", "InvalidStateError");
+        return state().pixels;
     }
     std::shared_ptr<State> state_;
 };
@@ -211,34 +293,6 @@ struct ImageBitmapSourceRect {
     double height = 0.0;
 };
 
-namespace image_bitmap_detail {
-
-/** An ImageBitmapOptions enum member: its value, `fallback` when absent; another throws TypeError. */
-inline std::string enum_member(const js::Nullable<std::string>& value, const char* member,
-                               std::initializer_list<const char*> values, const char* fallback) {
-    if (!value)
-        return fallback;
-    for (const char* admitted : values)
-        if (*value == admitted)
-            return *value;
-    throw js::NamedError("TypeError", std::string("Failed to execute 'createImageBitmap': The ") +
-                                          member + " value '" + *value + "' is not valid.");
-}
-
-/** An [EnforceRange] unsigned long member: a non-finite or out-of-range value throws TypeError. */
-inline std::uint32_t enforced_unsigned_long(double value, const char* member) {
-    const double integer = std::trunc(value);
-    if (!std::isfinite(integer) || integer < 0.0 || integer > 4294967295.0)
-        throw js::NamedError("TypeError", std::string("Failed to execute 'createImageBitmap': ") +
-                                              member + " is outside the unsigned long range.");
-    return static_cast<std::uint32_t>(integer);
-}
-
-/** Pixels beyond which a native ImageBitmap is not allocated: a 16384 x 16384 canvas's. */
-inline constexpr std::uint64_t maximum_pixels = std::uint64_t{16384} * 16384;
-
-} // namespace image_bitmap_detail
-
 /**
  * `createImageBitmap(new ImageData(rgba, width, height)[, sx, sy, sw, sh][, options])`. The
  * ImageData constructor's checks throw first. The bitmap is the source rectangle of the image
@@ -274,13 +328,7 @@ inline js::Promise<ImageBitmap> create_image_bitmap(std::span<const std::uint8_t
     try {
         using image_bitmap_detail::enum_member;
         // The dictionary converts its members in name order.
-        enum_member(options.color_space_conversion, "colorSpaceConversion", {"none", "default"},
-                    "default");
-        const bool flip = enum_member(options.image_orientation, "imageOrientation",
-                                      {"from-image", "flipY", "none"}, "from-image") == "flipY";
-        const bool premultiply =
-            enum_member(options.premultiply_alpha, "premultiplyAlpha",
-                        {"none", "premultiply", "default"}, "default") == "premultiply";
+        const ImageBitmapTransforms transforms = image_bitmap_transforms(options);
         const auto output_height = resize.height
                                        ? std::optional(image_bitmap_detail::enforced_unsigned_long(
                                              *resize.height, "resizeHeight"))
@@ -307,14 +355,8 @@ inline js::Promise<ImageBitmap> create_image_bitmap(std::span<const std::uint8_t
                                      std::string("Failed to execute 'createImageBitmap': The crop "
                                                  "rect ") +
                                          (columns == 0 ? "width" : "height") + " is 0.");
-            if (columns < 0) {
-                left += columns;
-                columns = -columns;
-            }
-            if (rows < 0) {
-                top += rows;
-                rows = -rows;
-            }
+            normalize_extent(left, columns);
+            normalize_extent(top, rows);
         }
         if (output_width == 0u || output_height == 0u)
             throw js::make_dom_exception(
@@ -365,8 +407,7 @@ inline js::Promise<ImageBitmap> create_image_bitmap(std::span<const std::uint8_t
             const auto extent_x = static_cast<double>(columns);
             const auto extent_y = static_cast<double>(rows);
             retain_canvas_image(canvas, {{}, canvas_bitmap(std::move(image)), extent_x, extent_y},
-                                0.0, 0.0, extent_x, extent_y, 0.0, 0.0, canvas.width,
-                                canvas.height);
+                                0.0, 0.0, canvas.width, canvas.height);
             const auto composed = compose_canvas_image_data(canvas, no_canvas_source, 0.0, 0.0,
                                                             canvas.width, canvas.height);
             image = DecodedImage{
@@ -374,16 +415,8 @@ inline js::Promise<ImageBitmap> create_image_bitmap(std::span<const std::uint8_t
                 std::vector<std::uint8_t>(composed.data.data(),
                                           composed.data.data() + composed.data.size())};
         }
-        if (flip) {
-            const auto stride = static_cast<std::ptrdiff_t>(image.width) * 4;
-            for (int upper = 0, lower = image.height - 1; upper < lower; ++upper, --lower)
-                std::swap_ranges(image.rgba.begin() + upper * stride,
-                                 image.rgba.begin() + (upper + 1) * stride,
-                                 image.rgba.begin() + lower * stride);
-        }
-        if (premultiply)
-            premultiply_image_alpha(image);
-        const ImageBitmap bitmap(std::move(image), premultiply);
+        orient_image(image, transforms.flip, transforms.premultiply);
+        const ImageBitmap bitmap(std::move(image), transforms.premultiply);
         EventLoop::current().post([result, bitmap] { result.resolve(bitmap); });
     } catch (const WorkerTerminated&) {
         throw;
@@ -422,31 +455,22 @@ inline void offscreen_canvas_draw_image(const std::shared_ptr<OffscreenCanvas>& 
                                         const ImageBitmap& image, double sx, double sy, double sw,
                                         double sh, double dx, double dy, double dw, double dh) {
     auto& canvas = *context->context_2d();
-    const auto& pixels = image.pixels();
-    const int width = static_cast<int>(image.width());
-    const int height = static_cast<int>(image.height());
-    std::shared_ptr<const UiElementRecord::CanvasBitmap> bitmap;
-    if (image.premultiplied())
-        bitmap = std::make_shared<const UiElementRecord::CanvasBitmap>(
-            UiElementRecord::CanvasBitmap{width, height, *pixels});
-    else
-        bitmap = canvas_bitmap(DecodedImage{width, height, *pixels});
-    retain_canvas_image(canvas, {{}, std::move(bitmap), image.width(), image.height()}, sx, sy, sw,
-                        sh, dx, dy, dw, dh);
+    retain_canvas_image(canvas, image.canvas_source(), sx, sy, sw, sh, dx, dy, dw, dh);
 }
 
-/** `drawImage(bitmap, dx, dy, dw, dh)`: the whole bitmap into that rectangle. */
+/** `drawImage(bitmap, dx, dy, dw, dh)`. */
 inline void offscreen_canvas_draw_image(const std::shared_ptr<OffscreenCanvas>& context,
                                         const ImageBitmap& image, double dx, double dy, double dw,
                                         double dh) {
-    offscreen_canvas_draw_image(context, image, 0.0, 0.0, image.width(), image.height(), dx, dy, dw,
-                                dh);
+    auto& canvas = *context->context_2d();
+    retain_canvas_image(canvas, image.canvas_source(), dx, dy, dw, dh);
 }
 
-/** `drawImage(bitmap, dx, dy)`: the whole bitmap at its size. */
+/** `drawImage(bitmap, dx, dy)`. */
 inline void offscreen_canvas_draw_image(const std::shared_ptr<OffscreenCanvas>& context,
                                         const ImageBitmap& image, double dx, double dy) {
-    offscreen_canvas_draw_image(context, image, dx, dy, image.width(), image.height());
+    auto& canvas = *context->context_2d();
+    retain_canvas_image(canvas, image.canvas_source(), dx, dy);
 }
 
 } // namespace bbl::pal

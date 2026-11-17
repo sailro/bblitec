@@ -4701,6 +4701,8 @@ struct UiElementRecord {
     /** Read by getComputedStyle; the layout serializes it once requested. */
     UiComputedStyle computed_style{};
     bool computed_style_requested = false;
+    /** Whether a computed read named `transform`; the layout serializes it only then. */
+    bool computed_transform_requested = false;
     /** The custom properties a computed read names; the layout serializes their values. */
     std::vector<std::string> computed_custom_properties;
     std::optional<CanvasState> canvas;
@@ -8367,8 +8369,8 @@ void set_shader_storage_buffer_by_name(Engine& engine, MaterialHandle material,
 /** A ShaderMaterial list: `uniformDecls`, `samplerDecls`, `storageBufferDecls` or `attributes`. */
 enum class ShaderDeclarationList : std::uint8_t { uniforms, samplers, storage_buffers, attributes };
 /** The names a shader material's declaration list holds, in declaration order. */
-std::vector<std::string> shader_declaration_names(Engine& engine, MaterialHandle material,
-                                                  ShaderDeclarationList list);
+const std::vector<std::string>& shader_declaration_names(Engine& engine, MaterialHandle material,
+                                                         ShaderDeclarationList list);
 void set_shader_render_texture(Engine& engine, MaterialHandle material, std::uint32_t slot,
                                RenderTextureRef texture);
 void set_shader_csm_texture(Engine& engine, MaterialHandle material, std::uint32_t slot,

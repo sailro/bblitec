@@ -2,6 +2,8 @@
 
 #include <bblite/js_data.hpp>
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <mutex>
 #include <optional>
@@ -61,6 +63,23 @@ inline void premultiply_image_alpha(DecodedImage& image) {
             image.rgba[index + channel] = static_cast<std::uint8_t>(
                 (static_cast<std::uint32_t>(image.rgba[index + channel]) * alpha + 127u) / 255u);
         }
+    }
+}
+
+/**
+ * The pin's upload transforms of decoded texels, the one owner of their
+ * rule: `premultiplyAlpha` premultiplies (`createImageBitmap`), and
+ * `invertY` flips the rows (`copyExternalImageToTexture`'s `flipY`).
+ */
+inline void orient_image(DecodedImage& image, bool invert_y, bool premultiply_alpha) {
+    if (premultiply_alpha)
+        premultiply_image_alpha(image);
+    if (!invert_y)
+        return;
+    const auto row_bytes = static_cast<std::ptrdiff_t>(image.width) * 4;
+    for (int top = 0, bottom = image.height - 1; top < bottom; ++top, --bottom) {
+        const auto first = image.rgba.begin() + top * row_bytes;
+        std::swap_ranges(first, first + row_bytes, image.rgba.begin() + bottom * row_bytes);
     }
 }
 

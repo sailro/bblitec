@@ -1,6 +1,6 @@
-// An effect task's pass on a headless Dawn Direct3D 12 device, case by case:
-// the target is filled stale, then the task's pass clears it and draws the
-// fixture's fullscreen triangle through the backend's own
+// An effect task's pass on the WebGPU-subset fixtures' headless Dawn device,
+// case by case: the target is filled stale, then the task's pass clears it
+// and draws the fixture's fullscreen triangle through the backend's own
 // `record_dawn_effect_task_pass` (lifted into `lifted.hpp` with what it
 // calls), and the target is read back.
 
@@ -11,8 +11,9 @@
 #include <cstring>
 #include <exception>
 #include <iterator>
-#include <string>
-#include <vector>
+
+#include "../webgpu-subset/dawn-harness.hpp"
+#include "pal_gpu_images.hpp"
 
 namespace bbl::pal {
 /** The backend's effect pass, as far as its draw reads it. */
@@ -30,7 +31,7 @@ inline void record_dawn_effect_pass(WGPURenderPassEncoder render_pass, const Daw
 #include "cases.hpp"
 
 namespace {
-using effect_task_scissor::require;
+using webgpu_fixture::require;
 
 constexpr char shader_source[] = R"(
 @vertex fn vertex_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f {
@@ -43,68 +44,6 @@ constexpr char shader_source[] = R"(
 )";
 
 WGPUStringView text(const char* value) { return WGPUStringView{value, std::strlen(value)}; }
-
-struct Dawn {
-    WGPUInstance instance = nullptr;
-    WGPUAdapter adapter = nullptr;
-    WGPUDevice device = nullptr;
-    WGPUQueue queue = nullptr;
-    std::vector<std::string> errors;
-
-    void wait(WGPUFuture future) const {
-        WGPUFutureWaitInfo completion = WGPU_FUTURE_WAIT_INFO_INIT;
-        completion.future = future;
-        require(wgpuInstanceWaitAny(instance, 1, &completion, 30'000'000'000) ==
-                    WGPUWaitStatus_Success,
-                "wgpuInstanceWaitAny");
-    }
-    Dawn() {
-        const WGPUInstanceFeatureName feature = WGPUInstanceFeatureName_TimedWaitAny;
-        WGPUInstanceDescriptor descriptor = WGPU_INSTANCE_DESCRIPTOR_INIT;
-        descriptor.requiredFeatureCount = 1;
-        descriptor.requiredFeatures = &feature;
-        instance = wgpuCreateInstance(&descriptor);
-        require(instance != nullptr, "wgpuCreateInstance");
-        WGPURequestAdapterOptions options = WGPU_REQUEST_ADAPTER_OPTIONS_INIT;
-        options.backendType = WGPUBackendType_D3D12;
-        WGPURequestAdapterCallbackInfo adapter_callback = WGPU_REQUEST_ADAPTER_CALLBACK_INFO_INIT;
-        adapter_callback.mode = WGPUCallbackMode_WaitAnyOnly;
-        adapter_callback.userdata1 = this;
-        adapter_callback.callback = [](WGPURequestAdapterStatus status, WGPUAdapter value,
-                                       WGPUStringView, void* data, void*) {
-            if (status == WGPURequestAdapterStatus_Success)
-                static_cast<Dawn*>(data)->adapter = value;
-        };
-        wait(wgpuInstanceRequestAdapter(instance, &options, adapter_callback));
-        require(adapter != nullptr, "wgpuInstanceRequestAdapter");
-        WGPUDeviceDescriptor device_descriptor = WGPU_DEVICE_DESCRIPTOR_INIT;
-        device_descriptor.uncapturedErrorCallbackInfo.userdata1 = this;
-        device_descriptor.uncapturedErrorCallbackInfo.callback =
-            [](WGPUDevice const*, WGPUErrorType, WGPUStringView message, void* data, void*) {
-                static_cast<Dawn*>(data)->errors.emplace_back(message.data, message.length);
-            };
-        WGPURequestDeviceCallbackInfo device_callback = WGPU_REQUEST_DEVICE_CALLBACK_INFO_INIT;
-        device_callback.mode = WGPUCallbackMode_WaitAnyOnly;
-        device_callback.userdata1 = this;
-        device_callback.callback = [](WGPURequestDeviceStatus status, WGPUDevice value,
-                                      WGPUStringView, void* data, void*) {
-            if (status == WGPURequestDeviceStatus_Success)
-                static_cast<Dawn*>(data)->device = value;
-        };
-        wait(wgpuAdapterRequestDevice(adapter, &device_descriptor, device_callback));
-        require(device != nullptr, "wgpuAdapterRequestDevice");
-        queue = wgpuDeviceGetQueue(device);
-    }
-    Dawn(const Dawn&) = delete;
-    Dawn& operator=(const Dawn&) = delete;
-    ~Dawn() {
-        wgpuQueueRelease(queue);
-        wgpuDeviceDestroy(device);
-        wgpuDeviceRelease(device);
-        wgpuAdapterRelease(adapter);
-        wgpuInstanceRelease(instance);
-    }
-};
 
 WGPURenderPassEncoder begin_pass(WGPUCommandEncoder encoder, WGPUTextureView view,
                                  const std::uint8_t (&colour)[4]) {
@@ -125,7 +64,7 @@ WGPURenderPassEncoder begin_pass(WGPUCommandEncoder encoder, WGPUTextureView vie
 
 int main() {
     try {
-        Dawn dawn;
+        webgpu_fixture::DawnHarness dawn(bbl::GpuSupportedLimits{});
         WGPUShaderSourceWGSL wgsl = WGPU_SHADER_SOURCE_WGSL_INIT;
         wgsl.code = text(shader_source);
         WGPUShaderModuleDescriptor module_descriptor = WGPU_SHADER_MODULE_DESCRIPTOR_INIT;
@@ -153,7 +92,7 @@ int main() {
         WGPUTexture image = wgpuDeviceCreateTexture(dawn.device, &texture_descriptor);
         require(image != nullptr, "wgpuDeviceCreateTexture");
         WGPUTextureView view = wgpuTextureCreateView(image, nullptr);
-        const std::uint32_t row_bytes = (target_width * 4 + 255) & ~255u;
+        const std::uint32_t row_bytes = bbl::pal::readback_bytes_per_row(target_width * 4);
         WGPUBufferDescriptor buffer_descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
         buffer_descriptor.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
         buffer_descriptor.size = static_cast<std::uint64_t>(row_bytes) * target_height;
@@ -205,9 +144,7 @@ int main() {
         wgpuTextureRelease(image);
         wgpuRenderPipelineRelease(pass.pipeline);
         wgpuShaderModuleRelease(module);
-        for (const std::string& error : dawn.errors)
-            std::fprintf(stderr, "Dawn error: %s\n", error.c_str());
-        require(dawn.errors.empty(), "Dawn reported validation errors");
+        dawn.check_errors();
         std::printf("dawn ok\n");
         return 0;
     } catch (const std::exception& error) {

@@ -8,6 +8,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_gpu.h>
 
+#include <cstddef>
 #include <cstring>
 #include <exception>
 
@@ -17,7 +18,7 @@
 #include "lifted.hpp"
 #include "cases.hpp"
 
-using screenshot_check::require;
+using webgpu_fixture::require;
 
 namespace {
 SDL_GPUTexture* uploaded(SDL_GPUDevice* device, SDL_GPUTextureFormat format) {
@@ -67,13 +68,17 @@ int main() {
             const bbl::pal::SdlTextureDownload download = bbl::pal::record_sdl_texture_download(
                 device, command, texture, width, height, 4,
                 bbl::upstream::screenshot_bytes_per_row(width));
-            require(SDL_SubmitGPUCommandBuffer(command), "SDL_SubmitGPUCommandBuffer");
-            bbl::pal::read_sdl_texture_download(
-                device, download, height, [&](std::span<const std::uint8_t> rows) {
-                    screenshot_check::print_unpacked(label, rows, width, height,
-                                                     download.bytes_per_row,
-                                                     *bbl::pal::sdl_screenshot_bgra(format));
-                });
+            const bbl::pal::OwnedSdlFence submitted{
+                SDL_SubmitGPUCommandBufferAndAcquireFence(command), {device}};
+            require(submitted != nullptr, "SDL_SubmitGPUCommandBufferAndAcquireFence");
+            {
+                const bbl::pal::SdlReadbackMap mapped(
+                    device, submitted.get(), download.transfer.get(),
+                    static_cast<std::size_t>(download.bytes_per_row) * height);
+                screenshot_check::print_unpacked(label, mapped.bytes(), width, height,
+                                                 download.bytes_per_row,
+                                                 *bbl::pal::screenshot_bgra(label));
+            }
             SDL_ReleaseGPUTexture(device, texture);
         }
         SDL_DestroyGPUDevice(device);

@@ -4,12 +4,13 @@
 // generates (`cases.hpp`: the target extent and each case's scissor), the
 // three colours a pixel can hold, and the line a case prints.
 
+#include "../webgpu-subset/fixture-require.hpp"
+
 #include <bblite/runtime.hpp>
 
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
-#include <stdexcept>
 #include <string>
 
 namespace effect_task_scissor {
@@ -24,11 +25,6 @@ struct Case {
 constexpr std::uint8_t stale[4] = {0, 0, 255, 255};
 constexpr std::uint8_t cleared[4] = {0, 0, 0, 255};
 constexpr std::uint8_t drawn[4] = {255, 0, 0, 255};
-
-inline void require(bool condition, const std::string& message) {
-    if (!condition)
-        throw std::runtime_error("effect task scissor check: " + message);
-}
 
 /** The effect task a case executes. */
 inline bbl::FrameTaskRecord task_of(const Case& scissor) {

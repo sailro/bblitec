@@ -292,23 +292,36 @@ dawn_render_target_texture(DawnState& state, const Engine& engine, RenderTargetH
 }
 
 namespace {
-/** A pinned utility module's single-sample pipeline: one fullscreen triangle, one target. */
+/**
+ * A pinned utility module's single-sample pipeline, one fullscreen triangle: into one colour
+ * target of `format`, or with `depth` into a depth target of `format` alone, written under
+ * `always`.
+ */
 WGPURenderPipeline fullscreen_grab_pipeline(DawnState& state, const char* stem,
-                                            WGPUTextureFormat format) {
+                                            WGPUTextureFormat format, bool depth = false) {
     DawnShaderModule module{load_wgsl_module(state, stem)};
     WGPURenderPipelineDescriptor descriptor = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
     descriptor.vertex.module = module;
     descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
     WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
     color_target.format = format;
+    WGPUDepthStencilState depth_stencil = WGPU_DEPTH_STENCIL_STATE_INIT;
+    depth_stencil.format = format;
+    depth_stencil.depthWriteEnabled = WGPUOptionalBool_True;
+    depth_stencil.depthCompare = WGPUCompareFunction_Always;
     WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
     fragment.module = module;
-    fragment.targetCount = 1;
-    fragment.targets = &color_target;
+    if (depth) {
+        descriptor.depthStencil = &depth_stencil;
+    } else {
+        fragment.targetCount = 1;
+        fragment.targets = &color_target;
+    }
     descriptor.fragment = &fragment;
     WGPURenderPipeline pipeline = wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
     if (!pipeline)
-        dawn_error("transmission grab pipeline creation failed.");
+        dawn_error(depth ? "depth resolve pipeline creation failed."
+                         : "transmission grab pipeline creation failed.");
     return pipeline;
 }
 
@@ -352,34 +365,21 @@ void encode_depth_resolve(DawnState& state, const Engine& engine, WGPUCommandEnc
                           const FrameTaskRecord& task, const WGPUPassTimestampWrites* timestamps) {
     const TargetUser user = task_target_user(task);
     const DepthResolveTaskOptions& options = task.depth_resolve;
-    const DawnRenderTarget& source =
-        resolve_gpu_target(engine, state.render_targets, options.source, user);
-    const DawnRenderTarget& target =
-        resolve_gpu_target(engine, state.render_targets, options.target, user);
-    require_depth_resolve(
-        engine, task, {source.width, source.height}, {target.width, target.height},
-        target_sample_count(state, resolve_render_target(engine, options.source, user)) > 1);
+    const RenderTargetRecord& source_record = resolve_render_target(engine, options.source, user);
+    const RenderTargetRecord& target_record = resolve_render_target(engine, options.target, user);
+    const DawnRenderTarget& source = handle_at(state.render_targets, options.source);
+    const DawnRenderTarget& target = handle_at(state.render_targets, options.target);
+    require_depth_resolve(options, source_record, target_record, {source.width, source.height},
+                          {target.width, target.height},
+                          target_sample_count(state, source_record) > 1);
     auto cached =
         std::find_if(state.depth_resolve_pipelines.begin(), state.depth_resolve_pipelines.end(),
                      [&](const auto& entry) { return entry.first == target.depth_format; });
     if (cached == state.depth_resolve_pipelines.end()) {
-        DawnShaderModule module{load_wgsl_module(state, "depth-resolve.frag")};
         // The pin's pipeline: no colour target, the target's depth written
         // under `always`.
-        WGPURenderPipelineDescriptor descriptor = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
-        descriptor.vertex.module = module;
-        descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
-        WGPUDepthStencilState depth_stencil = WGPU_DEPTH_STENCIL_STATE_INIT;
-        depth_stencil.format = target.depth_format;
-        depth_stencil.depthWriteEnabled = WGPUOptionalBool_True;
-        depth_stencil.depthCompare = WGPUCompareFunction_Always;
-        descriptor.depthStencil = &depth_stencil;
-        WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
-        fragment.module = module;
-        descriptor.fragment = &fragment;
-        DawnRenderPipeline pipeline{wgpuDeviceCreateRenderPipeline(state.device, &descriptor)};
-        if (!pipeline)
-            dawn_error("depth resolve pipeline creation failed.");
+        DawnRenderPipeline pipeline{
+            fullscreen_grab_pipeline(state, "depth-resolve.frag", target.depth_format, true)};
         state.depth_resolve_pipelines.emplace_back(target.depth_format, std::move(pipeline));
         cached = std::prev(state.depth_resolve_pipelines.end());
     }
@@ -617,7 +617,7 @@ void save_dawn_texture_file(DawnState& state, WGPUTexture texture, WGPUTextureFo
     const auto bytes_per_pixel =
         static_cast<std::uint32_t>(webgpu_texel_layout(dawn_webgpu_format_name(format)).bytes);
     const std::uint32_t source_row_bytes = width * bytes_per_pixel;
-    const std::uint32_t aligned_row_bytes = (source_row_bytes + 255u) & ~255u;
+    const std::uint32_t aligned_row_bytes = readback_bytes_per_row(source_row_bytes);
     WGPUBufferDescriptor readback_descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
     readback_descriptor.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
     readback_descriptor.size = static_cast<std::uint64_t>(aligned_row_bytes) * height;

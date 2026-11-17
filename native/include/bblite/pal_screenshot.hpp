@@ -12,11 +12,15 @@
 #include <bblite/runtime.hpp>
 
 #include <any>
+#include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
+#include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -112,6 +116,73 @@ inline std::exception_ptr missing_screenshot_texture() {
 inline std::exception_ptr unreadable_screenshot_format() {
     return std::make_exception_ptr(
         std::runtime_error("captureScreenshot reads an 8-bit RGBA or BGRA presented image."));
+}
+
+/**
+ * Whether a presented image of WebGPU format `format` is BGRA, the pin's
+ * `surface.format.startsWith("bgra")`; none for one the unpack cannot read.
+ */
+inline std::optional<bool> screenshot_bgra(std::string_view format) {
+    const bool bgra = format.starts_with("bgra");
+    if (!format.starts_with(bgra ? "bgra8unorm" : "rgba8unorm"))
+        return std::nullopt;
+    return bgra;
+}
+
+/** One frame's copy for the requests it settles: the backend's `Capture`, with `bytes_per_row`. */
+template <typename Capture> struct ScreenshotCopy {
+    std::vector<ScreenshotRequest> requests;
+    std::optional<Capture> capture;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    bool bgra = false;
+};
+
+/**
+ * `service`: takes the queued requests and has `record(bytes_per_row)` copy the frame's
+ * presented `texture`, of the WebGPU format `format_name()` names, at the pin's row stride.
+ * Without a texture, or with one the unpack cannot read, every request rejects.
+ */
+template <typename Texture, typename FormatName, typename Record>
+auto record_screenshot(Engine& engine, Texture texture, FormatName&& format_name,
+                       std::uint32_t width, std::uint32_t height, Record&& record)
+    -> ScreenshotCopy<std::invoke_result_t<Record&, std::uint32_t>> {
+    ScreenshotCopy<std::invoke_result_t<Record&, std::uint32_t>> copy;
+    copy.requests = take_screenshot_requests(engine);
+    if (copy.requests.empty())
+        return copy;
+    const std::optional<bool> bgra =
+        texture ? screenshot_bgra(std::forward<FormatName>(format_name)()) : std::nullopt;
+    if (!bgra) {
+        reject_screenshot_requests(copy.requests, texture ? unreadable_screenshot_format()
+                                                          : missing_screenshot_texture());
+        copy.requests.clear();
+        return copy;
+    }
+    copy.width = width;
+    copy.height = height;
+    copy.bgra = *bgra;
+    copy.capture = record(upstream::screenshot_bytes_per_row(width));
+    return copy;
+}
+
+/**
+ * `finish`, after the frame's submit: `map(capture, size)` maps the copy's `size` bytes,
+ * whose `bytes()` the settlement unpacks; a failure rejects every request.
+ */
+template <typename Capture, typename Map>
+void finish_screenshot(const ScreenshotCopy<Capture>& copy, Map&& map) {
+    if (!copy.capture)
+        return;
+    try {
+        const std::uint32_t bytes_per_row = copy.capture->bytes_per_row;
+        const auto mapped =
+            map(*copy.capture, static_cast<std::size_t>(bytes_per_row) * copy.height);
+        settle_screenshot_requests(
+            copy.requests, {mapped.bytes(), copy.width, copy.height, bytes_per_row, copy.bgra});
+    } catch (...) {
+        reject_screenshot_requests(copy.requests, std::current_exception());
+    }
 }
 
 } // namespace bbl::pal

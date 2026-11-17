@@ -125,6 +125,11 @@ inline std::uint8_t half_to_byte(std::uint16_t value) {
 // lands in the red channel, 8-bit rows copy through with an optional
 // BGRA swap. Rows arrive 256-byte aligned, the way both APIs return them.
 
+/** The stride a `row_bytes`-byte row lands at in a texture-to-buffer copy: a multiple of 256. */
+inline constexpr std::uint32_t readback_bytes_per_row(std::uint32_t row_bytes) {
+    return (row_bytes + 255u) & ~255u;
+}
+
 enum class ReadbackFormatClass {
     rgba16_float,
     r16_float,

@@ -474,16 +474,12 @@ struct AllocatedExtent {
  * and the pinned pass attaches the target's whole default view with no
  * stencil operations, so a layered or stencilled target refuses too.
  */
-inline void require_depth_resolve(const Engine& engine, const FrameTaskRecord& task,
-                                  AllocatedExtent source_extent, AllocatedExtent target_extent,
-                                  bool source_multisampled) {
-    const DepthResolveTaskOptions& options = task.depth_resolve;
+inline void require_depth_resolve(const DepthResolveTaskOptions& options,
+                                  const RenderTargetRecord& source,
+                                  const RenderTargetRecord& target, AllocatedExtent source_extent,
+                                  AllocatedExtent target_extent, bool source_multisampled) {
     // The pin's template literal quotes `config.name` as written.
     const std::string name = options.named ? options.name : "undefined";
-    const RenderTargetRecord& source =
-        resolve_render_target(engine, options.source, task_target_user(task));
-    const RenderTargetRecord& target =
-        resolve_render_target(engine, options.target, task_target_user(task));
     if (!source.has_depth)
         throw std::runtime_error(upstream::depth_resolve_source_without_depth(name));
     if (source.samples < 2)

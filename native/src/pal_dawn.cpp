@@ -4356,7 +4356,7 @@ public:
         const bool capture_pending = captures.screenshot_pending();
         const bool capture_frame = capture_ready && capture_pending;
 #if BBLITE_SCREENSHOT_CAPTURE
-        // `captureScreenshot`'s copy of the presented image, which no native UI covers yet.
+        // `captureScreenshot`'s copy of the presented image, before any native UI over it.
         const DawnScreenshotCopy screenshot = record_dawn_screenshot(
             engine, state.device, encoder, capture_source, state.surface_format, width, height);
         [[maybe_unused]] const bool screenshot_copied = screenshot.capture.has_value();

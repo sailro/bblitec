@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { compileSource } from "../src/compiler.js";
@@ -15,6 +15,7 @@ import {
     runFixtureExecutable,
     runGeneratedProgram,
     runNativeFixtureCompiler,
+    writeFixtureHeaders,
 } from "./native-fixture.js";
 
 /**
@@ -117,14 +118,10 @@ constexpr std::uint8_t texels[] = {${[...bytes].join(",")}};
 
 /** Writes the lowered unpack, the cases and `lifted` where a fixture includes them. */
 function fixtureDirectory(name: string, lifted = ""): string {
-    const directory = resolve("artifacts/test-screenshot", name);
-    mkdirSync(directory, { recursive: true });
-    writeFileSync(join(directory, "cases.hpp"), casesHeader(texels()));
-    writeFileSync(
-        join(directory, "lifted.hpp"),
-        `#pragma once\n${lowerScreenshotReadback(new LoweringContext()).source}\n${lifted}`,
-    );
-    return directory;
+    return writeFixtureHeaders(`test-screenshot/${name}`, {
+        "cases.hpp": casesHeader(texels()),
+        "lifted.hpp": `#pragma once\n${lowerScreenshotReadback(new LoweringContext()).source}\n${lifted}`,
+    });
 }
 
 const PROGRAM = `import { createEngine, createSceneContext, createFreeCamera, createSphere, addToScene, registerScene, startEngine, createStandardMaterial, captureScreenshot } from "@babylonjs/lite";
@@ -232,8 +229,7 @@ test("both backends copy and map an 8-bit presented image the pin's unpack reads
         const directory = fixtureDirectory(
             "sdl",
             `namespace bbl::pal {
-${lift("native/src/pal_sdl_gpu_shared.hpp", "struct SdlTextureDownload {", "inline SdlTextureDownload record_sdl_texture_download(")}
-${lift("native/src/pal_sdl_gpu_screenshot.hpp", "inline std::optional<bool> sdl_screenshot_bgra(", "template <typename Read> void read_sdl_texture_download(")}
+${lift("native/src/pal_sdl_gpu_shared.hpp", "struct SdlTextureDownload {", "inline SdlTextureDownload record_sdl_texture_download(", "class SdlReadbackMap {")}
 } // namespace bbl::pal
 `,
         );
@@ -266,7 +262,6 @@ ${lift("native/src/pal_sdl_gpu_screenshot.hpp", "inline std::optional<bool> sdl_
             "dawn",
             `namespace bbl::pal {
 ${lift("native/src/pal_dawn_shared.hpp", "inline void wait_for(WGPUInstance instance, WGPUFuture future) {", "class DawnReadbackMap {", "struct DawnSurfaceCapture {", "inline DawnSurfaceCapture record_dawn_texture_copy(")}
-${lift("native/src/pal_dawn_screenshot.hpp", "inline std::optional<bool> dawn_screenshot_bgra(")}
 } // namespace bbl::pal
 `,
         );
