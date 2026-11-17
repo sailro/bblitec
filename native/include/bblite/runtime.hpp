@@ -7288,6 +7288,19 @@ struct OverlayComposition {
     return record && record->swapchain;
 }
 
+/**
+ * `RenderTarget._width` (`_height` when `height`) of the swapchain target: the canvas backing
+ * store, which `setSurfaceSize` and each frame's `_refreshScRT` keep it at. Another target's is
+ * its frame-graph-built attachment's, which no native record holds.
+ */
+[[nodiscard]] inline double swapchain_render_target_extent(const Engine& engine,
+                                                           RenderTargetHandle target, bool height) {
+    if (!is_swapchain_target(engine, target))
+        throw std::runtime_error(
+            "RenderTarget._width and _height are read only on the swapchain target.");
+    return static_cast<double>(height ? engine.options.height : engine.options.width);
+}
+
 /** A scene's swapchain task, and whether it resolves into the swapchain. */
 struct SwapchainTask {
     TaskHandle task{};

@@ -453,6 +453,8 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
   refuses to execute until then, an SSAO task (settings and working resolution) or a copy task (its source resolves at
   every execute); the private `FrameGraph._tasks` list refuses (its native indices differ), so a live task cannot be
   removed.
+- A render target's private `_width`/`_height`, read through a cast, is the swapchain target's canvas backing store as
+  it is when read; another target's refuses when read.
 - Render and effect render task `dispose()` releases owned targets (not the swapchain's); executing a disposed task refuses.
   An effect task's `record`/`dispose` can be read, bound and replaced; the frame graph calls the replacements.
 - An effect render task's `scissor` takes a run-time `NormalizedViewport` or null; the native task copies its lanes, so

@@ -987,6 +987,17 @@ export const propertyRules: readonly PropertyRule[] = [
         helper: "bbl::swapchain_render_target",
         feature: "frame-graph:resources",
     },
+    // A render target's `_width`/`_height`, read through a cast: the
+    // swapchain target's is the canvas backing store, as it is now.
+    ...(["_width", "_height"] as const).map((property): PropertyRead => ({
+        owner: "render-target",
+        property,
+        value: "number",
+        helper: "bbl::swapchain_render_target_extent",
+        helperTakesEngine: true,
+        helperArgument: String(property === "_height"),
+        impure: true,
+    })),
     {
         owner: "camera",
         property: "alpha",
