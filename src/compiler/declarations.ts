@@ -113,6 +113,7 @@ import {
     isTypeAssertion,
     isExpressionWrapper,
     wrappersUnder,
+    objectLiteralMembers,
 } from "./syntax.js";
 import {
     commonResourceValue,
@@ -201,6 +202,7 @@ interface DeclarationContext
             | "isNativeHostUiLookup"
             | "moduleRelativeAssetUrl"
             | "nativeBindingCheckpoint"
+            | "nativeLocalSince"
             | "options"
             | "program"
             | "moduleNamespaces"
@@ -2016,10 +2018,24 @@ export class DeclarationLowerer {
                         this.context.dataTypes,
                         narrowed.dataType,
                     ));
+            // A const the initializer's own lowering already holds in a local
+            // of this block (a call's result held once for the facts its
+            // fields carry) names that local: a copy would be a second object.
+            const namesInitializerLocal =
+                variableKind(declaration) === "const" &&
+                !wrapperCopiesIdentity &&
+                passesByReference(this.context.dataTypes, narrowed.dataType) &&
+                !narrowed.readOnly &&
+                initializerCpp === narrowed.cpp &&
+                this.context.nativeLocalSince(
+                    narrowed.cpp,
+                    initializerBoundary,
+                );
             const reference =
                 stableOwnerAlias ||
                 (aliases && !wrapperCopiesIdentity) ||
-                borrowsStorage;
+                borrowsStorage ||
+                namesInitializerLocal;
             // A document copied out of the storage its initializer names
             // holds what that storage holds: a `JsonValue` copy shares the
             // object, array or native view, so a write through the local
@@ -5273,6 +5289,42 @@ export class DeclarationLowerer {
                 unwrapExpression(expression, { await: true }),
             ) &&
             typeCanCarryReference(this.context.checker.getTypeAtLocation(leaf));
+        // A stored value holds an alias's object only through a part that
+        // can hold an object: a scalar read off it (`a[i] = o.flag ? 1 : 0`),
+        // or a literal of such reads (`data.set([o.x, o.y])`), holds none.
+        const storesAlias = (
+            scan: AliasedMutationScan,
+            value: ts.Node,
+        ): boolean => {
+            if (!ts.isExpression(value)) return scan.containsAlias(value);
+            const node = unwrapExpression(value);
+            if (
+                !typeCanCarryReference(
+                    this.context.checker.getTypeAtLocation(node),
+                )
+            )
+                return false;
+            const parts = ts.isArrayLiteralExpression(node)
+                ? node.elements.map((element) =>
+                      ts.isSpreadElement(element)
+                          ? element.expression
+                          : element,
+                  )
+                : ts.isObjectLiteralExpression(node)
+                  ? objectLiteralMembers(node).map((member) =>
+                        member.kind === "spread"
+                            ? member.node.expression
+                            : (member.value ?? member.node),
+                    )
+                  : undefined;
+            return parts
+                ? parts.some(
+                      (part) =>
+                          !ts.isOmittedExpression(part) &&
+                          storesAlias(scan, part),
+                  )
+                : scan.containsAlias(node);
+        };
         return aliasedMutationScan(
             identifier,
             (name) => this.context.symbols.valueSymbol(name),
@@ -5327,14 +5379,16 @@ export class DeclarationLowerer {
                             stored &&
                             (ts.isPropertyAccessExpression(target) ||
                                 ts.isElementAccessExpression(target)) &&
-                            scan.containsAlias(stored)
+                            storesAlias(scan, stored)
                         )
                             return true;
                     }
                     if (
                         (ts.isCallExpression(node) ||
                             ts.isNewExpression(node)) &&
-                        node.arguments?.some(scan.containsAlias) &&
+                        node.arguments?.some((argument) =>
+                            storesAlias(scan, argument),
+                        ) &&
                         isStoringDataCall(node, this.context.checker)
                     )
                         return true;

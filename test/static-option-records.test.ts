@@ -261,3 +261,60 @@ test("leaves a stored argument's object to the run time once something changed o
             before,
         );
 });
+
+// A local selects one of two optional option records and copies values out
+// of it after the material; the vertex text reads whether it holds one.
+const selectedCells = (store: string): string => `
+    import { createBox, createEngine, createShaderMaterial, wgsl } from "@babylonjs/lite";
+
+    interface Cells { readonly scale: number; readonly flip: boolean }
+    interface CellOptions { readonly direct?: Cells; readonly keyed?: Cells }
+    const kept: Cells[] = [];
+    const FS = \`struct VertexOutput{@builtin(position) position:vec4<f32>,};
+@fragment fn mainFragment(input:VertexOutput)->@location(0) vec4<f32>{return vec4<f32>(1.0);}\`;
+
+    function cellMaterial(opts: CellOptions) {
+        const direct = opts.direct;
+        const keyed = opts.keyed;
+        const mode = direct ?? keyed;
+        const scale = mode ? "2.0" : "1.0";
+        const vertex = (): string => \`struct VertexOutput{@builtin(position) position:vec4<f32>,};
+@vertex fn mainVertex(input:VertexInput)->VertexOutput{var out:VertexOutput;out.position=shaderSystem.worldViewProjection*vec4<f32>(input.position*\${scale},1.0);return out;}\`;
+        const material = createShaderMaterial({
+            vertexSource: wgsl\`\${vertex()}\`,
+            fragmentSource: FS,
+            attributes: ["position"],
+            uniforms: ["worldViewProjection"],
+        });
+        if (mode) {
+            const data = new Float32Array(4);
+            ${store}
+            console.log(data[1]! + data[2]! + kept.length);
+        }
+        return material;
+    }
+
+    async function main() {
+        const engine = await createEngine({});
+        const box = createBox(engine);
+        box.material = cellMaterial({ keyed: { scale: 2, flip: Math.random() > 0.5 } });
+    }
+`;
+
+test("reads a selected option record whose numbers a store copies", () => {
+    // An element write or a typed array's `set` of a literal stores the
+    // record's numbers, not the record: `mode` stays the record passed.
+    for (const store of [
+        "data[1] = mode.flip ? -1 : 1;",
+        "data.set([mode.scale, 0], 2);",
+    ]) {
+        const [compiled] = compileSource(selectedCells(store)).manifest
+            .customShaderPrograms;
+        assert.match(compiled!.vertexSource, /input\.position\*2\.0,/, store);
+    }
+    // Storing the record itself keeps it where other code reaches it.
+    assert.throws(
+        () => compileSource(selectedCells("kept[0] = mode;")),
+        /closes over 'scale', whose value generation does not know/,
+    );
+});

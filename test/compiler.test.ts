@@ -1325,6 +1325,38 @@ test("keeps pure imported data builders on the static path", () => {
     );
 });
 
+test("a const names the result its call holds for the record's facts", () => {
+    const { cpp } = compileSource(`
+        interface Image { width: number; height: number; indices: Uint8Array }
+        function decode(data: Uint8Array): Image {
+            const indices = data.slice(0, 4);
+            return { width: 2, height: 2, indices };
+        }
+        function area(image: Image): number {
+            return image.width * image.height + image.indices.length;
+        }
+        function main(): void {
+            const img = decode(new Uint8Array(8));
+            img.indices[0] = img.width;
+            console.log(area(img) + img.indices[0]!);
+            let other = decode(new Uint8Array(4));
+            console.log(area(other));
+        }
+        main();
+    `);
+    // The const is the object the holder holds, written through in place; a
+    // `let` the program may rebind keeps its own copy.
+    assert.match(
+        cpp,
+        /auto (v_bblite_function_result_\d+) = bblscene::decode\(bbl::js::u8_array_sized\(8\.0\)\);\s+\[\[maybe_unused\]\] bblscene::Image& v_img = \1;/,
+    );
+    assert.match(cpp, /array_store_checked\(v_img\.indices, 0\.0,/);
+    assert.match(
+        cpp,
+        /auto (v_bblite_function_result_\d+) = bblscene::decode\(bbl::js::u8_array_sized\(4\.0\)\);\s+\[\[maybe_unused\]\] bblscene::Image v_other = \1;/,
+    );
+});
+
 test("uses TypeChecker types for local function arguments", () => {
     assert.throws(
         () =>
@@ -2865,15 +2897,14 @@ test("spreads a native partial struct into a wider struct", () => {
 
     // Nothing reads a copied key's presence, so an own undefined needs no
     // document: the wider record stays native and copies present fields.
-    assert.match(
-        result.cpp,
-        /bblscene::Item v_item = bbl::js::make_ref<bblscene::ItemData>\(\);/,
-    );
+    // The program stores only a boolean read off `item`, so `item` holds its
+    // fields in place.
+    assert.match(result.cpp, /bblscene::Item v_item\{\};/);
     for (const key of ["label", "enabled"])
         assert.match(
             result.cpp,
             new RegExp(
-                String.raw`if \(v_options->${key}\.has_value\(\)\) \{\s*v_item->${key} = \(\*v_options->${key}\);`,
+                String.raw`if \(v_options->${key}\.has_value\(\)\) \{\s*v_item\.${key} = \(\*v_options->${key}\);`,
             ),
         );
     // `label` is never written, so the copy's presence is known statically.

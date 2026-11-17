@@ -7877,11 +7877,16 @@ class Compiler implements LoweringServices {
         return binding;
     }
 
+    public nativeLocalSince(cpp: string, boundary: number): boolean {
+        const binding = this.nativeBindings.get(cpp);
+        return binding !== undefined && binding.sequence > boundary;
+    }
+
     public takeNativeTemporary(cpp: string, boundary: number): string {
         const binding = this.nativeBindings.get(cpp);
         if (
             !binding ||
-            binding.sequence <= boundary ||
+            !this.nativeLocalSince(cpp, boundary) ||
             !this.nativeTemporaries.has(binding)
         )
             return cpp;
