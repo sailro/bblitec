@@ -1888,8 +1888,8 @@ template <typename Variant>
  * rest element): an array (its elements are shared), a string's code
  * points; any other parsed value is not iterable.
  */
-[[nodiscard]] inline JsonValue json_iterated(const JsonValue& value,
-                                             std::size_t count = std::numeric_limits<std::size_t>::max()) {
+[[nodiscard]] inline JsonValue
+json_iterated(const JsonValue& value, std::size_t count = std::numeric_limits<std::size_t>::max()) {
     if (value.is_array())
         return value;
     if (!value.is_string())
