@@ -420,27 +420,36 @@ function recipeMap(
 
 /**
  * What a recipe map's `get` yields beside its value: the map and the
- * material it was keyed by, read from storage nothing reassigns.
+ * material it was keyed by, read from storage nothing reassigns or, for a
+ * key no stable binding names (a loop's element), from a constant the
+ * lookup pins it to where it reads it.
  */
 export function shaderRecipeLookup(
     context: Pick<
         ShaderDerivationContext,
-        "checker" | "hasStableNativeBinding" | "program" | "symbols" | "unwrap"
+        | "bindings"
+        | "checker"
+        | "hasStableNativeBinding"
+        | "program"
+        | "symbols"
+        | "unwrap"
     >,
     receiver: ts.Expression,
     key: Value,
+    keyNode: ts.Expression,
 ): ShaderRecipeLookup | undefined {
     if (
         key.kind !== "material" ||
         key.engineCpp === undefined ||
-        !context.hasStableNativeBinding(key) ||
         !derivesShaderMaterials(context)
     )
         return undefined;
     const map = recipeMap(context, receiver);
-    return map
-        ? { map, materialCpp: key.cpp, engineCpp: key.engineCpp }
-        : undefined;
+    if (!map) return undefined;
+    const held = context.hasStableNativeBinding(key)
+        ? key
+        : context.bindings.pinValueToTemporary(key, "recipe_key", keyNode);
+    return { map, materialCpp: held.cpp, engineCpp: key.engineCpp };
 }
 
 /**

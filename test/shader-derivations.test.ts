@@ -148,6 +148,29 @@ test("a recipe whose options the program may change, or that another store holds
     );
 });
 
+test("a material derived inside a run-time loop takes the variant of the element its recipe was looked up by", () => {
+    const { cpp } = compileSource(`${recipeModule}
+    async function main(): Promise<void> {
+        await createEngine({});
+        const picked = silhouettes().filter(() => Math.random() < 0.5);
+        const twins: ShaderMaterial[] = [];
+        for (const source of picked) twins.push(coverageOf(source));
+        console.log(twins.length);
+    }
+    void main();
+`);
+    // The loop's element is pinned where the lookup reads it; each pass
+    // creates its twin from that material's variant.
+    assert.match(
+        cpp,
+        /auto v_bblite_recipe_key_\d+ = bbl::js::snapshot_value\(\w+\);/,
+    );
+    assert.match(
+        cpp,
+        /bbl::create_shader_material\((\w+), bblscene::derived_shader_variant_0\(bbl::shader_material\(\1, v_bblite_recipe_key_\d+\)\.shader_variant\)\)/,
+    );
+});
+
 test("the derived material natively takes the variant derived from its source material's", (t) => {
     const native = optionalNativeFixtureTools(false);
     if (!native) {

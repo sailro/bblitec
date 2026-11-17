@@ -4069,6 +4069,7 @@ function compileMapDataMethod(
             lowerer.context,
             callee.expression,
             keyValue,
+            argumentAt(call, 0),
         );
         const read: Value = {
             // Map.get declares its absence, so source guards may narrow it.
