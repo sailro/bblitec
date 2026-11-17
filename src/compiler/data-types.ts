@@ -10741,13 +10741,15 @@ export class DataTypeRegistry {
     /**
      * Materializes a uniform static numeric table (nested readonly array
      * literals with numeric leaves) as a generated constant. Returns the
-     * table's native reference and dimensions.
+     * table's native reference and dimensions. Each row and leaf is read
+     * through `unwrap`, as the caller's shape test reads it.
      */
     public registerTable(
         declaration: ts.Node,
         preferredName: string,
         literal: ts.ArrayLiteralExpression,
         compileLeaf: (expression: ts.Expression) => number,
+        unwrap: (expression: ts.Expression) => ts.Expression,
     ): { reference: string; dimensions: number[] } {
         const existing = this.tables.get(declaration);
         if (existing) {
@@ -10756,12 +10758,17 @@ export class DataTypeRegistry {
                 dimensions: existing.dimensions,
             };
         }
-        const dimensions = this.tableDimensions(literal, compileLeaf);
+        const dimensions = this.tableDimensions(literal, compileLeaf, unwrap);
         const name = this.uniqueName(
             sanitizeIdentifier(preferredName),
             this.tableNames,
         );
-        const values = this.renderTableValues(literal, dimensions, compileLeaf);
+        const values = this.renderTableValues(
+            literal,
+            dimensions,
+            compileLeaf,
+            unwrap,
+        );
         this.tables.set(declaration, {
             name,
             dimensions,
@@ -10831,6 +10838,7 @@ export class DataTypeRegistry {
     private tableDimensions(
         literal: ts.ArrayLiteralExpression,
         compileLeaf: (expression: ts.Expression) => number,
+        unwrap: (expression: ts.Expression) => ts.Expression,
     ): number[] {
         if (literal.elements.length === 0) {
             this.fail(
@@ -10838,17 +10846,22 @@ export class DataTypeRegistry {
                 "Static tables require non-empty array literals.",
             );
         }
-        const first = literal.elements[0]!;
+        const first = unwrap(literal.elements[0]!);
         if (ts.isArrayLiteralExpression(first)) {
-            const inner = this.tableDimensions(first, compileLeaf);
-            for (const element of literal.elements) {
+            const inner = this.tableDimensions(first, compileLeaf, unwrap);
+            for (const entry of literal.elements) {
+                const element = unwrap(entry);
                 if (!ts.isArrayLiteralExpression(element)) {
                     this.fail(
                         element,
                         "Static tables require uniform nesting.",
                     );
                 }
-                const elementDims = this.tableDimensions(element, compileLeaf);
+                const elementDims = this.tableDimensions(
+                    element,
+                    compileLeaf,
+                    unwrap,
+                );
                 if (elementDims.join(",") !== inner.join(",")) {
                     this.fail(
                         element,
@@ -10859,7 +10872,7 @@ export class DataTypeRegistry {
             return [literal.elements.length, ...inner];
         }
         for (const element of literal.elements) {
-            compileLeaf(element);
+            compileLeaf(unwrap(element));
         }
         return [literal.elements.length];
     }
@@ -10868,21 +10881,23 @@ export class DataTypeRegistry {
         literal: ts.ArrayLiteralExpression,
         dimensions: number[],
         compileLeaf: (expression: ts.Expression) => number,
+        unwrap: (expression: ts.Expression) => ts.Expression,
     ): string {
         // The innermost numeric row is a JavaScript tuple and every outer level
         // is a std::array aggregate. Preserve the aggregate's double braces while
         // constructing the row through Tuple's initializer-list constructor.
         if (dimensions.length === 1) {
             return `{${literal.elements
-                .map((element) => doubleLiteral(compileLeaf(element)))
+                .map((element) => doubleLiteral(compileLeaf(unwrap(element))))
                 .join(", ")}}`;
         }
         return `{{${literal.elements
             .map((element) =>
                 this.renderTableValues(
-                    element as ts.ArrayLiteralExpression,
+                    unwrap(element) as ts.ArrayLiteralExpression,
                     dimensions.slice(1),
                     compileLeaf,
+                    unwrap,
                 ),
             )
             .join(", ")}}}`;

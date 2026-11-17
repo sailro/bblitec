@@ -8920,6 +8920,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             unwrapped.text,
             resolved,
             (leaf) => this.staticLeafNumber(leaf),
+            (expression) => this.context.unwrap(expression),
         );
         this.context.reachJsData();
         return {

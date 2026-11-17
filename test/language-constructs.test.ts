@@ -7568,6 +7568,23 @@ test("constant numeric tables support runtime indexing and static string project
     assert.ok(result.cpp.includes("first=xyz;second=yxz;third=zyx;"));
 });
 
+test("a constant numeric table of frozen rows supports runtime indexing", () => {
+    // `Object.freeze(row)` is the row itself, so the table's rows are the
+    // literals its shape test reads.
+    const result = compileSource(`
+        const CELLS: readonly (readonly [number, number, number, number])[] = Object.freeze([
+            Object.freeze([0, 0, 0.5, 0.5] as const),
+            Object.freeze([0.5, 0, 0.5, 0.5] as const),
+        ]);
+        const cell = CELLS[Math.random() < 0.5 ? 0 : 1]!;
+        if (cell[2] !== 0.5) throw new Error("frozen table row");
+    `);
+    assert.match(
+        result.cpp,
+        /\{\{\{0\.0, 0\.0, 0\.5, 0\.5\}, \{0\.5, 0\.0, 0\.5, 0\.5\}\}\}/,
+    );
+});
+
 test("static early returns preserve shader composition records", () => {
     const result = compileSource(`
         import type { EngineContext, ShaderMaterial, ShaderUniformDecl } from "@babylonjs/lite";
