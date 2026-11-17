@@ -2,11 +2,15 @@ import { EmissionSet } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
-import { handleCppType, type DataType } from "../data-types.js";
+import { dataTypesEqual, handleCppType, type DataType } from "../data-types.js";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
-import { validateObjectProperties } from "../option-helpers.js";
-import { isNullishLiteral } from "../symbols.js";
+import {
+    resolveConditionalOptions,
+    validateObjectProperties,
+} from "../option-helpers.js";
+import { optionalPresentCpp, optionalValueCpp } from "../types.js";
+import { isNullishLiteral, typeMayHoldNullish } from "../symbols.js";
 import {
     compileNullableHitRecord,
     numberField,
@@ -34,10 +38,14 @@ export interface PickingIntrinsicContext
             | "conditions"
             | "fail"
             | "unwrap"
-            | "objectProperty"
             | "propertyName"
             | "emitDiscardedValue"
             | "bindings"
+            | "dataLowerer"
+            | "objectProperties"
+            | "expectObjectLiteral"
+            | "evaluationOrder"
+            | "captureEmittedLines"
         > {}
 
 /**
@@ -55,12 +63,11 @@ export interface PickingIntrinsicContext
  * buffers the readback maps. `disposePicker` releases them, and a build
  * that never disposes still frees them with the renderer.
  *
- * `pickAsync`'s `filter` option is the scene's predicate over meshes,
- * which the shared candidate collector calls per mesh (`pickOptionsFilter`).
- * `discard` and `ignore` select another pinned pipeline
- * (`picking-advanced-pipeline.js`, `picking-ignore.js`) and refuse, and
- * `enableDetailedPicking` adds a third attachment plus the barycentric
- * readback that `detailed-picking.js` owns.
+ * `pickAsync`'s `filter` and `ignore` options are read by the shared
+ * candidate collector while it builds the list (`pickOptions`). `discard`
+ * selects another pinned pipeline (`picking-advanced-pipeline.js`) and
+ * refuses, and `enableDetailedPicking` adds a third attachment plus the
+ * barycentric readback that `detailed-picking.js` owns.
  */
 export function compilePickingIntrinsic(
     context: PickingIntrinsicContext,
@@ -143,9 +150,9 @@ export function compilePickingIntrinsic(
                           "pick_coordinate",
                       ).cpp;
             });
-            const filter =
+            const options =
                 call.arguments.length === 4
-                    ? pickOptionsFilter(context, argumentAt(call, 3))
+                    ? pickOptions(context, argumentAt(call, 3))
                     : undefined;
             return {
                 kind: "picking-info",
@@ -154,7 +161,7 @@ export function compilePickingIntrinsic(
                     `bbl::gpu_pick(` +
                     `${context.requireEngine(picker, call)}, ` +
                     `${picker.cpp}, ${x}, ${y}` +
-                    `${filter === undefined ? "" : `, ${filter}`})`,
+                    `${options === undefined ? "" : `, ${options}`})`,
                 ...(picker.engineCpp === undefined
                     ? {}
                     : {
@@ -320,14 +327,17 @@ export function compilePickingIntrinsic(
 }
 
 /**
- * `pickAsync`'s options literal: its `filter` as the native pick's
- * `Engine::PickFilter`, which the shared candidate collector asks per mesh
- * and under which no pick source draws, as `pickAsyncImpl` does. The pin's
- * `debugLabel` only names a `console.trace` of the pick; the label is
- * evaluated for its effects. `discard` and `ignore` select the pin's
- * advanced pipeline and refuse.
+ * `pickAsync`'s options literal as the native pick's `Engine::PickOptions`,
+ * through its conditional spreads: `filter` is the predicate the shared
+ * candidate collector asks per mesh, under which no pick source draws, as
+ * `pickAsyncImpl` does, and `ignore` its entries (`pickIgnoreEntries`).
+ * The pin's `debugLabel` only names a `console.trace` of the pick; a label
+ * with effects is evaluated for them. `discard` selects the pin's advanced
+ * pipeline and refuses. Members compile in source order, those ahead of a
+ * spread before its condition. Undefined for options naming neither
+ * `filter` nor `ignore`.
  */
-function pickOptionsFilter(
+function pickOptions(
     context: PickingIntrinsicContext,
     expression: ts.Expression,
 ): string | undefined {
@@ -337,34 +347,196 @@ function pickOptionsFilter(
             expression,
             "pickAsync options are lowered from an object literal naming each option.",
         );
-    validateObjectProperties(
+    const compileMember = (name: string, member: ts.Expression): string => {
+        switch (name) {
+            case "filter":
+                return pickFilter(context, member);
+            case "ignore":
+                return pickIgnoreEntries(context, expression, member);
+            case "discard":
+                return context.fail(
+                    member,
+                    "pickAsync's `discard` rule is not lowered: its WGSL predicate and per-mesh storage select a pinned picking pipeline variant (`picking-advanced-pipeline.js`) composed from the rule.",
+                );
+            default:
+                if (
+                    context.evaluationOrder.writesStorage(member) ||
+                    context.evaluationOrder.hasModuleEffects(member)
+                )
+                    context.emitDiscardedValue(context.compileValue(member));
+                return "";
+        }
+    };
+    const names = ["filter", "discard", "ignore", "debugLabel"];
+    // Each option's value, in source order.
+    const members = (properties: readonly ts.ObjectLiteralElementLike[]) => {
+        const seen = new Set<string>();
+        return properties.flatMap((property) => {
+            const member = ts.isPropertyAssignment(property)
+                ? property.initializer
+                : ts.isShorthandPropertyAssignment(property)
+                  ? property.name
+                  : undefined;
+            const name = member && context.propertyName(property.name!);
+            if (!member || !name || !names.includes(name)) return [];
+            if (seen.has(name))
+                context.fail(
+                    property,
+                    `pickAsync options name '${name}' once.`,
+                );
+            seen.add(name);
+            return [{ name, member }];
+        });
+    };
+    const properties = context.objectProperties(options);
+    const compiled = new Map<ts.Expression, string>();
+    for (const { name, member } of members(
+        properties.slice(
+            0,
+            Math.max(0, properties.findIndex(ts.isSpreadAssignment)),
+        ),
+    ))
+        compiled.set(member, compileMember(name, member));
+    let named = false;
+    const resolved = resolveConditionalOptions(
         context,
         options,
-        ["filter", "discard", "ignore", "debugLabel"],
-        "pickAsync options are lowered from plain `filter`, `discard`, `ignore` and `debugLabel` members.",
+        (literal, once) => {
+            validateObjectProperties(
+                context,
+                literal,
+                names,
+                "pickAsync options are lowered from plain `filter`, `discard`, `ignore` and `debugLabel` members.",
+            );
+            const read: Record<string, string> = {};
+            for (const { name, member } of members(
+                context.objectProperties(literal),
+            ))
+                read[name] = once(member, () => compileMember(name, member));
+            named ||=
+                read["filter"] !== undefined || read["ignore"] !== undefined;
+            return {
+                filter: read["filter"] ?? "bbl::Engine::PickFilter{}",
+                ignore:
+                    read["ignore"] ?? "std::vector<bbl::Engine::PickIgnore>{}",
+            };
+        },
+        [],
+        compiled,
     );
-    for (const [name, refusal] of [
-        [
-            "discard",
-            "pickAsync's `discard` rule is not lowered: its WGSL predicate and per-mesh storage select a pinned picking pipeline variant (`picking-advanced-pipeline.js`) composed from the rule.",
-        ],
-        [
-            "ignore",
-            "pickAsync's `ignore` option is not lowered: its mesh and thin-instance exclusions select the pin's advanced picking pipeline (`picking-ignore.js`).",
-        ],
-    ] as const) {
-        const value = context.objectProperty(options, name);
-        if (value) context.fail(value, refusal);
-    }
-    const label = context.objectProperty(options, "debugLabel");
-    if (label) context.emitDiscardedValue(context.compileValue(label));
+    return named
+        ? `bbl::Engine::PickOptions{${resolved["filter"]}, ${resolved["ignore"]}}`
+        : undefined;
+}
+
+/** `filter` as an `Engine::PickFilter` over the scene's stored predicate. */
+function pickFilter(
+    context: PickingIntrinsicContext,
+    filter: ts.Expression,
+): string {
     // The pin reads `options?.filter ?? null`: a nullish one filters nothing.
-    const filter = context.objectProperty(options, "filter");
-    if (!filter || isNullishLiteral(context.checker, filter)) return undefined;
+    if (isNullishLiteral(context.checker, filter))
+        return "bbl::Engine::PickFilter{}";
     const predicate = context.dataLowerer.compileForSink(filter, {
         kind: "function",
         parameters: [{ kind: "handle", handle: "mesh" }],
         result: { kind: "boolean" },
     });
     return `bbl::Engine::PickFilter([predicate = ${predicate}](bbl::MeshHandle mesh) { return static_cast<bool>(predicate(mesh)); })`;
+}
+
+/**
+ * `ignore` as the native entries, in its order: the value is stored as the
+ * pin's declared `PickIgnore | readonly PickIgnore[]`, so one entry is a
+ * list of one, and each entry carries its mesh and the index and range
+ * lanes it holds (`picking-ignore.ts`, `ignoredRange`).
+ */
+function pickIgnoreEntries(
+    context: PickingIntrinsicContext,
+    options: ts.Expression,
+    ignore: ts.Expression,
+): string {
+    const refuse = (): never =>
+        context.fail(
+            ignore,
+            "pickAsync's `ignore` is lowered as the pin's `PickIgnore | readonly PickIgnore[]`.",
+        );
+    const declared = context.checker.getContextualType(options);
+    const member =
+        declared &&
+        context.checker.getPropertyOfType(
+            context.checker.getNonNullableType(declared),
+            "ignore",
+        );
+    if (!member) return refuse();
+    const type = context.dataTypes.fromTsType(
+        context.checker.getNonNullableType(
+            context.checker.getTypeOfSymbol(member),
+        ),
+        ignore,
+    );
+    if (type?.kind !== "union" || type.members.length !== 2) return refuse();
+    const list = type.members.findIndex((arm) => arm.kind === "vector");
+    const entry = type.members[1 - list];
+    if (
+        list < 0 ||
+        entry?.kind !== "struct" ||
+        !dataTypesEqual(type.members[list]!, { kind: "vector", element: entry })
+    )
+        return refuse();
+    // A member's present value: absent where its slot is empty.
+    const read = (struct: string, owner: string, name: string) => {
+        const field = context.dataTypes
+            .structFields(struct, ignore)
+            .find((candidate) => candidate.sourceName === name);
+        if (
+            !field ||
+            field.type.kind === "tagged" ||
+            field.type.kind === "json"
+        )
+            return refuse();
+        const cpp = `${owner}${context.dataTypes.memberAccess(struct)}${field.name}`;
+        const optional =
+            field.type.kind === "optional" ? field.type : undefined;
+        return {
+            present: context.dataTypes.slotPresentCpp(field.type, cpp),
+            cpp: optional ? optionalValueCpp(cpp) : cpp,
+            type: optional?.inner ?? field.type,
+        };
+    };
+    const number = (field: ReturnType<typeof read>): string =>
+        field.type.kind === "number" ? field.cpp : refuse();
+    const lane = (
+        field: ReturnType<typeof read>,
+        cppType: string,
+        cpp: string,
+    ): string =>
+        `${field.present ?? "true"} ? std::optional<${cppType}>{${cppType}{${cpp}}} : std::nullopt`;
+    const field = read(entry.name, "ignore", "mesh");
+    const mesh = context.dataLowerer.leafValue(field.cpp, field.type);
+    if (field.present !== undefined || mesh.kind !== "mesh") return refuse();
+    const index = read(entry.name, "ignore", "thinInstanceIndex");
+    const range = read(entry.name, "ignore", "thinInstanceRange");
+    const lanes = range.type.kind === "struct" ? range.type.name : refuse();
+    const [start, count] = ["start", "count"].map((name) =>
+        number(read(lanes, range.cpp, name)),
+    );
+    // An undefined `ignore` is none (`pickAsyncImpl`: `if (ignored)`).
+    const absent = typeMayHoldNullish(context.checker, ignore, "undefined");
+    const value = context.dataLowerer.compileForSink(
+        ignore,
+        absent ? { kind: "optional", inner: type } : type,
+    );
+    return (
+        `[&] { std::vector<bbl::Engine::PickIgnore> entries; ` +
+        `const auto entry = [&entries](const auto& ignore) { entries.push_back({${mesh.cpp}, ` +
+        `${lane(index, "double", number(index))}, ` +
+        `${lane(range, "std::array<double, 2>", `${start}, ${count}`)}}); }; ` +
+        (absent
+            ? `const auto& held = ${value}; if (!${optionalPresentCpp("held")}) return entries; const auto& ignored = ${optionalValueCpp("held")}; `
+            : `const auto& ignored = ${value}; `) +
+        `if (ignored.index() == ${list}) { for (const auto& each : std::get<${list}>(ignored)) entry(each); } ` +
+        `else entry(std::get<${1 - list}>(ignored)); ` +
+        `return entries; }()`
+    );
 }

@@ -9,6 +9,7 @@
 #include <bblite/features/has_splats.hpp>
 #include <bblite/features/has_sprites.hpp>
 
+#include <bblite/js_data.hpp>
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
 #include <array>
@@ -361,12 +362,39 @@ struct PickMeshCandidate {
 std::optional<std::size_t> picker_scene_index(const Engine& engine, GpuPickerHandle picker,
                                               const std::vector<std::shared_ptr<Scene>>& scenes);
 
+/** The first `ignore` entry naming `mesh` (`picking-ignore.ts` `forMesh`), if any. */
+inline const Engine::PickIgnore* pick_ignore_entry(const Engine::PickOptions* options,
+                                                   MeshHandle mesh) {
+    if (!options)
+        return nullptr;
+    for (const Engine::PickIgnore& entry : options->ignore)
+        if (entry.mesh == mesh)
+            return &entry;
+    return nullptr;
+}
+
+/**
+ * The first thin instance an entry skips and how many, as
+ * `picking-advanced-draw.ts` `ignoredRange` reads them: a range over an
+ * index, each lane ToInt32 and at least zero.
+ */
+inline std::array<std::uint32_t, 2> pick_ignored_range(const Engine::PickIgnore& entry) {
+    const auto lane = [](double value) {
+        return static_cast<std::uint32_t>(std::max(0, js::to_int32(value)));
+    };
+    if (entry.thin_instance_range)
+        return {lane((*entry.thin_instance_range)[0]), lane((*entry.thin_instance_range)[1])};
+    if (entry.thin_instance_index)
+        return {lane(*entry.thin_instance_index), 1u};
+    return {0u, 0u};
+}
+
 template <typename HasGeometry>
 inline std::vector<PickMeshCandidate>
 collect_pick_mesh_candidates(const Engine& engine, [[maybe_unused]] const Scene& scene,
                              const upstream::RenderPlan& render_plan, std::size_t gpu_mesh_count,
                              const HasGeometry& has_geometry, std::vector<PickRange>& ranges,
-                             std::uint32_t& next_id, const Engine::PickFilter* filter = nullptr,
+                             std::uint32_t& next_id, const Engine::PickOptions* options = nullptr,
                              [[maybe_unused]] bool detailed = false) {
     std::vector<PickMeshCandidate> candidates;
     for (std::size_t item_index = 0;
@@ -382,9 +410,14 @@ collect_pick_mesh_candidates(const Engine& engine, [[maybe_unused]] const Scene&
         if (!upstream::pick_candidate(handle_at(engine.meshes, handle))) {
             continue;
         }
+        // `prepareIgnoredCandidates`: an entry naming no thin instance skips
+        // the whole mesh before the filter is asked about it.
+        [[maybe_unused]] const Engine::PickIgnore* ignored = pick_ignore_entry(options, handle);
+        if (ignored && !ignored->thin_instance_index && !ignored->thin_instance_range)
+            continue;
         // The pin's `pickFilter` arm: a mesh the supplied filter refuses
         // neither answers nor occludes, and consumes no id.
-        if (filter && !(*filter)(handle)) {
+        if (options && options->filter && !options->filter(handle)) {
             continue;
         }
         PickMeshCandidate candidate;
@@ -397,6 +430,13 @@ collect_pick_mesh_candidates(const Engine& engine, [[maybe_unused]] const Scene&
             if (pool.count <= 0 || !pool.gpu_buffer)
                 continue;
             candidate.instance_count = gpu_u32(gpu_size(pool.count));
+            // The thin-instance pick shader discards the ignored instances,
+            // which then neither answer nor occlude; their ids stay assigned.
+            if (ignored) {
+                const auto [start, count] = pick_ignored_range(*ignored);
+                candidate.uniforms.excluded_thin_instance_start = start;
+                candidate.uniforms.excluded_thin_instance_count = count;
+            }
             if (detailed)
                 throw std::runtime_error(
                     "Detailed picking requires the selected thin-instance world matrix.");

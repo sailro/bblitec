@@ -3886,7 +3886,7 @@ PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::Re
                             const std::vector<upstream::RenderPlan>& overlay_plans,
                             const std::vector<std::shared_ptr<Scene>>& active_registered_scenes,
                             [[maybe_unused]] GpuPickerHandle picker, double x, double y,
-                            const Engine::PickFilter* filter
+                            const Engine::PickOptions* options
 #if BBLITE_HAS_BILLBOARDS
                             ,
                             DawnBillboardPickContributor& billboard_pick

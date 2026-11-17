@@ -1564,9 +1564,9 @@ public:
                             &billboard_pick
 #endif
         ]([[maybe_unused]] GpuPickerHandle picker, double x, double y,
-                           const Engine::PickFilter* filter) -> PickingInfo {
+                           const Engine::PickOptions* options) -> PickingInfo {
             return pick_dawn_scene(state, engine, root_plan, overlay_plans,
-                                   active_registered_scenes, picker, x, y, filter
+                                   active_registered_scenes, picker, x, y, options
 #if BBLITE_HAS_BILLBOARDS
                                    ,
                                    billboard_pick

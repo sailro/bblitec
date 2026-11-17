@@ -398,7 +398,7 @@ PickingInfo pick_sdl_gpu_scene(GpuState& state, Engine& engine,
                                const std::vector<upstream::RenderPlan>& overlay_plans,
                                const std::vector<std::shared_ptr<Scene>>& active_registered_scenes,
                                [[maybe_unused]] GpuPickerHandle picker, double x, double y,
-                               const Engine::PickFilter* filter
+                               const Engine::PickOptions* options
 #if BBLITE_HAS_BILLBOARDS
                                ,
                                BillboardPickContributor& billboard_pick
@@ -455,9 +455,9 @@ PickingInfo pick_sdl_gpu_scene(GpuState& state, Engine& engine,
             const GpuMesh& gpu = pick_meshes[item_index];
             return gpu.vertices && gpu.indices;
         },
-        ranges, next_id, filter, detailed);
+        ranges, next_id, options, detailed);
     // `pickAsyncImpl` takes no pick source under a supplied filter.
-    [[maybe_unused]] const bool pick_sources = filter == nullptr;
+    [[maybe_unused]] const bool pick_sources = !options || !options->filter;
     validate_pick_contributors(engine, scene, detailed, pick_sources);
 
 #if BBLITE_DEFORM_PICKING

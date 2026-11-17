@@ -627,11 +627,11 @@ PickingInfo gpu_pick_through_hook(
     GpuPickerHandle picker,
     double x,
     double y,
-    const Engine::PickFilter* filter) {
+    const Engine::PickOptions* options) {
     const GpuPickerRecord& record = picker_record(engine, picker);
     PickingInfo info = record.disposed || !engine.pick_hook
         ? PickingInfo{}
-        : engine.pick_hook(picker, x, y, filter);
+        : engine.pick_hook(picker, x, y, options);
     info.bind_engine(engine);
 ${detailed ? DETAILED_CONTINUATION : ""}    return info;
 }
@@ -656,7 +656,19 @@ PickingInfo gpu_pick(
     double x,
     double y,
     const Engine::PickFilter& filter) {
-    return gpu_pick_through_hook(engine, picker, x, y, &filter);
+    const Engine::PickOptions options{filter, {}};
+    return gpu_pick_through_hook(engine, picker, x, y, &options);
+}
+
+// The pin's \`options\`: the filter as above, and the \`ignore\` entries the
+// shared candidate collector reads while it builds the list.
+PickingInfo gpu_pick(
+    Engine& engine,
+    GpuPickerHandle picker,
+    double x,
+    double y,
+    const Engine::PickOptions& options) {
+    return gpu_pick_through_hook(engine, picker, x, y, &options);
 }
 
 // The name a pick resolved to, read where the scene asks for it rather

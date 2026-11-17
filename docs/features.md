@@ -423,9 +423,9 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
 - `addBillboardSystemToScene`, `addDepthHostedSpriteLayerToScene` and `addTextRenderableToScene` add a member
   once per scene; it draws after the next scene build. Collection removal, snapshots and subscriptions are unsupported.
 - Picking: `createPickingRay` needs no GPU picker; detailed picks skip thin instances, billboards and splats.
-  A `pickAsync` filter is the scene's predicate per mesh; `discard` and `ignore` refuse. VAT meshes pick through their
-  baked pose; a detailed VAT pick refuses. A stored or awaited result's `pickedMesh` becomes a Mesh of the entry's
-  engine after a run-time check that it picked there.
+  A `pickAsync` filter is the scene's predicate per mesh; `ignore` skips a mesh or its thin instances; `discard`
+  refuses. VAT meshes pick through their baked pose; a detailed VAT pick refuses. A stored or awaited result's
+  `pickedMesh` becomes a Mesh of the entry's engine after a run-time check that it picked there.
 - KHR_interactivity blocks: SceneReadyEvent, OnSelect, Sequence, Get/SetVariable, Get/SetProperty, arithmetic, Abs,
   Floor, LessThan, Clamp, Combine/ExtractVector2. Others refuse.
 - Gizmos: display, bounding boxes, rotation editing; no bounding-box/scale drags.

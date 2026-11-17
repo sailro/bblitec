@@ -309,6 +309,48 @@ test(
     },
 );
 
+/**
+ * `runPickingCheck` over a stub engine of two meshes whose `pick_hook` is
+ * `hook`, an assignment to `engine.pick_hook` with `engine` in scope; the
+ * scene must return normally.
+ */
+function runPickHookCheck(name: string, cpp: string, hook: string): string {
+    return runPickingCheck(
+        name,
+        cpp,
+        `#include <cassert>
+#include <iostream>
+namespace bbl {
+Engine create_engine(EngineOptions options) {
+    Engine engine;
+    engine.options = options;
+    engine.meshes.emplace_back();
+    engine.meshes.emplace_back();
+${hook}    return engine;
+}
+Scene create_scene_context(Engine& engine) {
+    Scene scene;
+    scene.engine = &engine;
+    return scene;
+}
+std::vector<float> mesh_cpu_positions(const Engine&, MeshHandle) { return {}; }
+std::vector<float> mesh_cpu_normals(const Engine&, MeshHandle) { return {}; }
+std::vector<std::uint32_t> mesh_cpu_indices(const Engine&, MeshHandle) { return {}; }
+namespace upstream {
+std::array<float, 16> mesh_world_matrix(const Engine&, const MeshRecord&) {
+    return {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+}
+} // namespace upstream
+} // namespace bbl
+int main() {
+    assert(generated_scene_main() == 0);
+    bbl::js::collect_cycles();
+    std::cout << "${name}: ok\\n";
+}
+`,
+    );
+}
+
 test("a pick's filter option is the scene's predicate, asked per mesh after the options' coordinates", (t) => {
     const result = compileSource(`
         import {createEngine,createSceneContext,createGpuPicker,pickAsync,type Mesh} from "@babylonjs/lite";
@@ -334,7 +376,6 @@ test("a pick's filter option is the scene's predicate, asked per mesh after the 
     assert.match(result.cpp, /bbl::gpu_pick\([^\n]*bbl::Engine::PickFilter\(/);
     for (const [option, message] of [
         ["{ discard: rule }", /pickAsync's `discard` rule is not lowered/],
-        ["{ ignore: { mesh } }", /pickAsync's `ignore` option is not lowered/],
         [
             "{ filter(m: Mesh) { return m === mesh; } }",
             /pickAsync options are lowered from plain/,
@@ -358,21 +399,14 @@ test("a pick's filter option is the scene's predicate, asked per mesh after the 
         );
     if (!tools) return t.skip("Native fixture compiler unavailable.");
     assert.match(
-        runPickingCheck(
+        runPickHookCheck(
             "picking-filter-check",
             result.cpp,
-            `#include <cassert>
-#include <iostream>
-namespace bbl {
-Engine create_engine(EngineOptions options) {
-    Engine engine;
-    engine.options = options;
-    engine.meshes.emplace_back();
-    engine.meshes.emplace_back();
-    engine.pick_hook = [](GpuPickerHandle, double, double, const Engine::PickFilter* filter) {
+            `
+    engine.pick_hook = [](GpuPickerHandle, double, double, const Engine::PickOptions* options) {
         PickingInfo info;
         for (std::uint32_t index = 0; index < 2; ++index) {
-            if (filter && !(*filter)(MeshHandle{index}))
+            if (options && options->filter && !options->filter(MeshHandle{index}))
                 continue;
             info.hit = true;
             info.picked_kind = PickedNodeKind::mesh;
@@ -381,29 +415,104 @@ Engine create_engine(EngineOptions options) {
         }
         return info;
     };
-    return engine;
-}
-Scene create_scene_context(Engine& engine) {
-    Scene scene;
-    scene.engine = &engine;
-    return scene;
-}
-std::vector<float> mesh_cpu_positions(const Engine&, MeshHandle) { return {}; }
-std::vector<float> mesh_cpu_normals(const Engine&, MeshHandle) { return {}; }
-std::vector<std::uint32_t> mesh_cpu_indices(const Engine&, MeshHandle) { return {}; }
-namespace upstream {
-std::array<float, 16> mesh_world_matrix(const Engine&, const MeshRecord&) {
-    return {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
-}
-} // namespace upstream
-} // namespace bbl
-int main() {
-    assert(generated_scene_main() == 0);
-    bbl::js::collect_cycles();
-    std::cout << "picking-filter-check: ok\\n";
-}
 `,
         ),
         /picking-filter-check: ok/,
+    );
+});
+
+test("a pick's ignore option reaches the native pick as its entries, through the options' conditional spreads", (t) => {
+    const result = compileSource(`
+        import {createEngine,createSceneContext,createGpuPicker,pickAsync,type Mesh,type PickIgnore,type PickingInfo} from "@babylonjs/lite";
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            const picker = createGpuPicker(scene);
+            const first = (await pickAsync(picker, 1, 0)).pickedMesh as Mesh;
+            const order: string[] = [];
+            const project = (whole: boolean): PickIgnore | readonly PickIgnore[] => {
+                order.push("ignore");
+                return whole ? { mesh: first } : [{ mesh: first, thinInstanceRange: { start: 1.5, count: 2 } }, { mesh: first, thinInstanceIndex: 4 }];
+            };
+            const pick = (whole: boolean | undefined, label?: string) => {
+                const ignored = whole === undefined ? undefined : project(whole);
+                return pickAsync(picker, 1, 0, {
+                    filter: () => { order.push("filter"); return true; },
+                    ...(ignored ? { ignore: ignored } : {}),
+                    ...(label ? { debugLabel: label } : {}),
+                });
+            };
+            const skipped = await pick(true, "whole");
+            const thin = await pick(false);
+            const none = await pick(undefined);
+            const one = await pickAsync(picker, 1, 0, { ignore: { mesh: first, thinInstanceIndex: 2 } });
+            const optional = (ignored: PickIgnore | undefined) => pickAsync(picker, 1, 0, { ignore: ignored });
+            const absent = await optional(undefined);
+            const present = await optional({ mesh: first });
+            const describe = (picked: Mesh, point: PickingInfo["pickedPoint"]): string =>
+                (picked === first ? "first" : "second") + (point ? ":" + point[0] + ":" + point[1] + ":" + point[2] : "");
+            const report = [
+                describe(skipped.pickedMesh as Mesh, skipped.pickedPoint),
+                describe(thin.pickedMesh as Mesh, thin.pickedPoint),
+                describe(none.pickedMesh as Mesh, none.pickedPoint),
+                describe(one.pickedMesh as Mesh, one.pickedPoint),
+                describe(absent.pickedMesh as Mesh, absent.pickedPoint),
+                describe(present.pickedMesh as Mesh, present.pickedPoint),
+            ];
+            if (report.join() !== "second:1:-1:-1,first:2:-1:1502,first:0:-1:-1,first:1:2:-1,first:0:-1:-1,second:1:-1:-1" ||
+                order.join() !== "ignore,filter,ignore,filter,filter")
+                throw new Error(report.join() + " " + order.join());
+        }
+        void main();
+    `);
+    assert.match(result.cpp, /bbl::Engine::PickOptions\{/);
+    assert.throws(
+        () =>
+            compileSource(`
+            import {createEngine,createSceneContext,createGpuPicker,pickAsync,createSphere} from "@babylonjs/lite";
+            async function main(flag: boolean) {
+                const engine = await createEngine({});
+                const mesh = createSphere(engine, {});
+                const scene = createSceneContext(engine);
+                const picker = createGpuPicker(scene);
+                await pickAsync(picker, 0, 0, { ignore: [], ...(flag ? { ignore: { mesh } } : {}) });
+            }
+            void main(Date.now() > 0);
+        `),
+        /pickAsync options name 'ignore' once/,
+    );
+    if (!tools) return t.skip("Native fixture compiler unavailable.");
+    // The stub reports the entries it was handed as the picked point: their
+    // count, the first one's index and its range (start * 1000 + count); it
+    // skips a mesh whose first entry names neither.
+    assert.match(
+        runPickHookCheck(
+            "picking-ignore-check",
+            result.cpp,
+            `
+    engine.pick_hook = [](GpuPickerHandle, double, double, const Engine::PickOptions* options) {
+        PickingInfo info;
+        const auto& entries = options ? options->ignore : std::vector<Engine::PickIgnore>{};
+        info.picked_point = std::array<double, 3>{static_cast<double>(entries.size()),
+            entries.empty() ? -1.0 : entries[0].thin_instance_index.value_or(-1.0),
+            entries.empty() || !entries[0].thin_instance_range ? -1.0
+                : (*entries[0].thin_instance_range)[0] * 1000 + (*entries[0].thin_instance_range)[1]};
+        for (std::uint32_t index = 0; index < 2; ++index) {
+            const auto entry = std::find_if(entries.begin(), entries.end(),
+                [index](const Engine::PickIgnore& ignore) { return ignore.mesh.value == index; });
+            if (entry != entries.end() && !entry->thin_instance_index && !entry->thin_instance_range)
+                continue;
+            if (options && options->filter && !options->filter(MeshHandle{index}))
+                continue;
+            info.hit = true;
+            info.picked_kind = PickedNodeKind::mesh;
+            info.picked_index = index;
+            break;
+        }
+        return info;
+    };
+`,
+        ),
+        /picking-ignore-check: ok/,
     );
 });

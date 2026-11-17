@@ -2482,7 +2482,7 @@ PickingInfo pick_sdl_gpu_scene(GpuState& state, Engine& engine,
                                const std::vector<upstream::RenderPlan>& overlay_plans,
                                const std::vector<std::shared_ptr<Scene>>& active_registered_scenes,
                                [[maybe_unused]] GpuPickerHandle picker, double x, double y,
-                               const Engine::PickFilter* filter
+                               const Engine::PickOptions* options
 #if BBLITE_HAS_BILLBOARDS
                                ,
                                BillboardPickContributor& billboard_pick

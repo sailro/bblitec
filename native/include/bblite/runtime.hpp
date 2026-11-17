@@ -5534,12 +5534,33 @@ struct Engine {
      * plausible.
      */
     /**
-     * The pin's `pickAsync` `filter` option rides the request: the shared
-     * candidate collector asks it per mesh and both backends skip their
-     * pick sources under it (`pickAsyncImpl`). Null is an unfiltered pick.
+     * The pin's `pickAsync` `filter` option: the shared candidate collector
+     * asks it per mesh and both backends skip their pick sources under it
+     * (`pickAsyncImpl`).
      */
     using PickFilter = std::function<bool(MeshHandle)>;
-    std::function<PickingInfo(GpuPickerHandle, double, double, const PickFilter*)> pick_hook;
+    /**
+     * One `PickIgnore` of the `ignore` option: the mesh, and the thin
+     * instances of it a pick skips; with neither an index nor a range the
+     * whole mesh is skipped (`picking-ignore.ts`).
+     */
+    struct PickIgnore {
+        MeshHandle mesh;
+        std::optional<double> thin_instance_index;
+        /** `start`, `count`. */
+        std::optional<std::array<double, 2>> thin_instance_range;
+    };
+    /**
+     * The `pickAsync` options a native pick honours: an empty `filter` is
+     * none, and `ignore` lists the entries in the option's order (one
+     * entry is a list of one).
+     */
+    struct PickOptions {
+        PickFilter filter;
+        std::vector<PickIgnore> ignore;
+    };
+    /** Null is a pick with no options. */
+    std::function<PickingInfo(GpuPickerHandle, double, double, const PickOptions*)> pick_hook;
     std::shared_ptr<TextSurface> text_surface;
     std::uint64_t next_pixels_texture_identity = 1;
     /**
@@ -9559,6 +9580,9 @@ PickingInfo gpu_pick(Engine& engine, GpuPickerHandle picker, double x, double y)
 /** The same pick under the pin's `filter` option; see `Engine::PickFilter`. */
 PickingInfo gpu_pick(Engine& engine, GpuPickerHandle picker, double x, double y,
                      const Engine::PickFilter& filter);
+/** The same pick under `pickAsync`'s options; see `Engine::PickOptions`. */
+PickingInfo gpu_pick(Engine& engine, GpuPickerHandle picker, double x, double y,
+                     const Engine::PickOptions& options);
 /**
  * `KHR_interactivity` (the generated flow-graph unit). The loader chains
  * `attach_flow_graphs` onto an interactive asset's scene setup, and
