@@ -169,7 +169,7 @@ test("a program reading no declaration list keeps its shader units unchanged", (
     );
     assert.equal(
         on.factory.replace(
-            /std::vector<std::string> shader_declaration_names\([^]*?\n}\n\n/,
+            /const std::vector<std::string>& shader_declaration_names\([^]*?\n}\n\n/,
             "",
         ),
         off.factory,

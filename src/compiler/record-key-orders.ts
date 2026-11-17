@@ -1,7 +1,12 @@
 import type ts from "typescript";
-import { EmissionMap } from "./emission-transaction.js";
+import {
+    EmissionMap,
+    EmissionSet,
+    emissionArray,
+} from "./emission-transaction.js";
 import { StorageDemand } from "./storage-demand.js";
 import type { StorageRequest } from "./replay-storage.js";
+import { keyIndex, sameKeys } from "./syntax.js";
 
 /**
  * `keys` as the own keys of one object that creates them in this order:
@@ -12,11 +17,6 @@ export function ownKeyOrder(keys: Iterable<string>): string[] {
     return Object.keys(
         Object.fromEntries([...keys].map((key) => [key, undefined])),
     );
-}
-
-/** Whether JavaScript orders `key` as an array index, ahead of the others whenever it is created. */
-function isIndexKey(key: string): boolean {
-    return /^(?:0|[1-9]\d*)$/.test(key) && Number(key) < 2 ** 32 - 1;
 }
 
 /** The key orders records take, each a list of their own keys. */
@@ -100,23 +100,24 @@ interface Agreement {
  * that keep their own order.
  */
 export class RecordKeyOrders {
-    /** Each struct's distinct creations, by their spelling. */
+    /** Each struct's distinct creations, in the order each was first noted. */
     private readonly creations = new EmissionMap<
         string,
-        ReadonlyMap<string, readonly CreatedKeys[]>
+        (readonly CreatedKeys[])[]
     >();
+    /** Every creation noted, spelled with its struct. */
+    private readonly spellings = new EmissionSet<string>();
     /** Enumerated structs, with the first node enumerating each. */
     private readonly enumerations = new EmissionMap<string, ts.Node>();
 
     /** A record of `struct` created making `keys` own, in order. */
     public noteCreation(struct: string, keys: readonly CreatedKeys[]): void {
-        const spelled = JSON.stringify(keys);
+        const spelled = JSON.stringify([struct, keys]);
+        if (this.spellings.has(spelled)) return;
+        this.spellings.add(spelled);
         const known = this.creations.get(struct);
-        if (known?.has(spelled)) return;
-        this.creations.set(
-            struct,
-            new Map([...(known ?? []), [spelled, keys]]),
-        );
+        if (known) known.push(keys);
+        else this.creations.set(struct, emissionArray([keys]));
     }
 
     /** `struct`'s own keys are enumerated in its field order. */
@@ -138,19 +139,24 @@ export class RecordKeyOrders {
             node: ts.Node,
         ) => void,
     ): void {
+        const layouts = new Map<string, readonly LayoutKey[] | undefined>();
+        const laidOut: Layout = (struct) => {
+            if (!layouts.has(struct)) layouts.set(struct, layout(struct));
+            return layouts.get(struct);
+        };
         // The enumerated structs and every struct their records take keys from.
         const involved = new Set<string>();
         const visit = (struct: string): void => {
-            if (involved.has(struct) || !layout(struct)) return;
+            if (involved.has(struct) || !laidOut(struct)) return;
             involved.add(struct);
-            for (const created of this.creations.get(struct)?.values() ?? [])
+            for (const created of this.creations.get(struct) ?? [])
                 for (const item of created)
                     if ("struct" in item) visit(item.struct);
         };
         for (const struct of this.enumerations.keys()) visit(struct);
-        const agreements = this.agree(involved, layout);
+        const agreements = this.agree(involved, laidOut);
         for (const [struct, node] of this.enumerations) {
-            const keys = layout(struct);
+            const keys = laidOut(struct);
             const agreement = agreements.get(struct);
             if (!keys || !agreement) continue;
             if (agreement.order === "varies") settle(struct, undefined, node);
@@ -176,12 +182,50 @@ export class RecordKeyOrders {
         structs: ReadonlySet<string>,
         layout: Layout,
     ): ReadonlyMap<string, Agreement> {
-        const base = (struct: string): string[] =>
-            layout(struct)!.map(({ key }) => key);
+        const bases = new Map(
+            [...structs].map((struct) => [
+                struct,
+                layout(struct)!.map(({ key }) => key),
+            ]),
+        );
+        const base = (struct: string): string[] => bases.get(struct)!;
         const bound =
             structs.size *
-            (Math.max(0, ...[...structs].map((struct) => base(struct).length)) +
+            (Math.max(0, ...[...bases.values()].map((keys) => keys.length)) +
                 1);
+        // The structs whose creations take keys from each one.
+        const dependents = new Map<string, Set<string>>();
+        for (const struct of structs)
+            for (const created of this.creations.get(struct) ?? [])
+                for (const item of created)
+                    if ("struct" in item && structs.has(item.struct)) {
+                        const readers = dependents.get(item.struct);
+                        if (readers) readers.add(struct);
+                        else dependents.set(item.struct, new Set([struct]));
+                    }
+        // Rounds over the structs in order while one changes and `more`
+        // allows: a struct is evaluated again only after an order it reads
+        // changed, which otherwise leaves its answer as it was.
+        const rounds = (
+            evaluate: (struct: string, round: number) => boolean,
+            more: (round: number) => boolean,
+        ): void => {
+            const stale = new Set(structs);
+            for (
+                let round = 0, changed = true;
+                changed && more(round);
+                round++
+            ) {
+                changed = false;
+                for (const struct of structs) {
+                    if (!stale.delete(struct) || !evaluate(struct, round))
+                        continue;
+                    changed = true;
+                    for (const reader of dependents.get(struct) ?? [])
+                        stale.add(reader);
+                }
+            }
+        };
         // The orders a struct's creations give its records from their
         // sources' orders, and whether one varies.
         const give = (
@@ -190,7 +234,7 @@ export class RecordKeyOrders {
         ): { orders: string[][]; varies: boolean } => {
             const orders: string[][] = [];
             let varies = false;
-            for (const created of this.creations.get(struct)?.values() ?? []) {
+            for (const created of this.creations.get(struct) ?? []) {
                 const made = this.created(
                     struct,
                     created,
@@ -204,27 +248,23 @@ export class RecordKeyOrders {
             return { orders, varies };
         };
         const found = new Map<string, readonly string[]>();
-        const search = (): void => {
-            for (
-                let rounds = 0, changed = true;
-                changed && rounds <= bound;
-                rounds++
-            ) {
-                changed = false;
-                for (const struct of structs) {
+        const search = (): void =>
+            rounds(
+                (struct) => {
                     const { orders } = give(struct, (source) =>
                         structs.has(source) ? found.get(source) : "varies",
                     );
                     if (orders.length === 0 && this.creations.has(struct))
-                        continue;
+                        return false;
                     const order = agreedKeyOrder(orders, base(struct));
                     const known = found.get(struct);
-                    if (!order || (known && sameAgreed(known, order))) continue;
+                    if (!order || (known && sameAgreed(known, order)))
+                        return false;
                     found.set(struct, order);
-                    changed = true;
-                }
-            }
-        };
+                    return true;
+                },
+                (round) => round <= bound,
+            );
         search();
         for (const struct of structs)
             if (!found.has(struct))
@@ -236,11 +276,10 @@ export class RecordKeyOrders {
                 { order: found.get(struct)!, orders: [] },
             ]),
         );
-        for (let rounds = 0, changed = true; changed; rounds++) {
-            changed = false;
-            for (const struct of structs) {
+        rounds(
+            (struct, round) => {
                 const known = agreements.get(struct)!;
-                if (known.order === "varies") continue;
+                if (known.order === "varies") return false;
                 const { orders, varies } = give(
                     struct,
                     (source) => agreements.get(source)?.order ?? "varies",
@@ -250,13 +289,14 @@ export class RecordKeyOrders {
                         ? undefined
                         : agreedKeyOrder(orders, base(struct))) ?? "varies";
                 const settled =
-                    rounds > bound && !sameAgreed(known.order, order)
+                    round > bound && !sameAgreed(known.order, order)
                         ? "varies"
                         : order;
-                if (!sameAgreed(known.order, settled)) changed = true;
                 agreements.set(struct, { order: settled, orders });
-            }
-        }
+                return !sameAgreed(known.order, settled);
+            },
+            () => true,
+        );
         return agreements;
     }
 
@@ -307,10 +347,10 @@ export class RecordKeyOrders {
                 const known = made[index]!;
                 if (!known.maybe) continue;
                 if (
-                    !isIndexKey(key) &&
+                    keyIndex(key) === undefined &&
                     made
                         .slice(index + 1)
-                        .some((later) => !isIndexKey(later.key))
+                        .some((later) => keyIndex(later.key) === undefined)
                 ) {
                     if (!known.own) return "varies";
                     made.splice(index, 1);
@@ -328,8 +368,7 @@ export class RecordKeyOrders {
 function sameAgreed(left: Agreed, right: Agreed): boolean {
     return left === "varies" || right === "varies"
         ? left === right
-        : left.length === right.length &&
-              left.every((key, index) => key === right[index]);
+        : sameKeys(left, right);
 }
 
 /**

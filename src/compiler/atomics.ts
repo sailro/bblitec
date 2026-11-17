@@ -100,14 +100,10 @@ export function compileAtomicsCall(
                 .some((argument) => expressionMayRunCode(argument))
         )
             return cpp;
-        const temporary = context.allocateTemporaryCppName("atomics_operand");
-        context.emit({
-            kind: "declaration",
-            type: "const double",
-            name: temporary,
-            initializer: cpp,
-        });
-        return temporary;
+        return context.bindings.pinValueToTemporary(
+            { kind: "number", cpp },
+            "atomics_operand",
+        ).cpp;
     });
     context.reachJsData();
     if (method === "notify") {

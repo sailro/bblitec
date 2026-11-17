@@ -48,6 +48,7 @@ import type {
     EmissionMark,
     LoweringStatement,
     NativeFunctionBodyOptions,
+    ShaderSourceText,
 } from "./compiler/lowering-services.js";
 import type { ApplicationCpp } from "./compiler/source-units.js";
 import {
@@ -197,6 +198,7 @@ import {
     compileRegisteredIntrinsic,
 } from "./compiler/intrinsics/registry.js";
 import {
+    isSampleCount,
     selectedStaticExpression,
     selectedStaticNumberValue,
     type StaticSelectionContext,
@@ -355,6 +357,7 @@ import {
     variableKind,
     referenceBases,
     keysMayMatch,
+    sameKeys,
     unwrapExpression,
     type SupportedFunction,
 } from "./compiler/syntax.js";
@@ -977,14 +980,6 @@ interface ShaderSourceHole {
  */
 type UnreadLanes = ReadonlyMap<number, ReadonlyArray<readonly string[]>>;
 
-/** Whether two key paths name one lane. */
-function sameLane(left: readonly string[], right: readonly string[]): boolean {
-    return (
-        left.length === right.length &&
-        left.every((key, index) => key === right[index])
-    );
-}
-
 /**
  * One fold of a shader stage's text (`compileShaderSource`): which run, the
  * holes found so far, and whether a builder ran over an argument with holes.
@@ -997,14 +992,9 @@ interface ShaderSourceRun {
     readonly every?: ts.CallExpression;
 }
 
-/** A shader stage's text and the uniforms it reads its lifted numbers from. */
-interface ShaderSourceText {
-    source: string;
-    dynamicUniforms: Array<{
-        name: string;
-        type: "f32";
-        components: string[];
-    }>;
+/** A list item spelled in the bindings that read it. */
+function unboundListItem(node: ts.Expression): StaticListItem {
+    return { node, within: (read) => read() };
 }
 
 /**
@@ -4050,7 +4040,7 @@ class Compiler implements LoweringServices {
      */
     public staticListItems(expression: ts.Expression): StaticListItem[] {
         const projected = this.projectedStaticElements(expression);
-        if (projected) return projected.map((node) => ({ node }));
+        if (projected) return projected.map(unboundListItem);
         const literal = unlessRefused(() =>
             this.expectStaticArrayLiteral(expression),
         );
@@ -4058,15 +4048,17 @@ class Compiler implements LoweringServices {
             return literal.elements.flatMap((element) =>
                 ts.isSpreadElement(element)
                     ? this.staticListItems(element.expression)
-                    : [{ node: element }],
+                    : [unboundListItem(element)],
             );
         const held = this.heldStrings(expression);
-        if (held) return held.map((text) => ({ node: expression, text }));
+        if (held)
+            return held.map((text) => ({
+                ...unboundListItem(expression),
+                text,
+            }));
         const returned = this.returnedListItems(expression);
         if (returned) return returned;
-        return this.expectStaticArrayElements(expression).map((node) => ({
-            node,
-        }));
+        return this.expectStaticArrayElements(expression).map(unboundListItem);
     }
 
     /**
@@ -4154,12 +4146,11 @@ class Compiler implements LoweringServices {
             elements.flatMap((element) =>
                 ts.isSpreadElement(element)
                     ? this.staticListItems(element.expression)
-                    : [{ node: element }],
+                    : [unboundListItem(element)],
             ),
         ).map((item) => ({
             ...item,
-            within: <T>(read: () => T): T =>
-                within(() => (item.within ? item.within(read) : read())),
+            within: <T>(read: () => T): T => within(() => item.within(read)),
         }));
     }
 
@@ -5167,7 +5158,7 @@ class Compiler implements LoweringServices {
                         () => false,
                     );
                 if (staticSamples !== undefined) {
-                    if (staticSamples !== 1 && staticSamples !== 4)
+                    if (!isSampleCount(staticSamples))
                         this.fail(
                             samples,
                             "Native engine lowering supports explicit msaaSamples: 1 or 4 only.",
@@ -5460,13 +5451,18 @@ class Compiler implements LoweringServices {
         try {
             for (const run of [0, 1] as const) {
                 state.run = run;
-                const text = this.probeEmission(
-                    () =>
-                        every
-                            ? this.runGenerationBuilder(every)
-                            : this.compileStaticString(expression),
-                    () => false,
-                );
+                // The runs spell differently only at holes: without one,
+                // the second spells the first's text.
+                const text =
+                    run === 1 && holes.length === 0
+                        ? spelled[0]
+                        : this.probeEmission(
+                              () =>
+                                  every
+                                      ? this.runGenerationBuilder(every)
+                                      : this.compileStaticString(expression),
+                              () => false,
+                          );
                 if (!state.admitted || text === undefined) return undefined;
                 spelled.push(text);
             }
@@ -5523,11 +5519,11 @@ class Compiler implements LoweringServices {
                     argument,
                     value,
                     every === hole.call,
-                )?.lanes.find(({ lane }) => sameLane(lane, hole.lane));
+                )?.lanes.find(({ lane }) => sameKeys(lane, hole.lane));
                 if (!lane) {
                     this.fail(
                         hole.formatter,
-                        `The number '${hole.formatter.getText()}' a shader source spells is no longer one generation can read.`,
+                        `The number '${hole.formatter.getText()}' a shader source spells reads a lane its argument, compiled for the material's uniform, does not hold as a number.`,
                     );
                 }
                 const known = lane.value.staticNumber;
@@ -5813,7 +5809,7 @@ class Compiler implements LoweringServices {
                 if (
                     !unread
                         .get(parameter)
-                        ?.some((known) => sameLane(known, lane))
+                        ?.some((known) => sameKeys(known, lane))
                 )
                     return;
                 const format = numberFormatOf(member.name)!;

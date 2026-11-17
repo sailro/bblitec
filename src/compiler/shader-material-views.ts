@@ -17,29 +17,34 @@
 // view keeps the source's slots, so a redefinition keeps the uniforms,
 // samplers and storage buffers its source declares.
 import ts from "typescript";
-import { unlessRefused } from "./compile-error.js";
 import { writable } from "./emission-transaction.js";
 import { jsonToValue } from "./json-value.js";
 import type { LoweringServices } from "./lowering-services.js";
 import {
+    compileVariantProgram,
     effectFreeOptions,
+    factsRecord,
+    fieldsReadingOthers,
     isShaderMaterialType,
     optionFact,
     optionsBinding,
-    PINNED_SHADER_FIELDS,
     pinnedShaderMaterialField,
     recipeFactPolicy,
+    shaderMaterialField,
+    shaderSourceFact,
+    viewFields,
     type RecordFact,
     type RecordFacts,
+    type ShaderDerivationContext,
 } from "./shader-derivations.js";
-import {
-    SHADER_DECLARATION_LISTS,
-    type CompiledShaderMaterialOptions,
-} from "./shader-material.js";
-import { plainDataMembers, unwrapExpression, variableKind } from "./syntax.js";
-import type { ShaderStage } from "../shader-ir.js";
+import type { CompiledShaderMaterialOptions } from "./shader-material.js";
+import { statementsBeside, unwrapExpression, variableKind } from "./syntax.js";
 import type { CompiledShaderProgram, Value } from "./types.js";
-import { undefinedValue } from "./values/model.js";
+import {
+    shaderVariantFacts,
+    shaderVariantsOf,
+    withShaderVariants,
+} from "./values/model.js";
 
 /** A `createMaterialView` over a ShaderMaterial. */
 export interface ShaderMaterialView {
@@ -51,30 +56,37 @@ export interface ShaderMaterialView {
     readonly programs: ReadonlyMap<string, string>;
 }
 
-export type ShaderMaterialViewContext = Pick<
-    LoweringServices,
-    | "bindings"
-    | "captureEmittedLines"
-    | "checker"
-    | "compileShaderSource"
-    | "compileValue"
-    | "cppString"
-    | "emit"
-    | "evaluationOrder"
-    | "expectArgumentCount"
-    | "fail"
-    | "intrinsicOptions"
-    | "memberLiteral"
-    | "probeEmission"
-    | "reachFeature"
-    | "requireEngine"
-    | "resolveStaticLiteral"
-    | "sceneManifest"
-    | "staticListItems"
-    | "staticLiteralData"
-    | "symbols"
-    | "unwrap"
->;
+export type ShaderMaterialViewContext = Omit<
+    ShaderDerivationContext,
+    | "hasStableNativeBinding"
+    | "objectProperties"
+    | "objectProperty"
+    | "program"
+    | "propertyName"
+> &
+    Pick<
+        LoweringServices,
+        | "compileShaderSource"
+        | "emit"
+        | "expectArgumentCount"
+        | "reachFeature"
+        | "requireEngine"
+    >;
+
+/**
+ * One property a definition call redefines on a view, as object-statics.ts
+ * parses its descriptor (`propertyDefinition`).
+ */
+interface ViewDefinition {
+    readonly key: string;
+    /** Where the definition is spelled: the call, or its descriptor map's member. */
+    readonly site: ts.Node;
+    /** The descriptor expression, and the literal it is. */
+    readonly node: ts.Node;
+    readonly descriptor: ts.ObjectLiteralExpression;
+    /** A data descriptor's value; an accessor descriptor has none. */
+    readonly value: ts.Expression | undefined;
+}
 
 /** What each slot map holds at run time. */
 const SLOT_MAPS: Readonly<Record<string, string>> = {
@@ -82,75 +94,6 @@ const SLOT_MAPS: Readonly<Record<string, string>> = {
     _textureSlots: "the textures `setShaderTexture` binds",
     _storageBufferSlots: "the storage buffers `setShaderStorageBuffer` binds",
 };
-
-/**
- * The ShaderMaterial properties a view may redefine, by the
- * `createShaderMaterial` option each is built from.
- */
-const VIEW_PROGRAM_OPTIONS: Readonly<Record<string, string>> = {
-    vertexSource: "vertexSource",
-    fragmentSource: "fragmentSource",
-    attributes: "attributes",
-    uniformDecls: "uniforms",
-    samplerDecls: "samplers",
-    storageBufferDecls: "storageBuffers",
-    needAlphaBlending: "needAlphaBlending",
-    blendMode: "blendMode",
-    blend: "blend",
-    transmissive: "transmissive",
-    needAlphaTesting: "needAlphaTesting",
-    backFaceCulling: "backFaceCulling",
-    depthWrite: "depthWrite",
-    depthCompare: "depthCompare",
-    depthOnlyFragment: "depthOnlyFragment",
-    depthBias: "depthBias",
-    depthBiasSlopeScale: "depthBiasSlopeScale",
-};
-
-/** The options holding WGSL text, by the stage `createShaderMaterial` compiles each as. */
-const SHADER_SOURCES: Readonly<Record<string, ShaderStage>> = {
-    vertexSource: "vertex",
-    fragmentSource: "fragment",
-};
-
-/** The WGSL a source expression compiles to, read without leaving code behind. */
-function sourceFact(
-    context: Pick<
-        ShaderMaterialViewContext,
-        "compileShaderSource" | "probeEmission"
-    >,
-    expression: ts.Expression,
-    stage: ShaderStage,
-): RecordFact {
-    return context.probeEmission(
-        () =>
-            unlessRefused((): RecordFact => {
-                const compiled = context.compileShaderSource(expression, stage);
-                return compiled.dynamicUniforms.length > 0
-                    ? "runtime"
-                    : { json: compiled.source };
-            }) ?? "runtime",
-        () => false,
-    );
-}
-
-/**
- * The options whose pinned defaults read another option: a view keeps the
- * value its source resolved for each, whatever it redefines.
- */
-const RESOLVED_OPTIONS: Readonly<Record<string, readonly string[]>> = {
-    needAlphaBlending: ["needAlphaBlending", "blend"],
-    depthWrite: ["depthWrite", "needAlphaBlending", "blend"],
-};
-
-/** The variants a material may be, when generation knows them. */
-function materialVariants(value: Value): readonly string[] | undefined {
-    if (value.sceneShaderVariant !== undefined)
-        return [value.sceneShaderVariant];
-    return value.possibleSceneShaderVariants?.length
-        ? value.possibleSceneShaderVariants
-        : undefined;
-}
 
 /** The text a refusal names an expression by. */
 function spelled(node: ts.Node): string {
@@ -198,9 +141,10 @@ function variantsField(
 }
 
 /**
- * `<material>.<field>` for a field the pin's `createShaderMaterial` builds
- * (`PINNED_SHADER_FIELDS`) or a slot map: the plain data the material's
- * variant was built with, or a refusal. Undefined for any other read.
+ * `<material>.<field>` for a field generation reads as the plain data the
+ * pin's `createShaderMaterial` builds (`shaderMaterialField`) or a slot
+ * map: the plain data the material's variant was built with, or a
+ * refusal. Undefined for any other read.
  */
 export function readShaderMaterialFact(
     context: Pick<
@@ -211,10 +155,7 @@ export function readShaderMaterialFact(
     expression: ts.PropertyAccessExpression,
 ): Value | undefined {
     const field = expression.name.text;
-    if (
-        !Object.hasOwn(PINNED_SHADER_FIELDS, field) &&
-        !Object.hasOwn(SLOT_MAPS, field)
-    )
+    if (!shaderMaterialField(field)?.built && !Object.hasOwn(SLOT_MAPS, field))
         return undefined;
     const material =
         owner.kind === "material" ||
@@ -232,7 +173,7 @@ export function readShaderMaterialFact(
             expression,
             `'${spelled(expression)}' reads a ShaderMaterial's '${field}', which holds ${SLOT_MAPS[field]!} at run time; generation reads the material's declarations ('uniformDecls', 'samplerDecls', 'storageBufferDecls'), not its slots.`,
         );
-    const variants = materialVariants(owner);
+    const variants = shaderVariantsOf(owner);
     if (!variants)
         context.fail(
             expression,
@@ -306,7 +247,7 @@ export function compileCreateMaterialView(
     const engine = context.requireEngine(source, call);
     context.reachFeature("material:shader", call);
     context.reachFeature("material:shader-view", call);
-    const variants = materialVariants(source) ?? [];
+    const variants = shaderVariantsOf(source) ?? [];
     const binding = optionsBinding(context, sourceExpression);
     const declaration = binding?.symbol.valueDeclaration;
     const sourceName =
@@ -320,47 +261,13 @@ export function compileCreateMaterialView(
         kind: "material",
         cpp: `bbl::create_shader_material_view(${engine}, ${source.cpp})`,
         engineCpp: engine,
-        ...variantFacts(variants),
+        ...shaderVariantFacts(variants),
         shaderMaterialView: {
             source,
             ...(sourceName ? { sourceName } : {}),
             programs: new Map(variants.map((variant) => [variant, variant])),
         },
     };
-}
-
-/** The variant facts of a material drawing one of `variants`. */
-function variantFacts(
-    variants: readonly string[],
-): Pick<
-    Value,
-    "shaderVariant" | "sceneShaderVariant" | "possibleSceneShaderVariants"
-> {
-    if (variants.length === 1)
-        return {
-            shaderVariant: variants[0]!,
-            sceneShaderVariant: variants[0]!,
-        };
-    return variants.length > 1
-        ? { possibleSceneShaderVariants: [...new Set(variants)].sort() }
-        : {};
-}
-
-/** `value` drawing one of `variants`, in place of the variants it carried. */
-function withVariants(value: Value, variants: readonly string[]): Value {
-    const updated: Value = { ...value };
-    delete writable(updated).shaderVariant;
-    delete writable(updated).sceneShaderVariant;
-    delete writable(updated).possibleSceneShaderVariants;
-    Object.assign(writable(updated), variantFacts(variants));
-    return updated;
-}
-
-/** One redefined property: its key and the expression of its value. */
-interface ViewDefinition {
-    readonly key: string;
-    readonly value: ts.Expression;
-    readonly descriptor: ts.ObjectLiteralExpression;
 }
 
 /**
@@ -391,86 +298,35 @@ export function shaderMaterialViewTarget(
     );
 }
 
-/** Each property a definition call redefines, with its data descriptor. */
-function viewDefinitions(
-    context: Pick<
-        ShaderMaterialViewContext,
-        "fail" | "unwrap" | "compileValue"
-    >,
-    call: ts.CallExpression,
-    operation: "defineProperty" | "defineProperties",
-): ViewDefinition[] {
-    const entries: { key: string; descriptor: ts.Expression; node: ts.Node }[] =
-        [];
-    if (operation === "defineProperty") {
-        const key = context.compileValue(call.arguments[1]!).staticString;
-        if (key === undefined)
-            context.fail(
-                call.arguments[1]!,
-                "Object.defineProperty on a ShaderMaterial view needs a property key known at generation.",
-            );
-        entries.push({ key, descriptor: call.arguments[2]!, node: call });
-    } else {
-        const map = context.unwrap(call.arguments[1]!);
-        if (!ts.isObjectLiteralExpression(map))
-            context.fail(
-                map,
-                "Object.defineProperties on a ShaderMaterial view needs a literal descriptor map.",
-            );
-        const members = plainDataMembers(map);
-        if (!members || members.some((member) => member.kind !== "property"))
-            context.fail(
-                map,
-                "Object.defineProperties on a ShaderMaterial view needs literal property keys without spreads or methods.",
-            );
-        for (const member of members)
-            if (member.kind === "property")
-                entries.push({
-                    key: member.key,
-                    descriptor: member.value,
-                    node: member.node,
-                });
-    }
-    return entries.map(({ key, descriptor, node }) => {
+/** One redefined program property: its key and the expression of its value. */
+interface ViewRedefinition {
+    readonly key: string;
+    readonly value: ts.Expression;
+    readonly descriptor: ts.ObjectLiteralExpression;
+}
+
+/** Each definition as a redefinition of a property the view's program is built from. */
+function viewRedefinitions(
+    context: Pick<ShaderMaterialViewContext, "fail">,
+    definitions: readonly ViewDefinition[],
+): ViewRedefinition[] {
+    return definitions.map(({ key, site, node, descriptor, value }) => {
         if (Object.hasOwn(SLOT_MAPS, key))
             context.fail(
-                node,
+                site,
                 `A ShaderMaterial view keeps its source's slots; redefining '${key}' would give it slots of its own for ${SLOT_MAPS[key]!}, which generation does not represent.`,
             );
-        if (!Object.hasOwn(VIEW_PROGRAM_OPTIONS, key))
+        if (!viewFields().includes(key))
+            context.fail(
+                site,
+                `A ShaderMaterial view redefines only the properties its program is built from (${viewFields().join(", ")}); '${key}' is not one.`,
+            );
+        if (!value)
             context.fail(
                 node,
-                `A ShaderMaterial view redefines only the properties its program is built from (${Object.keys(VIEW_PROGRAM_OPTIONS).join(", ")}); '${key}' is not one.`,
-            );
-        const literal = context.unwrap(descriptor);
-        const members = ts.isObjectLiteralExpression(literal)
-            ? plainDataMembers(literal)
-            : undefined;
-        const value =
-            members?.every(
-                (member) =>
-                    member.kind === "property" &&
-                    [
-                        "value",
-                        "enumerable",
-                        "configurable",
-                        "writable",
-                    ].includes(member.key) &&
-                    (member.key === "value" ||
-                        member.value.kind === ts.SyntaxKind.TrueKeyword ||
-                        member.value.kind === ts.SyntaxKind.FalseKeyword),
-            ) === true
-                ? members.find(
-                      (member) =>
-                          member.kind === "property" && member.key === "value",
-                  )?.value
-                : undefined;
-        if (!value || !ts.isObjectLiteralExpression(literal))
-            context.fail(
-                descriptor,
                 `A ShaderMaterial view's '${key}' is redefined by a literal data descriptor: a 'value' and literal 'enumerable', 'configurable' or 'writable' flags.`,
             );
-        return { key, value, descriptor: literal };
+        return { key, value, descriptor };
     });
 }
 
@@ -495,8 +351,7 @@ function followsDeclaration(
         declared !== undefined &&
         ts.isVariableStatement(declared) &&
         variableKind(declaration!) === "const" &&
-        declared.parent === statement.parent &&
-        declared.pos < statement.pos
+        (statementsBeside(declared, "after")?.includes(statement) ?? false)
     );
 }
 
@@ -521,40 +376,19 @@ function viewOptions(
             );
         options.set(key, fact);
     }
-    for (const [key, read] of Object.entries(RESOLVED_OPTIONS)) {
-        if (redefined.has(key) || facts.has(key)) continue;
-        if (!read.some((option) => redefined.has(option))) continue;
-        const resolved = pinnedShaderMaterialField(facts, key, read);
+    for (const [field, { option, reads }] of fieldsReadingOthers()) {
+        if (redefined.has(option) || facts.has(option)) continue;
+        if (!reads.some((read) => redefined.has(read))) continue;
+        const resolved = pinnedShaderMaterialField(facts, field);
         if (typeof resolved === "string")
             context.fail(
                 node,
-                `A ShaderMaterial view keeps the '${key}' its source resolved, which generation does not hold: ${resolved}.`,
+                `A ShaderMaterial view keeps the '${option}' its source resolved, which generation does not hold: ${resolved}.`,
             );
-        options.set(key, resolved);
+        options.set(option, resolved);
     }
     for (const [key, fact] of redefined) options.set(key, fact);
     return options;
-}
-
-/** Options as the compile-time record a synthesized options literal reads. */
-function optionsRecord(
-    context: Pick<ShaderMaterialViewContext, "cppString" | "fail">,
-    options: RecordFacts,
-    node: ts.Node,
-): Value {
-    return {
-        kind: "record",
-        cpp: "",
-        recordOwnKeys: [...options.keys()],
-        recordProperties: Object.fromEntries(
-            [...options].map(([key, fact]) => [
-                key,
-                typeof fact === "object"
-                    ? jsonToValue(context, recipeFactPolicy, fact.json, node)
-                    : undefinedValue(),
-            ]),
-        ),
-    };
 }
 
 /** The resource declarations a view shares with its source. */
@@ -577,7 +411,7 @@ export function compileShaderMaterialViewDefinitions(
     context: ShaderMaterialViewContext,
     call: ts.CallExpression,
     target: ts.Identifier,
-    operation: "defineProperty" | "defineProperties",
+    defined: readonly ViewDefinition[],
 ): Value {
     const view = context.bindings.lookupOptional(target)!;
     const facts = view.shaderMaterialView!;
@@ -586,7 +420,7 @@ export function compileShaderMaterialViewDefinitions(
             call,
             "A ShaderMaterial view's program is redefined by a statement after the view's `const` declaration, in the same block: the program it draws is then the one every later use reads.",
         );
-    const definitions = viewDefinitions(context, call, operation);
+    const definitions = viewRedefinitions(context, defined);
     if (facts.programs.size === 0)
         context.fail(
             call,
@@ -615,7 +449,7 @@ export function compileShaderMaterialViewDefinitions(
                 ? [
                       {
                           name: facts.sourceName,
-                          value: withVariants(source, [variant]),
+                          value: withShaderVariants(source, [variant]),
                           compileTime: true,
                       },
                   ]
@@ -623,26 +457,21 @@ export function compileShaderMaterialViewDefinitions(
             () =>
                 new Map(
                     definitions.map(({ key, value }): [string, RecordFact] => {
-                        const option = VIEW_PROGRAM_OPTIONS[key]!;
-                        const stage = SHADER_SOURCES[option];
-                        const fact = stage
-                            ? sourceFact(context, value, stage)
-                            : optionFact(
-                                  context,
-                                  value,
-                                  SHADER_DECLARATION_LISTS.has(option),
-                              );
+                        const field = shaderMaterialField(key)!;
+                        const fact = field.stage
+                            ? shaderSourceFact(context, value, field.stage)
+                            : optionFact(context, value, field.items === true);
                         if (fact === "runtime")
                             context.fail(
                                 value,
                                 `A ShaderMaterial view's '${key}' compiles into its program at generation; this value is decided at run time.`,
                             );
-                        return [option, fact];
+                        return [field.option, fact];
                     }),
                 ),
         );
     const derived = new Map<string, string>();
-    const ids = new Map<number, number>();
+    const programs = new Map<number, CompiledShaderMaterialOptions>();
     let transmissive: boolean | undefined;
     for (const [program, sourceVariant] of facts.programs) {
         const redefined = compileRedefinitions(sourceVariant);
@@ -653,77 +482,67 @@ export function compileShaderMaterialViewDefinitions(
                 call,
                 `A ShaderMaterial view's program compiles from its source's options; the options shader variant '${program}' was created from are not generation's.`,
             );
-        const current = context.sceneManifest.reachedShaderPrograms.find(
+        const current = context.sceneManifest.reachedShaderPrograms.findIndex(
             (candidate) => candidate.name === program,
-        )!;
-        let compiled: CompiledShaderMaterialOptions | undefined;
+        );
+        let compiled!: CompiledShaderMaterialOptions;
         for (const creation of creations) {
             const options = viewOptions(context, creation, redefined, call);
-            let next!: CompiledShaderMaterialOptions;
-            context.captureEmittedLines(() => {
-                next = context.bindings.withBoundParameters(
-                    [
-                        {
-                            name: target,
-                            value: optionsRecord(context, options, call),
-                            compileTime: true,
-                        },
-                    ],
-                    () =>
-                        context.intrinsicOptions.compileShaderMaterialOptions(
-                            context.memberLiteral(target, [...options.keys()]),
-                        ),
-                );
-            });
-            if (next.dynamicUniforms)
-                context.fail(
-                    call,
-                    "A ShaderMaterial view's program compiles from generation-known options; these lift run-time numbers into uniforms.",
-                );
-            if (compiled && compiled.id !== next.id)
-                context.fail(
-                    call,
-                    `A ShaderMaterial view derives two programs from shader variant '${program}': materials of that variant were created from options that read differently.`,
-                );
-            compiled = next;
+            compiled = compileVariantProgram(
+                context,
+                programs,
+                current,
+                { name: target, value: factsRecord(context, options, call) },
+                context.memberLiteral(target, [...options.keys()]),
+                {
+                    node: call,
+                    runtime:
+                        "A ShaderMaterial view's program compiles from generation-known options; these lift run-time numbers into uniforms.",
+                    twice: `A ShaderMaterial view derives two programs from shader variant '${program}': materials of that variant were created from options that read differently.`,
+                },
+            );
             context.sceneManifest.shaderDerivations.recordCreation(
-                next.name,
+                compiled.name,
                 options,
             );
         }
-        const reached =
-            context.sceneManifest.reachedShaderPrograms[compiled!.id]!;
-        if (slotLayout(reached) !== slotLayout(current))
+        if (
+            slotLayout(
+                context.sceneManifest.reachedShaderPrograms[compiled.id]!,
+            ) !==
+            slotLayout(context.sceneManifest.reachedShaderPrograms[current]!)
+        )
             context.fail(
                 call,
                 `A ShaderMaterial view keeps its source's slots; its redefinitions (${definitions.map(({ key }) => key).join(", ")}) declare other uniforms, samplers or storage buffers than shader variant '${program}', which slots of the view's own would hold.`,
             );
         if (
             transmissive !== undefined &&
-            transmissive !== compiled!.transmissive
+            transmissive !== compiled.transmissive
         )
             context.fail(
                 call,
                 "A ShaderMaterial view derives transmissive and opaque programs from its source's variants; the run time decides which.",
             );
-        transmissive = compiled!.transmissive;
-        derived.set(compiled!.name, sourceVariant);
-        ids.set(
-            context.sceneManifest.reachedShaderPrograms.indexOf(current),
-            compiled!.id,
-        );
+        transmissive = compiled.transmissive;
+        derived.set(compiled.name, sourceVariant);
     }
     const engine = context.requireEngine(view, call);
+    const ids = new Map([...programs].map(([from, { id }]) => [from, id]));
     const variant =
         ids.size === 1
             ? `${[...ids.values()][0]!}u`
-            : `bblscene::derived_shader_variant_${context.sceneManifest.shaderDerivations.recordSite(undefined, ids)}(bbl::shader_material_view_variant(${engine}, ${view.cpp}))`;
+            : context.sceneManifest.shaderDerivations.derivedVariantCpp(
+                  undefined,
+                  ids,
+                  `bbl::shader_material_view_variant(${engine}, ${view.cpp})`,
+              );
     context.reachFeature("material:shader-view", call);
     context.emit({
         kind: "expression",
         code: `bbl::derive_shader_material_view(${engine}, ${view.cpp}, ${variant}, ${transmissive ? "true" : "false"});`,
     });
-    const updated = withVariants(view, [...derived.keys()]);
+    const updated = withShaderVariants(view, [...derived.keys()]);
     writable(updated).shaderMaterialView = { ...facts, programs: derived };
     context.bindings.rebindCompileTimeValue(target, updated);
     return { kind: "void", cpp: "" };

@@ -106,6 +106,15 @@ function memberGetterReceiver(
 }
 
 /**
+ * Whether a record states a `view` getter: the record
+ * `renderTargetColorViewTexture` reads as a render target's colour view,
+ * which a conditional selects as stored Texture2D.
+ */
+export function statesViewGetter(value: Value): boolean {
+    return value.kind === "record" && value.recordGetters?.view !== undefined;
+}
+
+/**
  * A `Texture2D` record over a render target's live colour attachment --
  * a `view` getter returning one render target's `_colorView`, an optional
  * `texture` getter returning the same target's `_colorTexture`, a GPU
@@ -127,17 +136,20 @@ export function renderTargetColorViewTexture(
     value: Value,
     node: ts.Node,
 ): Value | undefined {
-    const getters = value.kind === "record" ? value.recordGetters : undefined;
-    const view = getters?.view;
     if (
-        !view ||
+        !statesViewGetter(value) ||
         value.cpp ||
         value.classDeclaration ||
         Object.keys(value.recordMethods ?? {}).length > 0 ||
         Object.keys(value.recordSetters ?? {}).length > 0
     )
         return undefined;
-    const viewReceiver = memberGetterReceiver(context, view, "_colorView");
+    const getters = value.recordGetters!;
+    const viewReceiver = memberGetterReceiver(
+        context,
+        getters.view!,
+        "_colorView",
+    );
     if (!viewReceiver) return undefined;
     const target = context.withRecordScopes(value, () =>
         context.compileValue(viewReceiver),

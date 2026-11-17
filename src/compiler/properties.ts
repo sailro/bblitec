@@ -1246,6 +1246,19 @@ export const propertyRules: readonly PropertyRule[] = [
         alwaysTruthy: true,
     },
     {
+        owner: "texture",
+        property: "sampler",
+        value: "gpu-sampler",
+        dataType: { kind: "handle", handle: "gpu-sampler" },
+        helper: "bbl::stored_texture_gpu_sampler",
+        helperTakesEngine: true,
+        reject: (owner) =>
+            owner.dataType?.kind === "handle" &&
+            owner.dataType.handle === "texture"
+                ? undefined
+                : "Texture2D.sampler is read off a stored texture handle.",
+    },
+    {
         owner: "mesh",
         property: "_topology",
         value: "data",
@@ -1862,6 +1875,15 @@ export const propertyRules: readonly PropertyRule[] = [
         // material handles so bindings, guards, ??, and null comparisons all test
         // the handle before any camera-record access.
         optionalHandle: true,
+    },
+    {
+        // How many times the scene has built and published its renderables.
+        owner: "scene",
+        property: "_renderableVersion",
+        value: "number",
+        dataType: { kind: "number" },
+        helper: "bbl::scene_renderable_version",
+        impure: true,
     },
     {
         // The pin exposes this only as an internal lifecycle sentinel: removal
@@ -3189,7 +3211,7 @@ export class PropertyAccessLowerer {
                     dataType: { kind: "number" },
                 };
             }
-            // A wheel delta is in CSS pixels (`dom_wheel_delta_y`):
+            // A wheel delta is in CSS pixels (`dom_wheel_delta`):
             // `WheelEvent.DOM_DELTA_PIXEL`, read off a checked payload.
             if (property === "deltaMode")
                 return {
@@ -3829,14 +3851,6 @@ export class PropertyAccessLowerer {
                 },
             };
         }
-        // How many times the scene has built and published its renderables.
-        if (owner.kind === "scene" && property === "_renderableVersion")
-            return {
-                kind: "number",
-                cpp: `bbl::scene_renderable_version(${owner.cpp})`,
-                dataType: { kind: "number" },
-                impure: true,
-            };
         if (owner.kind === "engine" && property === "gpuFrameTimeMs") {
             if (!owner.ownedEngineCpp) throw new ApplicationRealmRequired();
             this.context.reachFeature("engine:gpu-task-timing", expression);
@@ -3971,20 +3985,6 @@ export class PropertyAccessLowerer {
         }
         const fetchedProperty = staticFetchProperty(owner, property);
         if (fetchedProperty) return fetchedProperty;
-        if (
-            owner.kind === "texture" &&
-            property === "sampler" &&
-            owner.dataType?.kind === "handle" &&
-            owner.dataType.handle === "texture"
-        ) {
-            const engine = this.context.requireEngine(owner, expression);
-            return {
-                kind: "gpu-sampler",
-                cpp: `bbl::stored_texture_gpu_sampler(${engine}, ${owner.cpp})`,
-                engineCpp: engine,
-                dataType: { kind: "handle", handle: "gpu-sampler" },
-            };
-        }
         if (
             owner.kind === "texture" &&
             (property === "width" || property === "height")

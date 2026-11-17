@@ -134,6 +134,7 @@ import {
     writeSites,
     expressionHasEffects,
     functionKind,
+    isModuleConstDeclaration,
     isModuleScopeFunction,
     regularExpressionParts,
     variableKind,
@@ -155,16 +156,10 @@ import {
 } from "./math-intrinsics.js";
 import { knownAbsent, knownCondition } from "./values/model.js";
 
-/** Whether a symbol names a module-scope `const` declared in the program. */
+/** Whether a symbol names a module constant (`isModuleConstDeclaration`). */
 function isModuleConstant(symbol: ts.Symbol): boolean {
-    const declaration = symbol.declarations?.find(ts.isVariableDeclaration);
-    const statement = declaration?.parent.parent;
-    return (
-        statement !== undefined &&
-        ts.isVariableStatement(statement) &&
-        ts.isSourceFile(statement.parent) &&
-        !statement.parent.isDeclarationFile &&
-        variableKind(statement.declarationList) === "const"
+    return isModuleConstDeclaration(
+        symbol.declarations?.find(ts.isVariableDeclaration),
     );
 }
 

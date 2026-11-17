@@ -1,5 +1,5 @@
 import type { DataType, HandleKind } from "./data-types/model.js";
-import { declaresThenMember } from "./thenables.js";
+import { programObservations } from "./program-observations.js";
 import {
     isEngineScopedHandleKind,
     isWindowHandleKind,
@@ -104,7 +104,6 @@ import {
     ownKeyOrder,
     RecordKeyOrderRequired,
     RecordKeyOrders,
-    type CreatedKeys,
 } from "./record-key-orders.js";
 import { SharedClassStorageRequired } from "./shared-class-storage.js";
 import {
@@ -1416,6 +1415,63 @@ function erasedFieldHolds(known: DataType, storage: DataType): boolean {
 const erasedMapKeys = new WeakMap<ts.Symbol, readonly ts.Expression[]>();
 
 /**
+ * The record and the keys a mapped type selects properties of the record
+ * by, as its alias's arguments: an alias of the shape of `Pick` (`{ [P in
+ * K]: T[P] }`, adding no modifier and renaming no key), whose constraint
+ * and template name its own parameters, keeps the keys; `Omit<T, K>`,
+ * `Pick` over the keys `K` leaves, keeps the others.
+ */
+function keyedSelection(
+    type: ts.Type,
+): { record: ts.Type; keys: ts.Type; kept: boolean } | undefined {
+    const parameters = type.aliasTypeArguments ?? [];
+    if (libraryName(type.aliasSymbol) === "Omit") {
+        const [record, keys] = parameters;
+        return record && keys ? { record, keys, kept: false } : undefined;
+    }
+    const alias = type.aliasSymbol?.declarations?.find(
+        ts.isTypeAliasDeclaration,
+    );
+    const mapped = alias?.type;
+    if (
+        !alias ||
+        !mapped ||
+        !ts.isMappedTypeNode(mapped) ||
+        mapped.readonlyToken ||
+        mapped.questionToken ||
+        mapped.nameType
+    )
+        return undefined;
+    // The alias argument a type node names: a bare reference to one of the
+    // alias's parameters.
+    const argument = (node: ts.TypeNode | undefined): ts.Type | undefined => {
+        const name =
+            node &&
+            ts.isTypeReferenceNode(node) &&
+            !node.typeArguments &&
+            ts.isIdentifier(node.typeName)
+                ? node.typeName.text
+                : undefined;
+        const index =
+            alias.typeParameters?.findIndex(
+                (parameter) => parameter.name.text === name,
+            ) ?? -1;
+        return index < 0 ? undefined : parameters[index];
+    };
+    const template = mapped.type;
+    const keys = argument(mapped.typeParameter.constraint);
+    const record =
+        template &&
+        ts.isIndexedAccessTypeNode(template) &&
+        ts.isTypeReferenceNode(template.indexType) &&
+        ts.isIdentifier(template.indexType.typeName) &&
+        template.indexType.typeName.text === mapped.typeParameter.name.text
+            ? argument(template.objectType)
+            : undefined;
+    return record && keys ? { record, keys, kept: true } : undefined;
+}
+
+/**
  * The object a record type's values already are, which stores them: a
  * native owner's carrier, or the shared instance of a class.
  */
@@ -1651,20 +1707,7 @@ export class DataTypeRegistry {
             this.retainConvertedRecordProperty(target, sources, property, node),
     );
     /** The own-key orders native records are created and enumerated in. */
-    private readonly keyOrders = new RecordKeyOrders();
-
-    /** A record of struct `name` created making `keys` own, in order (`RecordKeyOrders`). */
-    public noteRecordCreation(
-        name: string,
-        keys: readonly CreatedKeys[],
-    ): void {
-        this.keyOrders.noteCreation(name, keys);
-    }
-
-    /** Struct `name`'s records' own keys are enumerated in its field order. */
-    public noteKeyEnumeration(name: string, node: ts.Node): void {
-        this.keyOrders.noteEnumeration(name, node);
-    }
+    public readonly keyOrders = new RecordKeyOrders();
 
     /**
      * An enumerated struct lays its fields out in the one order its records
@@ -3405,6 +3448,12 @@ export class DataTypeRegistry {
         return set ? "get-set" : "get";
     }
 
+    /** @unjournaled Pure functions of the checked program: whether a declaration types a read-only array view. */
+    private readonly readonlyArrayDeclarations = new WeakMap<
+        ts.Declaration,
+        boolean
+    >();
+
     /**
      * Whether every declaration a field stores types it as a read-only array
      * view (`readonlyArrayType`): no array grows through the field.
@@ -3413,12 +3462,17 @@ export class DataTypeRegistry {
         const declarations = field.declarations ?? [];
         return (
             declarations.length > 0 &&
-            declarations.every((declaration) =>
-                readonlyArrayType(
-                    this.checker,
-                    this.checker.getTypeAtLocation(declaration),
-                ),
-            )
+            declarations.every((declaration) => {
+                let known = this.readonlyArrayDeclarations.get(declaration);
+                if (known === undefined) {
+                    known = readonlyArrayType(
+                        this.checker,
+                        this.checker.getTypeAtLocation(declaration),
+                    );
+                    this.readonlyArrayDeclarations.set(declaration, known);
+                }
+                return known;
+            })
         );
     }
 
@@ -5678,13 +5732,15 @@ export class DataTypeRegistry {
         if ((objectType.objectFlags & ts.ObjectFlags.Reference) !== 0) {
             const reference = type as ts.TypeReference;
             const target = reference.target;
-            // A PromiseLike is a native promise where no source of the
-            // program names a `then` member another object could implement.
+            // A PromiseLike is a native promise where no site of the program
+            // gives an object a `then` member (`definitions`).
             if (
                 library &&
                 (libraryName(type) === "Promise" ||
                     (libraryName(type) === "PromiseLike" &&
-                        !declaresThenMember(this.classHierarchy.program)))
+                        !programObservations(
+                            this.classHierarchy.program,
+                        ).definitions.has("then")))
             ) {
                 const [argument] = this.checker.getTypeArguments(reference);
                 if (!argument) return undefined;
@@ -8888,30 +8944,26 @@ export class DataTypeRegistry {
     }
 
     /**
-     * The properties of `Pick<T, K>` or `Omit<T, K>` whose arguments the
-     * instantiation in force substitutes: those of `T` that `K`'s literal
-     * keys select, or leave, each keeping its modifiers, as the library's
-     * homomorphic mapped type does. Undefined for any other type and for
-     * keys that are not string literals.
+     * The properties of a mapped type selecting a record's properties by
+     * key (`keyedSelection`) whose arguments the instantiation in force
+     * substitutes: those of the record that the keys' literals select, or
+     * leave, each keeping its modifiers, as a homomorphic mapped type does.
+     * Undefined for any other type and for keys that are not string
+     * literals.
      */
     private keyedProperties(type: ts.Type): readonly ts.Symbol[] | undefined {
-        const alias = libraryName(type.aliasSymbol);
-        const [record, keys] = type.aliasTypeArguments ?? [];
-        if (
-            (alias !== "Pick" && alias !== "Omit") ||
-            !record ||
-            !keys ||
-            !this.mentionsSubstitution(type)
-        )
-            return undefined;
+        const selection = keyedSelection(type);
+        if (!selection || !this.mentionsSubstitution(type)) return undefined;
         const names = new Set<string>();
-        for (const key of unionMembers(this.resolveTypeParameter(keys))) {
+        for (const key of unionMembers(
+            this.resolveTypeParameter(selection.keys),
+        )) {
             if (!key.isStringLiteral()) return undefined;
             names.add(key.value);
         }
-        return this.structProperties(this.resolveTypeParameter(record)).filter(
-            (property) => names.has(property.name) === (alias === "Pick"),
-        );
+        return this.structProperties(
+            this.resolveTypeParameter(selection.record),
+        ).filter((property) => names.has(property.name) === selection.kept);
     }
 
     /**

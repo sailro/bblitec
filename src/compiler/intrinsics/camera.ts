@@ -480,19 +480,19 @@ export function compileCameraIntrinsic(
                 "aspect_camera",
                 cameraExpression,
             );
-            const [width, height] = [1, 2].map((index) => {
-                const name = context.allocateTemporaryCppName("aspect_extent");
-                context.emit({
-                    kind: "declaration",
-                    type: "const double",
-                    name,
-                    initializer: context.compileNumber(
-                        argumentAt(call, index),
-                        "double",
-                    ),
-                });
-                return name;
-            });
+            const [width, height] = [1, 2].map(
+                (index) =>
+                    context.bindings.pinValueToTemporary(
+                        {
+                            kind: "number",
+                            cpp: context.compileNumber(
+                                argumentAt(call, index),
+                                "double",
+                            ),
+                        },
+                        "aspect_extent",
+                    ).cpp,
+            );
             // `camera?.viewport`: no camera scales the target's own ratio.
             const raw = `(${width} / ${height})`;
             if (isAbsentValue(camera))
@@ -545,19 +545,17 @@ export function compileCameraIntrinsic(
             context.reachFeature("camera:view-projection", call);
             let aspect = "";
             if (hasAspect) {
-                const value = context.compileNumber(
-                    argumentAt(call, 1),
-                    "double",
+                const captured = context.bindings.pinValueToTemporary(
+                    {
+                        kind: "number",
+                        cpp: context.compileNumber(
+                            argumentAt(call, 1),
+                            "double",
+                        ),
+                    },
+                    "camera_aspect",
                 );
-                const captured =
-                    context.allocateTemporaryCppName("camera_aspect");
-                context.emit({
-                    kind: "declaration",
-                    type: "const double",
-                    name: captured,
-                    initializer: value,
-                });
-                aspect = `, ${captured}`;
+                aspect = `, ${captured.cpp}`;
             }
             const getter =
                 importedName === "getViewMatrix"

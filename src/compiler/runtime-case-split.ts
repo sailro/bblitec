@@ -160,7 +160,7 @@ export function compileWithRuntimeCaseSplit(
         const runtime = runtimeSelectors(
             context,
             [
-                ...tests.groups,
+                ...tests.groups(),
                 ...tests.records.flatMap((record) =>
                     recordMemberSelectors(context, record),
                 ),
@@ -359,7 +359,8 @@ interface RecordArgument {
  * (`recordMemberSelectors`).
  */
 interface SelectorTests {
-    groups: readonly Selector[];
+    /** The tests, a value's of a few module constants among them, asked once. */
+    groups: () => readonly Selector[];
     records: readonly RecordArgument[];
 }
 
@@ -714,6 +715,22 @@ function selectorTests(
             });
     };
     const records: RecordArgument[] = [];
+    // A record argument value that may be one of a few module constants,
+    // with the place its test takes among the groups: which constants it
+    // can be (`selectedModuleConstants`) is asked only where an answer
+    // depends on it.
+    const candidates: { node: ts.Expression; index: number }[] = [];
+    const known = new Map<
+        ts.Expression,
+        readonly ts.Identifier[] | undefined
+    >();
+    const constantsOf = (
+        node: ts.Expression,
+    ): readonly ts.Identifier[] | undefined => {
+        if (!known.has(node))
+            known.set(node, selectedModuleConstants(context, node));
+        return known.get(node);
+    };
     // An argument value of a few outcomes, unless it is a literal (already
     // a constant) or a selection inside it already splits it; else the
     // record it names.
@@ -738,16 +755,8 @@ function selectorTests(
             !containsSelection(node)
         ) {
             const absent = nullability(type);
-            const constants =
-                absent.null || absent.undefined
-                    ? undefined
-                    : selectedModuleConstants(context, node);
-            if (constants)
-                addGroup(
-                    "constant",
-                    node,
-                    constants.map((constant) => ({ constant })),
-                );
+            if (!absent.null && !absent.undefined)
+                candidates.push({ node, index: groups.length });
         }
     };
     const visit = (node: ts.Node): void => {
@@ -776,28 +785,33 @@ function selectorTests(
         valuePosition(argument);
         visit(argument);
     });
-    if (groups.length === 0 && records.length === 0) return undefined;
+    if (
+        groups.length === 0 &&
+        records.length === 0 &&
+        !candidates.some(({ node }) => constantsOf(node))
+    )
+        return undefined;
     // The bindings the tests read; no call in the arguments may receive one.
-    const roots = new Set<ts.Symbol>();
     const binding = (node: ts.Node): node is ts.Identifier =>
         ts.isIdentifier(node) && isValueReference(node);
-    const collect = (node: ts.Node): void => {
+    const collect = (node: ts.Node, roots: Set<ts.Symbol>): void => {
         if (binding(node)) {
             const symbol = declaredSymbol(context.checker, node);
             if (symbol) roots.add(symbol);
         }
-        ts.forEachChild(node, collect);
+        ts.forEachChild(node, (child) => collect(child, roots));
     };
+    const roots = new Set<ts.Symbol>();
     for (const test of [
         ...groups.map((group) => group.test),
         ...records.map((record) => record.nodes[0]!),
     ]) {
         if (context.evaluationOrder.writesStorage(test)) return undefined;
-        collect(test);
+        collect(test, roots);
     }
     // A binding handed by value (a string, a boolean) is no way to change
     // what it holds.
-    const receivesRoot = (node: ts.Node): boolean =>
+    const receivesRoot = (node: ts.Node, roots: Set<ts.Symbol>): boolean =>
         (binding(node) &&
             roots.has(declaredSymbol(context.checker, node)!) &&
             typeCanCarryReference(context.checker.getTypeAtLocation(node)) &&
@@ -809,10 +823,47 @@ function selectorTests(
                     context.checker.getTypeAtLocation(node.parent),
                 )
             )) ||
-        (ts.forEachChild(node, receivesRoot) ?? false);
-    if (calls.some((inner) => inner.arguments.some(receivesRoot)))
-        return undefined;
-    return { groups, records };
+        (ts.forEachChild(node, (child) => receivesRoot(child, roots)) ?? false);
+    const handsRoot = (roots: Set<ts.Symbol>): boolean =>
+        calls.some((inner) =>
+            inner.arguments.some((argument) => receivesRoot(argument, roots)),
+        );
+    if (handsRoot(roots)) return undefined;
+    // A constant test rules the split out as any test does: where it
+    // writes, or an argument's call receives a binding it reads.
+    for (const { node } of candidates) {
+        const read = new Set<ts.Symbol>();
+        collect(node, read);
+        if (
+            (context.evaluationOrder.writesStorage(node) || handsRoot(read)) &&
+            constantsOf(node)
+        )
+            return undefined;
+    }
+    return {
+        groups: () => {
+            let inserted = 0;
+            for (const { node, index } of candidates.splice(0)) {
+                const constants = constantsOf(node);
+                if (!constants) continue;
+                const group = groups.find(
+                    (candidate) =>
+                        candidate.kind === "constant" &&
+                        sameExpression(context.checker, candidate.test, node),
+                );
+                if (group) group.nodes.push(node);
+                else
+                    groups.splice(index + inserted++, 0, {
+                        kind: "constant",
+                        test: node,
+                        nodes: [node],
+                        outcomes: constants.map((constant) => ({ constant })),
+                    });
+            }
+            return groups;
+        },
+        records,
+    };
 }
 
 /** The compile-time record a name holds, while its facts are current. */
@@ -1035,21 +1086,6 @@ function constantSelector(
     return told ? { ...selector, outcomes, discriminants } : undefined;
 }
 
-/** A run-time string or native enum, spelled `cpp`, compared with one literal. */
-function literalTest(
-    context: CaseSplitContext,
-    cpp: string,
-    storage: DataType | undefined,
-    text: string,
-    node: ts.Expression,
-): string {
-    return `${cpp} == ${
-        storage?.kind === "enum"
-            ? context.dataTypes.enumMemberCpp(storage, text, node)
-            : context.cppString(text)
-    }`;
-}
-
 /** A literal test's storage, which its arms compare: a string or a native enum. */
 function literalStorage(value: Value): boolean {
     return (
@@ -1116,8 +1152,7 @@ function splitCall(
                 });
                 return {
                     literal: (text) =>
-                        literalTest(
-                            context,
+                        context.dataLowerer.literalEquality(
                             name,
                             value.dataType,
                             text,
@@ -1150,8 +1185,7 @@ function splitCall(
                     constant: (outcome) =>
                         reads
                             .map(({ key, read }) =>
-                                literalTest(
-                                    context,
+                                context.dataLowerer.literalEquality(
                                     read!.cpp,
                                     read!.dataType,
                                     outcome.record!.recordProperties![key]!

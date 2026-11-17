@@ -24,7 +24,10 @@ import {
 } from "./emission-transaction.js";
 import { pinnedModuleFunction } from "../lowering/pinned-shader-builders.js";
 import { jsonToValue, type JsonValuePolicy } from "./json-value.js";
-import type { LoweringServices } from "./lowering-services.js";
+import type {
+    LoweringServices,
+    ShaderSourceText,
+} from "./lowering-services.js";
 import { staticJsonValue } from "./option-helpers.js";
 import { parameterIsRebound } from "./parameter-effects.js";
 import {
@@ -36,6 +39,7 @@ import { sourceFilesWalk } from "./analysis-walk.js";
 import {
     functionOfDeclaration,
     notJson,
+    isSuspensionPoint,
     objectLiteralMembers,
     outermostWrapper,
     unwrapExpression,
@@ -44,8 +48,9 @@ import {
 import { isPinnedType } from "./data-types.js";
 import { arrayShape, callSignatures, presentMembers } from "./type-facts.js";
 import type { CompiledShaderMaterialOptions } from "./shader-material.js";
-import type { StaticListItem, Value } from "./types.js";
-import { absenceOf, undefinedValue } from "./values/model.js";
+import type { ShaderStage } from "../shader-ir.js";
+import type { Value } from "./types.js";
+import { absenceOf, undefinedValue, valueForKind } from "./values/model.js";
 
 /**
  * One own key of a record: plain data generation knows, `undefined`, or a
@@ -149,13 +154,28 @@ export class ShaderDerivationRecorder {
         readonly RecordFacts[]
     >();
 
+    /** The JSON identity of each reading `creations` (by variant) and `stores` (by map) hold. */
+    private readonly identities = new EmissionMap<
+        string | ts.Symbol,
+        EmissionSet<string>
+    >();
+
+    /** Whether `identity` is a reading `owner` does not hold yet, which it then holds. */
+    private firstReading(owner: string | ts.Symbol, identity: string): boolean {
+        const known = this.identities.get(owner);
+        if (known?.has(identity)) return false;
+        if (known) known.add(identity);
+        else this.identities.set(owner, new EmissionSet([identity]));
+        return true;
+    }
+
     /** Records the options a variant compiled from, once per distinct reading. */
     public recordCreation(variant: string, options: RecordFacts): void {
-        const known = this.creations.get(variant) ?? [];
-        const identity = JSON.stringify([...options]);
-        if (known.some((facts) => JSON.stringify([...facts]) === identity))
-            return;
-        this.creations.set(variant, [...known, options]);
+        if (!this.firstReading(variant, JSON.stringify([...options]))) return;
+        this.creations.set(variant, [
+            ...(this.creations.get(variant) ?? []),
+            options,
+        ]);
     }
 
     /** The options a variant compiled from: one entry per distinct reading. */
@@ -178,16 +198,19 @@ export class ShaderDerivationRecorder {
             if (!this.opaque.has(map)) this.opaque.set(map, store);
             return;
         }
-        const known = this.stores.get(map) ?? [];
-        const identity = JSON.stringify(storeIdentity(store));
         if (
-            known.some(
-                (candidate) =>
-                    JSON.stringify(storeIdentity(candidate)) === identity,
+            !this.firstReading(
+                map,
+                JSON.stringify([
+                    store.variant,
+                    store.member,
+                    [...store.options],
+                    [...store.members],
+                ]),
             )
         )
             return;
-        this.stores.set(map, [...known, store]);
+        this.stores.set(map, [...(this.stores.get(map) ?? []), store]);
     }
 
     /** The stores a derivation reads, or why the map's recipes are unknown. */
@@ -195,13 +218,19 @@ export class ShaderDerivationRecorder {
         return this.opaque.get(map) ?? this.stores.get(map) ?? [];
     }
 
-    /** A site's table; a recipe map's stores close once one derives from it. */
-    public recordSite(
+    /**
+     * The variant a derivation site creates from its source's, `source`
+     * spelling the source's variant and `variants` the site's table; a
+     * recipe map's stores close once one derives from it.
+     */
+    public derivedVariantCpp(
         map: ts.Symbol | undefined,
         variants: ReadonlyMap<number, number>,
-    ): number {
+        source: string,
+    ): string {
         if (map) this.derived.add(map);
-        return this.sites.push(variants) - 1;
+        const site = this.sites.push(variants) - 1;
+        return `bblscene::${derivedVariantFunction(site)}(${source})`;
     }
 
     /** One function per derivation site, from source variant to derived variant. */
@@ -209,7 +238,7 @@ export class ShaderDerivationRecorder {
         return this.sites.flatMap((variants, site) => [
             ...(site > 0 ? [""] : []),
             `// The shader variant derivation site ${site} creates from its source material's variant.`,
-            `[[maybe_unused]] inline std::uint32_t derived_shader_variant_${site}(std::uint32_t source) {`,
+            `[[maybe_unused]] inline std::uint32_t ${derivedVariantFunction(site)}(std::uint32_t source) {`,
             "    switch (source) {",
             ...[...variants]
                 .sort(([left], [right]) => left - right)
@@ -224,13 +253,9 @@ export class ShaderDerivationRecorder {
     }
 }
 
-function storeIdentity(store: RecipeStore): unknown {
-    return [
-        store.variant,
-        store.member,
-        [...store.options],
-        [...store.members],
-    ];
+/** The function a derivation site's table compiles to. */
+function derivedVariantFunction(site: number): string {
+    return `derived_shader_variant_${site}`;
 }
 
 /** `createShaderMaterial` calls whose options spread a member chain. */
@@ -255,7 +280,7 @@ const derivationSites = sourceFilesWalk(
  * Whether the program derives a shader material from a recipe's options:
  * only then do recipe maps keep their stores.
  */
-export function derivesShaderMaterials(
+function derivesShaderMaterials(
     context: Pick<ShaderDerivationContext, "program" | "symbols">,
 ): boolean {
     return (
@@ -264,17 +289,174 @@ export function derivesShaderMaterials(
     );
 }
 
+/** A ShaderMaterial field the pin's `createShaderMaterial` builds from its options. */
+interface ShaderMaterialField {
+    /** The option the field is built from. */
+    readonly option: string;
+    /** Every option the pin's value of the field reads, where it reads others too. */
+    readonly reads?: readonly string[];
+    /** An option `createShaderMaterial` validates whatever it builds. */
+    readonly required?: true;
+    /** A WGSL source: the stage `createShaderMaterial` compiles it as. */
+    readonly stage?: ShaderStage;
+    /** An option holding a declaration list, read item by item. */
+    readonly items?: true;
+    /** Generation reads the field as the plain data the pin builds (`pinnedShaderMaterialField`). */
+    readonly built?: true;
+    /**
+     * The native list holding the field's names (`bbl::ShaderDeclarationList`);
+     * `names` where its entries are the names themselves.
+     */
+    readonly nativeList?: { readonly cpp: string; readonly names?: true };
+}
+
 /**
- * The ShaderMaterial fields `createShaderMaterial` builds from its options,
- * by the option each is built from.
+ * The ShaderMaterial fields `createShaderMaterial` builds from its options.
+ * A material view redefines the public ones; the pin's own (`_`-prefixed)
+ * stay its source's.
  */
-export const PINNED_SHADER_FIELDS: Readonly<Record<string, string>> = {
-    vertexSource: "vertexSource",
-    fragmentSource: "fragmentSource",
-    uniformDecls: "uniforms",
-    samplerDecls: "samplers",
-    storageBufferDecls: "storageBuffers",
+const SHADER_MATERIAL_FIELDS: Readonly<Record<string, ShaderMaterialField>> = {
+    vertexSource: {
+        option: "vertexSource",
+        required: true,
+        stage: "vertex",
+        built: true,
+    },
+    fragmentSource: {
+        option: "fragmentSource",
+        required: true,
+        stage: "fragment",
+        built: true,
+    },
+    attributes: {
+        option: "attributes",
+        required: true,
+        nativeList: {
+            cpp: "bbl::ShaderDeclarationList::attributes",
+            names: true,
+        },
+    },
+    uniformDecls: {
+        option: "uniforms",
+        items: true,
+        built: true,
+        nativeList: { cpp: "bbl::ShaderDeclarationList::uniforms" },
+    },
+    samplerDecls: {
+        option: "samplers",
+        items: true,
+        built: true,
+        nativeList: { cpp: "bbl::ShaderDeclarationList::samplers" },
+    },
+    _externalTextureDecls: { option: "externalTextures", items: true },
+    storageBufferDecls: {
+        option: "storageBuffers",
+        items: true,
+        built: true,
+        nativeList: { cpp: "bbl::ShaderDeclarationList::storage_buffers" },
+    },
+    needAlphaBlending: {
+        option: "needAlphaBlending",
+        reads: ["needAlphaBlending", "blend"],
+    },
+    blendMode: { option: "blendMode" },
+    blend: { option: "blend" },
+    transmissive: { option: "transmissive" },
+    needAlphaTesting: { option: "needAlphaTesting" },
+    backFaceCulling: { option: "backFaceCulling" },
+    depthWrite: {
+        option: "depthWrite",
+        reads: ["depthWrite", "needAlphaBlending", "blend"],
+    },
+    depthCompare: { option: "depthCompare" },
+    depthOnlyFragment: { option: "depthOnlyFragment" },
+    depthBias: { option: "depthBias" },
+    depthBiasSlopeScale: { option: "depthBiasSlopeScale" },
 };
+
+/** The ShaderMaterial field `name` names, when `createShaderMaterial` builds one. */
+export function shaderMaterialField(
+    name: string,
+): ShaderMaterialField | undefined {
+    return Object.hasOwn(SHADER_MATERIAL_FIELDS, name)
+        ? SHADER_MATERIAL_FIELDS[name]
+        : undefined;
+}
+
+/** The fields a material view may redefine, in the pin's order. */
+export function viewFields(): readonly string[] {
+    return Object.keys(SHADER_MATERIAL_FIELDS).filter(
+        (name) => !name.startsWith("_"),
+    );
+}
+
+/** The fields whose pinned value reads other options too. */
+export function fieldsReadingOthers(): ReadonlyArray<
+    readonly [
+        string,
+        ShaderMaterialField & { readonly reads: readonly string[] },
+    ]
+> {
+    return Object.entries(SHADER_MATERIAL_FIELDS).flatMap(([name, field]) =>
+        field.reads ? [[name, { ...field, reads: field.reads }] as const] : [],
+    );
+}
+
+/** The options holding declaration lists, read item by item. */
+const LISTED_OPTIONS: ReadonlySet<string> = new Set(
+    Object.values(SHADER_MATERIAL_FIELDS).flatMap((field) =>
+        field.items ? [field.option] : [],
+    ),
+);
+
+/**
+ * Whether the native declaration list of field `list` lowers `method` over
+ * it (`shader-declaration-lists.ts`): `some` over any list, `includes`
+ * over a list of names.
+ */
+export function nativeListSearch(list: string, method: string): boolean {
+    const native = shaderMaterialField(list)?.nativeList;
+    return (
+        native !== undefined &&
+        (method === "some" || (method === "includes" && native.names === true))
+    );
+}
+
+/**
+ * Whether a field read is one the native declaration list lowers: the list
+ * a `for (const <name> of ...)` walks, or the receiver of a search
+ * `nativeListSearch` names.
+ */
+function readsNativeDeclarationList(
+    read: ts.PropertyAccessExpression,
+): boolean {
+    if (
+        ts.isOptionalChain(read) ||
+        !shaderMaterialField(read.name.text)?.nativeList
+    )
+        return false;
+    const outer = outermostWrapper(read);
+    const parent = outer.parent;
+    if (ts.isForOfStatement(parent)) {
+        const head = parent.initializer;
+        return (
+            parent.expression === outer &&
+            !isSuspensionPoint(parent) &&
+            ts.isVariableDeclarationList(head) &&
+            head.declarations.length === 1 &&
+            ts.isIdentifier(head.declarations[0]!.name)
+        );
+    }
+    return (
+        ts.isPropertyAccessExpression(parent) &&
+        parent.expression === outer &&
+        !parent.questionDotToken &&
+        ts.isCallExpression(parent.parent) &&
+        parent.parent.expression === parent &&
+        !parent.parent.questionDotToken &&
+        nativeListSearch(read.name.text, parent.name.text)
+    );
+}
 
 /** Whether a type is the pin's ShaderMaterial, or an intersection holding it. */
 export function isShaderMaterialType(type: ts.Type): boolean {
@@ -283,7 +465,10 @@ export function isShaderMaterialType(type: ts.Type): boolean {
         : isPinnedType(type, ["ShaderMaterial"]);
 }
 
-/** Reads of a ShaderMaterial's built fields, and `createMaterialView` calls. */
+/**
+ * Reads of a ShaderMaterial's built fields the native declaration lists do
+ * not lower, and `createMaterialView` calls.
+ */
 const factReads = sourceFilesWalk(
     (
         node: ts.Node,
@@ -293,7 +478,8 @@ const factReads = sourceFilesWalk(
         (ts.isCallExpression(node) &&
             symbols.importedName(node.expression) === "createMaterialView") ||
         (ts.isPropertyAccessExpression(node) &&
-            Object.hasOwn(PINNED_SHADER_FIELDS, node.name.text) &&
+            shaderMaterialField(node.name.text)?.built &&
+            !readsNativeDeclarationList(node) &&
             isShaderMaterialType(checker.getTypeAtLocation(node.expression)))
             ? node
             : undefined,
@@ -319,44 +505,64 @@ export function keepsShaderCreations(
 
 const shaderMaterialModule = "src/material/shader/shader-material.ts";
 
+/** @unjournaled Pure functions of facts nothing writes once recorded. */
+const pinnedFields = new WeakMap<
+    RecordFacts,
+    Map<string, { readonly json: unknown } | string>
+>();
+
 /**
  * A field of the ShaderMaterial the pin's `createShaderMaterial` builds
  * from options `facts`, as plain data; a string says why generation does
- * not hold it. The pin runs over the options its validation reads (both
- * sources and the attributes) and `read`, the ones the field is built
- * from: by default the option `PINNED_SHADER_FIELDS` names.
+ * not hold it. The pin runs over the options it validates whatever it
+ * builds and the ones the field reads (`SHADER_MATERIAL_FIELDS`).
  */
 export function pinnedShaderMaterialField(
     facts: RecordFacts,
     field: string,
-    read: readonly string[] = [PINNED_SHADER_FIELDS[field]!],
 ): { readonly json: unknown } | string {
+    let fields = pinnedFields.get(facts);
+    if (!fields) {
+        fields = new Map();
+        pinnedFields.set(facts, fields);
+    }
+    const known = fields.get(field);
+    if (known !== undefined) return known;
+    const built = shaderMaterialField(field)!;
+    const read = [
+        ...Object.values(SHADER_MATERIAL_FIELDS).flatMap((candidate) =>
+            candidate.required ? [candidate.option] : [],
+        ),
+        ...(built.reads ?? [built.option]),
+    ];
     const options: Record<string, unknown> = {};
-    for (const key of [
-        "vertexSource",
-        "fragmentSource",
-        "attributes",
-        ...read,
-    ]) {
+    let result: { readonly json: unknown } | string | undefined;
+    for (const key of read) {
         const fact = facts.get(key);
         if (fact === undefined || fact === "undefined") continue;
-        if (fact === "runtime")
-            return `its '${key}' option is decided at run time`;
+        if (fact === "runtime") {
+            result = `its '${key}' option is decided at run time`;
+            break;
+        }
         options[key] = fact.json;
     }
-    const material = pinnedModuleFunction(
-        shaderMaterialModule,
-        "createShaderMaterial",
-    )(options);
-    const value: unknown =
-        typeof material === "object" && material !== null
-            ? Reflect.get(material, field)
-            : undefined;
-    if (value === undefined)
-        throw new Error(
-            `Pinned createShaderMaterial no longer builds '${field}'.`,
-        );
-    return { json: JSON.parse(JSON.stringify(value)) as unknown };
+    if (result === undefined) {
+        const material = pinnedModuleFunction(
+            shaderMaterialModule,
+            "createShaderMaterial",
+        )(options);
+        const value: unknown =
+            typeof material === "object" && material !== null
+                ? Reflect.get(material, field)
+                : undefined;
+        if (value === undefined)
+            throw new Error(
+                `Pinned createShaderMaterial no longer builds '${field}'.`,
+            );
+        result = { json: JSON.parse(JSON.stringify(value)) as unknown };
+    }
+    fields.set(field, result);
+    return result;
 }
 
 /**
@@ -377,7 +583,6 @@ export function shaderOptionFacts(
     >,
     object: ts.ObjectLiteralExpression,
     known: Readonly<Record<string, RecordFact>>,
-    lists: ReadonlySet<string>,
 ): RecordFacts {
     const keys = new Set<string>();
     for (const member of objectLiteralMembers(
@@ -394,7 +599,8 @@ export function shaderOptionFacts(
         const expression = context.objectProperty(object, key)!;
         facts.set(
             key,
-            known[key] ?? optionFact(context, expression, lists.has(key)),
+            known[key] ??
+                optionFact(context, expression, LISTED_OPTIONS.has(key)),
         );
     }
     return facts;
@@ -420,6 +626,33 @@ export function optionFact(
         : expressionFact(context, expression);
 }
 
+/** What `read` finds, read without leaving code behind; a refusal is a value only the run time holds. */
+function probedFact(
+    context: Pick<ShaderDerivationContext, "probeEmission">,
+    read: () => RecordFact,
+): RecordFact {
+    return context.probeEmission(
+        () => unlessRefused(read) ?? "runtime",
+        () => false,
+    );
+}
+
+/** A stage's text as a fact: a text that lifts run-time numbers into uniforms is the run time's. */
+export function sourceTextFact(text: ShaderSourceText): RecordFact {
+    return text.dynamicUniforms.length > 0 ? "runtime" : { json: text.source };
+}
+
+/** The WGSL a source expression compiles to, read without leaving code behind. */
+export function shaderSourceFact(
+    context: Pick<LoweringServices, "compileShaderSource" | "probeEmission">,
+    expression: ts.Expression,
+    stage: ShaderStage,
+): RecordFact {
+    return probedFact(context, () =>
+        sourceTextFact(context.compileShaderSource(expression, stage)),
+    );
+}
+
 /** What a member's expression holds, read without leaving code behind. */
 function expressionFact(
     context: Pick<
@@ -428,24 +661,19 @@ function expressionFact(
     >,
     expression: ts.Expression,
 ): RecordFact {
-    return context.probeEmission(
-        () =>
-            unlessRefused((): RecordFact => {
-                const json = staticJsonValue(
-                    {
-                        resolveStaticExpression: (node) =>
-                            context.resolveStaticLiteral(node),
-                    },
-                    expression,
-                );
-                if (json !== notJson) return { json };
-                return absenceOf(context.compileValue(expression)) ===
-                    "undefined"
-                    ? "undefined"
-                    : "runtime";
-            }) ?? "runtime",
-        () => false,
-    );
+    return probedFact(context, () => {
+        const json = staticJsonValue(
+            {
+                resolveStaticExpression: (node) =>
+                    context.resolveStaticLiteral(node),
+            },
+            expression,
+        );
+        if (json !== notJson) return { json };
+        return absenceOf(context.compileValue(expression)) === "undefined"
+            ? "undefined"
+            : "runtime";
+    });
 }
 
 /** A declaration list's items, each read within the bindings it was spelled in. */
@@ -459,29 +687,24 @@ function listFact(
     >,
     expression: ts.Expression,
 ): RecordFact {
-    return context.probeEmission(
-        () =>
-            unlessRefused((): RecordFact => {
-                if (absenceOf(context.compileValue(expression)) === "undefined")
-                    return "undefined";
-                const items = context
-                    .staticListItems(expression)
-                    .map((item: StaticListItem) => {
-                        const read = (): unknown =>
-                            item.text ??
-                            staticJsonValue(
-                                {
-                                    resolveStaticExpression: (node) =>
-                                        context.resolveStaticLiteral(node),
-                                },
-                                item.node,
-                            );
-                        return item.within ? item.within(read) : read();
-                    });
-                return items.includes(notJson) ? "runtime" : { json: items };
-            }) ?? "runtime",
-        () => false,
-    );
+    return probedFact(context, () => {
+        if (absenceOf(context.compileValue(expression)) === "undefined")
+            return "undefined";
+        const items = context.staticListItems(expression).map((item) =>
+            item.within(
+                (): unknown =>
+                    item.text ??
+                    staticJsonValue(
+                        {
+                            resolveStaticExpression: (node) =>
+                                context.resolveStaticLiteral(node),
+                        },
+                        item.node,
+                    ),
+            ),
+        );
+        return items.includes(notJson) ? "runtime" : { json: items };
+    });
 }
 
 /** The binding an options argument names, when it holds one object for its scope. */
@@ -556,22 +779,42 @@ function recipeMap(
     return aliasFree ? symbol : undefined;
 }
 
+type RecipeLookupContext = Pick<
+    ShaderDerivationContext,
+    | "bindings"
+    | "checker"
+    | "hasStableNativeBinding"
+    | "program"
+    | "symbols"
+    | "unwrap"
+>;
+
+/**
+ * A map's `get` (`read`): a recipe map's carries the map and the material
+ * it was keyed by (`shaderRecipeLookup`).
+ */
+export function readShaderRecipe(
+    context: RecipeLookupContext,
+    receiver: ts.Expression,
+    key: Value,
+    keyNode: ts.Expression,
+    read: () => Value,
+): Value {
+    const lookup = shaderRecipeLookup(context, receiver, key, keyNode);
+    const value = read();
+    return lookup
+        ? valueForKind(value.kind, { ...value, shaderRecipeLookup: lookup })
+        : value;
+}
+
 /**
  * What a recipe map's `get` yields beside its value: the map and the
  * material it was keyed by, read from storage nothing reassigns or, for a
  * key no stable binding names (a loop's element), from a constant the
  * lookup pins it to where it reads it.
  */
-export function shaderRecipeLookup(
-    context: Pick<
-        ShaderDerivationContext,
-        | "bindings"
-        | "checker"
-        | "hasStableNativeBinding"
-        | "program"
-        | "symbols"
-        | "unwrap"
-    >,
+function shaderRecipeLookup(
+    context: RecipeLookupContext,
     receiver: ts.Expression,
     key: Value,
     keyNode: ts.Expression,
@@ -847,11 +1090,95 @@ export function derivedRecipeSpread(
     return undefined;
 }
 
-/** The variants a derivation site takes, by source variant. */
-export interface DerivedShaderMaterial {
-    readonly variants: ReadonlyMap<number, { name: string; id: number }>;
-    readonly lookup: ShaderRecipeLookup;
-    readonly site: number;
+/** Why a derivation refuses, at `node`. */
+interface DerivationRefusals {
+    readonly node: ts.Node;
+    /** Options that lift run-time numbers into uniforms, or, where `opaque`, a transmissive program. */
+    readonly runtime: string;
+    /** Two programs derived from one source variant. */
+    readonly twice: string;
+    readonly opaque?: true;
+}
+
+/**
+ * The program `options` compile to from generation-known options, the
+ * binding `binding` names holding source variant `source`'s compile-time
+ * record: one per source variant, kept in `derived` by source variant id.
+ */
+export function compileVariantProgram(
+    context: Pick<
+        ShaderDerivationContext,
+        "bindings" | "captureEmittedLines" | "fail" | "intrinsicOptions"
+    >,
+    derived: Map<number, CompiledShaderMaterialOptions>,
+    source: number,
+    binding: { readonly name: ts.Identifier; readonly value: Value },
+    options: ts.ObjectLiteralExpression,
+    refusals: DerivationRefusals,
+): CompiledShaderMaterialOptions {
+    let compiled!: CompiledShaderMaterialOptions;
+    context.captureEmittedLines(() => {
+        compiled = context.bindings.withBoundParameters(
+            [{ ...binding, compileTime: true }],
+            () =>
+                context.intrinsicOptions.compileShaderMaterialOptions(options),
+        );
+    });
+    if (compiled.dynamicUniforms || (refusals.opaque && compiled.transmissive))
+        context.fail(refusals.node, refusals.runtime);
+    const previous = derived.get(source);
+    if (previous && previous.id !== compiled.id)
+        context.fail(refusals.node, refusals.twice);
+    derived.set(source, compiled);
+    return compiled;
+}
+
+/**
+ * Facts as the compile-time record a synthesized options literal reads:
+ * each `extra` member first, plain data as itself, an absent member as
+ * `undefined`, and a member only the run time holds as `runtime` reads it.
+ */
+export function factsRecord(
+    context: Pick<ShaderDerivationContext, "cppString" | "fail">,
+    facts: RecordFacts,
+    node: ts.Node,
+    runtime?: (key: string) => Value,
+    extra: Readonly<Record<string, Value>> = {},
+): Value {
+    return {
+        kind: "record",
+        cpp: "",
+        recordOwnKeys: [...Object.keys(extra), ...facts.keys()],
+        recordProperties: {
+            ...extra,
+            ...Object.fromEntries(
+                [...facts].map(([key, fact]) => {
+                    if (fact === "undefined") return [key, undefinedValue()];
+                    if (typeof fact === "object")
+                        return [
+                            key,
+                            jsonToValue(
+                                context,
+                                recipeFactPolicy,
+                                fact.json,
+                                node,
+                            ),
+                        ];
+                    if (!runtime)
+                        throw new Error(
+                            `Options generation compiles hold a run-time '${key}'.`,
+                        );
+                    return [key, runtime(key)];
+                }),
+            ),
+        },
+    };
+}
+
+/** The variants a derivation site takes, by source variant, and its creation's variant. */
+interface DerivedShaderMaterial {
+    readonly variants: ReadonlyMap<number, CompiledShaderMaterialOptions>;
+    readonly variantCpp: string;
 }
 
 /**
@@ -896,48 +1223,36 @@ export function compileDerivedShaderMaterial(
             object,
             "A material derived from a recipe evaluates its options at generation, once per source variant; these write storage or run code with effects.",
         );
-    const variants = new Map<number, { name: string; id: number }>();
+    const variants = new Map<number, CompiledShaderMaterialOptions>();
     for (const store of recipes) {
         if (store.member !== member)
             context.fail(
                 spread,
                 `A material derived from a recipe spreads '${member}', which a store of the map does not hold its key's creation options in.`,
             );
-        const view = recipeView(context, root, store);
-        let derived!: CompiledShaderMaterialOptions;
-        context.captureEmittedLines(() => {
-            derived = context.bindings.withBoundParameters(
-                [
-                    {
-                        name: declaration.name as ts.Identifier,
-                        value: view,
-                        compileTime: true,
-                    },
-                ],
-                () =>
-                    context.intrinsicOptions.compileShaderMaterialOptions(
-                        object,
-                    ),
-            );
-        });
-        if (derived.dynamicUniforms || derived.transmissive)
-            context.fail(
-                spread,
-                "A material derived from a recipe compiles from generation-known options per source variant; this one lifts run-time numbers into uniforms or is transmissive.",
-            );
-        const previous = variants.get(store.variant);
-        if (previous && previous.id !== derived.id)
-            context.fail(
-                spread,
-                "A material derived from a recipe map derives two variants from one source variant: its stores hold different recipes for materials of one variant.",
-            );
-        variants.set(store.variant, { name: derived.name, id: derived.id });
+        compileVariantProgram(
+            context,
+            variants,
+            store.variant,
+            { name: declaration.name, value: recipeView(context, root, store) },
+            object,
+            {
+                node: spread,
+                runtime:
+                    "A material derived from a recipe compiles from generation-known options per source variant; this one lifts run-time numbers into uniforms or is transmissive.",
+                twice: "A material derived from a recipe map derives two variants from one source variant: its stores hold different recipes for materials of one variant.",
+                opaque: true,
+            },
+        );
     }
-    const site = context.sceneManifest.shaderDerivations.recordSite(
-        lookup.map,
-        new Map([...variants].map(([source, { id }]) => [source, id])),
-    );
-    return { variants, lookup, site };
+    return {
+        variants,
+        variantCpp: context.sceneManifest.shaderDerivations.derivedVariantCpp(
+            lookup.map,
+            new Map([...variants].map(([source, { id }]) => [source, id])),
+            `bbl::shader_material(${lookup.engineCpp}, ${lookup.materialCpp}).shader_variant`,
+        ),
+    };
 }
 
 /**
@@ -959,34 +1274,9 @@ function recipeView(
         }
         return context.compileValue(owner);
     };
-    const record = (
-        facts: RecordFacts,
-        path: readonly string[],
-        extra: Readonly<Record<string, Value>> = {},
-    ): Value => ({
-        kind: "record",
-        cpp: "",
-        recordOwnKeys: [...Object.keys(extra), ...facts.keys()],
-        recordProperties: {
-            ...extra,
-            ...Object.fromEntries(
-                [...facts].map(([name, fact]) => [
-                    name,
-                    fact === "undefined"
-                        ? undefinedValue()
-                        : fact === "runtime"
-                          ? read([...path, name])
-                          : jsonToValue(
-                                context,
-                                recipeFactPolicy,
-                                fact.json,
-                                root,
-                            ),
-                ]),
-            ),
-        },
-    });
-    return record(store.members, [], {
-        [store.member]: record(store.options, [store.member]),
+    return factsRecord(context, store.members, root, (name) => read([name]), {
+        [store.member]: factsRecord(context, store.options, root, (name) =>
+            read([store.member, name]),
+        ),
     });
 }

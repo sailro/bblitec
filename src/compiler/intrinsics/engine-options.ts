@@ -29,8 +29,8 @@ import type {
 import {
     compileOptionalStaticBoolean,
     compilePositiveInteger,
+    compileRenderTargetSampleCount,
     compileStaticNumber,
-    engineSampleCount,
     staticNumberValue,
     pinnedEnumMemberName,
     validateObjectProperties,
@@ -420,13 +420,9 @@ export function compileRenderTargetOptions(
         selectedScale = `if (${context.conditions.compileCondition(selection.condition)}) { ${armScale(first, first.surface)} } else { ${armScale(second, second.surface)} }`;
     } else sized = renderTargetSize(context, size);
     const { width, height, surface, scale } = sized;
-    // A count the run decides is checked where the target is made.
-    const sampleCount = !samples
-        ? "1u"
-        : (engineSampleCount(context, samples) ??
-          (staticNumberValue(context, samples) === undefined
-              ? `bbl::render_target_sample_count(${context.compileNumber(samples, "double")})`
-              : compilePositiveInteger(context, samples)));
+    const sampleCount = samples
+        ? compileRenderTargetSampleCount(context, samples)
+        : "1u";
     const format = colorFormat && context.unwrap(colorFormat);
     const surfaceFormat =
         !!format &&
@@ -699,7 +695,7 @@ export function compileGeometryTaskOptions(
             nameExpression
                 ? context.compileStringLiteral(nameExpression)
                 : `geometry-${manifest.shaderIndex}`,
-        )}, ${manifest.shaderIndex}u, ${samplesExpression ? compilePositiveInteger(context, samplesExpression) : "1u"}, {${compiledDescriptions.join(", ")}}, ${target?.cpp ?? "bbl::RenderTargetHandle{}"}, ${clearColorExpression ? "true" : "false"}, ${clearColorExpression ? context.compileColor4(clearColorExpression) : "bbl::Color4{}"}, {}}`,
+        )}, ${manifest.shaderIndex}u, ${samplesExpression ? compileRenderTargetSampleCount(context, samplesExpression) : "1u"}, {${compiledDescriptions.join(", ")}}, ${target?.cpp ?? "bbl::RenderTargetHandle{}"}, ${clearColorExpression ? "true" : "false"}, ${clearColorExpression ? context.compileColor4(clearColorExpression) : "bbl::Color4{}"}, {}}`,
         manifest,
     };
 }
@@ -728,25 +724,17 @@ export function compileCopyTaskOptions(
         : "copy-task";
     context.sceneManifest.recordCopyTask(name);
     const sourceCpp = compileTextureReference(context, object, "sourceTexture");
-    const targetExpression = context.objectProperty(object, "targetTexture");
-    const resolveExpression = context.objectProperty(object, "resolveTexture");
-    const target = targetExpression
-        ? context.compileValue(targetExpression)
-        : undefined;
-    const resolveTarget = resolveExpression
-        ? context.compileValue(resolveExpression)
-        : undefined;
-    if (!target && !resolveTarget) {
+    const target = optionalRenderTarget(context, object, "targetTexture");
+    const resolveTarget = optionalRenderTarget(
+        context,
+        object,
+        "resolveTexture",
+    );
+    if (!target.value && !resolveTarget.value) {
         context.fail(
             object,
             "Copy task requires targetTexture or resolveTexture.",
         );
-    }
-    if (target && targetExpression) {
-        context.expectKind(target, "render-target", targetExpression);
-    }
-    if (resolveTarget && resolveExpression) {
-        context.expectKind(resolveTarget, "render-target", resolveExpression);
     }
     const viewportExpression = context.objectProperty(object, "viewport");
     let viewport = "bbl::NormalizedViewport{}";
@@ -754,12 +742,12 @@ export function compileCopyTaskOptions(
         const viewportObject = context.expectObjectLiteral(viewportExpression);
         viewport = `bbl::NormalizedViewport{${requiredObjectNumber(context, viewportObject, "x", "double")}, ${requiredObjectNumber(context, viewportObject, "y", "double")}, ${requiredObjectNumber(context, viewportObject, "width", "double")}, ${requiredObjectNumber(context, viewportObject, "height", "double")}}`;
     }
-    const options = `bbl::CopyTaskOptions{${context.cppString(name)}, ${sourceCpp}, ${target?.cpp ?? "bbl::RenderTargetHandle{}"}, ${resolveTarget?.cpp ?? "bbl::RenderTargetHandle{}"}, ${viewportExpression ? "true" : "false"}, ${viewport}}`;
+    const options = `bbl::CopyTaskOptions{${context.cppString(name)}, ${sourceCpp}, ${target.cpp}, ${resolveTarget.cpp}, ${viewportExpression ? "true" : "false"}, ${viewport}}`;
     // `ownsTargetTexture`: the task rebuilds its target at every graph build.
     const ownsExpression = context.objectProperty(object, "ownsTargetTexture");
     const owns = ownsExpression && context.compileBoolean(ownsExpression);
-    return owns && knownCondition(owns) !== false && target && targetExpression
-        ? `bbl::copy_task_owning_target(${context.requireEngine(target, targetExpression)}, ${options}, ${owns})`
+    return owns && knownCondition(owns) !== false && target.value
+        ? `bbl::copy_task_owning_target(${context.requireEngine(target.value, context.objectProperty(object, "targetTexture")!)}, ${options}, ${owns})`
         : options;
 }
 
@@ -783,12 +771,10 @@ export function compileDepthResolveTaskOptions(
         ? context.compileStringLiteral(nameExpression)
         : pinnedDepthResolveTaskName(sharedPinnedContext());
     const target = (property: string): string => {
-        const value = context.objectProperty(object, property);
+        const { cpp, value } = optionalRenderTarget(context, object, property);
         if (!value)
             context.fail(object, `A depth-resolve task requires ${property}.`);
-        const compiled = context.compileValue(value);
-        context.expectKind(compiled, "render-target", value);
-        return compiled.cpp;
+        return cpp;
     };
     return `bbl::DepthResolveTaskOptions{${context.cppString(name)}, ${nameExpression ? "true" : "false"}, ${target("sourceTexture")}, ${target("targetTexture")}}`;
 }
@@ -856,13 +842,10 @@ export function requiredObjectNumber(
 }
 
 /**
- * A render-target option the caller may omit, as the handle it names.
- *
- * Four task options are written this way -- a copy task's target and its
- * resolve, a render task's resolve, a post-process pass's target -- and each
- * means the same thing: a target when the scene named one, and the invalid
- * handle when it did not. With `runtimeAbsence`, the option may also be held
- * as optional data, which names its target only at run time.
+ * A render-target option, as the handle it names: a target when the scene
+ * named one (`value`), and the invalid handle when it did not. A required
+ * option refuses where `value` is absent. With `runtimeAbsence`, the option
+ * may also be held as optional data, which names its target only at run time.
  */
 export function optionalRenderTarget(
     context: EngineOptionContext,
@@ -1086,11 +1069,7 @@ export function compileEnginePixelRatioCap(
     context: PositiveIntegerContext &
         Pick<
             LoweringServices,
-            | "objectProperty"
-            | "options"
-            | "compileNumber"
-            | "emit"
-            | "allocateTemporaryCppName"
+            "objectProperty" | "options" | "compileNumber" | "bindings"
         >,
     options: ts.ObjectLiteralExpression,
 ): string | undefined {
@@ -1104,14 +1083,10 @@ export function compileEnginePixelRatioCap(
             ? String(cap)
             : "std::numeric_limits<double>::infinity()";
     }
-    const cap = context.allocateTemporaryCppName("max_device_pixel_ratio");
-    context.emit({
-        kind: "declaration",
-        type: "const double",
-        name: cap,
-        initializer: context.compileNumber(expression, "double"),
-    });
-    return cap;
+    return context.bindings.pinValueToTemporary(
+        { kind: "number", cpp: context.compileNumber(expression, "double") },
+        "max_device_pixel_ratio",
+    ).cpp;
 }
 
 /**

@@ -21,7 +21,8 @@ import { isJsonValue } from "./json-bridge.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { declaredInDomLibrary } from "./symbols.js";
 import { equalityOperator, unwrapExpression } from "./syntax.js";
-import type { Value } from "./types.js";
+import { staticStringValue, type Value } from "./types.js";
+import { stringLiteral } from "../cpp-literals.js";
 import { valueKinds } from "./type-facts.js";
 
 const STRICT_EQUALITY = new Map<ts.SyntaxKind, ts.SyntaxKind>([
@@ -282,30 +283,32 @@ export function foldStringComparison(
     context: ComparisonContext,
     expression: ts.BinaryExpression,
 ): string | undefined {
-    const equals =
-        expression.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken;
+    const kind = expression.operatorToken.kind;
     if (
-        !equals &&
-        expression.operatorToken.kind !==
-            ts.SyntaxKind.ExclamationEqualsEqualsToken
+        kind !== ts.SyntaxKind.EqualsEqualsEqualsToken &&
+        kind !== ts.SyntaxKind.ExclamationEqualsEqualsToken
     )
         return undefined;
     const stringTyped = (side: ts.Expression): boolean =>
         valueKinds(context.checker.getTypeAtLocation(side)).has("string");
     if (!stringTyped(expression.left) || !stringTyped(expression.right))
         return undefined;
-    const text = (side: ts.Expression): string | undefined => {
+    const text = (side: ts.Expression): Value | undefined => {
         const resolved = context.evaluator.resolveStaticExpression(side);
-        if (ts.isStringLiteralLike(resolved)) return resolved.text;
-        const value = unlessRefused(() => settledRead(context, resolved));
-        return value?.parameterBinding ? undefined : value?.staticString;
+        const value = ts.isStringLiteralLike(resolved)
+            ? staticStringValue(resolved.text, stringLiteral)
+            : unlessRefused(() => settledRead(context, resolved));
+        return value?.staticString !== undefined && !value.parameterBinding
+            ? value
+            : undefined;
     };
+    // The right side is read only once the left one is known.
     return context.probeEmission(() => {
         const left = text(expression.left);
+        if (!left) return undefined;
         const right = text(expression.right);
-        return left === undefined || right === undefined
-            ? undefined
-            : String((left === right) === equals);
+        const folded = right && foldSettledComparison(kind, left, right);
+        return folded === undefined ? undefined : String(folded);
     });
 }
 

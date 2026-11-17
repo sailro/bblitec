@@ -1,5 +1,6 @@
 import type ts from "typescript";
 import { cppIdentifierPattern, stringLiteral } from "../../cpp-literals.js";
+import { writable } from "../emission-transaction.js";
 import { isHandleKind } from "../data-types/handles.js";
 import type { DataType } from "../data-types/model.js";
 import { isUndefinedDataType } from "../data-types/operations.js";
@@ -122,6 +123,47 @@ export function knownPlainData(value: Value, depth = 0): boolean {
             knownPlainData(member, depth + 1),
         )
     );
+}
+
+/** The shader variants a material may draw, when generation knows them. */
+export function shaderVariantsOf(value: Value): readonly string[] | undefined {
+    if (value.sceneShaderVariant !== undefined)
+        return [value.sceneShaderVariant];
+    return value.possibleSceneShaderVariants?.length
+        ? value.possibleSceneShaderVariants
+        : undefined;
+}
+
+/**
+ * The variant facts of a material drawing one of `variants`: the one
+ * variant it draws, or the variants it may draw.
+ */
+export function shaderVariantFacts(
+    variants: readonly string[],
+): Pick<
+    Value,
+    "shaderVariant" | "sceneShaderVariant" | "possibleSceneShaderVariants"
+> {
+    const distinct = [...new Set(variants)].sort();
+    if (distinct.length === 1)
+        return {
+            shaderVariant: distinct[0]!,
+            sceneShaderVariant: distinct[0]!,
+        };
+    return distinct.length > 1 ? { possibleSceneShaderVariants: distinct } : {};
+}
+
+/** `value` drawing one of `variants`, in place of the variants it carried. */
+export function withShaderVariants(
+    value: Value,
+    variants: readonly string[],
+): Value {
+    const updated: Value = { ...value };
+    delete writable(updated).shaderVariant;
+    delete writable(updated).sceneShaderVariant;
+    delete writable(updated).possibleSceneShaderVariants;
+    Object.assign(writable(updated), shaderVariantFacts(variants));
+    return updated;
 }
 
 /**

@@ -905,6 +905,18 @@ export function sharedFunctionHasCallEffects(
     return constructs || reachesOpaqueCallee(context, body);
 }
 
+/** The index of the first of position-ordered `nodes` starting at or after `pos`. */
+function firstNodeFrom(nodes: readonly ts.Node[], pos: number): number {
+    let low = 0;
+    let high = nodes.length;
+    while (low < high) {
+        const middle = (low + high) >>> 1;
+        if (nodes[middle]!.pos < pos) low = middle + 1;
+        else high = middle;
+    }
+    return low;
+}
+
 /** @unjournaled Syntax answers: the nodes that can run once a statement begins, by statement (by file for a whole file). */
 const nodesRunningFrom = new WeakMap<ts.Node, ReadonlySet<ts.Node>>();
 
@@ -939,7 +951,8 @@ export function writtenOnceBegun(
             ? standing
             : file;
     let byStatement = writtenFrom.get(name);
-    if (!byStatement) writtenFrom.set(name, (byStatement = new Map()));
+    if (!byStatement)
+        writtenFrom.set(name, (byStatement = new Map<ts.Node, boolean>()));
     const known = byStatement.get(from);
     if (known !== undefined) return known;
     let reached = nodesRunningFrom.get(from);
@@ -947,20 +960,28 @@ export function writtenOnceBegun(
         const nodes = sourceFileNodes(file);
         if (from === file || !block) reached = new Set(nodes);
         else {
-            reached = new Set(
-                nodes.filter(
-                    (node) =>
-                        node.pos >= block.pos &&
-                        node.end <= block.end &&
-                        (node.pos >= from.pos ||
-                            ts.findAncestor(node, (owner) =>
-                                owner === block
-                                    ? "quit"
-                                    : ts.isFunctionLike(owner) ||
-                                      ts.isClassLike(owner),
-                            ) !== undefined),
-                ),
-            );
+            // Preorder lists nodes by position: the block's nodes start
+            // between its own start and end.
+            const inBlock = new Set<ts.Node>();
+            for (
+                let index = firstNodeFrom(nodes, block.pos);
+                index < nodes.length && nodes[index]!.pos <= block.end;
+                index++
+            ) {
+                const node = nodes[index]!;
+                if (
+                    node.end <= block.end &&
+                    (node.pos >= from.pos ||
+                        ts.findAncestor(node, (owner) =>
+                            owner === block
+                                ? "quit"
+                                : ts.isFunctionLike(owner) ||
+                                  ts.isClassLike(owner),
+                        ) !== undefined)
+                )
+                    inBlock.add(node);
+            }
+            reached = inBlock;
         }
         nodesRunningFrom.set(from, reached);
     }

@@ -27,7 +27,7 @@ await startEngine(engine);
     // Each frame reads the target's extent where the pin reads it.
     assert.match(
         cpp,
-        /const double (v_\w+) = bbl::swapchain_render_target_extent\(v_engine, (v_\w+), false\);\s*const double (v_\w+) = bbl::swapchain_render_target_extent\(v_engine, \2, true\);\s*[^\n]*effective_aspect_ratio\([^\n]*\1, \3\)/,
+        /const double (v_\w+) = bbl::swapchain_render_target_extent\(v_engine, (v_\w+), false\);\s*(?:\[\[maybe_unused\]\] )?const double (v_\w+) = bbl::swapchain_render_target_extent\(v_engine, \2, true\);\s*[^\n]*effective_aspect_ratio\([^\n]*\1, \3\)/,
     );
     // A read a binding holds is the extent when it ran, not a later one.
     assert.match(

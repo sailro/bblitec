@@ -1,24 +1,18 @@
 import ts from "typescript";
-import { sourceFileNodes } from "./analysis-walk.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { programObservations } from "./program-observations.js";
 import { holdsRecord } from "./record-observations.js";
 import {
     calledDeclaration,
-    libraryStaticMember,
     nullishLiteral,
     resolvedSymbol,
 } from "./symbols.js";
 import {
-    accessKey,
     isDestructuringPattern,
     isModuleConstDeclaration,
-    isTypeAssertion,
     literalKey,
-    objectLiteralMembers,
     unwrapExpression,
     variableKind,
-    writeSites,
     yieldedOperands,
 } from "./syntax.js";
 import {
@@ -176,15 +170,16 @@ class HeldConstants {
 }
 
 /**
- * Where the program's objects get their members, from one walk of its
- * sources (type nodes skipped):
+ * Where the program's objects get their members, from its observed
+ * definitions (`ProgramObservations`):
  *
  * - stores: the value each object literal's property or shorthand, and
  *   each assignment (`=`, `??=`, `||=`, `&&=`), gives a member of a known
  *   name; a copy (a spread, `Object.assign`) moves values stores gave;
  * - opened: the names some other site gives a value no store spells: a
- *   method, accessor or class member of that name, another update of it
- *   (compound, increment, a pattern or loop target);
+ *   method, accessor or class member of that name, a constructor's
+ *   parameter property, another update of it (compound, increment, a
+ *   pattern or loop target);
  * - keyed: the objects, by static type, a run-time key may give any member
  *   (`names` the keys it can be, when a union of literals): a computed key,
  *   a keyed or reflective write, a copy of an untyped or index-signature
@@ -197,9 +192,9 @@ class HeldConstants {
  *   index-signature type, through which a run-time key may write them:
  *   handed where one is declared (but to a library function, which writes
  *   no member it does not declare unless reflectively), or asserted to one;
- * - unbounded: a site that may give an object any member: one setting its
- *   prototype, whose members read through it, or a class member under a
- *   run-time string key.
+ * - unbounded: a site that may give an object any member: one giving it a
+ *   foreign prototype (`foreignPrototype`), whose members read through it,
+ *   or a class member under a run-time string key.
  */
 interface MemberStores {
     readonly stores: ReadonlyMap<string, readonly ts.Expression[]>;
@@ -216,6 +211,12 @@ interface MemberStores {
 /** @unjournaled Pure functions of the checked program, kept across replays. */
 const programStores = new WeakMap<ts.Program, MemberStores>();
 
+/** @unjournaled Pure functions of the checked program: `memberStores` by holder type and name. */
+const holderStores = new WeakMap<
+    ts.Type,
+    Map<string, readonly ts.Expression[] | null>
+>();
+
 /**
  * Every value the program stores in the member `name` of an object read
  * as `holder`: undefined where a site can give that member a value no
@@ -230,6 +231,26 @@ export function memberStores(
     name: string,
     holder: ts.Type,
 ): readonly ts.Expression[] | undefined {
+    let byName = holderStores.get(holder);
+    if (!byName)
+        holderStores.set(
+            holder,
+            (byName = new Map<string, readonly ts.Expression[] | null>()),
+        );
+    let known = byName.get(name);
+    if (known === undefined) {
+        known = holderMemberStores(program, checker, name, holder) ?? null;
+        byName.set(name, known);
+    }
+    return known ?? undefined;
+}
+
+function holderMemberStores(
+    program: ts.Program,
+    checker: ts.TypeChecker,
+    name: string,
+    holder: ts.Type,
+): readonly ts.Expression[] | undefined {
     let index = programStores.get(program);
     if (!index)
         programStores.set(program, (index = indexStores(program, checker)));
@@ -238,7 +259,7 @@ export function memberStores(
             (member) => checker.getPropertyOfType(member, name) !== undefined,
         );
     const holds = (type: ts.Type): boolean =>
-        untyped(type) || holdsRecord(checker, type, [holder]);
+        holdsRecord(checker, type, [holder]);
     return index.unbounded ||
         index.opened.has(name) ||
         libraryMemberNames(program).has(name) ||
@@ -265,8 +286,10 @@ function indexStores(
     };
     const opened = new Set<string>();
     const keyed: { type: ts.Type; names?: ReadonlySet<string> }[] = [];
-    const keyedBy = (target: ts.Node, key: ts.Expression): void => {
-        const names = keyNames(checker, key);
+    const keyedAt = (
+        target: ts.Node,
+        names: ReadonlySet<string> | undefined,
+    ): void => {
         if (names?.size !== 0)
             keyed.push({
                 type: checker.getTypeAtLocation(target),
@@ -289,119 +312,106 @@ function indexStores(
         )
             escaped.push(type);
     }
-    for (const file of program.getSourceFiles()) {
-        if (file.isDeclarationFile) continue;
-        for (const node of sourceFileNodes(file)) {
-            // A pattern's leaves are written where it assigns (below).
-            if (ts.isObjectLiteralExpression(node)) {
-                if (isDestructuringPattern(node)) continue;
-                for (const member of objectLiteralMembers(node)) {
-                    if (member.kind === "spread") {
-                        const source = member.node.expression;
-                        if (
-                            openType(checker, checker.getTypeAtLocation(source))
-                        )
-                            keyed.push({
-                                type: checker.getTypeAtLocation(node),
-                            });
-                    } else if (member.kind === "proto") unbounded = true;
-                    else if (member.key === undefined)
-                        keyedBy(
-                            node,
-                            (member.node.name as ts.ComputedPropertyName)
-                                .expression,
-                        );
-                    else if (
-                        member.kind === "property" ||
-                        member.kind === "shorthand"
-                    )
-                        store(member.key, member.value);
-                    else opened.add(member.key);
-                }
-                continue;
-            }
-            if (ts.isClassLike(node)) {
-                for (const member of node.members) {
-                    if (!member.name || ts.isPrivateIdentifier(member.name))
-                        continue;
-                    if (!ts.isComputedPropertyName(member.name))
-                        opened.add(member.name.text);
-                    else {
-                        const names = keyNames(checker, member.name.expression);
-                        if (names) for (const name of names) opened.add(name);
-                        else unbounded = true;
-                    }
-                    if (ts.isConstructorDeclaration(member))
-                        for (const parameter of member.parameters)
-                            if (
-                                ts.isIdentifier(parameter.name) &&
-                                ts.isParameterPropertyDeclaration(
-                                    parameter,
-                                    member,
-                                )
-                            )
-                                opened.add(parameter.name.text);
-                }
-                continue;
-            }
-            if (isTypeAssertion(node) && !ts.isConstTypeReference(node.type)) {
-                const asserted = checker.getTypeAtLocation(node);
-                const operand = checker.getTypeAtLocation(node.expression);
-                if (
-                    openType(checker, operand) ||
-                    !checker.isTypeAssignableTo(operand, asserted)
-                )
-                    viewed.push(asserted);
-                // The object asserted is the innermost operand's, as built.
-                const built = checker.getTypeAtLocation(
-                    unwrapExpression(node.expression),
+    for (const [name, definitions] of observations.definitions)
+        for (const definition of definitions) {
+            if (definition.via === "reflect")
+                keyedAt(definition.node.arguments[0]!, new Set([name]));
+            else if (definition.via !== "class" && definition.stored)
+                store(name, definition.stored);
+            else if (definition.via !== "write" || definition.kind !== "delete")
+                opened.add(name);
+        }
+    for (const definition of observations.keyedDefinitions)
+        switch (definition.via) {
+            case "literal":
+                keyedAt(
+                    definition.node.parent,
+                    definition.key && keyNames(checker, definition.key),
                 );
-                if (keyedView(checker, asserted) && !keyedView(checker, built))
-                    escaped.push(built);
-                continue;
+                break;
+            case "write":
+                keyedAt(
+                    definition.node.expression,
+                    definition.key && keyNames(checker, definition.key),
+                );
+                break;
+            case "class": {
+                const names =
+                    definition.key && keyNames(checker, definition.key);
+                if (names) for (const name of names) opened.add(name);
+                else unbounded = true;
+                break;
             }
-            // A type guard views what it tests as the type it names.
-            if (
-                ts.isFunctionLike(node) &&
-                node.type &&
-                ts.isTypePredicateNode(node.type) &&
-                node.type.type
-            )
-                viewed.push(checker.getTypeFromTypeNode(node.type.type));
-            if (ts.isCallExpression(node)) {
-                const reflective = reflectiveStore(checker, node);
-                if (reflective === "prototype") unbounded = true;
-                else if (reflective)
-                    keyed.push({
-                        type: checker.getTypeAtLocation(reflective.target),
-                        ...(reflective.names
-                            ? { names: reflective.names }
-                            : {}),
-                    });
-                continue;
-            }
-            for (const site of writeSites(node)) {
-                const target = site.target;
+            case "reflect": {
+                const [target, key, ...sources] = definition.node.arguments;
                 if (
-                    !ts.isPropertyAccessExpression(target) &&
-                    !ts.isElementAccessExpression(target)
+                    definition.method === "defineProperty" ||
+                    definition.method === "set"
                 )
-                    continue;
-                const key = accessKey(target);
-                if (key === undefined) {
-                    if (ts.isElementAccessExpression(target))
-                        keyedBy(target.expression, target.argumentExpression);
-                } else if (site.kind === "delete") continue;
+                    keyedAt(target!, key && keyNames(checker, key));
                 else if (
-                    (site.kind === "assign" || site.kind === "logical") &&
-                    site.stored
+                    definition.method === "defineProperties" ||
+                    [key, ...sources].some(
+                        (source) =>
+                            source !== undefined &&
+                            (ts.isSpreadElement(source) ||
+                                openType(
+                                    checker,
+                                    checker.getTypeAtLocation(source),
+                                )),
+                    )
                 )
-                    store(key, site.stored);
-                else opened.add(key);
+                    keyedAt(target!, undefined);
+                break;
             }
         }
+    for (const { from, into } of observations.copies)
+        if (
+            ts.isObjectLiteralExpression(into) &&
+            !isDestructuringPattern(into) &&
+            openType(checker, checker.getTypeAtLocation(from))
+        )
+            keyedAt(into, undefined);
+    for (const assertion of observations.typeAssertions) {
+        if (ts.isConstTypeReference(assertion.type)) continue;
+        const asserted = checker.getTypeAtLocation(assertion);
+        const operand = checker.getTypeAtLocation(assertion.expression);
+        if (
+            openType(checker, operand) ||
+            !checker.isTypeAssignableTo(operand, asserted)
+        )
+            viewed.push(asserted);
+        // The object asserted is the innermost operand's, as built.
+        const built = checker.getTypeAtLocation(
+            unwrapExpression(assertion.expression),
+        );
+        if (keyedView(checker, asserted) && !keyedView(checker, built))
+            escaped.push(built);
     }
+    // A type guard views what it tests as the type it names.
+    for (const guarded of observations.guardedTypes)
+        viewed.push(checker.getTypeFromTypeNode(guarded));
     return { stores, opened, keyed, viewed, escaped, unbounded };
+}
+
+/**
+ * Whether some member of a type has one of `flags` or a string index
+ * signature.
+ */
+function indexedOr(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+    flags: ts.TypeFlags,
+): boolean {
+    return unionMembers(type).some(
+        (member) =>
+            (member.flags & flags) !== 0 ||
+            checker
+                .getIndexInfosOfType(member)
+                .some(
+                    (info) => (info.keyType.flags & ts.TypeFlags.String) !== 0,
+                ),
+    );
 }
 
 /**
@@ -410,26 +420,12 @@ function indexStores(
  * object built from entries).
  */
 function openType(checker: ts.TypeChecker, type: ts.Type): boolean {
-    return (
-        untyped(type) ||
-        unionMembers(type).some((member) => stringIndexed(checker, member))
-    );
-}
-
-/** Whether a type has a string index signature. */
-function stringIndexed(checker: ts.TypeChecker, type: ts.Type): boolean {
-    return checker
-        .getIndexInfosOfType(type)
-        .some((info) => (info.keyType.flags & ts.TypeFlags.String) !== 0);
+    return indexedOr(checker, type, ts.TypeFlags.Any | ts.TypeFlags.Unknown);
 }
 
 /** A type a run-time key can write members through: `any` or a string index signature. */
 function keyedView(checker: ts.TypeChecker, type: ts.Type): boolean {
-    return unionMembers(type).some(
-        (member) =>
-            (member.flags & ts.TypeFlags.Any) !== 0 ||
-            stringIndexed(checker, member),
-    );
+    return indexedOr(checker, type, ts.TypeFlags.Any);
 }
 
 /** Whether a value is an argument of a call to a library-declared function. */
@@ -443,14 +439,6 @@ function libraryArgument(
         (call.arguments?.includes(value) ?? false) &&
         (calledDeclaration(checker, call)?.getSourceFile().isDeclarationFile ??
             false)
-    );
-}
-
-/** `any` or `unknown`, or a union holding one. */
-function untyped(type: ts.Type): boolean {
-    return unionMembers(type).some(
-        (member) =>
-            (member.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0,
     );
 }
 
@@ -471,79 +459,6 @@ function keyNames(
             ? new Set()
             : undefined)
     );
-}
-
-/**
- * A library call that defines an object's members, whose values no store
- * spells: the object and the names it can define (`Object.defineProperty`,
- * `Reflect.set`, `Object.defineProperties`, `Object.assign` from an untyped
- * or index-signature source), or one setting a prototype.
- */
-function reflectiveStore(
-    checker: ts.TypeChecker,
-    call: ts.CallExpression,
-):
-    | { readonly target: ts.Expression; readonly names?: ReadonlySet<string> }
-    | "prototype"
-    | undefined {
-    const callee = libraryStaticMember(
-        checker,
-        unwrapExpression(call.expression),
-    );
-    if (callee?.owner !== "Object" && callee?.owner !== "Reflect")
-        return undefined;
-    const [target, key] = call.arguments;
-    if (!target || ts.isSpreadElement(target)) return undefined;
-    switch (callee.name) {
-        case "defineProperty":
-        case "set": {
-            const names = key && keyNames(checker, key);
-            return names?.size === 0
-                ? undefined
-                : { target, ...(names ? { names } : {}) };
-        }
-        case "defineProperties": {
-            const names = key && descriptorKeys(key);
-            return { target, ...(names ? { names } : {}) };
-        }
-        case "setPrototypeOf":
-            return "prototype";
-        case "assign":
-            return call.arguments
-                .slice(1)
-                .some(
-                    (source) =>
-                        ts.isSpreadElement(source) ||
-                        openType(checker, checker.getTypeAtLocation(source)),
-                )
-                ? { target }
-                : undefined;
-        default:
-            return undefined;
-    }
-}
-
-/**
- * The keys of the descriptors object an expression builds: a literal's,
- * through selections and spreads of such literals; undefined where a key
- * is known only at run time.
- */
-function descriptorKeys(
-    expression: ts.Expression,
-    keys = new Set<string>(),
-): ReadonlySet<string> | undefined {
-    for (const { operand } of yieldedOperands(expression)) {
-        if (!ts.isObjectLiteralExpression(operand)) return undefined;
-        for (const member of objectLiteralMembers(operand)) {
-            if (member.kind === "spread") {
-                if (!descriptorKeys(member.node.expression, keys))
-                    return undefined;
-            } else if (member.kind === "proto" || member.key === undefined)
-                return undefined;
-            else keys.add(member.key);
-        }
-    }
-    return keys;
 }
 
 /** @unjournaled Pure functions of the checked program, kept across replays. */

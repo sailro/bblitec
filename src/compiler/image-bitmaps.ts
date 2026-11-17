@@ -215,16 +215,14 @@ function compileImageDataBitmap(
         image.pixels,
         "bitmap_pixels",
     );
-    const number = (expression: ts.Expression): string => {
-        const temporary = context.allocateTemporaryCppName("bitmap_number");
-        context.emit({
-            kind: "declaration",
-            type: "const double",
-            name: temporary,
-            initializer: context.compileNumber(expression, "double"),
-        });
-        return temporary;
-    };
+    const number = (expression: ts.Expression): string =>
+        context.bindings.pinValueToTemporary(
+            {
+                kind: "number",
+                cpp: context.compileNumber(expression, "double"),
+            },
+            "bitmap_number",
+        ).cpp;
     const width = number(image.width);
     const height = number(image.height);
     const source =

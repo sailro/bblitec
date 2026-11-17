@@ -32,7 +32,11 @@ import {
     type DataType,
 } from "./data-types.js";
 import type { Value } from "./types.js";
-import { lightSetter, typedLightOwner } from "./assignments.js";
+import {
+    lightSetter,
+    recordMaterialDraw,
+    typedLightOwner,
+} from "./assignments.js";
 import {
     isInstrumentationHostWrite,
     isRefusedRealmHostWrite,
@@ -3372,7 +3376,7 @@ export class StatementLowerer {
             // Keep this object's identity: later iterations observe field
             // deletions, while rebinding the source must not change its owner.
             context.dataTypes.markStoredObjectReferences(dataType);
-            context.dataTypes.noteKeyEnumeration(dataType.name, node);
+            context.dataTypes.keyOrders.noteEnumeration(dataType.name, node);
             const fields = context.dataTypes.structFields(
                 dataType.name,
                 node,
@@ -5813,9 +5817,11 @@ export class StatementLowerer {
                 materialOverride = true;
                 const meshProfile =
                     mesh.sceneMeshIndex ?? mesh.sceneMeshProfileIndex;
-                context.sceneManifest.recordSceneShaderMaterialDraw(
-                    meshProfile,
+                recordMaterialDraw(
+                    context,
                     material,
+                    [meshProfile],
+                    meshProfile,
                 );
                 if (material.scenePbrMaterialIndex !== undefined) {
                     if (meshProfile === undefined) {
@@ -5828,17 +5834,6 @@ export class StatementLowerer {
                             meshProfile,
                         );
                     }
-                } else if (
-                    !material.standardMaterial &&
-                    material.nodeMaterialIndex === undefined &&
-                    material.shaderVariant === undefined &&
-                    material.sceneShaderVariant === undefined &&
-                    !material.possibleSceneShaderVariants?.length &&
-                    !material.assetPbrMaterial
-                ) {
-                    context.sceneManifest.recordUnknownSceneMaterialAssignment(
-                        meshProfile,
-                    );
                 }
                 context.reachFeature(
                     "frame-graph:task-material-override",

@@ -100,30 +100,31 @@ interface StandardMaterialSetters {
 
 /**
  * `uniformDecls` / `samplerDecls` / `storageBufferDecls` / `attributes`:
- * the names createShaderMaterial pushed, in declaration order. The
- * variant's uniform slots end with its lifted source numbers and its
- * samplers with its externalTextures, which the pin's lists do not hold.
+ * the names createShaderMaterial pushed, in declaration order, built once
+ * per variant from the variant table. The variant's uniform slots end with
+ * its lifted source numbers and its samplers with its externalTextures,
+ * which the pin's lists do not hold.
  */
-const shaderDeclarationNamesCpp = `std::vector<std::string> shader_declaration_names(
+const shaderDeclarationNamesCpp = `const std::vector<std::string>& shader_declaration_names(
     Engine& engine, MaterialHandle material, ShaderDeclarationList list) {
-    const auto& info = upstream::shader_variant_info(shader_material(engine, material).shader_variant);
-    std::vector<std::string> names;
-    switch (list) {
-    case ShaderDeclarationList::uniforms:
-        for (auto slot = info.uniform_slots.begin(); slot != info.uniform_slots.end() - info.lifted_uniforms; ++slot)
-            names.emplace_back(slot->name);
-        break;
-    case ShaderDeclarationList::samplers:
-        names.assign(info.samplers.begin(), info.samplers.end() - info.external_textures);
-        break;
-    case ShaderDeclarationList::storage_buffers:
-        for (const auto& slot : info.storage_buffers) names.emplace_back(slot.name);
-        break;
-    case ShaderDeclarationList::attributes:
-        names.assign(info.attributes.begin(), info.attributes.end());
-        break;
-    }
-    return names;
+    // Each variant's lists, indexed by ShaderDeclarationList.
+    static const auto variants = [] {
+        std::vector<std::array<std::vector<std::string>, 4>> built(upstream::shader_variant_count());
+        for (std::uint32_t variant = 0; variant < built.size(); ++variant) {
+            const auto& info = upstream::shader_variant_info(variant);
+            const auto names = [&](ShaderDeclarationList which) -> std::vector<std::string>& {
+                return built[variant][static_cast<std::size_t>(which)];
+            };
+            for (auto slot = info.uniform_slots.begin(); slot != info.uniform_slots.end() - info.lifted_uniforms; ++slot)
+                names(ShaderDeclarationList::uniforms).emplace_back(slot->name);
+            names(ShaderDeclarationList::samplers).assign(info.samplers.begin(), info.samplers.end() - info.external_textures);
+            for (const auto& slot : info.storage_buffers)
+                names(ShaderDeclarationList::storage_buffers).emplace_back(slot.name);
+            names(ShaderDeclarationList::attributes).assign(info.attributes.begin(), info.attributes.end());
+        }
+        return built;
+    }();
+    return variants.at(shader_material(engine, material).shader_variant)[static_cast<std::size_t>(list)];
 }
 
 `;

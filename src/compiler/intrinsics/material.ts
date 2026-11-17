@@ -70,7 +70,7 @@ import {
 } from "../pbr-texture-slots.js";
 import { shaderUniformSlots } from "../../shader-material-programs.js";
 import { shadowCasterMaterialWrite } from "../shadow-caster-material.js";
-import { knownCondition } from "../values/model.js";
+import { knownCondition, shaderVariantFacts } from "../values/model.js";
 import { namedMember } from "../symbols.js";
 import type { CompiledShaderMaterialOptions } from "../shader-material.js";
 import {
@@ -1283,8 +1283,7 @@ function compileShaderMaterialCreation(
                 ? { dynamicUniforms: variant.dynamicUniforms }
                 : {}),
             facts: {
-                shaderVariant: variant.name,
-                sceneShaderVariant: variant.name,
+                ...shaderVariantFacts([variant.name]),
                 ...(variant.creation
                     ? {
                           shaderCreation: {
@@ -1308,19 +1307,16 @@ function compileDerivedShaderMaterialCreation(
     object: ts.ObjectLiteralExpression,
 ): Value {
     return shaderMaterialValue(context, call, (engine) => {
-        const { variants, lookup, site } = compileDerivedShaderMaterial(
+        const { variants, variantCpp } = compileDerivedShaderMaterial(
             context,
             object,
         );
-        const source = `bbl::shader_material(${lookup.engineCpp}, ${lookup.materialCpp}).shader_variant`;
         return {
-            creation: `bbl::create_shader_material(${engine}, bblscene::derived_shader_variant_${site}(${source}))`,
+            creation: `bbl::create_shader_material(${engine}, ${variantCpp})`,
             programs: [...variants.values()].map(({ id }) => id),
-            facts: {
-                possibleSceneShaderVariants: [
-                    ...new Set([...variants.values()].map(({ name }) => name)),
-                ].sort(),
-            },
+            facts: shaderVariantFacts(
+                [...variants.values()].map(({ name }) => name),
+            ),
         };
     });
 }

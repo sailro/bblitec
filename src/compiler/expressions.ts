@@ -44,7 +44,10 @@ import {
     valueDataType,
 } from "./values/model.js";
 import { isEffectTaskMethodName } from "./effect-task-methods.js";
-import { projectAssetContainer } from "./data-sinks/resources.js";
+import {
+    projectAssetContainer,
+    statesViewGetter,
+} from "./data-sinks/resources.js";
 import { arrayFunctionValue } from "./native-function-values.js";
 import { hasDynamicObjectSpread, isJsonValue } from "./json-bridge.js";
 import {
@@ -144,7 +147,7 @@ import {
     isAsyncFunction,
     containsSuspension,
     restParameterIndex,
-    variableKind,
+    isModuleConstDeclaration,
     isMemberAccess,
     localCallback,
     propertyKey,
@@ -319,6 +322,7 @@ export interface ExpressionContext
             | "compileShaderSource"
             | "intrinsicOptions"
             | "memberLiteral"
+            | "objectProperties"
             | "resolveStaticLiteral"
             | "staticListItems"
             | "staticLiteralData"
@@ -3225,9 +3229,7 @@ export class ExpressionLowerer {
             texture2D(whenTrue) &&
             texture2D(whenFalse) &&
             (whenTrue.kind !== whenFalse.kind ||
-                [whenTrue, whenFalse].some(
-                    (arm) => arm.recordGetters?.view !== undefined,
-                ))
+                [whenTrue, whenFalse].some(statesViewGetter))
                 ? this.selectedDataType(node, path)
                 : undefined;
         if (
@@ -3909,19 +3911,8 @@ export class ExpressionLowerer {
     private isModuleConstantRecord(expression: ts.Expression): boolean {
         const owner = this.context.unwrap(expression);
         if (!ts.isIdentifier(owner)) return false;
-        const declaration = resolvedSymbol(
-            this.context.checker,
-            owner,
-        )?.valueDeclaration;
-        return (
-            declaration !== undefined &&
-            ts.isVariableDeclaration(declaration) &&
-            declaration.parent !== undefined &&
-            ts.isVariableDeclarationList(declaration.parent) &&
-            variableKind(declaration.parent) === "const" &&
-            declaration.parent.parent !== undefined &&
-            ts.isVariableStatement(declaration.parent.parent) &&
-            ts.isSourceFile(declaration.parent.parent.parent)
+        return isModuleConstDeclaration(
+            resolvedSymbol(this.context.checker, owner)?.valueDeclaration,
         );
     }
 
@@ -7149,11 +7140,6 @@ export class ExpressionLowerer {
                     const known = ownKeysKnown(this.context, spread, property);
                     if (!known && declines === "run-time-keys")
                         return undefined;
-                    if (!spread.recordOwnKeys)
-                        this.context.dataTypes.noteKeyEnumeration(
-                            spread.dataType.name,
-                            property,
-                        );
                     // A `?` field whose storage says whether it is own
                     // becomes a key the record holds while it is present.
                     const entries = structOwnEntries(

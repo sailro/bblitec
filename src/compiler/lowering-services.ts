@@ -69,6 +69,16 @@ export type NativeReturnValueCompiler = (
     node: ts.Node,
 ) => string;
 
+/** A shader stage's text and the uniforms it reads its lifted numbers from. */
+export interface ShaderSourceText {
+    source: string;
+    dynamicUniforms: Array<{
+        name: string;
+        type: "f32";
+        components: string[];
+    }>;
+}
+
 /** Where a native declaration was emitted (`emissionMark`). */
 export type EmissionMark = Pick<
     import("./function-specializations.js").FunctionEmissionScope,
@@ -418,14 +428,7 @@ export interface LoweringServices {
     compileShaderSource(
         expression: ts.Expression,
         stage: ShaderStage,
-    ): {
-        source: string;
-        dynamicUniforms: Array<{
-            name: string;
-            type: "f32";
-            components: string[];
-        }>;
-    };
+    ): ShaderSourceText;
     resolveStaticExpression(
         expression: ts.Expression,
         resolving?: ReadonlySet<ts.Symbol>,

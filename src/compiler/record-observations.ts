@@ -16,7 +16,7 @@ import {
     type ObservedWrite,
     type ProgramObservations,
 } from "./program-observations.js";
-import { yieldsNewArray } from "./fresh-records.js";
+import { freshConstLocal, yieldsNewArray } from "./fresh-records.js";
 import { enclosedReference } from "./array-length-growth.js";
 import {
     determinedTypeArguments,
@@ -45,7 +45,6 @@ import {
     equalityOperator,
     positionalParameter,
     variableKind,
-    hasExportModifier,
     propertyKey,
     valueConsumer,
     isGeneratorFunction,
@@ -1556,26 +1555,6 @@ function newArrayExpression(
     )
         return newArrayExpression(checker, method.expression);
     return yieldsNewArray(checker, unwrapped);
-}
-
-/** The unexported `const` local `read` names, initialized with a fresh object (`fresh`). */
-export function freshConstLocal(
-    checker: ts.TypeChecker,
-    read: ts.Expression,
-    fresh: (initializer: ts.Expression) => boolean,
-): ts.VariableDeclaration | undefined {
-    const unwrapped = unwrapExpression(read);
-    if (!ts.isIdentifier(unwrapped)) return undefined;
-    const declaration = declaredSymbol(checker, unwrapped)?.valueDeclaration;
-    return declaration &&
-        ts.isVariableDeclaration(declaration) &&
-        declaration.initializer &&
-        ts.isVariableStatement(declaration.parent.parent) &&
-        variableKind(declaration) === "const" &&
-        !hasExportModifier(declaration.parent.parent) &&
-        fresh(declaration.initializer)
-        ? declaration
-        : undefined;
 }
 
 /**

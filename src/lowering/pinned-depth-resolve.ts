@@ -20,7 +20,8 @@ import {
     RecordedTextureView,
     type DescriptorShapes,
 } from "../recording-device.js";
-import { floatLiteral, stringLiteral } from "../cpp-literals.js";
+import { floatLiteral } from "../cpp-literals.js";
+import { pinnedMessageConcatenation } from "./pinned-error.js";
 import type { PinnedUtilityModule } from "../pinned-utility-passes.js";
 
 const depthResolveModule = "src/frame-graph/depth-resolve-task.ts";
@@ -136,12 +137,26 @@ function mismatch(what: string): never {
     );
 }
 
+/** What the pin's record and execute of an unnamed task show. */
+interface RecordedDepthResolve {
+    /** The module it compiles. */
+    wgsl: string;
+    /** The depth its pass clears to. */
+    clearDepth: number;
+    /** The task's default name. */
+    name: string;
+}
+
+/** The pin's recorded run, a function of the pin alone. */
+let recorded: RecordedDepthResolve | undefined;
+
 /**
- * The pin's record and execute over a multisampled source: the module it
- * compiles and the depth its pass clears to, after checking the rest of
- * the pass both backends encode against what they recorded.
+ * The pin's record and execute over a multisampled source of an unnamed
+ * task, after checking the rest of the pass both backends encode against
+ * what they recorded.
  */
-function recordedDepthResolve(): { wgsl: string; clearDepth: number } {
+function recordedDepthResolve(): RecordedDepthResolve {
+    if (recorded) return recorded;
     const source = target(4, "depth24plus-stencil8", unit);
     const resolved = target(1, "depth24plus", unit);
     const { task, recorder } = run({
@@ -205,7 +220,12 @@ function recordedDepthResolve(): { wgsl: string; clearDepth: number } {
         mismatch(
             "encodes one pass clearing and storing the target's depth, with no stencil operations, drawing three vertices",
         );
-    return { wgsl: module.code, clearDepth: attachment.depthClearValue };
+    recorded = {
+        wgsl: module.code,
+        clearDepth: attachment.depthClearValue,
+        name: task.name,
+    };
+    return recorded;
 }
 
 /** The module the pin's record compiles, deployed under the `depth-resolve` stem pair. */
@@ -265,21 +285,22 @@ function refusalFunction(
         holes.map((hole) => hole.sentinel.replace(/\W/g, "\\$&")).join("|"),
         "g",
     );
-    const pieces: string[] = [];
+    const literals: string[] = [];
+    const read: string[] = [];
     const quoted = new Set<string>();
     let at = 0;
     for (const match of message.matchAll(pattern)) {
-        pieces.push(stringLiteral(message.slice(at, match.index)));
+        literals.push(message.slice(at, match.index));
         const hole = holes.find((each) => each.sentinel === match[0])!;
         quoted.add(hole.parameter);
-        pieces.push(
+        read.push(
             hole.cpp === "std::uint32_t"
                 ? `std::to_string(${hole.parameter})`
                 : hole.parameter,
         );
         at = match.index + match[0].length;
     }
-    pieces.push(stringLiteral(message.slice(at)));
+    literals.push(message.slice(at));
     // A packaged throw keeps its arguments off the message (`#<code>`).
     const parameters = holes
         .map(
@@ -287,9 +308,8 @@ function refusalFunction(
                 `${quoted.has(hole.parameter) ? "" : "[[maybe_unused]] "}${hole.cpp} ${hole.parameter}`,
         )
         .join(", ");
-    const [first, ...rest] = pieces;
     return `[[nodiscard]] inline std::string ${name}(${parameters}) {
-    return ${[`std::string(${first!})`, ...rest].join(" + ")};
+    return ${pinnedMessageConcatenation(literals, read)};
 }`;
 }
 
@@ -346,13 +366,10 @@ export function pinnedDepthResolveHeader(context: LoweringContext): string {
             targetTexture: target(1, undefined, unit, false),
         }),
     );
-    const unnamed = run({
-        sourceTexture: target(4, "depth24plus", unit),
-        targetTexture: target(1, "depth24plus", unit),
-    }).task.name;
-    if (unnamed !== pinnedDepthResolveTaskName(context))
+    const recording = recordedDepthResolve();
+    if (recording.name !== pinnedDepthResolveTaskName(context))
         throw new Error(
-            `Pinned ${factory} names an unnamed task '${unnamed}', not its declared default.`,
+            `Pinned ${factory} names an unnamed task '${recording.name}', not its declared default.`,
         );
     return `#pragma once
 // ${context.provenance(depthResolveModule, factory, "its build's refusals")}
@@ -362,7 +379,7 @@ export function pinnedDepthResolveHeader(context: LoweringContext): string {
 namespace bbl::upstream {
 
 /** The depth the pass clears its target to before every fragment overwrites it. */
-inline constexpr float depth_resolve_clear_depth = ${floatLiteral(recordedDepthResolve().clearDepth)};
+inline constexpr float depth_resolve_clear_depth = ${floatLiteral(recording.clearDepth)};
 
 ${refusalFunction("depth_resolve_source_without_depth", sourceDepth, [name])}
 

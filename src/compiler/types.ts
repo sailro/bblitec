@@ -63,7 +63,7 @@ import type { CompiledTextData } from "../pinned-text-data.js";
 import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
 import type { LocalCubemapPlan } from "../pinned-local-cubemap.js";
 import type { DeploymentOptions } from "./deployment.js";
-import { knownCondition } from "./values/model.js";
+import { knownCondition, shaderVariantsOf } from "./values/model.js";
 
 /** A static host-page element projected beside scene-created retained UI. */
 export interface NativeHostUiElement {
@@ -2261,7 +2261,8 @@ export interface CollectionCardinality {
 export interface StaticListItem {
     readonly node: ts.Expression;
     readonly text?: string;
-    readonly within?: <T>(read: () => T) => T;
+    /** Reads the item within the bindings it was spelled in. */
+    readonly within: <T>(read: () => T) => T;
 }
 
 /** A point of the source walk by the run-time regions around it. */
@@ -2493,11 +2494,7 @@ export function commonResourceValue(
         else delete common.possibleSceneMeshProfiles;
     }
     if (value.kind === "material") {
-        const variants = candidates.map((candidate) =>
-            candidate.sceneShaderVariant === undefined
-                ? candidate.possibleSceneShaderVariants
-                : [candidate.sceneShaderVariant],
-        );
+        const variants = candidates.map(shaderVariantsOf);
         if (variants.length > 0 && variants.every((names) => names?.length))
             common.possibleSceneShaderVariants = [
                 ...new EmissionSet(variants.flatMap((names) => names ?? [])),

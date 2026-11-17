@@ -282,17 +282,16 @@ export function compileCanvasValue(
                 node,
                 "OffscreenCanvas requires width and height.",
             );
-        const argumentsCpp = node.arguments.map((argument) => {
-            const temporary =
-                context.allocateTemporaryCppName("canvas_dimension");
-            context.emit({
-                kind: "declaration",
-                type: "const double",
-                name: temporary,
-                initializer: context.compileNumber(argument, "double"),
-            });
-            return temporary;
-        });
+        const argumentsCpp = node.arguments.map(
+            (argument) =>
+                context.bindings.pinValueToTemporary(
+                    {
+                        kind: "number",
+                        cpp: context.compileNumber(argument, "double"),
+                    },
+                    "canvas_dimension",
+                ).cpp,
+        );
         return {
             kind: "offscreen-canvas",
             dataType: { kind: "handle", handle: "offscreen-canvas" },

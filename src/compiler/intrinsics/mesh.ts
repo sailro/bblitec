@@ -2219,13 +2219,13 @@ function compileSetThinInstanceMatrix(
         argumentAt(call, 0),
     );
     context.expectKind(mesh, "mesh", argumentAt(call, 0));
-    const index = context.allocateTemporaryCppName("thin_matrix_index");
-    context.emit({
-        kind: "declaration",
-        type: "const double",
-        name: index,
-        initializer: context.compileNumber(argumentAt(call, 1), "double"),
-    });
+    const index = context.bindings.pinValueToTemporary(
+        {
+            kind: "number",
+            cpp: context.compileNumber(argumentAt(call, 1), "double"),
+        },
+        "thin_matrix_index",
+    ).cpp;
     const matrix = compileThinInstanceMatrixArgument(
         context,
         argumentAt(call, 2),

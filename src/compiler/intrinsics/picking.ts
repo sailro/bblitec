@@ -6,6 +6,7 @@ import { handleCppType, type DataType } from "../data-types.js";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { validateObjectProperties } from "../option-helpers.js";
+import { isNullishLiteral } from "../symbols.js";
 import {
     compileNullableHitRecord,
     numberField,
@@ -35,9 +36,8 @@ export interface PickingIntrinsicContext
             | "unwrap"
             | "objectProperty"
             | "propertyName"
-            | "compileStoredDataFunction"
             | "emitDiscardedValue"
-            | "emit"
+            | "bindings"
         > {}
 
 /**
@@ -136,16 +136,12 @@ export function compilePickingIntrinsic(
                     argumentAt(call, index),
                     "double",
                 );
-                if (call.arguments.length === 3) return cpp;
-                const name =
-                    context.allocateTemporaryCppName("pick_coordinate");
-                context.emit({
-                    kind: "declaration",
-                    type: "const double",
-                    name,
-                    initializer: cpp,
-                });
-                return name;
+                return call.arguments.length === 3
+                    ? cpp
+                    : context.bindings.pinValueToTemporary(
+                          { kind: "number", cpp },
+                          "pick_coordinate",
+                      ).cpp;
             });
             const filter =
                 call.arguments.length === 4
@@ -362,19 +358,10 @@ function pickOptionsFilter(
     }
     const label = context.objectProperty(options, "debugLabel");
     if (label) context.emitDiscardedValue(context.compileValue(label));
+    // The pin reads `options?.filter ?? null`: a nullish one filters nothing.
     const filter = context.objectProperty(options, "filter");
-    if (!filter) return undefined;
-    const callback = context.unwrap(filter);
-    if (
-        !ts.isIdentifier(callback) &&
-        !ts.isArrowFunction(callback) &&
-        !ts.isFunctionExpression(callback)
-    )
-        return context.fail(
-            filter,
-            "pickAsync's `filter` is lowered from a function or a name holding one.",
-        );
-    const predicate = context.compileStoredDataFunction(callback, {
+    if (!filter || isNullishLiteral(context.checker, filter)) return undefined;
+    const predicate = context.dataLowerer.compileForSink(filter, {
         kind: "function",
         parameters: [{ kind: "handle", handle: "mesh" }],
         result: { kind: "boolean" },

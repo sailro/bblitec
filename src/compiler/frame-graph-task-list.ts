@@ -19,7 +19,13 @@ import {
     resolvedSymbol,
     type NamedMember,
 } from "./symbols.js";
-import { argumentAt, unwrapExpression, variableKind } from "./syntax.js";
+import {
+    argumentAt,
+    isBlockOrSourceFile,
+    statementsBeside,
+    unwrapExpression,
+    variableKind,
+} from "./syntax.js";
 import type { Value } from "./types.js";
 
 /** The idiom's three statements, by the nodes lowering reads. */
@@ -92,16 +98,16 @@ export function taskListRemoval(
     )
         return undefined;
     const statement = list.parent.parent;
-    const block = statement.parent;
+    const following = statementsBeside(statement, "after", isBlockOrSourceFile);
     if (
         !ts.isVariableStatement(statement) ||
         constDeclaration(statement) !== list ||
-        !(ts.isBlock(block) || ts.isSourceFile(block))
+        !following
     )
         return undefined;
-    const position = block.statements.indexOf(statement);
+    const [indexStatement, guard] = following;
     const tasks = declaredSymbol(context.checker, list.name);
-    const indexDeclaration = constDeclaration(block.statements[position + 1]);
+    const indexDeclaration = constDeclaration(indexStatement);
     const index =
         indexDeclaration &&
         declaredSymbol(context.checker, indexDeclaration.name);
@@ -109,7 +115,6 @@ export function taskListRemoval(
         tasks &&
         indexDeclaration &&
         memberCall(context, indexDeclaration.initializer!, "indexOf", tasks);
-    const guard = block.statements[position + 2];
     if (
         !tasks ||
         !index ||

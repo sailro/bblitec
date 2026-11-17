@@ -39,7 +39,7 @@ ${lowerShaderUniformApi(context)}
 ${cppFunction(factory, "void apply_shader_material_variant(")}
 ${cppFunction(factory, "MaterialHandle create_shader_material(")}
 ${cppFunction(factory, "MaterialRecord& shader_material(")}
-${declarationLists ? cppFunction(factory, "std::vector<std::string> shader_declaration_names(") : ""}
+${declarationLists ? cppFunction(factory, "const std::vector<std::string>& shader_declaration_names(") : ""}
 ${lowerShaderUniformSnapshot(context)}
 ${cppFunction(factory, "void initialize_shader_uniform_values(")}
 ${cppFunction(factory, "void set_shader_uniform_values(")}

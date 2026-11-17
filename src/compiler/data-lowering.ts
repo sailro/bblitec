@@ -178,7 +178,6 @@ import {
     arrayWriteObservation,
     recordFieldIsWritten,
     builtRecordFieldIsWritten,
-    freshConstLocal,
 } from "./record-observations.js";
 import { sceneRelativeSourceLabel } from "../source-location.js";
 import { staticJsonValue, staticNumberValue } from "./option-helpers.js";
@@ -270,6 +269,7 @@ import {
 import { isTrsVectorName } from "./assignments.js";
 import {
     constObjectLiteral,
+    freshConstLocal,
     literalFieldObject,
     mappedElement,
     readOnlyFreshConst,
@@ -297,6 +297,7 @@ import {
     writeSites,
     writeSiteOf,
     accessKey,
+    isArrayIndex,
     keyIndex,
     patternSlots,
     refuseProtoSetter,
@@ -4440,25 +4441,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         call: ts.CallExpression,
         value: Value,
     ): Value | undefined {
-        const type = value.dataType;
-        const callType =
-            value.kind === "data" && type?.kind === "struct"
-                ? this.context.dataTypes.structCall(type.name)
-                : undefined;
-        if (!callType) return undefined;
-        this.context.useNativeValue(value);
-        const record = this.context.allocateTemporaryCppName("callable_record");
-        this.context.emit({
-            kind: "declaration",
-            type: "const auto",
-            name: record,
-            initializer: snapshotReadCpp(value),
-        });
-        return this.compileStoredCall(
-            call,
-            `${record}->${callMember}`,
-            callType,
-            record,
+        const callable = this.callableRecordSnapshot(value, value.dataType);
+        return (
+            callable &&
+            this.compileStoredCall(
+                call,
+                `${callable.record}->${callMember}`,
+                callable.callType,
+                callable.record,
+            )
         );
     }
 
@@ -4473,12 +4464,37 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         receiver?: string,
     ): Value | undefined {
         const type = value.dataType;
-        const inner = type?.kind === "optional" ? type.inner : type;
+        const optional = type?.kind === "optional";
+        const callable = this.callableRecordSnapshot(
+            value,
+            optional ? type.inner : type,
+        );
+        if (!callable) return undefined;
+        const { record } = callable;
+        const present = optional ? optionalPresentCpp(record) : record;
+        const held = optional ? optionalValueCpp(record) : record;
+        return this.compileOptionalStoredCall(
+            call,
+            `${held}->${callMember}`,
+            callable.callType,
+            receiver ? `(${receiver}) && ${present}` : present,
+        );
+    }
+
+    /**
+     * The call of the callable record `value` holds as a `struct` record of
+     * `type`, and the temporary its reference is read into; undefined for a
+     * value that holds no callable record.
+     */
+    private callableRecordSnapshot(
+        value: Value,
+        type: DataType | undefined,
+    ): { record: string; callType: DataType<"function"> } | undefined {
         const callType =
-            value.kind === "data" && inner?.kind === "struct"
-                ? this.context.dataTypes.structCall(inner.name)
+            value.kind === "data" && type?.kind === "struct"
+                ? this.context.dataTypes.structCall(type.name)
                 : undefined;
-        if (!inner || !callType) return undefined;
+        if (!callType) return undefined;
         this.context.useNativeValue(value);
         const record = this.context.allocateTemporaryCppName("callable_record");
         this.context.emit({
@@ -4487,16 +4503,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             name: record,
             initializer: snapshotReadCpp(value),
         });
-        const present =
-            type?.kind === "optional" ? optionalPresentCpp(record) : record;
-        const held =
-            type?.kind === "optional" ? optionalValueCpp(record) : record;
-        return this.compileOptionalStoredCall(
-            call,
-            `${held}->${callMember}`,
-            callType,
-            receiver ? `(${receiver}) && ${present}` : present,
-        );
+        return { record, callType };
     }
 
     /** A narrowed payload owns a snapshot of that payload, not its carrier. */
@@ -7734,12 +7741,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.context,
             access.argumentExpression,
         );
-        return (
-            staticIndex !== undefined &&
-            Number.isInteger(staticIndex) &&
-            staticIndex >= 0 &&
-            staticIndex < 4294967295
-        );
+        return staticIndex !== undefined && isArrayIndex(staticIndex);
     }
 
     /** The statically known element count of `owner`, if it has one. */
@@ -9909,15 +9911,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         fallback: string,
     ): string {
         if (!argument) return fallback;
-        const value = this.context.compileNumber(argument, "double");
-        const name = this.context.allocateTemporaryCppName("numeric_argument");
-        this.context.emit({
-            kind: "declaration",
-            type: "const double",
-            name: name,
-            initializer: value,
-        });
-        return name;
+        return this.context.bindings.pinValueToTemporary(
+            {
+                kind: "number",
+                cpp: this.context.compileNumber(argument, "double"),
+            },
+            "numeric_argument",
+        ).cpp;
     }
 
     /**
@@ -14063,11 +14063,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         if (source.kind !== "data" || source.dataType?.kind !== "struct")
             return undefined;
-        if (!source.recordOwnKeys)
-            this.context.dataTypes.noteKeyEnumeration(
-                source.dataType.name,
-                property,
-            );
         const snapshot = this.context.allocateTemporaryCppName("spread_source");
         this.context.emit({
             kind: "declaration",
@@ -14702,7 +14697,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             owner,
             sourceType,
             source,
-            options.excludedKeys,
+            {
+                ...(options.excludedKeys
+                    ? { excludedKeys: options.excludedKeys }
+                    : {}),
+                intoStruct: true,
+            },
         )) {
             const sourceField = sourceFields.get(entry.key)!;
             const targetField = targetFields.get(entry.key);
@@ -14833,6 +14833,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return assigned;
     }
 
+    /** A run-time string or native enum, spelled `cpp`, compared with one literal. */
+    public literalEquality(
+        cpp: string,
+        storage: DataType | undefined,
+        text: string,
+        node: ts.Node,
+    ): string {
+        return `${cpp} == ${
+            storage?.kind === "enum"
+                ? this.context.dataTypes.enumMemberCpp(storage, text, node)
+                : this.context.cppString(text)
+        }`;
+    }
+
     /** The own-object services the own-entry walks read. */
     public ownObjectContext(): Parameters<typeof structOwnEntries>[0] {
         return {
@@ -14854,7 +14868,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         dataType: DataType<"struct">,
         keys: readonly CreatedKeys[],
     ): void {
-        this.context.dataTypes.noteRecordCreation(dataType.name, [
+        this.context.dataTypes.keyOrders.noteCreation(dataType.name, [
             ...keys,
             ...keysDefinedOnDeclaration(this.context.checker, literal).map(
                 (key) => ({ key }),
@@ -19977,9 +19991,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 return test;
             });
             const selects = (index: number): string =>
-                keyType.kind === "enum"
-                    ? `${key} == ${this.context.dataTypes.enumMemberCpp(keyType, fields[index]!.sourceName, access)}`
-                    : `${key} == ${this.context.cppString(fields[index]!.sourceName)}`;
+                this.literalEquality(
+                    key,
+                    keyType,
+                    fields[index]!.sourceName,
+                    access,
+                );
             // A key no field has reads an inherited method, or undefined.
             let selected: string;
             if (keyType.kind === "enum") selected = tests.at(-1)!;

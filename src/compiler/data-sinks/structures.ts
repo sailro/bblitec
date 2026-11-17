@@ -583,7 +583,7 @@ function valueStruct(
         );
         // A class instance seen as a record lists the record type's members.
         if (value.classDeclaration === undefined)
-            lowerer.context.dataTypes.noteRecordCreation(
+            lowerer.context.dataTypes.keyOrders.noteCreation(
                 dataType.name,
                 recordCreatedKeys(value),
             );
@@ -775,7 +775,7 @@ function valueStruct(
             ),
             sourceType,
         );
-        lowerer.context.dataTypes.noteRecordCreation(dataType.name, [
+        lowerer.context.dataTypes.keyOrders.noteCreation(dataType.name, [
             { struct: sourceType.name },
         ]);
         lowerer.context.dataTypes.requireEngineFieldsStorage(
@@ -987,12 +987,6 @@ function conditionalOwnFieldInitializer(
 }
 
 /**
- * A field only some union arms hold, from a record whose selected arm may
- * lack it (a conditional between two arms' literals): the value where the
- * arm holds it, else the field's default storage, which its tags keep
- * from being own.
- */
-/**
  * A member stored as a struct field, marked when the field is declared only
  * as a read-only array view (`readonlyArrayField`).
  */
@@ -1012,6 +1006,12 @@ function storeFieldMember(
     );
 }
 
+/**
+ * A field only some union arms hold, from a record whose selected arm may
+ * lack it (a conditional between two arms' literals): the value where the
+ * arm holds it, else the field's default storage, which its tags keep
+ * from being own.
+ */
 function armFieldOrDefault(
     lowerer: DataSinkHost,
     property: Value,

@@ -20,12 +20,7 @@ import {
     readOnlyDataMethods,
 } from "./receiver-methods.js";
 import ts from "typescript";
-import {
-    knownCondition,
-    staticKeyOf,
-    undefinedValue,
-    valueForKind,
-} from "./values/model.js";
+import { knownCondition, staticKeyOf, undefinedValue } from "./values/model.js";
 import { hasProvenUndefinedCompletion } from "./undefined-values.js";
 import { absentReceiverMessage } from "./properties.js";
 import { belongsToEntryEngine } from "./data-types/handles.js";
@@ -124,8 +119,8 @@ import {
 } from "./type-facts.js";
 import { jsToUint32Call } from "../lowering/pinned-operators.js";
 import {
+    readShaderRecipe,
     recordShaderRecipeStore,
-    shaderRecipeLookup,
 } from "./shader-derivations.js";
 
 /** The member a call names ({@link namedMember}). */
@@ -4065,28 +4060,22 @@ function compileMapDataMethod(
                 ...(slotFoundCpp ? { slotFoundCpp } : {}),
             };
         }
-        const shaderRecipe = shaderRecipeLookup(
+        return readShaderRecipe(
             lowerer.context,
             callee.expression,
             keyValue,
             argumentAt(call, 0),
+            () => ({
+                // Map.get declares its absence, so source guards may narrow it.
+                ...lowerer.mapPropertyValue(
+                    narrowed.cpp,
+                    key,
+                    dataType.value,
+                    false,
+                ),
+                ...(slotFoundCpp ? { slotFoundCpp } : {}),
+            }),
         );
-        const read: Value = {
-            // Map.get declares its absence, so source guards may narrow it.
-            ...lowerer.mapPropertyValue(
-                narrowed.cpp,
-                key,
-                dataType.value,
-                false,
-            ),
-            ...(slotFoundCpp ? { slotFoundCpp } : {}),
-        };
-        return shaderRecipe
-            ? valueForKind(read.kind, {
-                  ...read,
-                  shaderRecipeLookup: shaderRecipe,
-              })
-            : read;
     }
     if (method === "set") {
         if (call.arguments.length !== 2) {

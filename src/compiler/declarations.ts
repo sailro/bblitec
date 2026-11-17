@@ -61,6 +61,7 @@ import { nativeReturnTsType } from "./native-return-type.js";
 import { isNativeOwnerRecord } from "./native-owner-carrier.js";
 import { NativeRecordStorageRequired } from "./native-record-storage.js";
 import { recordPropertyKeys } from "./object-statics.js";
+import { ownKeyOrder } from "./record-key-orders.js";
 import {
     nullability,
     unionMembers,
@@ -4678,11 +4679,9 @@ export class DeclarationLowerer {
                     ts.isObjectLiteralExpression(initializer) &&
                     !this.context.sharedClosures.identifierIsRebound(name)
                   ? {
-                        recordOwnKeys: Object.keys(
-                            Object.fromEntries(
-                                this.context.dataLowerer
-                                    .literalKeyOrder(initializer)
-                                    .map((key) => [key, undefined]),
+                        recordOwnKeys: ownKeyOrder(
+                            this.context.dataLowerer.literalKeyOrder(
+                                initializer,
                             ),
                         ),
                     }
@@ -6630,7 +6629,7 @@ export class DeclarationLowerer {
             initializer: this.context.dataLowerer.structAggregate(type, []),
         });
         // The rest object is fresh: each field still holds its absent default.
-        this.context.dataTypes.noteRecordCreation(type.name, [
+        this.context.dataTypes.keyOrders.noteCreation(type.name, [
             { struct: source.dataType.name },
         ]);
         this.context.dataLowerer.copyStructOwnProperties(

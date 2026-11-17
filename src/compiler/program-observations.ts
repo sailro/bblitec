@@ -26,8 +26,61 @@ import {
     equalityOperator,
     operandYield,
     testsTruthinessOnly,
+    isDestructuringPattern,
+    literalKey,
+    objectLiteralMembers,
+    propertyKey,
+    yieldedOperands,
+    type MemberAccess,
+    type WriteKind,
 } from "./syntax.js";
 import { valueKindOf, arrayShape, unionMembers } from "./type-facts.js";
+
+/** The library calls that define members of their first argument. */
+type ReflectiveDefinition =
+    "assign" | "defineProperty" | "defineProperties" | "set";
+
+/** Each {@link ReflectiveDefinition}, by its owner and name. */
+const REFLECTIVE_DEFINITIONS: ReadonlyMap<string, ReflectiveDefinition> =
+    new Map([
+        ["Object.assign", "assign"],
+        ["Object.defineProperty", "defineProperty"],
+        ["Object.defineProperties", "defineProperties"],
+        ["Reflect.set", "set"],
+    ]);
+
+/**
+ * A site giving objects a member. `key` is the expression a keyed site's
+ * key is only known from at run time.
+ */
+export type MemberDefinition =
+    /** An object literal's property, shorthand, method or accessor; `stored` a property's or shorthand's value. */
+    | {
+          readonly via: "literal";
+          readonly node: ts.ObjectLiteralElementLike;
+          readonly stored?: ts.Expression;
+          readonly key?: ts.Expression;
+      }
+    /** A class member, or a parameter property of its constructor. */
+    | {
+          readonly via: "class";
+          readonly node: ts.ClassElement | ts.ParameterDeclaration;
+          readonly key?: ts.Expression;
+      }
+    /** A write of a member access (`writeSites`); `stored` the whole value `=` or a logical assignment gives it. */
+    | {
+          readonly via: "write";
+          readonly node: MemberAccess;
+          readonly kind: WriteKind;
+          readonly stored?: ts.Expression;
+          readonly key?: ts.Expression;
+      }
+    /** A library call defining members of its first argument. */
+    | {
+          readonly via: "reflect";
+          readonly node: ts.CallExpression;
+          readonly method: ReflectiveDefinition;
+      };
 
 /** A write's location, and the property it writes (absent: any may be). */
 export interface ObservedWrite {
@@ -86,7 +139,17 @@ export interface NamedRead {
  *   argument, a returned value (an arrow's expression body too), the
  *   initializer of a typed declaration, parameter or class field, a
  *   property's value (a shorthand's name too), an array literal's element,
- *   an assigned value.
+ *   an assigned value;
+ * - definitions: each site giving objects a member, by the key its syntax
+ *   names: an object literal's member (a destructuring pattern's are its
+ *   leaves' writes), a class member or parameter property, a write of a
+ *   member access, and `Object.defineProperty`, `Reflect.set` (a literal
+ *   key) and `Object.defineProperties` (each key of its descriptors
+ *   literal, through selections and spreads of such literals); keyed
+ *   definitions are those whose key only the run time knows, and every
+ *   `Object.assign`;
+ * - type assertions and guards: every `as`/`<T>` assertion, and the type
+ *   each type predicate narrows to.
  */
 export interface ProgramObservations {
     readonly writes: ReadonlyMap<ts.Type, readonly ObservedWrite[]>;
@@ -124,6 +187,10 @@ export interface ProgramObservations {
     }[];
     /** Values given where their contextual type declares another type for them. */
     readonly handed: readonly ts.Expression[];
+    readonly definitions: ReadonlyMap<string, readonly MemberDefinition[]>;
+    readonly keyedDefinitions: readonly MemberDefinition[];
+    readonly typeAssertions: readonly (ts.AsExpression | ts.TypeAssertion)[];
+    readonly guardedTypes: readonly ts.TypeNode[];
     /**
      * The first site that gives an object a prototype no literal or
      * constructor gives it: `Object.create`, `Object.setPrototypeOf`,
@@ -248,6 +315,47 @@ function assignmentPatternReads(
     }
 }
 
+/**
+ * The keys of the descriptors object an expression builds: a literal's,
+ * through selections and spreads of such literals; undefined where a key
+ * is known only at run time.
+ */
+function descriptorKeys(
+    expression: ts.Expression,
+    keys = new Set<string>(),
+): ReadonlySet<string> | undefined {
+    for (const { operand } of yieldedOperands(expression)) {
+        if (!ts.isObjectLiteralExpression(operand)) return undefined;
+        for (const member of objectLiteralMembers(operand)) {
+            if (member.kind === "spread") {
+                if (!descriptorKeys(member.node.expression, keys))
+                    return undefined;
+            } else if (member.kind === "proto" || member.key === undefined)
+                return undefined;
+            else keys.add(member.key);
+        }
+    }
+    return keys;
+}
+
+/**
+ * The keys a reflective definition names: its key argument's literal, its
+ * descriptors' keys; undefined where only the run time knows them.
+ */
+function reflectedKeys(
+    call: ts.CallExpression,
+    method: ReflectiveDefinition,
+): readonly string[] | undefined {
+    const key = call.arguments[1];
+    if (method === "assign" || !key) return undefined;
+    if (method === "defineProperties") {
+        const keys = descriptorKeys(key);
+        return keys && [...keys];
+    }
+    const literal = literalKey(key);
+    return literal === undefined ? undefined : [literal];
+}
+
 /** The program's observations, walked on first read. */
 export function programObservations(program: ts.Program): ProgramObservations {
     let known = observations.get(program);
@@ -297,6 +405,21 @@ function observe(program: ts.Program): ProgramObservations {
         )
             handed.push(value);
     };
+    const definitions = new Map<string, MemberDefinition[]>();
+    const keyedDefinitions: MemberDefinition[] = [];
+    const define = (
+        key: string | undefined,
+        definition: MemberDefinition,
+    ): void => {
+        if (key === undefined) keyedDefinitions.push(definition);
+        else {
+            const list = definitions.get(key);
+            if (list) list.push(definition);
+            else definitions.set(key, [definition]);
+        }
+    };
+    const typeAssertions: (ts.AsExpression | ts.TypeAssertion)[] = [];
+    const guardedTypes: ts.TypeNode[] = [];
     let foreignPrototype: ts.Node | undefined;
     const typeOf = (node: ts.Node): ts.Type => checker.getTypeAtLocation(node);
     let order = 0;
@@ -520,7 +643,54 @@ function observe(program: ts.Program): ProgramObservations {
                         });
                 }
         }
+        if (ts.isObjectLiteralExpression(node) && !isDestructuringPattern(node))
+            for (const member of objectLiteralMembers(node)) {
+                if (member.kind === "spread" || member.kind === "proto")
+                    continue;
+                const name = member.node.name;
+                define(member.key, {
+                    via: "literal",
+                    node: member.node,
+                    ...(member.value ? { stored: member.value } : {}),
+                    ...(member.key === undefined &&
+                    ts.isComputedPropertyName(name)
+                        ? { key: name.expression }
+                        : {}),
+                });
+            }
+        else if (ts.isClassLike(node))
+            for (const member of node.members) {
+                const name = member.name;
+                if (name && !ts.isPrivateIdentifier(name)) {
+                    const key = propertyKey(name);
+                    define(key, {
+                        via: "class",
+                        node: member,
+                        ...(key === undefined && ts.isComputedPropertyName(name)
+                            ? { key: name.expression }
+                            : {}),
+                    });
+                }
+                if (ts.isConstructorDeclaration(member))
+                    for (const parameter of member.parameters)
+                        if (
+                            ts.isIdentifier(parameter.name) &&
+                            ts.isParameterPropertyDeclaration(parameter, member)
+                        )
+                            define(parameter.name.text, {
+                                via: "class",
+                                node: parameter,
+                            });
+            }
+        else if (
+            ts.isFunctionLike(node) &&
+            node.type &&
+            ts.isTypePredicateNode(node.type) &&
+            node.type.type
+        )
+            guardedTypes.push(node.type.type);
         if (isTypeAssertion(node)) {
+            typeAssertions.push(node);
             const untyped = (type: ts.Type): boolean =>
                 (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0;
             const asserted = typeOf(node);
@@ -615,7 +785,25 @@ function observe(program: ts.Program): ProgramObservations {
             )
                 observesObject(node, node);
         }
-        for (const { target } of writeSites(node)) written(target);
+        for (const { target, kind, stored } of writeSites(node)) {
+            written(target);
+            if (
+                ts.isPropertyAccessExpression(target) ||
+                ts.isElementAccessExpression(target)
+            ) {
+                const key = accessKey(target);
+                define(key, {
+                    via: "write",
+                    node: target,
+                    kind,
+                    ...(stored ? { stored } : {}),
+                    ...(key === undefined &&
+                    ts.isElementAccessExpression(target)
+                        ? { key: target.argumentExpression }
+                        : {}),
+                });
+            }
+        }
         if (isAssignmentExpression(node)) {
             if (node.operatorToken.kind === ts.SyntaxKind.EqualsToken)
                 assignmentPatternReads(node.left, read, (object) =>
@@ -707,6 +895,17 @@ function observe(program: ts.Program): ProgramObservations {
             (owner === "Reflect" && method === "setPrototypeOf")
         )
             foreignPrototype ??= node;
+        const reflective = REFLECTIVE_DEFINITIONS.get(`${owner}.${method}`);
+        if (reflective && first && !ts.isSpreadElement(first)) {
+            const definition: MemberDefinition = {
+                via: "reflect",
+                node,
+                method: reflective,
+            };
+            const keys = reflectedKeys(node, reflective);
+            if (keys) for (const key of keys) define(key, definition);
+            else define(undefined, definition);
+        }
         if (owner === "Object") {
             if (method === "assign" && first) {
                 addWrite(first, { node });
@@ -780,6 +979,10 @@ function observe(program: ts.Program): ProgramObservations {
         wholesaleReads,
         copies,
         handed,
+        definitions,
+        keyedDefinitions,
+        typeAssertions,
+        guardedTypes,
         foreignPrototype,
     };
 }

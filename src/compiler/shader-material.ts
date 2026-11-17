@@ -1,8 +1,8 @@
-import { EmissionSet, EmissionMap } from "./emission-transaction.js";
-import type { LoweringServices } from "./lowering-services.js";
 // Shader-material descriptors retain stable creation-order IDs and declared
 // resource slots. Scene-local stages lower through typed Shader IR after their
 // reached draws establish the mesh layout; unused descriptors need no stages.
+import { EmissionSet, EmissionMap } from "./emission-transaction.js";
+import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import { sharedPinnedContext } from "../lowering/context.js";
@@ -37,7 +37,6 @@ import type {
     CompiledShaderStorageBuffer,
     CompiledShaderUniformDefault,
     SceneMeshManifest,
-    StaticListItem,
     Value,
 } from "./types.js";
 import {
@@ -47,19 +46,11 @@ import {
 } from "./data-types.js";
 import { isJsonValue } from "./json-bridge.js";
 import { presenceCpp } from "./types.js";
-
-/** Reads a list item within the bindings of the call that returned it. */
-function readListItem<T>(
-    item: StaticListItem,
-    read: (item: StaticListItem) => T,
-): T {
-    return item.within ? item.within(() => read(item)) : read(item);
-}
 import { knownCondition } from "./values/model.js";
 import {
     keepsShaderCreations,
     shaderOptionFacts,
-    type RecordFact,
+    sourceTextFact,
     type RecordFacts,
 } from "./shader-derivations.js";
 
@@ -79,14 +70,6 @@ const shaderDepthCompare: TableOption = {
  * is the shared export.
  */
 const WGSL_IDENTIFIER = cppIdentifierPattern;
-
-/** The options holding declaration lists, read item by item. */
-export const SHADER_DECLARATION_LISTS: ReadonlySet<string> = new Set([
-    "uniforms",
-    "samplers",
-    "externalTextures",
-    "storageBuffers",
-]);
 
 /** Per-stage resource limits for native shader materials. */
 const MAX_SHADER_SAMPLERS = 16;
@@ -518,24 +501,15 @@ export function compileShaderMaterialOptions(
         context.objectProperty(object, "transmissive"),
         false,
     );
-    const source = (compiled: typeof compiledVertex): RecordFact =>
-        compiled.dynamicUniforms.length > 0
-            ? "runtime"
-            : { json: compiled.source };
     const creation = keepsShaderCreations(context)
-        ? shaderOptionFacts(
-              context,
-              object,
-              {
-                  ...(staticName === undefined
-                      ? {}
-                      : { name: { json: staticName } }),
-                  vertexSource: source(compiledVertex),
-                  fragmentSource: source(compiledFragment),
-                  attributes: { json: attributes },
-              },
-              SHADER_DECLARATION_LISTS,
-          )
+        ? shaderOptionFacts(context, object, {
+              ...(staticName === undefined
+                  ? {}
+                  : { name: { json: staticName } }),
+              vertexSource: sourceTextFact(compiledVertex),
+              fragmentSource: sourceTextFact(compiledFragment),
+              attributes: { json: attributes },
+          })
         : undefined;
     return {
         ...reached,
@@ -574,7 +548,8 @@ function compileShaderSamplers(
     }
     const samplers: CompiledShaderSampler[] = [];
     for (const item of context.staticListItems(expression)) {
-        readListItem(item, ({ node: element, text }) => {
+        item.within(() => {
+            const { node: element, text } = item;
             // A typed `ShaderSamplerDecl` names its own sample type, view
             // dimension and comparison mode. Everything else goes through the
             // same static-string resolution `attributes` and `uniforms` take, so
@@ -675,7 +650,8 @@ function compileShaderExternalTextures(
 ): string[] {
     if (!expression || absentShaderOption(context, expression)) return [];
     const names = context.staticListItems(expression).map((item) =>
-        readListItem(item, ({ node: element, text }) => {
+        item.within(() => {
+            const { node: element, text } = item;
             const name = text ?? context.compileStaticString(element);
             reserveSamplerPair(
                 context,
@@ -859,8 +835,8 @@ function compileShaderUniformSignatures(
         name: string;
         components: string[];
     }> = [];
-    const signatures = context.staticListItems(expression).map((listed) =>
-        readListItem(listed, (item) => {
+    const signatures = context.staticListItems(expression).map((item) =>
+        item.within(() => {
             if (item.text !== undefined) return item.text;
             const resolved = context.resolveStaticLiteral(item.node);
             if (ts.isStringLiteralLike(resolved)) {
@@ -1328,10 +1304,9 @@ function compileStaticStringArray(
 ): string[] {
     return context
         .staticListItems(expression)
-        .map((listed) =>
-            readListItem(
-                listed,
-                (item) => item.text ?? context.compileStaticString(item.node),
+        .map((item) =>
+            item.within(
+                () => item.text ?? context.compileStaticString(item.node),
             ),
         );
 }

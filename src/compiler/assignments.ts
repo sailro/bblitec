@@ -3059,6 +3059,7 @@ import {
 } from "./values/model.js";
 import { recordAt } from "./record-access.js";
 import { isPinnedType, typeImpliedFacts } from "./data-types.js";
+import { isShaderMaterialType } from "./shader-derivations.js";
 import { creationInSegment } from "./creation-segments.js";
 export { isTrsVectorName } from "../scene-node-transform-descriptor.js";
 
@@ -4428,9 +4429,9 @@ function emitMaterialAssignment(
         const sceneShader =
             material.sceneShaderVariant !== undefined ||
             (material.possibleSceneShaderVariants?.length ?? 0) > 0 ||
-            isPinnedType(context.checker.getTypeAtLocation(expression.right), [
-                "ShaderMaterial",
-            ]);
+            isShaderMaterialType(
+                context.checker.getTypeAtLocation(expression.right),
+            );
         if (
             target.runtimeMeshStreams !== undefined &&
             !sceneShader &&
@@ -4512,31 +4513,47 @@ function emitMaterialAssignment(
         if (meshProfile === undefined && material.standardMaterial) {
             context.sceneManifest.recordUnknownStandardMeshMaterial();
         }
-        if (meshProfile === undefined) {
-            const profiles = target.possibleSceneMeshProfiles ?? [undefined];
-            for (const profile of profiles)
-                context.sceneManifest.recordSceneShaderMaterialDraw(
-                    profile,
-                    material,
-                    profiles.length > 1,
-                );
-        }
-        if (
-            material.scenePbrMaterialIndex === undefined &&
-            !material.standardMaterial &&
-            material.nodeMaterialIndex === undefined &&
-            material.shaderVariant === undefined &&
-            material.sceneShaderVariant === undefined &&
-            !material.possibleSceneShaderVariants?.length &&
-            !material.assetPbrMaterial
-        ) {
-            context.sceneManifest.recordUnknownSceneMaterialAssignment(
-                meshProfile,
-            );
-        }
+        recordMaterialDraw(
+            context,
+            material,
+            meshProfile === undefined
+                ? (target.possibleSceneMeshProfiles ?? [undefined])
+                : [],
+            meshProfile,
+        );
         return true;
     }
     return false;
+}
+
+/**
+ * The manifest records of `material` drawn on a mesh: its scene shader
+ * variants on each profile `drawn` names (possible draws where it names
+ * several), and, for a material of no family generation knows, an unknown
+ * assignment on `profile`.
+ */
+export function recordMaterialDraw(
+    context: Pick<LoweringServices, "sceneManifest">,
+    material: Value,
+    drawn: readonly (number | undefined)[],
+    profile: number | undefined,
+): void {
+    for (const each of drawn)
+        context.sceneManifest.recordSceneShaderMaterialDraw(
+            each,
+            material,
+            drawn.length > 1,
+        );
+    if (
+        material.scenePbrMaterialIndex === undefined &&
+        !material.standardMaterial &&
+        material.nodeMaterialIndex === undefined &&
+        material.shaderVariant === undefined &&
+        material.sceneShaderVariant === undefined &&
+        !material.possibleSceneShaderVariants?.length &&
+        !material.assetPbrMaterial
+    )
+        context.sceneManifest.recordUnknownSceneMaterialAssignment(profile);
 }
 
 function emitBoundMinAssignment(

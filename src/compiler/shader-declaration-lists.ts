@@ -8,7 +8,6 @@
  */
 import ts from "typescript";
 import { bindingReferences } from "./binding-references.js";
-import { isPinnedType } from "./data-types.js";
 import {
     emitCollectionSearch,
     searchPredicate,
@@ -16,20 +15,14 @@ import {
     type HandleCollectionTarget,
 } from "./handle-collections.js";
 import type { LoweringServices } from "./lowering-services.js";
+import {
+    isShaderMaterialType,
+    nativeListSearch,
+    shaderMaterialField,
+} from "./shader-derivations.js";
 import { declaredSymbol, type NamedMember } from "./symbols.js";
 import { writeSiteOf } from "./syntax.js";
 import { booleanValue, type Value } from "./types.js";
-
-/** Each list, by the native list holding the same names. */
-const DECLARATION_LISTS: Readonly<Record<string, string>> = {
-    uniformDecls: "bbl::ShaderDeclarationList::uniforms",
-    samplerDecls: "bbl::ShaderDeclarationList::samplers",
-    storageBufferDecls: "bbl::ShaderDeclarationList::storage_buffers",
-    attributes: "bbl::ShaderDeclarationList::attributes",
-};
-
-/** The list whose entries are the names themselves, not declaration records. */
-const NAME_LIST = "attributes";
 
 type ShaderDeclarationContext = Pick<
     LoweringServices,
@@ -53,7 +46,7 @@ type ShaderDeclarationContext = Pick<
 >;
 
 /** A walk over one declaration list: the native loop and its bound entry. */
-export interface ShaderDeclarationWalk {
+interface ShaderDeclarationWalk {
     readonly target: HandleCollectionTarget;
     readonly entry: ElementFields;
 }
@@ -66,12 +59,15 @@ function declarationList(
     const list = context.unwrap(expression);
     return ts.isPropertyAccessExpression(list) &&
         !ts.isOptionalChain(list) &&
-        Object.hasOwn(DECLARATION_LISTS, list.name.text) &&
-        isPinnedType(context.checker.getTypeAtLocation(list.expression), [
-            "ShaderMaterial",
-        ])
+        shaderMaterialField(list.name.text)?.nativeList &&
+        isShaderMaterialType(context.checker.getTypeAtLocation(list.expression))
         ? list
         : undefined;
+}
+
+/** The native list `list` reads. */
+function nativeList(list: ts.PropertyAccessExpression) {
+    return shaderMaterialField(list.name.text)!.nativeList!;
 }
 
 /** The native names of the list `list` reads, in its order. */
@@ -85,7 +81,7 @@ function listNames(
     context.reachFeature("material:shader", list);
     context.reachFeature("material:shader-declaration-lists", list);
     return {
-        cpp: `bbl::shader_declaration_names(${engine}, ${material.cpp}, ${DECLARATION_LISTS[list.name.text]!})`,
+        cpp: `bbl::shader_declaration_names(${engine}, ${material.cpp}, ${nativeList(list).cpp})`,
         engine,
     };
 }
@@ -104,7 +100,7 @@ export function shaderDeclarationWalk(
 ): ShaderDeclarationWalk | undefined {
     const list = declarationList(context, expression);
     if (!list) return undefined;
-    const names = list.name.text === NAME_LIST;
+    const names = nativeList(list).names === true;
     const symbol = declaredSymbol(context.checker, entry);
     for (const site of symbol && !names
         ? bindingReferences(context.program, context.checker, symbol)
@@ -156,8 +152,9 @@ export function compileShaderDeclarationSearch(
     member: NamedMember,
 ): Value | undefined {
     const list = declarationList(context, member.expression);
-    if (!list) return undefined;
-    if (member.name === "includes" && list.name.text === NAME_LIST) {
+    if (!list || !nativeListSearch(list.name.text, member.name))
+        return undefined;
+    if (member.name === "includes") {
         context.expectArgumentCount(call, 1, 1);
         // The list is read before its argument, as JavaScript reads them.
         const names = listNames(context, list).cpp;
@@ -167,7 +164,6 @@ export function compileShaderDeclarationSearch(
         context.reachJsData();
         return booleanValue(`bbl::js::array_includes(${names}, ${name})`);
     }
-    if (member.name !== "some") return undefined;
     const predicate = searchPredicate(context, call, "some");
     const walk = shaderDeclarationWalk(
         context,

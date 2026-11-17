@@ -1,11 +1,14 @@
 import ts from "typescript";
+import { foldNumericComparison } from "../lowering/pinned-operators.js";
 import { isRebound } from "./binding-rebinds.js";
 import { libraryCallName, libraryGlobal, valueSymbolOf } from "./symbols.js";
 import {
     equalityOperator,
+    isBlockOrSourceFile,
     isOperandSelection,
     literalKey,
     operandYield,
+    statementsBeside,
     unwrapExpression,
     variableKind,
     type ValueClass,
@@ -56,10 +59,10 @@ export function writeGuardRejects(
                 condition: parent.expression,
                 taken: parent.thenStatement === node,
             });
-        if (ts.isBlock(parent) || ts.isSourceFile(parent)) {
-            const index = parent.statements.indexOf(node as ts.Statement);
+        const earlier = statementsBeside(node, "before", isBlockOrSourceFile);
+        if (earlier) {
             const reads = new Set<ts.Symbol>();
-            for (const statement of parent.statements.slice(0, index))
+            for (const statement of earlier)
                 for (const read of slotReads(
                     checker,
                     statement,
@@ -232,24 +235,11 @@ function evaluateGuard(
                 const equal = equality.loose ? a == b : a === b;
                 return { known: equality.negated ? !equal : equal };
             }
-            switch (operator) {
-                case ts.SyntaxKind.LessThanToken:
-                case ts.SyntaxKind.LessThanEqualsToken:
-                case ts.SyntaxKind.GreaterThanToken:
-                case ts.SyntaxKind.GreaterThanEqualsToken:
-                    if (typeof a !== "number" || typeof b !== "number")
-                        return undefined;
-                    return {
-                        known:
-                            operator === ts.SyntaxKind.LessThanToken
-                                ? a < b
-                                : operator === ts.SyntaxKind.LessThanEqualsToken
-                                  ? a <= b
-                                  : operator === ts.SyntaxKind.GreaterThanToken
-                                    ? a > b
-                                    : a >= b,
-                    };
-            }
+            const ordered =
+                typeof a === "number" && typeof b === "number"
+                    ? foldNumericComparison(operator, a, b)
+                    : undefined;
+            if (ordered !== undefined) return { known: ordered };
         }
         return undefined;
     };

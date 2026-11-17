@@ -459,13 +459,14 @@ test("getEffectiveAspectRatio scales the target ratio by the camera's viewport, 
         }
         void main();
     `);
-    // The extents are read once, in order, and an absent camera divides them.
+    // The extents are read once, in order (the const width where it is
+    // bound, the literal into a constant), and an absent camera divides them.
     assert.match(
         result.cpp,
-        /const double (v_bblite_aspect_extent_\d+) = [^;]*width[^;]*;\s*const double (v_bblite_aspect_extent_\d+) = 400\.0;/,
+        /const double (v_bblite_aspect_extent_\d+) = 400\.0;/,
     );
     assert.match(
         result.cpp,
-        /\? bbl::upstream::effective_aspect_ratio\([^;]*cameras[^;]*, v_bblite_aspect_extent_\d+, v_bblite_aspect_extent_\d+\) : \(v_bblite_aspect_extent_\d+ \/ v_bblite_aspect_extent_\d+\)\)/,
+        /\? bbl::upstream::effective_aspect_ratio\([^;]*cameras[^;]*, (v_block0_width), (v_bblite_aspect_extent_\d+)\) : \(\1 \/ \2\)\)/,
     );
 });
