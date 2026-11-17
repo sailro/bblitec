@@ -13960,6 +13960,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.context.emit(
                 `${this.context.dataTypes.cppType(dataType)} ${result};`,
             );
+            // A closure created after the literal captures it.
+            this.context.registerNativeBinding(result);
             for (const [index, property] of literal.properties.entries()) {
                 if (skipped?.has(property)) continue;
                 refuseProtoSetter(property, (node, message) =>
