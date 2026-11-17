@@ -3049,8 +3049,8 @@ export interface ValueFields {
      */
     slotDeclarations?: readonly ts.Declaration[];
     /**
-     * Stored into a record field declared only as a read-only array view
-     * (`ArrayLike`, `readonly T[]`): no array grows through that field.
+     * A tuple stored into a record field declared only as a read-only array
+     * view (`ArrayLike`, `readonly T[]`): no array grows through that field.
      */
     readonlyArraySlot?: true;
     /** JavaScript truthiness when it differs from mere optional presence. */

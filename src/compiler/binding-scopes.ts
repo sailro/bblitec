@@ -1426,35 +1426,46 @@ export class BindingScopes {
                         declaration,
                         "source",
                     );
-                const properties = this.recordPropertiesAreCurrent(narrowed)
-                    ? narrowed.recordProperties
+                const record = narrowed;
+                const properties = this.recordPropertiesAreCurrent(record)
+                    ? record.recordProperties
                     : undefined;
                 // Methods and accessors are own keys as data properties are.
                 const ownKeys =
-                    narrowed.recordOwnKeys ?? recordPropertyKeys(narrowed);
-                narrowed = presentCopy(
-                    this.pinValueToTemporary(
-                        this.context.dataLowerer.leafValue(
-                            this.context.dataLowerer.compileKnownValueForSink(
-                                narrowed,
-                                represented,
-                                argument ?? identifier,
+                    record.recordOwnKeys ?? recordPropertyKeys(record);
+                const node = argument ?? identifier;
+                narrowed = this.context.dataLowerer.withRetainedArraySinks(
+                    record,
+                    this.retainedArrayFields(record, node),
+                    () => {
+                        const projected = presentCopy(
+                            this.pinValueToTemporary(
+                                this.context.dataLowerer.leafValue(
+                                    this.context.dataLowerer.compileKnownValueForSink(
+                                        record,
+                                        represented,
+                                        node,
+                                    ),
+                                    represented,
+                                ),
+                                "parameter_object",
+                                identifier,
                             ),
-                            represented,
-                        ),
-                        "parameter_object",
-                        identifier,
-                    ),
-                    narrowed,
+                            record,
+                        );
+                        if (properties) {
+                            writable(projected).recordProperties =
+                                Object.fromEntries(
+                                    Object.entries(properties).filter(
+                                        ([, propertyValue]) =>
+                                            keepsStaticMember(propertyValue),
+                                    ),
+                                );
+                            writable(projected).recordOwnKeys = ownKeys;
+                        }
+                        return projected;
+                    },
                 );
-                if (properties) {
-                    writable(narrowed).recordProperties = Object.fromEntries(
-                        Object.entries(properties).filter(([, propertyValue]) =>
-                            keepsStaticMember(propertyValue),
-                        ),
-                    );
-                    writable(narrowed).recordOwnKeys = ownKeys;
-                }
             }
         }
         if (
@@ -3023,6 +3034,38 @@ export class BindingScopes {
         return value;
     }
 
+    /**
+     * The fresh array members of an object literal's record whose element
+     * facts its native object keeps while the projection retains them
+     * (`DataLowerer.withRetainedArraySinks`).
+     */
+    private retainedArrayFields(
+        value: Value,
+        node: ts.Expression,
+    ): { key: string; value: Value; node: ts.Expression }[] {
+        return ts.isObjectLiteralExpression(unwrapExpression(node)) &&
+            this.recordPropertiesAreCurrent(value) &&
+            !Object.keys(value.recordMethods ?? {}).length &&
+            !Object.keys(value.recordGetters ?? {}).length &&
+            !Object.keys(value.recordSetters ?? {}).length
+            ? Object.entries(value.recordProperties ?? {}).flatMap(
+                  ([key, member]) =>
+                      member.freshData &&
+                      !member.conditionalOwnKey &&
+                      member.dataType?.kind === "vector" &&
+                      member.staticElements
+                          ? [
+                                {
+                                    key,
+                                    value: member,
+                                    node: literalMember(node, key) ?? node,
+                                },
+                            ]
+                          : [],
+              )
+            : [];
+    }
+
     /** Project a stored plain object once, preserving replacement of its members. */
     public referenceRecordValue(
         value: Value,
@@ -3068,33 +3111,9 @@ export class BindingScopes {
             return projected;
         };
         const projectRecord = (type: DataType<"struct">): Value => {
-            const fields =
-                ts.isObjectLiteralExpression(unwrapExpression(node)) &&
-                this.recordPropertiesAreCurrent(value) &&
-                !Object.keys(value.recordMethods ?? {}).length &&
-                !Object.keys(value.recordGetters ?? {}).length &&
-                !Object.keys(value.recordSetters ?? {}).length
-                    ? Object.entries(value.recordProperties ?? {}).flatMap(
-                          ([key, member]) =>
-                              member.freshData &&
-                              !member.conditionalOwnKey &&
-                              member.dataType?.kind === "vector" &&
-                              member.staticElements
-                                  ? [
-                                        {
-                                            key,
-                                            value: member,
-                                            node:
-                                                literalMember(node, key) ??
-                                                node,
-                                        },
-                                    ]
-                                  : [],
-                      )
-                    : [];
             return this.context.dataLowerer.withRetainedArraySinks(
                 value,
-                fields,
+                this.retainedArrayFields(value, node),
                 () =>
                     retainFields(
                         this.context.dataLowerer.leafValue(

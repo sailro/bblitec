@@ -69,6 +69,7 @@ import ts from "typescript";
 import {
     absenceOf,
     knownCondition,
+    knownOwnKeys,
     staticBooleanOf,
     staticKeyOf,
     undefinedValue,
@@ -4456,17 +4457,8 @@ class Compiler implements LoweringServices {
             bound.kind === "data" &&
             bound.dataType?.kind === "struct"
         ) {
-            const struct = bound.dataType.name;
-            return bound.recordOwnKeys ||
-                this.dataTypes.ownKeysDecided(struct, node)
-                ? this.memberLiteral(
-                      node,
-                      bound.recordOwnKeys ??
-                          this.dataTypes
-                              .structFields(struct, node, "accessors")
-                              .map((field) => field.sourceName),
-                  )
-                : undefined;
+            const keys = knownOwnKeys(this, bound, node);
+            return keys ? this.memberLiteral(node, keys) : undefined;
         }
         const properties = bound.recordProperties;
         const keys =

@@ -336,6 +336,36 @@ export function ownKeysKnown(
     );
 }
 
+/**
+ * The own keys of a compile-time record or a struct where generation knows
+ * every one (`ownKeysKnown`): its proven keys, a record's property keys, or
+ * a struct's fields where the struct decides them. Undefined otherwise.
+ */
+export function knownOwnKeys(
+    context: {
+        readonly dataTypes: {
+            ownKeysDecided(structName: string, node: ts.Node): boolean;
+            structFields(
+                structName: string,
+                node: ts.Node,
+                accessors: "accessors",
+            ): readonly { readonly sourceName: string }[];
+        };
+    },
+    owner: Value,
+    node: ts.Node,
+): readonly string[] | undefined {
+    if (!ownKeysKnown(context, owner, node)) return undefined;
+    if (owner.recordOwnKeys) return owner.recordOwnKeys;
+    if (owner.kind === "record")
+        return Object.keys(owner.recordProperties ?? {});
+    return owner.dataType?.kind === "struct"
+        ? context.dataTypes
+              .structFields(owner.dataType.name, node, "accessors")
+              .map((field) => field.sourceName)
+        : undefined;
+}
+
 /** The backing value to store, before projecting a handle or other data leaf. */
 export function representedStorage(
     value: Value,

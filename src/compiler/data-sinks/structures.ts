@@ -987,8 +987,10 @@ function conditionalOwnFieldInitializer(
 }
 
 /**
- * A member stored as a struct field, marked when the field is declared only
- * as a read-only array view (`readonlyArrayField`).
+ * A member stored as a struct field. A tuple is marked when the field is
+ * declared only as a read-only array view (`readonlyArrayField`), the one
+ * storage that reads the mark; any other member stores as itself, keeping
+ * the identity its sinks track it by (`withRetainedArraySinks`).
  */
 function storeFieldMember(
     lowerer: DataSinkHost,
@@ -997,7 +999,8 @@ function storeFieldMember(
     node: ts.Node,
 ): string {
     return lowerer.compileMemberForSink(
-        lowerer.context.dataTypes.readonlyArrayField(field)
+        member.dataType?.kind === "tuple" &&
+            lowerer.context.dataTypes.readonlyArrayField(field)
             ? { ...member, readonlyArraySlot: true }
             : member,
         field.type,

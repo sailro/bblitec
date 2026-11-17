@@ -43,6 +43,7 @@ import {
     absenceOfNull,
     knownAbsent,
     knownCondition,
+    knownOwnKeys,
     staticKeyOf,
     undefinedValue,
     valueDataType,
@@ -10439,16 +10440,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         element.dataType?.kind === "struct",
                 ))
         ) {
+            const ownKeys = elements.map((element) =>
+                knownOwnKeys(this.context, element, node),
+            );
             if (
                 !elements.every(
-                    (element) =>
+                    (element, index) =>
                         !element.parameterBinding &&
                         (element.staticString !== undefined ||
                             element.staticNumber !== undefined ||
                             element.staticBoolean !== undefined ||
                             (element.recordProperties !== undefined &&
-                                (element.recordOwnKeys !== undefined ||
-                                    element.kind === "record") &&
+                                ownKeys[index] !== undefined &&
                                 Object.keys(element.recordGetters ?? {})
                                     .length === 0 &&
                                 Object.keys(element.recordSetters ?? {})
@@ -10488,10 +10491,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     (key) =>
                         !recordFieldIsWritten(this.context, sourceElement, key),
                 );
-            for (const element of elements)
+            for (const [index, element] of elements.entries())
                 this.context.bindings.retainRecordPropertiesAlias(
                     element,
-                    unwrittenScalars,
+                    unwrittenScalars ||
+                        // An object only its struct decides the keys of (a
+                        // module constant's) was not built for the array:
+                        // the array's escape withdraws the array's view of
+                        // it, as a holder's escape leaves its own facts.
+                        (element.kind !== "record" &&
+                            element.recordOwnKeys === undefined &&
+                            ownKeys[index] !== undefined),
                 );
             writable(owner).staticElements = elements.map((element, index) => ({
                 kind: "data",
@@ -10504,14 +10514,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     ? { optionalFoundCpp: "true" }
                     : {}),
                 ...scalarFacts(element),
-                ...(element.recordProperties
+                ...(element.recordProperties && ownKeys[index]
                     ? {
                           // Keep the source identity: writes through either
                           // record view invalidate the same indexed fact map.
                           recordProperties: element.recordProperties,
-                          recordOwnKeys:
-                              element.recordOwnKeys ??
-                              Object.keys(element.recordProperties),
+                          recordOwnKeys: ownKeys[index],
                       }
                     : {}),
             }));
