@@ -491,6 +491,7 @@ export interface LoweringServices {
     isFunctionEvaluationRepeated(lexicalThis: Value | undefined): boolean;
     isLocalCallbackEvaluationRepeated(declaration: ts.Node): boolean;
     enterStaticIteration(statement: ts.IterationStatement): void;
+    withinStaticExpansionBudget<T>(expand: () => T, declined: T): T;
     leaveStaticIteration(): void;
     isInParameterizedResourceLoop(statement?: ts.IterationStatement): boolean;
     parameterizedResourceLoop(

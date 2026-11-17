@@ -1009,6 +1009,41 @@ test("enforces total static expansion across separate loops", () => {
     );
 });
 
+test("a setup loop unrolled only for its pinned calls runs natively where unrolling exceeds the budget", () => {
+    // Each pass places nodes and instances of one existing mesh: no pass
+    // needs its own record, so a count whose unrolling would exceed the
+    // allowance runs as a native loop, and a small count still unrolls.
+    const placements = (clumps: number): string =>
+        compileSource(`
+        import { createEngine, createSceneContext, createBox, addToScene, createTransformNode, addThinInstance } from "@babylonjs/lite";
+        import type { EngineContext, SceneContext } from "@babylonjs/lite";
+        async function create(engine: EngineContext, scene: SceneContext, opts: { clumps: number }): Promise<number> {
+            await Promise.resolve();
+            const box = createBox(engine);
+            addToScene(scene, box);
+            const placeItem = (x: number, z: number): void => {
+                const node = createTransformNode("n", x, 0, z);
+                addThinInstance(box, node.worldMatrix as unknown as Float32Array);
+            };
+            for (let c = 0; c < opts.clumps; c++) {
+                const k = Math.floor(Math.random() * 3);
+                for (let i = 0; i < k; i++) placeItem(c, i);
+            }
+            return opts.clumps;
+        }
+        async function main() {
+            const engine = await createEngine(document.createElement("canvas"));
+            const scene = createSceneContext(engine);
+            console.log(await create(engine, scene, { clumps: ${clumps} }));
+        }
+        void main();
+    `).cpp;
+    assert.match(placements(3000), /for \([^\n]*_c < 3000\);/);
+    const unrolled = placements(3);
+    assert.doesNotMatch(unrolled, /_c < 3\)/);
+    assert.equal(unrolled.match(/for \(/g)?.length, 3);
+});
+
 test("a caught expansion failure cannot turn a later emission probe into success", () => {
     const source = ts.createSourceFile(
         "loop.ts",

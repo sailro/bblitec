@@ -6788,6 +6788,32 @@ class Compiler implements LoweringServices {
         );
     }
 
+    /**
+     * An optional static expansion: where it would exceed the compilation's
+     * static budget, nothing it emitted is kept, the budget included, and
+     * `declined` stands for it, so the caller emits the runtime form.
+     */
+    public withinStaticExpansionBudget<T>(expand: () => T, declined: T): T {
+        let exceeded = false;
+        const refusals = this.staticExpansionBudget.refusals;
+        return this.probeEmission(
+            () => {
+                try {
+                    return expand();
+                } catch (error) {
+                    if (
+                        !(error instanceof CompileError) ||
+                        this.staticExpansionBudget.refusals === refusals
+                    )
+                        throw error;
+                    exceeded = true;
+                    return declined;
+                }
+            },
+            () => !exceeded,
+        );
+    }
+
     public leaveStaticIteration(): void {
         this.staticCallbackEvaluationIdentities.pop();
         this.staticExpansionBudget.leave();

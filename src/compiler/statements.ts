@@ -227,6 +227,7 @@ interface StatementLoweringContext extends Pick<
     | "noteErasedElementWrite"
     | "requiresStaticIteration"
     | "requiresStaticDataIteration"
+    | "withinStaticExpansionBudget"
     | "executedModuleConstantElements"
     | "emitNativeDataIteration"
     | "knownCollectionCardinality"
@@ -2656,15 +2657,29 @@ export class StatementLowerer {
                 statement.statement,
                 new EmissionSet([indexSymbol]),
             );
-        if (
-            (!this.bindsEnclosingLoop(statement.statement) ||
-                needsSpecialization ||
-                staticExits) &&
+        const expand = (): boolean =>
             this.emitStaticIndexFor(
                 context,
                 statement,
                 this.bindsEnclosingLoop(statement.statement) && staticExits,
-            )
+            );
+        // A setup loop unrolled only because it reaches pinned calls, with
+        // no pass needing its own specialization, loop control or frame
+        // yields, runs as a native loop where unrolling would exceed the
+        // static budget; the native body still refuses any construction it
+        // records.
+        const optional =
+            resourceLoop &&
+            !needsSpecialization &&
+            !this.bindsEnclosingLoop(statement.statement) &&
+            !containsFrameYield(context, statement.statement);
+        if (
+            (!this.bindsEnclosingLoop(statement.statement) ||
+                needsSpecialization ||
+                staticExits) &&
+            (optional
+                ? context.withinStaticExpansionBudget(expand, false)
+                : expand())
         ) {
             return;
         }

@@ -104,7 +104,9 @@ Rules:
   write grows an array of non-nullable objects with default slots.
 - An intersection of the pin's types of one engine object (`ShaderMaterial & MaterialView`) stores that object's handle.
   A list with no native element type (`any[]`) refuses a handle a callback creates and pushes.
-- Static expansion: 4,096 iterations / 1 MiB; composition tables: 65,536 records.
+- Static expansion: 4,096 iterations / 1 MiB; composition tables: 65,536 records. A setup `for` loop unrolled only
+  because it reaches pinned calls, whose passes need no specialization, loop control or frame yield, runs natively past
+  that allowance.
 - `import.meta.env`: `MODE="production"`, `PROD=true`, `DEV=false`, `SSR=false`, `BASE_URL` from deployment; custom
   strings via `--env NAME=value` or `CompileOptions.environment`. No dotenv or host variables.
 - Without a realm, timers and microtasks need no engine; RAF needs a Window repaint source.
