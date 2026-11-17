@@ -6005,6 +6005,10 @@ export class DataTypeRegistry {
                             ? this.dynamicJsonType(parameterType)
                             : undefined) ??
                         this.fromStoredTsType(parameterType, location) ??
+                        // Every call writes its argument here: a record
+                        // type reaching `unknown` members stores them as
+                        // dynamic values, as a result's does.
+                        this.storedDynamicRecordType(parameterType, location) ??
                         // An `unknown` parameter passed `undefined`, `null`
                         // or `{}`, values without storage of their own,
                         // holds them as the dynamic value it can be.

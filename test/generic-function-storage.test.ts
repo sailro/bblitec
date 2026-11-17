@@ -348,6 +348,63 @@ check(
 `,
 );
 
+// A stored generic method takes adapters whose optional method returns
+// `unknown`: each instantiation's parameter is the record each adapter is
+// stored as, that result a dynamic value.
+check(
+    "stored-generic-unknown-member-parameter",
+    `
+    interface Candidate<S> { readonly state: S; readonly score: number }
+    interface Adapter<S> { readonly stableId: number; current(): Candidate<S>; companion?(stableId: number): unknown; cloneState(state: S): S }
+    interface Controller { begin<S>(adapter: Adapter<S>): boolean; begun(): number }
+    function createController(limit: number): Controller {
+        let begun = 0;
+        return {
+            begin<S>(adapter: Adapter<S>): boolean {
+                const initial = adapter.current();
+                if (initial.score > limit) return false;
+                begun += adapter.stableId;
+                return adapter.companion?.(adapter.stableId) === undefined && adapter.cloneState(initial.state) !== initial.state;
+            },
+            begun: () => begun,
+        };
+    }
+    function createAdapter<S>(stableId: number, state: () => S, clone: (state: S) => S): Adapter<S> {
+        return { stableId, current: () => ({ state: state(), score: stableId }), companion: (id) => (id === stableId ? undefined : { id }), cloneState: clone };
+    }
+    interface House { f: number }
+    interface Tower { a: number; name: string }
+    const house: House = { f: 1 };
+    const tower: Tower = { a: 2, name: "t" };
+    const controllers = [createController(8), createController(10)];
+    const controller = controllers[Math.random() > 2 ? 0 : 1]!;
+    if (!controller.begin(createAdapter<House>(7, () => house, (state) => ({ ...state })))) throw new Error("house begin");
+    if (!controller.begin(createAdapter<Tower>(9, () => tower, (state) => ({ ...state })))) throw new Error("tower begin");
+    if (controller.begin(createAdapter<House>(11, () => house, (state) => state))) throw new Error("house over limit");
+    if (controller.begun() !== 16) throw new Error("begun " + controller.begun());
+`,
+);
+
+// So does a stored method declared for one state type.
+check(
+    "stored-unknown-member-parameter",
+    `
+    interface Adapter<S> { readonly stableId: number; current(): S; companion?(stableId: number): unknown }
+    interface Controller { readonly limit: number; measure(adapter: Adapter<House>): number }
+    function createController(limit: number): Controller {
+        return { limit, measure: (adapter) => adapter.stableId * limit + adapter.current().f + (adapter.companion?.(0) === undefined ? 0 : 1) };
+    }
+    function createAdapter<S>(stableId: number, state: () => S): Adapter<S> {
+        return { stableId, current: state, companion: (id) => (id === stableId ? undefined : { id }) };
+    }
+    interface House { f: number }
+    const controllers = [createController(8), createController(10)];
+    const controller = controllers[Math.random() > 2 ? 0 : 1]!;
+    const measured = controller.measure(createAdapter<House>(7, () => ({ f: 2 })));
+    if (measured !== 73) throw new Error("measure " + measured);
+`,
+);
+
 test("Arguments object unsupported mutations and unconstrained storage refuse explicitly", () => {
     for (const mutation of [
         "arguments[0]=3;",

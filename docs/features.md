@@ -72,6 +72,8 @@ Rules:
 - A field typed `unknown` that an assertion reads (through an access or a `const` destructuring) or a write fills with one
   native handle kind stores that handle, absent when a write stores none; a function typed to return `unknown` whose
   returns are one handle kind, `undefined` or such fields returns that handle.
+- A record type reaching `unknown` members where several writes meet (a rebound binding, a function's result or
+  parameter) stores those members as documents.
 - A record binding whose member is written by a run-time key or replaced takes native storage; its fields typed
   `Record<string, unknown>` are documents.
 - A record type a parsed document is stored as is a document, with every record type the program reads out of it
