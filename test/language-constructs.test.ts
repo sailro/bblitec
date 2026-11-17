@@ -18762,6 +18762,67 @@ check(
 `,
 );
 
+// Meshes are native handles the Node run has no engine for: the generated
+// program runs the same assertions over two engines whose first meshes
+// share a slot, so only the engine tells them apart.
+test(
+    "an object parameter compares the mesh it is passed by identity through a stored method",
+    { skip: !native },
+    () => {
+        const { cpp } = compileSource(`
+        import { createBox, type EngineContext, type Mesh } from "@babylonjs/lite";
+        interface Fence { mesh: Mesh; elementAt(pickedMesh: object | null, faceId: number): number | null }
+        function createFence(engine: EngineContext): Fence {
+            const mesh = createBox(engine);
+            const hits: number[] = [7, 8, 9];
+            const elementAt = (pickedMesh: object | null, faceId: number): number | null => {
+                if (pickedMesh !== mesh) return null;
+                return hits[faceId] ?? null;
+            };
+            return { mesh, elementAt };
+        }
+        function inspect(first: EngineContext, second: EngineContext): number {
+            const fence = createFence(first);
+            const other = createFence(second);
+            if (fence.elementAt(fence.mesh, 1) !== 8) throw new Error("its own mesh");
+            if (fence.elementAt(null, 1) !== null) throw new Error("no mesh");
+            if (fence.elementAt(other.mesh, 1) !== null) throw new Error("another engine's mesh");
+            if (other.elementAt(other.mesh, 2) !== 9) throw new Error("the other fence");
+            return 1;
+        }
+        const inspections: Array<typeof inspect> = [inspect];
+    `);
+        const entry =
+            /double (\w+)\(\[\[maybe_unused\]\] bblscene::(\w+)& \w+, \[\[maybe_unused\]\] bbl::StoredEngine \w+, \[\[maybe_unused\]\] bbl::StoredEngine \w+\);/.exec(
+                cpp,
+            );
+        assert.ok(entry, "two-engine inspection");
+        runGeneratedProgram(
+            native!,
+            "language-constructs/object-parameter-mesh-identity",
+            `
+            #define main generated_main
+            ${cpp}
+            #undef main
+            #include <cassert>
+            namespace bbl {
+                MeshHandle create_box(Engine& engine, BoxOptions) {
+                    engine.meshes.emplace_back();
+                    return {0, 0};
+                }
+            }
+            int main() {
+                const bbl::js::RealmScope realm;
+                auto first = std::make_shared<bbl::Engine>();
+                auto second = std::make_shared<bbl::Engine>();
+                bblscene::${entry[2]} environment{};
+                assert(bblscene::${entry[1]}(environment, bbl::StoredEngine{first}, bbl::StoredEngine{second}) == 1);
+            }
+        `,
+        );
+    },
+);
+
 check(
     "a-local-record-stored-as-a-closed-key-record-is-that-record",
     `

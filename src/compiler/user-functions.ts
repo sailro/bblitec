@@ -6183,6 +6183,20 @@ export class UserFunctionLowerer {
                             continue;
                         }
                         const { type, cppName: name } = supplied;
+                        // The parameter of the signature its callers pass
+                        // through to, which stores what this one demands.
+                        const signatureIndex = runtimeIndex - 1;
+                        const signatureParameter = () =>
+                            context.dataTypes.signatureParameterDeclaration(
+                                signatureType,
+                                signatureIndex,
+                            ) ??
+                            (site &&
+                                storedSignatureParameter(
+                                    this.checker,
+                                    site,
+                                    ir.parameters.indexOf(parameter),
+                                ));
                         if (
                             !dataTypesEqual(
                                 type,
@@ -6193,16 +6207,7 @@ export class UserFunctionLowerer {
                             )
                         )
                             context.dataTypes.requireEngineParameterStorage(
-                                context.dataTypes.signatureParameterDeclaration(
-                                    signatureType,
-                                    runtimeIndex - 1,
-                                ) ??
-                                    (site &&
-                                        storedSignatureParameter(
-                                            this.checker,
-                                            site,
-                                            ir.parameters.indexOf(parameter),
-                                        )),
+                                signatureParameter(),
                             );
                         // A parameter that tells null from undefined needs
                         // the signature its callers pass through to as well.
@@ -6212,17 +6217,22 @@ export class UserFunctionLowerer {
                         )
                             requireDeclarationAbsenceTag(
                                 context.absenceTags,
-                                context.dataTypes.signatureParameterDeclaration(
-                                    signatureType,
-                                    runtimeIndex - 1,
-                                ) ??
-                                    (site &&
-                                        storedSignatureParameter(
-                                            this.checker,
-                                            site,
-                                            ir.parameters.indexOf(parameter),
-                                        )),
+                                signatureParameter(),
                             );
+                        // So does an erased parameter a native handle settled.
+                        const asserted =
+                            context.dataTypes.assertedParameterStorage(
+                                parameter.declaration,
+                            );
+                        if (asserted && !dataTypesEqual(type, asserted)) {
+                            const declared = signatureParameter();
+                            if (declared)
+                                context.dataTypes.requireWrittenHandleFieldStorage(
+                                    declared,
+                                    asserted,
+                                    parameter.declaration,
+                                );
+                        }
                         // Stored callbacks receive owned parameters by value.
                         // Their separate source bindings can borrow that stable
                         // storage until a source assignment requires a copy.

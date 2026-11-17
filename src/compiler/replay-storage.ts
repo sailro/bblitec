@@ -6,6 +6,7 @@ import type { CompletionProof } from "./completion-storage.js";
 import type { AbsenceTagDeclaration } from "./absence-tag-storage.js";
 import type { InstanceProperty } from "./class-members.js";
 import type { EngineOwnerStorageDeclaration } from "./engine-owner-storage.js";
+import type { ErasedHandleStorage } from "./asserted-handle-field-storage.js";
 import type { DynamicBindingStorage } from "./dynamic-binding-storage.js";
 import {
     GenericFunctionStorage,
@@ -46,7 +47,7 @@ export type StorageRequest =
     | { kind: "engine-owner"; declaration: EngineOwnerStorageDeclaration }
     | {
           kind: "asserted-handle-field";
-          declaration: ts.PropertySignature | ts.PropertyDeclaration;
+          declaration: ErasedHandleStorage;
           storage: DataType;
       }
     | { kind: "completion"; signatureSite: string; proof: CompletionProof }

@@ -108,3 +108,76 @@ test("an unknown field its writes fill with two handle kinds refuses", () => {
         /Function 'viewFor' uses early value returns but its return type is outside the native data model/,
     );
 });
+
+// A fence answering for the mesh a pick hands its stored method, whose
+// `object | null` parameter takes the storage of the handle that reaches it.
+const fence = (elementAt: string, query: string): string => `
+import { addToScene, createBox, createEngine, createSceneContext, createStandardMaterial, type Mesh } from "@babylonjs/lite";
+interface Fence { mesh: Mesh; elementAt(pickedMesh: object | null, faceId: number): number | null; direct: Array<(pickedMesh: object | null, faceId: number) => number | null> }
+function createFence(engine: Parameters<typeof createBox>[0]): Fence {
+    const mesh = createBox(engine);
+    const hits: number[] = [7, 8, 9];
+    const elementAt = ${elementAt};
+    const direct: Array<typeof elementAt> = [elementAt];
+    return { mesh, elementAt, direct };
+}
+const engine = await createEngine({});
+const scene = createSceneContext(engine);
+const fence = createFence(engine);
+addToScene(scene, fence.mesh);
+const hit = ${query};
+if (hit === 5) throw new Error("never");
+`;
+const comparing = `(pickedMesh: object | null, faceId: number): number | null => {
+        if (pickedMesh !== mesh) return null;
+        return hits[faceId] ?? null;
+    }`;
+const meshParameter =
+    "bbl::js::Callback<bbl::js::Nullable<double>(bbl::js::Nullable<std::pair<bbl::StoredEngine, bbl::MeshHandle>>, double)>";
+
+test("an object parameter its body compares with a mesh stores that mesh", () => {
+    const { cpp } = compileSource(
+        fence(
+            comparing,
+            "fence.elementAt(Math.random() > 0.5 ? fence.mesh : null, 1)",
+        ),
+    );
+    // The interface's signature, and the array typed by the arrow's own,
+    // both pass the mesh with its engine, or nothing.
+    assert.ok(cpp.includes(`${meshParameter} elementAt;`));
+    assert.ok(cpp.includes(`bbl::js::Array<${meshParameter}> direct;`));
+    // The comparison is the mesh's identity: its engine and its slot.
+    assert.match(
+        cpp,
+        /\.has_value\(\) && bbl::js::detail::same_value_zero\(\(\*v_\w+\), std::pair<bbl::StoredEngine, bbl::MeshHandle>\{bbl::StoredEngine\{v_engine\}, v_\w*mesh\}\)/,
+    );
+});
+
+test("an object parameter its callers pass a mesh stores that mesh", () => {
+    const { cpp } = compileSource(
+        fence(
+            `(pickedMesh: object | null, faceId: number): number | null =>
+        pickedMesh === null ? null : (hits[faceId] ?? null)`,
+            "fence.elementAt(fence.mesh, 1)",
+        ),
+    );
+    assert.ok(cpp.includes(`${meshParameter} elementAt;`));
+    assert.match(cpp, /if \(!v_\w*pickedMesh\.has_value\(\)\)/);
+});
+
+test("an object parameter holding a mesh refuses other values", () => {
+    for (const [argument, refusal] of [
+        [
+            "createStandardMaterial()",
+            /Compile-time material value does not match the expected data handle/,
+        ],
+        ["{ x: 1 }", /Expected a mesh value, received record/],
+    ] as const)
+        assert.throws(
+            () =>
+                compileSource(
+                    fence(comparing, `fence.elementAt(${argument}, 1)`),
+                ),
+            refusal,
+        );
+});

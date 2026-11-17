@@ -4,7 +4,10 @@ import {
     isEngineScopedHandleKind,
     isWindowHandleKind,
 } from "./data-types/handles.js";
-import { AssertedHandleFieldStorageRequired } from "./asserted-handle-field-storage.js";
+import {
+    AssertedHandleFieldStorageRequired,
+    type ErasedHandleStorage,
+} from "./asserted-handle-field-storage.js";
 import { INDEXED_DB_OBJECTS, indexedDbRequestKind } from "./indexed-db.js";
 import {
     EngineOwnerStorageRequired,
@@ -3680,8 +3683,10 @@ export class DataTypeRegistry {
     }
 
     /**
-     * A native handle written to an erased (`unknown`) record field settles
-     * that field's layout as an assertion would: the field keeps the handle.
+     * A native handle written to an erased record field (`unknown`) or
+     * parameter (`unknown` or `object`) settles that storage's layout as an
+     * assertion would: it keeps the handle. A parameter's `null` and
+     * `undefined` members make it optional.
      */
     public requireWrittenHandleFieldStorage(
         declaration: ts.Declaration,
@@ -3694,22 +3699,55 @@ export class DataTypeRegistry {
                 : target;
         if (
             present.kind !== "handle" ||
-            (!ts.isPropertySignature(declaration) &&
-                !ts.isPropertyDeclaration(declaration)) ||
-            (this.checker.getTypeAtLocation(declaration).flags &
-                ts.TypeFlags.Unknown) ===
-                0
+            !this.isErasedHandleStorage(declaration)
         )
             return;
-        const storage = this.engineOwnedStorage(target);
+        const absent = ts.isParameter(declaration)
+            ? nullability(this.checker.getTypeAtLocation(declaration))
+            : undefined;
+        const storage = this.engineOwnedStorage(
+            absent?.null || absent?.undefined
+                ? this.nullableType(present, !absent.null)
+                : target,
+        );
         const known = this.storage.assertedHandleFields.get(declaration);
         if (!known || erasedFieldWidens(known, storage))
             throw new AssertedHandleFieldStorageRequired(declaration, storage);
         if (!erasedFieldHolds(known, storage))
             this.fail(
                 node,
-                "An erased field holds incompatible native handles.",
+                "An erased field or parameter holds incompatible native handles.",
             );
+    }
+
+    /**
+     * Whether a declaration is storage a native handle can settle: a record
+     * field typed `unknown`, or a program parameter, not a rest one, typed
+     * `unknown` or `object` besides `null` and `undefined`.
+     */
+    private isErasedHandleStorage(
+        declaration: ts.Declaration,
+    ): declaration is ErasedHandleStorage {
+        const type = this.checker.getTypeAtLocation(declaration);
+        if (
+            ts.isPropertySignature(declaration) ||
+            ts.isPropertyDeclaration(declaration)
+        )
+            return (type.flags & ts.TypeFlags.Unknown) !== 0;
+        return (
+            ts.isParameter(declaration) &&
+            !declaration.dotDotDotToken &&
+            !declaration.getSourceFile().isDeclarationFile &&
+            ((type.flags & ts.TypeFlags.Unknown) !== 0 ||
+                holdsObjectKeyword(type))
+        );
+    }
+
+    /** The handle storage a reached use settled an erased parameter with. */
+    public assertedParameterStorage(
+        declaration: ts.ParameterDeclaration,
+    ): DataType | undefined {
+        return this.storage.assertedHandleFields.get(declaration);
     }
 
     private assertedHandleFieldStorage(
@@ -5990,6 +6028,7 @@ export class DataTypeRegistry {
             const given = "symbol" in source ? passed?.[index] : undefined;
             const mapped =
                 given ??
+                (parameter && this.assertedParameterStorage(parameter)) ??
                 (restArguments &&
                 "symbol" in source &&
                 this.isUnknownRestParameter(source.symbol)
@@ -6169,7 +6208,8 @@ export class DataTypeRegistry {
             ...(optionalParameters.length > 0 ? { optionalParameters } : {}),
         };
         // Parameter declarations connect a stored signature to the body's
-        // demands for nullish tags or a resource's engine owner.
+        // demands for nullish tags, a resource's engine owner or an erased
+        // parameter's handle.
         const sites = declarations.map((entry, index) => {
             if (!entry) return "";
             const [declaration, symbol] = entry;
@@ -6180,7 +6220,8 @@ export class DataTypeRegistry {
             if (
                 (!absent.null ||
                     (!absent.undefined && !declaration.initializer)) &&
-                dataTypesEqual(stored, this.collectionKeyStorage(stored))
+                dataTypesEqual(stored, this.collectionKeyStorage(stored)) &&
+                !this.isErasedHandleStorage(declaration)
             )
                 return "";
             const site = `${declaration.getSourceFile().fileName}:${declaration.pos}`;
@@ -6211,6 +6252,30 @@ export class DataTypeRegistry {
     ): ts.ParameterDeclaration | undefined {
         const site = type.parameterSites?.[index];
         return site ? this.parameterSites.get(site) : undefined;
+    }
+
+    /**
+     * A function stored where a signature's erased parameter receives the
+     * native handle its own parameter holds: that parameter takes the
+     * handle's storage too.
+     */
+    public requireErasedHandleParameters(
+        source: DataType<"function">,
+        target: DataType<"function">,
+        node: ts.Node,
+    ): void {
+        source.parameters.forEach((stored, index) => {
+            const declaration = this.signatureParameterDeclaration(
+                target,
+                index,
+            );
+            if (declaration && target.parameters[index]?.kind === "json")
+                this.requireWrittenHandleFieldStorage(
+                    declaration,
+                    stored,
+                    node,
+                );
+        });
     }
 
     private fromGenericFunction(

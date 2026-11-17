@@ -60,6 +60,7 @@ import {
 import { documentEngine, windowErrorEventValue } from "./window-events.js";
 import {
     accessedPropertySymbol,
+    calledDeclaration,
     CompilerSymbols,
     declarationInDefaultLibrary,
     declaredSymbol,
@@ -284,6 +285,7 @@ import {
     outermostWrapper,
     propertyKey,
     unwrapExpression,
+    valueConsumer,
     wrappedParent,
     isTypeAssertion,
     wrappersUnder,
@@ -12788,6 +12790,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.requireEnumMapBinding(node, dataType);
         }
         if (dataType.kind === "json") this.requireErasedHandleField(node);
+        if (dataType.kind === "function" && value.dataType?.kind === "function")
+            this.context.dataTypes.requireErasedHandleParameters(
+                value.dataType,
+                dataType,
+                node,
+            );
         this.context.fail(
             node,
             `Compile-time ${value.kind} value does not match the expected data ${dataType.kind} ` +
@@ -12797,45 +12805,71 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
-     * A native handle an object literal writes to an `unknown` field: the
-     * field's declaration takes handle storage (a storage demand). The
+     * A native handle written to erased storage: an object literal's
+     * `unknown` field, the `unknown` or `object` parameter an argument is
+     * passed to, or the parameter an identity comparison reads on its other
+     * side. That declaration takes handle storage (a storage demand). The
      * handle is what its type maps to, or what `stored` says the written
      * value holds.
      */
     public requireErasedHandleField(node: ts.Node, stored?: DataType): void {
         if (!ts.isExpression(node)) return;
-        const property = node.parent;
-        if (
-            !ts.isPropertyAssignment(property) ||
-            property.initializer !== node ||
-            !ts.isObjectLiteralExpression(property.parent)
-        )
-            return;
-        const name = this.context.propertyName(property.name);
-        const field =
-            name !== undefined
-                ? contextualProperty(
-                      this.context.checker,
-                      property.parent,
-                      name,
-                  )
-                : undefined;
-        const declaration =
-            field?.declarations?.length === 1
-                ? field.declarations[0]
-                : undefined;
+        const declaration = this.erasedStorageDeclaration(node);
+        if (!declaration) return;
         const written =
             stored ??
             this.context.dataTypes.fromTsType(
                 this.context.checker.getTypeAtLocation(node),
                 node,
             );
-        if (declaration && written)
+        if (written)
             this.context.dataTypes.requireWrittenHandleFieldStorage(
                 declaration,
                 written,
                 node,
             );
+    }
+
+    /**
+     * The declaration whose storage receives the value of `node`, past its
+     * wrappers and the selections yielding it: the field a literal property
+     * writes, the parameter of the called signature an argument is passed
+     * to, or the parameter a comparison's other operand names.
+     */
+    private erasedStorageDeclaration(
+        node: ts.Expression,
+    ): ts.Declaration | undefined {
+        const checker = this.context.checker;
+        const at = outermostWrapper(node, { branches: true });
+        const consumer = valueConsumer(at);
+        switch (consumer.kind) {
+            case "property": {
+                const name = this.context.propertyName(consumer.name);
+                const field =
+                    name !== undefined
+                        ? contextualProperty(checker, consumer.literal, name)
+                        : undefined;
+                return field?.declarations?.length === 1
+                    ? field.declarations[0]
+                    : undefined;
+            }
+            case "argument":
+                return calledDeclaration(checker, consumer.call)?.parameters[
+                    consumer.index
+                ];
+            case "compared": {
+                const { comparison } = consumer;
+                const other = unwrapExpression(
+                    comparison.left === at ? comparison.right : comparison.left,
+                );
+                const read = ts.isIdentifier(other)
+                    ? resolvedSymbol(checker, other)?.valueDeclaration
+                    : undefined;
+                return read && ts.isParameter(read) ? read : undefined;
+            }
+            default:
+                return undefined;
+        }
     }
 
     /** A guarded numeric tuple, including a document array copied by spread. */
