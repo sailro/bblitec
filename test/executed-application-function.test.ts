@@ -370,6 +370,60 @@ void main();
     );
 });
 
+test("an outcome whose call always throws stores no result", (t) => {
+    // The facade material is built only where the spread wrote a base, but
+    // the call splits on the base's presence: the arm without one, which no
+    // run reaches, throws in the helper and assigns nothing.
+    const { compiled, cpp } = compileShaderMaterialFixture(`
+    import { createEngine, createShaderMaterial, wgsl, type ShaderMaterial } from "babylon-lite";
+    const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*S*/, 1.0); return out; }\`;
+    const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+    interface Base { readonly id: number }
+    interface Facade { readonly bold: boolean }
+    interface SurfaceOptions { readonly name: string; readonly base?: Base; readonly facade?: Facade }
+    function surface(opts: SurfaceOptions): ShaderMaterial {
+        if (opts.facade && !opts.base) throw new Error("a facade requires a base");
+        const vertex = VERTEX.replace("/*S*/", opts.base ? "2.0" : "1.0");
+        const projection = (facade: boolean): string => vertex.replace("/*F*/", facade ? "f" : "");
+        return createShaderMaterial({ name: opts.name, vertexSource: wgsl\`\${projection(!!opts.facade)}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+    }
+    function facadeOf(base: Base, other: Base | undefined, facade?: Facade): ShaderMaterial | undefined {
+        const chosen = other ?? base;
+        const distinct = chosen !== base;
+        const options = { name: "body", ...(distinct ? { base: chosen } : {}) };
+        return facade && distinct ? surface({ ...options, name: "facade", facade }) : undefined;
+    }
+    async function main() {
+        await createEngine({});
+        const paired = Math.random() < 2;
+        if (!facadeOf({ id: 1 }, paired ? { id: 2 } : undefined, paired ? { bold: true } : undefined)) throw new Error("facade");
+    }
+    main();`);
+    assert.deepEqual(
+        compiled.manifest.customShaderPrograms.map(
+            (program) =>
+                /position \* ([0-9.]+)/.exec(program.vertexSource)?.[1],
+        ),
+        ["2.0"],
+    );
+    assert.match(
+        compiled.cpp,
+        /\} else \{\s+std::rethrow_exception\(bbl::js::make_error\("Error", "a facade requires a base"/,
+    );
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native compiler required.");
+        return;
+    }
+    runGeneratedProgram(
+        native,
+        "executed-application-function/throwing-outcome",
+        `${cpp}\n#define main generated_main\n${compiled.cpp}\n#undef main\nint main(){assert(generated_main()==0);}`,
+        { expectedOutput: "" },
+    );
+});
+
 const pluginScene = (plugin: string, prelude = ""): string => `
     import {
         addToScene,

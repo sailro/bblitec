@@ -330,7 +330,8 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
   Generation-selected nullish uniform, sampler, external-texture, storage-buffer and define declarations use the pinned
   empty defaults, including absent retained fields and getters.
   `uniformDecls`, `samplerDecls` and `storageBufferDecls` of a run-time material take `.some(arrow)` and `for...of`
-  whose entry is read only through `name`; other uses of an entry or the list refuse.
+  whose entry is read only through `name`; its `attributes` take `.includes(name)`, `.some(arrow)` and `for...of`
+  over the names; other uses of an entry or the list refuse.
   `createShaderNoColorMaterialView` shares source uniforms and resource bindings. Depth-only render tasks use each
   material's pipeline, including custom vertex transforms and `depthOnlyFragment` discards.
   `screenSize` uses the current pass dimensions. Static descriptor arrays may use closed ECMAScript calls and callbacks.

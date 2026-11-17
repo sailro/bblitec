@@ -841,6 +841,7 @@ export class RendererLowerer {
                 valueCount,
                 defaults,
                 liftedUniforms: program.liftedUniforms ?? 0,
+                attributes: program.attributes,
                 uniformSlots: shaderUniformSlots(program.uniforms).map(
                     (slot) => ({
                         ...slot,
@@ -923,6 +924,7 @@ export class RendererLowerer {
 ${
     shaderDeclarationLists
         ? `        ${info.liftedUniforms}u,
+        {${info.attributes.map((name) => `"${name}"`).join(", ")}},
 `
         : ""
 }        ${info.thinInstanceColorOption === undefined ? "js::Nullable<double>{}" : `js::Nullable<double>{${info.thinInstanceColorOption ? "1.0" : "0.0"}}`},
@@ -1301,6 +1303,8 @@ ${
         ? `    // How many trailing uniform_slots are source numbers lifted into
     // uniforms; the material's uniformDecls holds the slots before them.
     std::uint32_t lifted_uniforms = 0;
+    // The material's attributes option, in its order.
+    std::vector<const char*> attributes;
 `
         : ""
 }    js::Nullable<double> thin_instance_color_option;

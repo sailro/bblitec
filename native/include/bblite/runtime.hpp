@@ -8084,8 +8084,8 @@ void set_shader_storage_buffer(Engine& engine, MaterialHandle material, std::uin
                                StorageBufferHandle buffer);
 void set_shader_storage_buffer_by_name(Engine& engine, MaterialHandle material,
                                        const std::string& name, StorageBufferHandle buffer);
-/** A ShaderMaterial declaration list: `uniformDecls`, `samplerDecls` or `storageBufferDecls`. */
-enum class ShaderDeclarationList : std::uint8_t { uniforms, samplers, storage_buffers };
+/** A ShaderMaterial list: `uniformDecls`, `samplerDecls`, `storageBufferDecls` or `attributes`. */
+enum class ShaderDeclarationList : std::uint8_t { uniforms, samplers, storage_buffers, attributes };
 /** The names a shader material's declaration list holds, in declaration order. */
 std::vector<std::string> shader_declaration_names(Engine& engine, MaterialHandle material,
                                                   ShaderDeclarationList list);

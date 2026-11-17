@@ -31,7 +31,7 @@ function make(facade: boolean, depthBias = 0): ShaderMaterial {
         name: facade ? "facade" : "plain",
         vertexSource: vertexSource(depthBias),
         fragmentSource,
-        attributes: ["position"],
+        attributes: facade ? ["position", "normal", "uv"] : ["position"],
         uniforms: ["worldViewProjection", { name: "uTint", type: "vec4<f32>", defaultValue: [1, 1, 1, 1] }],
         samplers: facade ? ["uAlbedo", { name: "uShadow", sampleType: "depth" }] : ["uAlbedo"],
         externalTextures: ["uVideo"],
@@ -60,6 +60,7 @@ test("a ShaderMaterial's declaration lists read the names its options declared, 
 function declares(material: ShaderMaterial, name: string): boolean {
     return material.storageBufferDecls.some((decl) => decl.name === name);
 }
+const GEOMETRY: { readonly attributes: readonly ShaderMaterial["attributes"][number][] } = { attributes: ["position", "uv"] };
 function check(facade: ShaderMaterial, plain: ShaderMaterial): void {
     if (!declares(facade, APPEARANCE.name) || !declares(facade, PALETTE.name)) throw new Error("facade storage");
     if (declares(plain, APPEARANCE.name) || !declares(plain, PALETTE.name)) throw new Error("plain storage");
@@ -71,6 +72,11 @@ function check(facade: ShaderMaterial, plain: ShaderMaterial): void {
     let uniforms = "";
     for (const decl of facade.uniformDecls) uniforms += decl.name + ";";
     if (uniforms !== "worldViewProjection;uTint;") throw new Error("uniforms " + uniforms);
+    for (const name of GEOMETRY.attributes) if (!facade.attributes.includes(name)) throw new Error("facade attribute " + name);
+    if (plain.attributes.includes(GEOMETRY.attributes[1]!) || !plain.attributes.some((name) => name === "position")) throw new Error("plain attributes");
+    let attributes = "";
+    for (const name of facade.attributes) attributes += name + ";";
+    if (attributes !== "position;normal;uv;") throw new Error("attributes " + attributes);
 }`),
     );
     runGeneratedProgram(
@@ -98,6 +104,17 @@ function check(facade: ShaderMaterial, plain: ShaderMaterial): void {
                 ),
             /A ShaderMaterial's (storageBufferDecls|samplerDecls|uniformDecls) entry is read only through its name\./,
         );
+    // The attribute list takes `includes`, `some` and `for...of` alone.
+    assert.throws(
+        () =>
+            compileSource(
+                program(`
+function check(facade: ShaderMaterial, plain: ShaderMaterial): void {
+    if (facade.attributes.indexOf("uv") < 0) throw new Error(plain.name);
+}`),
+            ),
+        /Unsupported property value 'facade\.attributes\.indexOf'/,
+    );
 });
 
 test("a program reading no declaration list keeps its shader units unchanged", () => {
@@ -134,17 +151,20 @@ test("a program reading no declaration list keeps its shader units unchanged", (
         off.header + off.source + off.factory,
         /lifted_uniforms|shader_declaration_names/,
     );
-    // The feature adds the table's lifted-uniform field, each entry's count
-    // and the name walk, and nothing else.
+    // The feature adds the table's lifted-uniform and attribute fields, each
+    // entry's count and attribute names, and the name walk, and nothing else.
     assert.equal(
         on.header.replace(
-            /\n {4}\/\/ How many trailing uniform_slots[^]*?std::uint32_t lifted_uniforms = 0;(?=\n)/,
+            /\n {4}\/\/ How many trailing uniform_slots[^]*?std::vector<const char\*> attributes;(?=\n)/,
             "",
         ),
         off.header,
     );
     assert.equal(
-        on.source.replace(/\n {8}1u,(?=\n {8}js::Nullable<double>)/g, ""),
+        on.source.replace(
+            /\n {8}1u,\n {8}\{"position"(?:, "\w+")*\},(?=\n {8}js::Nullable<double>)/g,
+            "",
+        ),
         off.source,
     );
     assert.equal(

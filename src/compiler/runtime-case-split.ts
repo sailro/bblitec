@@ -991,7 +991,11 @@ function splitCall(
             compile,
         );
         if (!value) throw new CompileError("", 0, 0, "unanswered");
-        if (result)
+        // An arm whose call never completes normally (its body throws for
+        // that outcome) stores no result.
+        if (value.kind === "void" && value.abruptCompletion)
+            context.emitDiscardedValue(value);
+        else if (result)
             context.emit({
                 kind: "expression",
                 code: `${result.name} = ${context.dataLowerer.compileKnownValueForSink(value, result.type, call)};`,

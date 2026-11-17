@@ -99,10 +99,10 @@ interface StandardMaterialSetters {
 }
 
 /**
- * `uniformDecls` / `samplerDecls` / `storageBufferDecls`: the names
- * createShaderMaterial pushed, in declaration order. The variant's uniform
- * slots end with its lifted source numbers and its samplers with its
- * externalTextures, which the pin's lists do not hold.
+ * `uniformDecls` / `samplerDecls` / `storageBufferDecls` / `attributes`:
+ * the names createShaderMaterial pushed, in declaration order. The
+ * variant's uniform slots end with its lifted source numbers and its
+ * samplers with its externalTextures, which the pin's lists do not hold.
  */
 const shaderDeclarationNamesCpp = `std::vector<std::string> shader_declaration_names(
     Engine& engine, MaterialHandle material, ShaderDeclarationList list) {
@@ -118,6 +118,9 @@ const shaderDeclarationNamesCpp = `std::vector<std::string> shader_declaration_n
         break;
     case ShaderDeclarationList::storage_buffers:
         for (const auto& slot : info.storage_buffers) names.emplace_back(slot.name);
+        break;
+    case ShaderDeclarationList::attributes:
+        names.assign(info.attributes.begin(), info.attributes.end());
         break;
     }
     return names;
