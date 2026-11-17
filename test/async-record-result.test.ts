@@ -320,3 +320,32 @@ test("async records own arrays of opaque material handles", () => {
     `);
     assert.match(result.cpp, /Array<bbl::MaterialHandle> all/);
 });
+
+test("an async record result of a type the program keeps as a document settles as one", () => {
+    // `kept` holds a parsed document and `make`'s record as one type, so
+    // that type's records are documents: the settled record is one too,
+    // its method a native value of the document.
+    const result = compileSource(`
+        interface Rect { u: number }
+        interface Assets { cells: Rect[]; read(): number }
+        async function make(n: number): Promise<Assets> {
+            await Promise.resolve();
+            return { cells: [{ u: n }], read: () => n };
+        }
+        async function main(): Promise<void> {
+            const kept: Assets[] = [JSON.parse('{"cells":[{"u":1}]}') as Assets];
+            kept.push(await make(2));
+            if (kept[0]!.cells.length !== 1 || kept[1]!.cells[0]!.u !== 2 || kept[1]!.read() !== 2)
+                throw new Error("assets");
+        }
+        void main();
+    `);
+    assert.match(
+        result.cpp,
+        /bbl::js::Promise<bbl::js::JsonValue> v_bblite_async_body_\d+\(/,
+    );
+    assert.match(
+        result.cpp,
+        /co_return \(\[&\]\(\) \{ bbl::js::JsonValue::Object own; own\.emplace_back\("cells", [^;]+\); own\.emplace_back\("read", bbl::js::JsonValue::from_native\(/,
+    );
+});

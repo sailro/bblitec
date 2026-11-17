@@ -370,6 +370,41 @@ void main();
     );
 });
 
+test("a call whose outcome refuses names the arm's refusal, then the call's", () => {
+    // Compiled once, the builder reads a run-time stage; per outcome, the
+    // arm holding a gain stops at its own unsupported read.
+    const message = refusal(
+        `import { createEngine, createShaderMaterial, wgsl, type ShaderMaterial } from "@babylonjs/lite";
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*S*/, 1.0); return out; }\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+interface Gain { readonly amount: number }
+function surface(gain?: Gain): ShaderMaterial {
+    const vertex = VERTEX.replace("/*S*/", gain ? "2.0" : "1.0");
+    const projection = (): string => vertex;
+    const material = createShaderMaterial({ vertexSource: wgsl\`\${projection()}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+    if (gain && material.attributes.indexOf("uv") < 0) throw new Error("uv");
+    return material;
+}
+async function main(): Promise<void> {
+    await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    const gained = Math.random() < 2;
+    surface(gained ? { amount: 1 } : undefined);
+}
+void main();
+`,
+        "test/executed-arm-refusal-entry.ts",
+    );
+    assert.match(
+        message,
+        /^test\/executed-arm-refusal-entry\.ts:10:\d+: Unsupported property value 'material\.attributes\.indexOf'/,
+    );
+    assert.match(
+        message,
+        /\(An arm of a call compiled once per outcome of gained refuses so; compiled once, the call refuses at test\/executed-arm-refusal-entry\.ts:8:\d+: Builder 'projection' closes over 'vertex', whose value generation does not know\.\)$/,
+    );
+});
+
 test("an outcome whose call always throws stores no result", (t) => {
     // The facade material is built only where the spread wrote a base, but
     // the call splits on the base's presence: the arm without one, which no

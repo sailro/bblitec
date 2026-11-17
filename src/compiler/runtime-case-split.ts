@@ -186,6 +186,7 @@ export function compileWithRuntimeCaseSplit(
                 selectors,
                 `run-time tests in at most ${MAX_ARMS} arms; its tests make ${arms}`,
             );
+        let armRefusal: CompileError | undefined;
         const split = context.probeEmission(
             () => {
                 try {
@@ -199,15 +200,55 @@ export function compileWithRuntimeCaseSplit(
                 } catch (inner) {
                     // An arm's own storage demand restarts generation with
                     // it satisfied, after which the split can succeed.
-                    if (inner instanceof CompileError) return undefined;
+                    if (inner instanceof CompileError) {
+                        armRefusal = inner;
+                        return undefined;
+                    }
                     throw inner;
                 }
             },
             (result) => result !== undefined,
         );
         if (split) return split;
-        throw error;
+        throw armRefused(error, armRefusal, selectors);
     }
+}
+
+/** A selector's test as a refusal names it: the expression, then a member's key path. */
+function testNames(tests: readonly Selector[]): string {
+    return tests
+        .map((test) =>
+            [test.test.getText(), ...(test.member?.path ?? [])].join("."),
+        )
+        .join(", ");
+}
+
+/**
+ * The refusal of a call whose arms refused too: the arm's own, where the
+ * compile stopped, then the tests and the call's refusal compiled once.
+ * The reason and subject stay the call's, which is what its callers act
+ * on. A restart, an arm refusing as the call did, and an arm that left no
+ * located refusal stand as they are.
+ */
+function armRefused(
+    error: unknown,
+    arm: CompileError | undefined,
+    tests: readonly Selector[],
+): unknown {
+    if (
+        !(error instanceof CompileError) ||
+        !arm?.fileName ||
+        arm.message === error.message
+    )
+        return error;
+    return new CompileError(
+        arm.fileName,
+        arm.line,
+        arm.column,
+        `${arm.detail} (An arm of a call compiled once per outcome of ${testNames(tests)} refuses so; compiled once, the call refuses at ${error.message})`,
+        error.reason,
+        error.subject,
+    );
 }
 
 /**
@@ -221,14 +262,11 @@ function beyondSplit(
     reach: string,
 ): unknown {
     if (!(error instanceof CompileError)) return error;
-    const names = tests.map((test) =>
-        [test.test.getText(), ...(test.member?.path ?? [])].join("."),
-    );
     return new CompileError(
         error.fileName,
         error.line,
         error.column,
-        `${error.detail} The call compiles once per outcome of ${reach}: ${names.join(", ")}.`,
+        `${error.detail} The call compiles once per outcome of ${reach}: ${testNames(tests)}.`,
         error.reason,
         error.subject,
     );

@@ -2899,6 +2899,16 @@ export class AsyncLowerer {
                 value = { ...value, recordProperties };
             }
         }
+        // A record type the program stores as a document settles as one.
+        if (result?.kind === "json")
+            return this.context.dataLowerer.leafValue(
+                this.context.dataLowerer.compileKnownValueForSink(
+                    value,
+                    result,
+                    node,
+                ),
+                result,
+            );
         if (
             result?.kind !== "struct" &&
             !(result?.kind === "map" && result.dictionary)
