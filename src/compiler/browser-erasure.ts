@@ -1107,7 +1107,10 @@ export class BrowserErasure {
             ts.isPropertyAccessExpression(unwrapped) ||
             ts.isElementAccessExpression(unwrapped)
         )
-            return this.isBrowserOwner(unwrapped.expression);
+            return (
+                this.browserRecordField(unwrapped) !== undefined ||
+                this.isBrowserOwner(unwrapped.expression)
+            );
         if (ts.isNewExpression(unwrapped))
             return (
                 this.context.libraryGlobal(unwrapped.expression) !== undefined
@@ -1122,6 +1125,31 @@ export class BrowserErasure {
             this.isBrowserOnlyNullableClassFactoryCall(unwrapped) ||
             this.evaluateBrowserHelperCall(unwrapped) !== undefined
         );
+    }
+
+    /**
+     * The browser value a compile-time record holds in the field a read
+     * names (a record parameter's `deps.canvas`, nested records too): the
+     * read erases as a name bound to that value does.
+     */
+    private browserRecordField(expression: ts.Expression): Value | undefined {
+        const field = ts.isPropertyAccessExpression(expression)
+            ? this.recordField(expression)
+            : undefined;
+        return field?.kind === "browser" ? field : undefined;
+    }
+
+    /** The value a bound record, or a record field of one, holds in a field. */
+    private recordField(
+        expression: ts.PropertyAccessExpression,
+    ): Value | undefined {
+        const receiver = this.context.unwrap(expression.expression);
+        const record = ts.isIdentifier(receiver)
+            ? this.context.bindings.lookupOptional(receiver)
+            : ts.isPropertyAccessExpression(receiver)
+              ? this.recordField(receiver)
+              : undefined;
+        return record?.recordProperties?.[expression.name.text];
     }
 
     public isBrowserDomValue(expression: ts.Expression): boolean {
@@ -1464,6 +1492,7 @@ export class BrowserErasure {
         if (windowViewportDimension(this.context, unwrapped)) {
             return false;
         }
+        if (this.browserRecordField(unwrapped)) return true;
         if (
             ts.isPropertyAccessExpression(unwrapped) &&
             ts.isIdentifier(unwrapped.expression) &&
@@ -1748,7 +1777,10 @@ export class BrowserErasure {
                 ts.isPropertyAccessExpression(unwrapped) ||
                 ts.isElementAccessExpression(unwrapped)
             ) {
-                return owner(unwrapped.expression);
+                return (
+                    this.browserRecordField(unwrapped) ??
+                    owner(unwrapped.expression)
+                );
             }
             // A call producing retained UI (a helper or createElement) owns
             // the members read and called on its result.
@@ -2034,6 +2066,8 @@ export class BrowserErasure {
                 ? undefined
                 : this.browserValueOf(resolved);
         }
+        const field = this.browserRecordField(unwrapped);
+        if (field) return field.browserValue;
         // `new URL(path, import.meta.url).href`: the module-relative URL as
         // the package resolves it.
         const constructed = ts.isPropertyAccessExpression(unwrapped)

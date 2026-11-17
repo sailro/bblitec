@@ -2078,13 +2078,19 @@ template <typename T> inline constexpr bool is_tagged_v<Tagged<T>> = true;
 }
 
 /**
- * SameValueZero, the key equality of JavaScript Map and Set: NaN is NaN
- * and -0 is +0. A short string -- a chunk coordinate, an id -- compares
- * inline; the library's variable-length compare is a call that costs more
- * than such a key's bytes.
+ * SameValue, with `SignedZeros`, or SameValueZero, the key equality of
+ * JavaScript Map and Set: NaN is NaN, and -0 is +0 only under SameValueZero.
+ * A short string -- a chunk coordinate, an id -- compares inline; the
+ * library's variable-length compare is a call that costs more than such a
+ * key's bytes.
  */
-template <typename T> [[nodiscard]] bool same_value_zero(const T& left, const T& right) {
+template <bool SignedZeros, typename T>
+[[nodiscard]] bool same_value_as(const T& left, const T& right) {
     if constexpr (std::is_floating_point_v<T>) {
+        if constexpr (SignedZeros) {
+            if (left == T{} && right == T{})
+                return std::signbit(left) == std::signbit(right);
+        }
         return left == right || (std::isnan(left) && std::isnan(right));
     } else if constexpr (std::is_same_v<T, std::string>) {
         const std::size_t size = left.size();
@@ -2100,25 +2106,30 @@ template <typename T> [[nodiscard]] bool same_value_zero(const T& left, const T&
         return true;
     } else if constexpr (IsNullable<T>::value) {
         return left.has_value() == right.has_value() &&
-               (!left.has_value() || same_value_zero(*left, *right));
+               (!left.has_value() || same_value_as<SignedZeros>(*left, *right));
     } else if constexpr (is_tagged_v<T>) {
         return left.defined() == right.defined() &&
-               (!left.defined() || same_value_zero(left.value(), right.value()));
+               (!left.defined() || same_value_as<SignedZeros>(left.value(), right.value()));
     } else if constexpr (is_variant_v<T>) {
         return left.index() == right.index() &&
                std::visit(
                    [](const auto& first, const auto& second) {
                        if constexpr (std::is_same_v<decltype(first), decltype(second)>)
-                           return same_value_zero(first, second);
+                           return same_value_as<SignedZeros>(first, second);
                        else
                            return false;
                    },
                    left, right);
     } else if constexpr (is_pair_v<T>) {
-        return same_value_zero(left.first, right.first) &&
-               same_value_zero(left.second, right.second);
+        return same_value_as<SignedZeros>(left.first, right.first) &&
+               same_value_as<SignedZeros>(left.second, right.second);
     } else if constexpr (requires { left.same_value_zero(right); }) {
-        // A value carrying several kinds (a parsed document) owns its rule.
+        // A value carrying several kinds (a parsed document) owns its rule;
+        // its numbers keep their signed zeros apart under SameValue.
+        if constexpr (SignedZeros && requires { left.to_number(); }) {
+            if (left.is_number() && right.is_number())
+                return same_value_as<true>(left.to_number(), right.to_number());
+        }
         return left.same_value_zero(right);
     } else if constexpr (
         !requires { left == right; } &&
@@ -2126,10 +2137,14 @@ template <typename T> [[nodiscard]] bool same_value_zero(const T& left, const T&
             left.value;
             right.value;
         }) {
-        return same_value_zero(left.value, right.value);
+        return same_value_as<SignedZeros>(left.value, right.value);
     } else {
         return std::equal_to<T>{}(left, right);
     }
+}
+
+template <typename T> [[nodiscard]] bool same_value_zero(const T& left, const T& right) {
+    return same_value_as<false>(left, right);
 }
 
 /** The key Map.prototype.set and Set.prototype.add store: -0 becomes +0. */
@@ -3077,11 +3092,7 @@ template <typename Slot>
 
 /** JavaScript SameValue over numbers: NaN equals NaN and the signed zeros differ. */
 [[nodiscard]] inline bool same_value(double left, double right) {
-    if (std::isnan(left) || std::isnan(right))
-        return std::isnan(left) && std::isnan(right);
-    if (left == 0.0 && right == 0.0)
-        return std::signbit(left) == std::signbit(right);
-    return left == right;
+    return detail::same_value_as<true>(left, right);
 }
 
 /** Immediate snapshot of JavaScript Array.prototype.keys: 0 through length - 1. */

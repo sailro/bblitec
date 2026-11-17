@@ -2,7 +2,14 @@ import { writable } from "./emission-transaction.js";
 import { knownCondition, presentCopy } from "./values/model.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
-import { argumentAt, propertyKey, isSupportedFunction } from "./syntax.js";
+import {
+    argumentAt,
+    propertyKey,
+    isSupportedFunction,
+    outermostWrapper,
+    unwrapExpression,
+} from "./syntax.js";
+import { someAnalysisNode } from "./analysis-walk.js";
 import type { LoweringServices } from "./lowering-services.js";
 import {
     booleanValue,
@@ -27,6 +34,7 @@ import { pinDetached } from "./dom-listeners.js";
 import { refuseErrorReflection } from "./error-values.js";
 import {
     borrowedPrototypeMethod,
+    isLibraryStatic,
     isSymbolPropertyKey,
     resolvedSymbol,
 } from "./symbols.js";
@@ -1224,9 +1232,101 @@ interface PropertyDefinition {
     accessor: boolean;
     setter: boolean;
     configurable: boolean;
+    /** A data descriptor's; an accessor descriptor has none. */
+    writable: boolean;
 }
 
 type DefinitionOperation = "defineProperty" | "defineProperties";
+
+/**
+ * The keys the statements right after a literal's declaration define on its
+ * binding, in definition order (`const item = {...row} as Row;
+ * Object.defineProperty(item, "id", ...)`): `Object.defineProperty` and
+ * `Object.defineProperties` calls on the binding whose keys are literals and
+ * whose descriptors do not name it. Nothing can read the binding before
+ * those definitions apply, so a key it lacks until then is unobserved.
+ */
+export function keysDefinedOnDeclaration(
+    checker: ts.TypeChecker,
+    literal: ts.ObjectLiteralExpression,
+): readonly string[] {
+    const initializer = outermostWrapper(literal);
+    const declaration = initializer.parent;
+    const list = declaration.parent;
+    const statement = list?.parent;
+    const block = statement?.parent;
+    if (
+        !ts.isVariableDeclaration(declaration) ||
+        declaration.initializer !== initializer ||
+        !ts.isIdentifier(declaration.name) ||
+        !ts.isVariableDeclarationList(list) ||
+        list.declarations.length !== 1 ||
+        !ts.isVariableStatement(statement) ||
+        !block ||
+        !(
+            ts.isBlock(block) ||
+            ts.isSourceFile(block) ||
+            ts.isModuleBlock(block) ||
+            ts.isCaseOrDefaultClause(block)
+        )
+    )
+        return [];
+    const binding = resolvedSymbol(checker, declaration.name);
+    if (!binding) return [];
+    const names = (node: ts.Node): boolean =>
+        someAnalysisNode(
+            node,
+            (candidate) =>
+                ts.isIdentifier(candidate) &&
+                resolvedSymbol(checker, candidate) === binding,
+        );
+    const keys: string[] = [];
+    for (const next of block.statements.slice(
+        block.statements.indexOf(statement) + 1,
+    )) {
+        const call = ts.isExpressionStatement(next)
+            ? unwrapExpression(next.expression)
+            : undefined;
+        if (!call || !ts.isCallExpression(call) || call.arguments.length < 2)
+            break;
+        const single = isLibraryStatic(
+            checker,
+            call.expression,
+            "Object",
+            "defineProperty",
+        );
+        const target = unwrapExpression(argumentAt(call, 0));
+        if (
+            (!single &&
+                !isLibraryStatic(
+                    checker,
+                    call.expression,
+                    "Object",
+                    "defineProperties",
+                )) ||
+            !ts.isIdentifier(target) ||
+            resolvedSymbol(checker, target) !== binding ||
+            call.arguments.slice(1).some(names)
+        )
+            break;
+        const key = unwrapExpression(argumentAt(call, 1));
+        const defined = single
+            ? [ts.isStringLiteralLike(key) ? key.text : undefined]
+            : ts.isObjectLiteralExpression(key)
+              ? key.properties.map((property) =>
+                    ts.isPropertyAssignment(property)
+                        ? propertyKey(property.name)
+                        : undefined,
+                )
+              : [undefined];
+        const named = defined.filter(
+            (name): name is string => name !== undefined,
+        );
+        if (named.length !== defined.length) break;
+        keys.push(...named);
+    }
+    return keys;
+}
 
 /** `existing`: the target already has an enumerable property, which an omitted `enumerable` keeps. */
 function propertyDefinition(
@@ -1243,7 +1343,8 @@ function propertyDefinition(
         return refuse("needs literal property descriptors.");
     const members: PropertyDefinition["members"] = [];
     const attributes = new Set<string>();
-    let configurable = true;
+    // The attributes a descriptor gives as a literal boolean.
+    const flags = new Map<string, boolean>();
     const names = new Set<string>();
     for (const property of literal.properties) {
         if (
@@ -1271,23 +1372,25 @@ function propertyDefinition(
                 return refuse("requires literal getter and setter functions.");
             members.push({ name, callback });
         } else if (
-            name === "configurable" &&
+            (name === "configurable" || name === "writable") &&
             ts.isPropertyAssignment(property) &&
             (property.initializer.kind === ts.SyntaxKind.TrueKeyword ||
                 property.initializer.kind === ts.SyntaxKind.FalseKeyword)
         ) {
-            configurable =
-                property.initializer.kind === ts.SyntaxKind.TrueKeyword;
+            flags.set(
+                name,
+                property.initializer.kind === ts.SyntaxKind.TrueKeyword,
+            );
             attributes.add(name);
         } else if (
-            ["writable", "enumerable", "configurable"].includes(name) &&
+            name === "enumerable" &&
             ts.isPropertyAssignment(property) &&
             property.initializer.kind === ts.SyntaxKind.TrueKeyword
         )
             attributes.add(name);
         else
             return refuse(
-                `does not represent descriptor attribute '${name}' unless it is ${name === "configurable" ? "a literal boolean" : "literally true"}.`,
+                `does not represent descriptor attribute '${name}' unless it is ${name === "enumerable" ? "literally true" : "a literal boolean"}.`,
             );
     }
     const accessor = names.has("get") || names.has("set");
@@ -1311,7 +1414,7 @@ function propertyDefinition(
             );
     } else if (!names.has("value") || attributes.size !== 3)
         return refuse(
-            "represents a value with writable and enumerable true and an explicit boolean configurable attribute only.",
+            "represents a value with enumerable true, an explicit boolean writable and an explicit boolean configurable attribute only.",
         );
     return {
         key,
@@ -1319,7 +1422,8 @@ function propertyDefinition(
         members,
         accessor,
         setter: names.has("set"),
-        configurable,
+        configurable: flags.get("configurable") ?? true,
+        writable: flags.get("writable") ?? true,
     };
 }
 
@@ -1473,6 +1577,7 @@ function applyPropertyDefinitions(
             field: DataStructField;
             cpp: string;
             configurable: boolean;
+            writable: boolean;
             preserveSetter: boolean;
         }
     >();
@@ -1492,9 +1597,15 @@ function applyPropertyDefinitions(
                 definition.node,
                 `Object.${operation} does not redefine prototype accessor fields.`,
             );
+        if (!definition.writable && field.accessorReceiver)
+            context.fail(
+                definition.node,
+                `Object.${operation} does not define a read-only property in a receiver-aware slot.`,
+            );
         if (
             definition.accessor ||
             !definition.configurable ||
+            !definition.writable ||
             field.accessorReceiver
         ) {
             if (context.dataTypes.isClassStruct(target.dataType.name))
@@ -1510,7 +1621,7 @@ function applyPropertyDefinitions(
             )
                 context.fail(
                     definition.node,
-                    `Object.${operation} requires an accessor property that is always own or a nonconfigurable data property that is always own.`,
+                    `Object.${operation} requires an accessor property that is always own or a nonconfigurable or read-only data property that is always own.`,
                 );
             if (
                 !field.accessor ||
@@ -1559,17 +1670,18 @@ function applyPropertyDefinitions(
             field,
             cpp,
             configurable: definition.configurable,
+            writable: definition.writable,
             preserveSetter: definition.accessor && !definition.setter,
         });
     }
     // Object.keys also places integer-index keys before other string keys.
     for (const key of Object.keys(Object.fromEntries(collected))) {
-        const { field, cpp, configurable, preserveSetter } =
+        const { field, cpp, configurable, writable, preserveSetter } =
             collected.get(key)!;
         context.emit({
             kind: "expression",
             code: field.accessor
-                ? `${target.cpp}->${field.name}.define(${cpp}, ${configurable}, ${preserveSetter}${field.accessorReceiver ? `, ${target.cpp}` : ""});`
+                ? `${target.cpp}->${field.name}.define(${cpp}, ${configurable}, ${preserveSetter}${field.accessorReceiver ? `, ${target.cpp}` : writable ? "" : ", false"});`
                 : `${target.cpp}->${field.name} = ${cpp};`,
         });
     }
@@ -1651,9 +1763,13 @@ function applyDocumentDefinitions(
             const value = definition.members.find(
                 (member) => member.name === "value",
             );
-            if (!definition.configurable || value?.name !== "value")
+            if (
+                !definition.configurable ||
+                !definition.writable ||
+                value?.name !== "value"
+            )
                 return refuse(
-                    "defines a dynamic object's data property only as configurable.",
+                    "defines a dynamic object's data property only as writable and configurable.",
                 );
             return `${target.cpp}.define_value(${key}, ${context.dataLowerer.compileForSink(value.expression, json)});`;
         }

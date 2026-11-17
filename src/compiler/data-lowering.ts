@@ -238,6 +238,7 @@ import {
 } from "./types.js";
 import {
     deleteRecordProperty,
+    keysDefinedOnDeclaration,
     ownEntries,
     setRecordProperty,
     structOwnEntries,
@@ -14472,26 +14473,38 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             }
             compiled.set(name, cpp);
         }
-        const parts = fields.map((field) => {
-            const cpp = compiled.get(field.sourceName);
-            if (cpp !== undefined) return cpp;
-            const absent =
-                field.defaultWhenMissing ||
-                (field.accessorReceiver && field.type.kind === "optional")
-                    ? "{}"
-                    : field.type.kind === "optional"
-                      ? "std::nullopt"
-                      : undefined;
-            if (absent !== undefined)
-                return this.context.dataTypes.structFieldInitializerCpp(
-                    field,
-                    absent,
-                );
+        const absent = (field: DataStructField): string | undefined =>
+            field.defaultWhenMissing ||
+            (field.accessorReceiver && field.type.kind === "optional")
+                ? "{}"
+                : field.type.kind === "optional"
+                  ? "std::nullopt"
+                  : undefined;
+        const lacked = fields.filter(
+            (field) =>
+                !compiled.has(field.sourceName) && absent(field) === undefined,
+        );
+        if (
+            !this.lackedFieldsDefinedOnDeclaration(
+                literal,
+                fields,
+                (field) => compiled.has(field.sourceName),
+                lacked,
+            )
+        )
             this.context.fail(
                 literal,
-                `Struct literal is missing field '${field.sourceName}'.`,
+                `Struct literal is missing field '${lacked[0]!.sourceName}'.`,
             );
-        });
+        // A lacked field the next statements define holds a placeholder.
+        const parts = fields.map(
+            (field) =>
+                compiled.get(field.sourceName) ??
+                this.context.dataTypes.structFieldInitializerCpp(
+                    field,
+                    absent(field) ?? "{}",
+                ),
+        );
         if (self)
             return completeLiteralSelf(
                 this.context,
@@ -14776,6 +14789,34 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             dataLowerer: this,
             fail: (node, message) => this.context.fail(node, message),
         };
+    }
+
+    /**
+     * Whether a literal's record can hold placeholders in the fields it
+     * lacks: the statements right after its declaration define each
+     * (`keysDefinedOnDeclaration`) before anything reads the record, and
+     * each follows every field the literal holds, in definition order, as
+     * those definitions append it.
+     */
+    private lackedFieldsDefinedOnDeclaration(
+        literal: ts.ObjectLiteralExpression,
+        fields: readonly DataStructField[],
+        holds: (field: DataStructField) => boolean,
+        lacked: readonly DataStructField[],
+    ): boolean {
+        if (!lacked.length) return true;
+        const keys = keysDefinedOnDeclaration(this.context.checker, literal);
+        const lastHeld = fields.reduce(
+            (last, field, index) => (holds(field) ? index : last),
+            -1,
+        );
+        let definedAt = -1;
+        return lacked.every((field) => {
+            const at = keys.indexOf(field.sourceName);
+            const appended = at > definedAt && fields.indexOf(field) > lastHeld;
+            definedAt = at;
+            return appended;
+        });
     }
 
     /**
@@ -15250,22 +15291,33 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         declareDefault();
         // An absent optional field keeps the default the declaration
-        // stored, as a struct literal omitting it does.
-        const missing = this.context.dataTypes
-            .structFields(dataType.name, literal, "accessors")
-            .find(
-                // A `?` field holding a nullable reference or function is
-                // absent in its default storage.
-                (field) =>
-                    field.type.kind !== "optional" &&
-                    !field.optionalProperty &&
-                    !field.defaultWhenMissing &&
-                    !assigned.has(field.name),
-            );
-        if (missing) {
+        // stored, as a struct literal omitting it does; so does a lacked
+        // field the next statements define, a placeholder until then.
+        const fields = this.context.dataTypes.structFields(
+            dataType.name,
+            literal,
+            "accessors",
+        );
+        const lacked = fields.filter(
+            // A `?` field holding a nullable reference or function is
+            // absent in its default storage.
+            (field) =>
+                field.type.kind !== "optional" &&
+                !field.optionalProperty &&
+                !field.defaultWhenMissing &&
+                !assigned.has(field.name),
+        );
+        if (
+            !this.lackedFieldsDefinedOnDeclaration(
+                literal,
+                fields,
+                (field) => assigned.has(field.name),
+                lacked,
+            )
+        ) {
             this.context.fail(
                 literal,
-                `Struct literal is missing field '${missing.name}'.`,
+                `Struct literal is missing field '${lacked[0]!.name}'.`,
             );
         }
         return knownProperties && Object.keys(knownProperties).length > 0

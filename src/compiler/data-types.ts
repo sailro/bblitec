@@ -8625,17 +8625,26 @@ export class DataTypeRegistry {
             ? [...declared].sort((left, right) => at(left) - at(right))
             : declared;
         if (!type.isIntersection()) return properties;
-        const byName = new Map(
+        // In its members' order, as the checker orders a concrete
+        // intersection's: a member a type parameter names contributes the
+        // properties of the instantiation in force where it stands.
+        const declaredByName = new Map(
             properties.map((property) => [property.name, property]),
         );
+        const byName = new Map<string, ts.Symbol>();
         for (const member of type.types) {
             const concrete = this.resolveTypeParameter(member);
             for (const property of concrete.isIntersection()
                 ? this.structProperties(concrete)
                 : this.checker.getPropertiesOfType(concrete))
                 if (!byName.has(property.name))
-                    byName.set(property.name, property);
+                    byName.set(
+                        property.name,
+                        declaredByName.get(property.name) ?? property,
+                    );
         }
+        for (const property of properties)
+            if (!byName.has(property.name)) byName.set(property.name, property);
         return [...byName.values()];
     }
 

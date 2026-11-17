@@ -186,6 +186,80 @@ test("nonconfigurable properties retain per-object state, writable data and fail
     );
 });
 
+test("read-only properties reject writes and redefinitions that change them", (t) => {
+    const source = `
+        interface State { x: number; y: number; }
+        const frozen: State = {x: 1, y: 2};
+        const alias = frozen;
+        let denied = 0;
+        function deny(write: () => void): void {
+            try { write(); } catch (error) { if (error instanceof TypeError) denied++; }
+        }
+        Object.defineProperty(frozen, "x", {value: -0, writable: false, enumerable: true, configurable: false});
+        deny(() => { alias.x = 3; });
+        deny(() => { Object.assign(frozen, {x: 4}); });
+        Object.defineProperty(frozen, "x", {value: -0, writable: false, enumerable: true, configurable: false});
+        deny(() => Object.defineProperty(frozen, "x", {value: 0, writable: false, enumerable: true, configurable: false}));
+        deny(() => Object.defineProperty(frozen, "x", {value: -0, writable: true, enumerable: true, configurable: false}));
+        deny(() => Object.defineProperty(frozen, "x", {value: -0, writable: false, enumerable: true, configurable: true}));
+        if (denied !== 5 || !Object.is(alias.x, -0)) throw new Error("read-only nonconfigurable data");
+        Object.defineProperty(frozen, "y", {value: 5, writable: true, enumerable: true, configurable: false});
+        Object.defineProperty(frozen, "y", {value: 6, writable: false, enumerable: true, configurable: false});
+        deny(() => { alias.y = 7; });
+        if (denied !== 6 || alias.y !== 6) throw new Error("locked writable data");
+        const ordinary: State = {x: 8, y: 9};
+        Object.defineProperty(ordinary, "x", {value: 10, writable: false, enumerable: true, configurable: true});
+        deny(() => { ordinary.x = 11; });
+        Object.defineProperty(ordinary, "x", {value: 12, writable: true, enumerable: true, configurable: true});
+        ordinary.x = 13;
+        if (denied !== 7 || ordinary.x !== 13) throw new Error("configurable read-only data");
+        const copy: State = {...frozen};
+        copy.x = 14;
+        copy.y = 15;
+        if (copy.x !== 14 || copy.y !== 15 || Object.keys(frozen).join() !== "x,y")
+            throw new Error("fresh spread attributes");
+    `;
+    runInNewContext('"use strict";' + ts.transpile(source));
+    const result = compileSource(source);
+    const native = optionalNativeFixtureTools(false);
+    if (!native) return t.skip("Native fixture compiler unavailable.");
+    runGeneratedProgram(native, "object-definition-read-only", result.cpp);
+});
+
+test("a literal lacking what the statements after its declaration define holds it from those definitions", (t) => {
+    const source = `
+        interface Token { readonly key: number }
+        function attach<T extends object>(row: T, id: Token): T & { readonly id: Token } {
+            const item = { ...row } as T & { readonly id: Token };
+            Object.defineProperty(item, "id", { value: id, enumerable: true, writable: false, configurable: false });
+            return item;
+        }
+        function rewrite(target: { id: Token }, id: Token): void { target.id = id; }
+        const first: Token = { key: 1 };
+        const slit = attach({ tower: 2, height: 1.5 }, first);
+        if (slit.id !== first || slit.tower !== 2 || slit.height !== 1.5 || Object.keys(slit).join() !== "tower,height,id")
+            throw new Error("attached identity");
+        let denied = 0;
+        try { rewrite(slit, { key: 2 }); } catch (error) { if (error instanceof TypeError) denied++; }
+        try {
+            Object.defineProperty(slit, "id", { value: { key: 3 }, enumerable: true, writable: false, configurable: false });
+        } catch (error) { if (error instanceof TypeError) denied++; }
+        Object.defineProperty(slit, "id", { value: first, enumerable: true, writable: false, configurable: false });
+        const copy = { ...slit };
+        rewrite(copy, { key: 4 });
+        if (denied !== 2 || slit.id !== first || copy.id.key !== 4) throw new Error("locked identity");
+    `;
+    runInNewContext('"use strict";' + ts.transpile(source));
+    const result = compileSource(source);
+    const native = optionalNativeFixtureTools(false);
+    if (!native) return t.skip("Native fixture compiler unavailable.");
+    runGeneratedProgram(
+        native,
+        "object-definition-declared-literal",
+        result.cpp,
+    );
+});
+
 test("Object.assign evaluates owners and arguments before descriptor copy effects", (t) => {
     const source = `
         const locked = {x: 0, y: 0};
@@ -226,7 +300,7 @@ test("Object.assign evaluates owners and arguments before descriptor copy effect
 test("property definitions refuse descriptor attributes and layouts without native semantics", () => {
     const cases = [
         [
-            "{x: {value: 1, writable: false, enumerable: true, configurable: true}}",
+            "{x: {value: 1, writable: Math.random() > 1, enumerable: true, configurable: true}}",
             /descriptor attribute 'writable'/,
         ],
         [
@@ -269,6 +343,42 @@ test("property definitions refuse descriptor attributes and layouts without nati
         `),
         /accessor property that is always own/,
     );
+    assert.throws(
+        () =>
+            compileSource(`
+            const target: {x: number} = {x: 0};
+            const view = new Proxy(target, {});
+            Object.defineProperty(target, "x", {value: 1, writable: false, enumerable: true, configurable: true});
+            if (view.x !== 1) throw new Error("view");
+        `),
+        /read-only property in a receiver-aware slot/,
+    );
+    // A literal read before the definition that gives it a property, or
+    // given it after another statement, lacks that property where it is read.
+    for (const [descriptor, between] of [
+        [
+            "{value: (item as {id?: number}).id ?? id, writable: true, enumerable: true, configurable: true}",
+            "",
+        ],
+        [
+            "{value: id, writable: true, enumerable: true, configurable: true}",
+            "const copy = {...item};",
+        ],
+    ] as const)
+        assert.throws(
+            () =>
+                compileSource(`
+                function attach<T extends object>(row: T, id: number): T & { readonly id: number } {
+                    const item = { ...row } as T & { readonly id: number };
+                    ${between}
+                    Object.defineProperty(item, "id", ${descriptor});
+                    return item;
+                }
+                const attached = attach({ tower: 1 }, 2);
+                if (attached.id !== 2) throw new Error("id");
+            `),
+            /Struct literal is missing field 'id'/,
+        );
 });
 
 test("a Window realm's devicePixelRatio definition replaces what every read observes", (t) => {

@@ -6312,7 +6312,7 @@ test("Object.create, defineProperty and getPrototypeOf refuse unrepresented form
         ],
         [
             "const o: { x?: number } = {}; Object.defineProperty(o, 'x', { value: 3 });",
-            /Object\.defineProperty represents a value with writable and enumerable true and an explicit boolean configurable attribute only/,
+            /Object\.defineProperty represents a value with enumerable true, an explicit boolean writable and an explicit boolean configurable attribute only/,
         ],
         [
             "const o: { x?: number } = {}; Object.defineProperty(o, 'x', { get: () => 3, enumerable: true, configurable: true });",
