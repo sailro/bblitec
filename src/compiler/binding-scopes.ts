@@ -74,6 +74,7 @@ import {
 import { metadataFieldsForKind } from "./values/metadata.js";
 import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
 import { isNativeOwnerRecord } from "./native-owner-carrier.js";
+import { recordPropertyKeys } from "./object-statics.js";
 import { parameterProjectionIsReadOnly } from "./parameter-projection-effects.js";
 import { recordFieldIsWritten } from "./record-observations.js";
 import { loopBoundMayChange, walkReachedLoopNodes } from "./resource-loops.js";
@@ -1428,7 +1429,9 @@ export class BindingScopes {
                 const properties = this.recordPropertiesAreCurrent(narrowed)
                     ? narrowed.recordProperties
                     : undefined;
-                const ownKeys = narrowed.recordOwnKeys;
+                // Methods and accessors are own keys as data properties are.
+                const ownKeys =
+                    narrowed.recordOwnKeys ?? recordPropertyKeys(narrowed);
                 narrowed = presentCopy(
                     this.pinValueToTemporary(
                         this.context.dataLowerer.leafValue(
@@ -1450,8 +1453,7 @@ export class BindingScopes {
                             keepsStaticMember(propertyValue),
                         ),
                     );
-                    writable(narrowed).recordOwnKeys =
-                        ownKeys ?? Object.keys(properties);
+                    writable(narrowed).recordOwnKeys = ownKeys;
                 }
             }
         }

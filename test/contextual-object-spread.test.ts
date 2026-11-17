@@ -216,3 +216,45 @@ check(
         throw new Error('stored open keys');
 `,
 );
+
+check(
+    "spread of a record parameter copies the methods its argument literal holds",
+    `
+    interface Range { readonly count: number; readonly flush: (first: number, count: number) => void; }
+    interface Retained extends Range { readonly local: Float32Array; }
+    class Frame {
+        readonly ranges: Retained[] = [];
+        bind(range: Range): () => number {
+            const retained: Retained = { ...range, local: new Float32Array(range.count) };
+            this.ranges.push(retained);
+            return () => range.count;
+        }
+    }
+    function run(): number {
+        const frame = new Frame();
+        let flushed = 0;
+        const count = frame.bind({ count: 2, flush(first, count) { flushed += count - first; } });
+        frame.ranges[0]!.flush(1, 4);
+        if (Object.keys(frame.ranges[0]!).sort().join(',') !== 'count,flush,local') throw new Error('own keys');
+        return flushed * 10 + count();
+    }
+    if (run() !== 32) throw new Error('parameter method spread');
+`,
+);
+
+check(
+    "spread of a record binding copies the methods its initializer literal holds",
+    `
+    interface Range { readonly count: number; readonly flush: (first: number) => number; }
+    interface Retained extends Range { readonly local: number; }
+    function run(): number {
+        let flushed = 0;
+        const range: Range = { count: 1, flush(first) { flushed += first; return flushed; } };
+        const reads = [() => range.count];
+        const retained: Retained = { ...range, local: 2 };
+        if (Object.keys(retained).sort().join(',') !== 'count,flush,local') throw new Error('own keys');
+        return retained.flush(3) * 10 + reads[0]!();
+    }
+    if (run() !== 31) throw new Error('binding method spread');
+`,
+);

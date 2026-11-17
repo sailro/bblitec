@@ -1490,10 +1490,30 @@ function newArrayExpression(
     return yieldsNewArray(checker, unwrapped);
 }
 
+/** The unexported `const` local `read` names, initialized with a fresh object (`fresh`). */
+export function freshConstLocal(
+    checker: ts.TypeChecker,
+    read: ts.Expression,
+    fresh: (initializer: ts.Expression) => boolean,
+): ts.VariableDeclaration | undefined {
+    const unwrapped = unwrapExpression(read);
+    if (!ts.isIdentifier(unwrapped)) return undefined;
+    const declaration = declaredSymbol(checker, unwrapped)?.valueDeclaration;
+    return declaration &&
+        ts.isVariableDeclaration(declaration) &&
+        declaration.initializer &&
+        ts.isVariableStatement(declaration.parent.parent) &&
+        variableKind(declaration) === "const" &&
+        !hasExportModifier(declaration.parent.parent) &&
+        fresh(declaration.initializer)
+        ? declaration
+        : undefined;
+}
+
 /**
- * Whether `read` is the only reference to an unexported `const` local
- * initialized with a fresh object (`fresh`), read once per binding
- * (`soleBindingRead`). A copy stored there replaces the only reference.
+ * Whether `read` is the only reference to a `freshConstLocal`, read once
+ * per binding (`soleBindingRead`). A copy stored there replaces the only
+ * reference.
  */
 export function soleReadOfFreshLocal(
     program: ts.Program,
@@ -1501,18 +1521,11 @@ export function soleReadOfFreshLocal(
     read: ts.Expression,
     fresh: (initializer: ts.Expression) => boolean,
 ): boolean {
-    const unwrapped = unwrapExpression(read);
-    if (!ts.isIdentifier(unwrapped)) return false;
-    const declaration = declaredSymbol(checker, unwrapped)?.valueDeclaration;
+    const declaration = freshConstLocal(checker, read, fresh);
     return (
-        !!declaration &&
-        ts.isVariableDeclaration(declaration) &&
-        !!declaration.initializer &&
-        ts.isVariableStatement(declaration.parent.parent) &&
-        variableKind(declaration) === "const" &&
-        !hasExportModifier(declaration.parent.parent) &&
-        fresh(declaration.initializer) &&
-        soleBindingRead(program, checker, declaration) === unwrapped
+        declaration !== undefined &&
+        soleBindingRead(program, checker, declaration) ===
+            unwrapExpression(read)
     );
 }
 

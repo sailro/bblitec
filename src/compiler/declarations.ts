@@ -60,6 +60,7 @@ import {
 import { nativeReturnTsType } from "./native-return-type.js";
 import { isNativeOwnerRecord } from "./native-owner-carrier.js";
 import { NativeRecordStorageRequired } from "./native-record-storage.js";
+import { recordPropertyKeys } from "./object-statics.js";
 import {
     nullability,
     unionMembers,
@@ -3620,7 +3621,12 @@ export class DeclarationLowerer {
                     resourceArraySnapshot ??
                     plainRecordSnapshot ??
                     heldRecordSnapshot;
-                if (snapshot)
+                // Demanded elements are the binding's own: an owner its
+                // initializer's elements carry does not replace them.
+                if (
+                    snapshot &&
+                    !(typeof storage === "object" && "elements" in storage)
+                )
                     type = this.context.dataLowerer.retainedResultType(
                         snapshot,
                         type,
@@ -4661,11 +4667,7 @@ export class DeclarationLowerer {
             ts.isIdentifier(name) &&
             !mutablePlainObject &&
             ownKeysKnown(this.context, initializerSnapshot, name)
-                ? {
-                      recordOwnKeys: Object.keys(
-                          initializerSnapshot.recordProperties ?? {},
-                      ),
-                  }
+                ? { recordOwnKeys: recordPropertyKeys(initializerSnapshot) }
                 : annotated.kind === "enummap" &&
                     ts.isObjectLiteralExpression(initializer) &&
                     !this.context.sharedClosures.identifierIsRebound(name)

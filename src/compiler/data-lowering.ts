@@ -178,6 +178,7 @@ import {
     arrayWriteObservation,
     recordFieldIsWritten,
     builtRecordFieldIsWritten,
+    freshConstLocal,
 } from "./record-observations.js";
 import { sceneRelativeSourceLabel } from "../source-location.js";
 import { staticJsonValue, staticNumberValue } from "./option-helpers.js";
@@ -270,6 +271,7 @@ import {
     mappedElement,
     readOnlyFreshConst,
     yieldsFreshObject,
+    yieldsNewArray,
 } from "./fresh-records.js";
 import {
     isAssignmentOperator,
@@ -13289,6 +13291,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     /**
      * An array binding assigned an array whose elements keep their engine
      * beside the handle: the binding keeps them so too, one array for both.
+     * A const local holding a new array, read where an array of the
+     * engine-less handles is expected, holds those instead: its initializer
+     * converts each element while nothing else holds the array.
      */
     public requireArrayBindingElements(
         element: DataType,
@@ -13312,6 +13317,25 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             throw new DynamicBindingStorageRequired(declaration, {
                 elements: element,
             });
+        const local = this.newArrayLocal(node);
+        if (local)
+            throw new DynamicBindingStorageRequired(local, {
+                elements: target,
+            });
+    }
+
+    /** The const local a converted expression reads, initialized with a new array, while it has no demanded storage. */
+    private newArrayLocal(node: ts.Node): ts.VariableDeclaration | undefined {
+        const converted = this.convertedExpression(node);
+        const checker = this.context.checker;
+        const declaration =
+            converted &&
+            freshConstLocal(checker, converted, (initializer) =>
+                yieldsNewArray(checker, initializer),
+            );
+        return declaration && !this.context.dynamicBindings.has(declaration)
+            ? declaration
+            : undefined;
     }
 
     /** The local a converted expression initializes or plainly assigns, while it has no demanded storage. */
