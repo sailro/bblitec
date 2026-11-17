@@ -2996,20 +2996,7 @@ export class DataTypeRegistry {
         type: ts.Type,
     ): InstantiatedRecord | undefined {
         if (!this.mentionsSubstitution(type)) return undefined;
-        const object = type as ts.ObjectType;
-        const [generic, arguments_] =
-            type.aliasSymbol && type.aliasTypeArguments?.length
-                ? [type.aliasSymbol, type.aliasTypeArguments]
-                : type.isIntersection()
-                  ? [type, type.types]
-                  : (object.objectFlags & ts.ObjectFlags.Reference) !== 0
-                    ? [
-                          (type as ts.TypeReference).target,
-                          this.checker.getTypeArguments(
-                              type as ts.TypeReference,
-                          ),
-                      ]
-                    : [undefined, []];
+        const [generic, arguments_] = this.genericArguments(type);
         if (!generic) return undefined;
         const resolved = arguments_.map((argument) => {
             const concrete = this.resolveTypeParameter(argument);
@@ -3020,6 +3007,27 @@ export class DataTypeRegistry {
         return resolved.every((argument) => argument !== undefined)
             ? instantiatedRecord(generic, resolved)
             : undefined;
+    }
+
+    /**
+     * The generic declaration a record type instantiates and the arguments
+     * it takes: an alias's symbol, a generic interface's or class's type,
+     * or an intersection itself, of its parts.
+     */
+    private genericArguments(
+        type: ts.Type,
+    ): readonly [ts.Symbol | ts.Type | undefined, readonly ts.Type[]] {
+        const object = type as ts.ObjectType;
+        return type.aliasSymbol && type.aliasTypeArguments?.length
+            ? [type.aliasSymbol, type.aliasTypeArguments]
+            : type.isIntersection()
+              ? [type, type.types]
+              : (object.objectFlags & ts.ObjectFlags.Reference) !== 0
+                ? [
+                      (type as ts.TypeReference).target,
+                      this.checker.getTypeArguments(type as ts.TypeReference),
+                  ]
+                : [undefined, []];
     }
 
     /**
@@ -4108,9 +4116,15 @@ export class DataTypeRegistry {
                     true,
                 );
             // Every property any arm declares takes one storage in the
-            // joined layout, including those the union's own fields omit.
+            // joined layout, including those the union's own fields omit;
+            // two instantiations of one generic record, the storage their
+            // structs give it.
+            const generic = this.genericArguments(sourceRecord)[0];
             if (
-                sourceInstantiation || targetInstantiation
+                sourceInstantiation ||
+                targetInstantiation ||
+                (generic !== undefined &&
+                    generic === this.genericArguments(targetRecord)[0])
                     ? union !== sourceUnion ||
                       this.structLayoutsCompatible(sourceFields, targetFields)
                     : layoutsCompatible(
@@ -4187,6 +4201,20 @@ export class DataTypeRegistry {
                     left.name,
                     right.name,
                 );
+            // One function under both types takes and returns one value.
+            if (
+                left.kind === "function" &&
+                right.kind === "function" &&
+                !left.generic &&
+                !right.generic &&
+                left.parameters.length === right.parameters.length
+            ) {
+                left.parameters.forEach((parameter, index) =>
+                    compare(parameter, right.parameters[index]!),
+                );
+                if (left.result && right.result)
+                    compare(left.result, right.result);
+            }
         };
         const container = (type: DataType): boolean =>
             type.kind === "vector" ||
@@ -4423,6 +4451,16 @@ export class DataTypeRegistry {
         right: DataType,
     ): DataType | undefined {
         if (dataTypesEqual(left, right)) return left;
+        // One declared signature stored generically in one layout is that
+        // table in both: it holds every concrete signature its calls reach.
+        if (
+            left.kind === "function" &&
+            right.kind === "function" &&
+            !left.generic !== !right.generic &&
+            left.signatureSite !== undefined &&
+            left.signatureSite === right.signatureSite
+        )
+            return left.generic ? left : right;
         // One signature declared twice is stored once; the storage keeps
         // only the completion facts every value it holds proves.
         if (left.kind === "function" && right.kind === "function") {
@@ -8799,7 +8837,14 @@ export class DataTypeRegistry {
             let unionField: DataType | undefined;
             for (const [index, value] of values.entries()) {
                 if (!storing(value) || empty(value)) continue;
-                const { mapped } = value;
+                // A shape typing it only as a dynamic value (`unknown`)
+                // holds what the others store in it as dynamic values.
+                const mapped =
+                    value.mapped ??
+                    this.withDynamicJsonTypes(
+                        true,
+                        () => valueOf(declared[index]!).mapped,
+                    );
                 const next =
                     mapped && this.joinedStorage(stored, storage(mapped));
                 if (next) {

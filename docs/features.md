@@ -74,6 +74,10 @@ Rules:
   returns are one handle kind, `undefined` or such fields returns that handle.
 - A record type reaching `unknown` members where several writes meet (a rebound binding, a function's result or
   parameter) stores those members as documents.
+- A generic record instantiated at a type and stored as its `unknown` instantiation where a copy is observable shares
+  one layout with it: records the one holds where the other holds a dynamic value (fields, function fields' parameters
+  and results) are documents; a method one stores as a generic function's table is that table in both, a stored
+  function filling each of its signatures.
 - A record binding whose member is written by a run-time key or replaced takes native storage; its fields typed
   `Record<string, unknown>` are documents.
 - A record type a parsed document is stored as is a document, with every record type the program reads out of it

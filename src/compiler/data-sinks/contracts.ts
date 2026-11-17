@@ -22,6 +22,7 @@ export type DataSinkHost = Pick<
     | "emitSpreadStructDeclaration"
     | "registerLocal"
     | "structLiteral"
+    | "structAggregate"
     | "markEscaped"
     | "requireDataValue"
     | "enumMapLiteral"
