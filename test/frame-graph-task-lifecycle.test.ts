@@ -160,16 +160,15 @@ test("the live outline build lowers in strict mode and other task kinds refuse p
             ),
         /buildFrameGraphTask lowers render, effect render, SSAO and copy tasks\./,
     );
-    // The application's removal of a half-built task: no view of the native
-    // list keeps the pin's indices, so the private read refuses.
-    assert.throws(
-        () =>
-            compileSource(
-                `${prefix}${outline}const frameGraphTasks=(frameGraph as unknown as {_tasks:unknown[]})._tasks;
+    // The application's removal of a half-built task: the position it finds
+    // and splices out at once names the same task in the native list.
+    assert.match(
+        compileSource(
+            `${prefix}${outline}const frameGraphTasks=(frameGraph as unknown as {_tasks:unknown[]})._tasks;
                 const i=frameGraphTasks.indexOf(maskTask);
                 if(i>=0){ frameGraphTasks.splice(i,1); }`,
-            ),
-        /FrameGraph\._tasks is private and is not represented/,
+        ).cpp,
+        /bbl::js::array_splice_one\(v_\w*frameGraphTasks\.tasks, /,
     );
     assert.throws(
         () =>

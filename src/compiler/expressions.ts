@@ -118,6 +118,7 @@ import {
 import { compileLibraryPrototype } from "./prototype-values.js";
 import { compileVatMethodCall } from "./intrinsics/vat.js";
 import { compileShaderDeclarationSearch } from "./shader-declaration-lists.js";
+import { compileTaskListRemovalCall } from "./frame-graph-task-list.js";
 import { compilePhysicsMethodCall } from "./physics-surface.js";
 import { compileCustomEventConstructor } from "./custom-events.js";
 import { compileSyntheticEventConstructor } from "./synthetic-events.js";
@@ -8161,6 +8162,7 @@ export class ExpressionLowerer {
         // has no native intermediate array for that probe to lower.
         const found =
             compileShaderDeclarationSearch(this.context, call, member) ??
+            compileTaskListRemovalCall(this.context, call, member) ??
             this.context.handleCollections.compileFind(call, member) ??
             this.context.handleCollections.compileSome(call, member) ??
             this.context.handleCollections.compileFilter(call, member);

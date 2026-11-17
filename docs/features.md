@@ -451,8 +451,9 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
   Explicit `depthCompare` overrides ShaderMaterial depth state. `scene.surface` reads require a known primary-surface scene.
 - `buildFrameGraphTask(getFrameGraph(scene), task)` records a render or effect render task added to a live scene, which
   refuses to execute until then, an SSAO task (settings and working resolution) or a copy task (its source resolves at
-  every execute); the private `FrameGraph._tasks` list refuses (its native indices differ), so a live task cannot be
-  removed.
+  every execute). `removeTask` unlists every registration of a task, which keeps its passes and resources. The private
+  `FrameGraph._tasks` list refuses (its native indices differ), except a `const` view whose `indexOf(task)` position
+  is only tested `>= 0` and spliced out at once (`splice(i, 1)`), which removes that registration.
 - A render target's private `_width`/`_height`, read through a cast, is the swapchain target's canvas backing store as
   it is when read; another target's refuses when read.
 - Render and effect render task `dispose()` releases owned targets (not the swapchain's); executing a disposed task refuses.

@@ -28,6 +28,7 @@ import {
     lowerFrameGraphTaskBuild,
     lowerTaskExecutionCheck,
 } from "./frame-graph-task-build.js";
+import { lowerTaskRemoval } from "./frame-graph-task-removal.js";
 import { lowerDeformedVertex } from "./deformed-vertex.js";
 import { sameSource } from "../compiler/syntax.js";
 
@@ -149,6 +150,8 @@ interface SceneCoreOptions {
     effectTasks?: boolean;
     /** A task may be added to a registered scene. */
     liveTaskAdd?: boolean;
+    /** A task may be removed from a graph (`removeTask`). */
+    taskRemoval?: boolean;
     /** A render or effect task may be disposed. */
     taskDisposal?: boolean;
     /** Scene code replaces an effect task's `record` / `dispose`. */
@@ -2751,7 +2754,11 @@ void off_visibility_change(Engine& engine, std::size_t identity) {
     }
 
     /** A task added to a registered scene waits for its record. */
-    private liveTaskAddSource(): string {
+    /**
+     * `removeTask` keeps a task's recorded passes, so a task added back
+     * draws them at once; its draw lists rebuild with the graph's.
+     */
+    private liveTaskAddSource(taskRemoval: boolean): string {
         return `// ${this.context.provenance("src/scene/scene-core.ts", "registerScene", "src/frame-graph/frame-graph.ts#buildFrameGraphTask")}
 void add_live_task(Scene& scene, TaskHandle task, bool at_start) {
     if (at_start)
@@ -2765,7 +2772,13 @@ void add_live_task(Scene& scene, TaskHandle task, bool at_start) {
             return registered && registered->shares_identity(scene);
         }))
         record.record_state = FrameTaskRecordState::pending_build;
-}
+${
+    taskRemoval
+        ? `    else if (record.record_state == FrameTaskRecordState::recorded)
+        ++scene.engine->draw_list_epoch;
+`
+        : ""
+}}
 
 `;
     }
@@ -3068,7 +3081,7 @@ ${
         ? `${lowerFrameGraphTaskBuild(this.context, this.renderTaskRecordSource(options), { effect: options.effectTasks, ssao: options.ssaoTasks }, options.taskMethodSlots ?? false)}
 `
         : ""
-}${options.liveTaskAdd ? this.liveTaskAddSource() : ""}${
+}${options.liveTaskAdd ? this.liveTaskAddSource(options.taskRemoval === true) : ""}${options.taskRemoval ? lowerTaskRemoval(this.context) : ""}${
             options.liveTaskAdd || options.taskDisposal
                 ? lowerTaskExecutionCheck(this.context, {
                       disposal: options.taskDisposal ?? false,

@@ -1686,6 +1686,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "(src/frame-graph/frame-graph.ts buildFrameGraphTask)",
         consumers: CMAKE,
     },
+    "frame-graph:task-removal": {
+        provenance: "src/frame-graph/frame-graph-actions.ts removeTask",
+        consumers: CMAKE,
+    },
     "frame-graph:task-method-slots": {
         provenance:
             "src/frame-graph/frame-graph.ts recordTask (task.record()) + " +

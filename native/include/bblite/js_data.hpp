@@ -5331,8 +5331,9 @@ template <typename T> [[nodiscard]] inline Array<T> array_filled(double count, c
 }
 
 // `array.splice(index, 1)` — remove one element and shift the tail down,
-// the removal form the reached subset compiles (the particle sweep).
-template <typename T> inline void array_splice_one(Array<T>& values, double index) {
+// the removal form the reached subset compiles (the particle sweep, a
+// graph's native task list).
+template <typename Values> inline void array_splice_one(Values& values, double index) {
     const auto position = array_index(index);
     if (position >= values.size()) [[unlikely]] {
         throw std::runtime_error("Array splice index out of range.");

@@ -1446,6 +1446,7 @@ ${lowerThinInstanceSync(context)}
                 ssaoTasks: features.includes("renderer:ssao"),
                 effectTasks: features.includes("effect:task"),
                 liveTaskAdd: features.includes("frame-graph:live-task-add"),
+                taskRemoval: features.includes("frame-graph:task-removal"),
                 taskDisposal: features.includes("frame-graph:task-disposal"),
                 taskMethodSlots: features.includes(
                     "frame-graph:task-method-slots",

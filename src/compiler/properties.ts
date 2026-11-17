@@ -150,6 +150,7 @@ import {
     isDocumentVisibilityRead,
 } from "./window-events.js";
 import type { WindowProperties } from "./window-properties.js";
+import { taskListRemoval } from "./frame-graph-task-list.js";
 
 /** A property the compiled surface deliberately does not serve. */
 interface RefusedProperty {
@@ -2311,6 +2312,7 @@ interface PropertyAccessContext
             | "handleCollections"
             | "optionalChainStop"
             | "platformDocumentHidden"
+            | "program"
             | "sharedClosures"
             | "useNativeValue"
         > {
@@ -4662,7 +4664,15 @@ export class PropertyAccessLowerer {
         }
         // The native list holds the pin's tasks only, but the pin's also
         // holds its shadow task and its transmission image-processing task,
-        // which native passes replace, so its indices still differ.
+        // which native passes replace, so its indices still differ. A
+        // removal by the position it finds names the same task in both.
+        if (
+            (owner.kind === "frame-graph" ||
+                owner.kind === "frame-graph-context") &&
+            expression.name.text === "_tasks" &&
+            taskListRemoval(this.context, expression)
+        )
+            return owner;
         if (owner.kind === "frame-graph" && expression.name.text === "_tasks")
             this.context.fail(
                 expression,

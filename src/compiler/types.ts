@@ -3753,6 +3753,7 @@ export type Feature =
     | "frame-graph:task-disposal"
     | "frame-graph:task-method-slots"
     | "frame-graph:live-task-add"
+    | "frame-graph:task-removal"
     | "renderer:frame-graph"
     | "effect:wrapper"
     | "effect:wrapper-disposal"

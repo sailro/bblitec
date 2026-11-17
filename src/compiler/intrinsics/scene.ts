@@ -59,6 +59,7 @@ export function compileSceneIntrinsic(
             "addTask",
             "addTaskAtStart",
             "addTaskAfter",
+            "removeTask",
         ].includes(importedName)
     ) {
         context.admissions.noteTemporalRecordBoundary(
@@ -611,6 +612,35 @@ export function compileSceneIntrinsic(
                 kind: "frame-graph",
                 cpp: scene.cpp,
                 ...(scene.engineCpp ? { engineCpp: scene.engineCpp } : {}),
+            };
+        }
+
+        case "removeTask": {
+            context.expectArgumentCount(call, 2, 2);
+            const argument = (index: number) =>
+                context.bindings.pinValueToTemporary(
+                    context.compileValue(argumentAt(call, index)),
+                    "removed_task_argument",
+                    argumentAt(call, index),
+                );
+            const target = argument(0),
+                task = argument(1);
+            if (
+                target.kind !== "scene" &&
+                target.kind !== "frame-graph" &&
+                target.kind !== "frame-graph-context"
+            )
+                context.fail(
+                    argumentAt(call, 0),
+                    `removeTask requires a scene, its frame graph or a frame-graph context, received ${target.kind}.`,
+                );
+            if (task.kind !== "compute-task")
+                context.expectKind(task, "task", argumentAt(call, 1));
+            context.expectSameEngine(target, task, call);
+            context.reachFeature("frame-graph:task-removal", call);
+            return {
+                kind: "boolean",
+                cpp: `bbl::remove_task(${target.cpp}, ${task.cpp})`,
             };
         }
 
