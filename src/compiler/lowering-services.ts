@@ -785,6 +785,8 @@ export interface LoweringServices {
     knownValueWithoutEvaluation(expression: ts.Expression): Value | undefined;
     knownCollectionCardinality(expression: ts.Expression): number | undefined;
     runtimeCollectionCardinality(expression: ts.Expression): number | undefined;
+    /** Whether a collection's generation facts describe it where the walk stands. */
+    collectionFactsHold(value: Value): boolean;
     recordArrayPush(value: Value, added: number | undefined): boolean;
     /**
      * Gives a list a block-scoped declaration creates a cardinality of its

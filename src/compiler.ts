@@ -370,6 +370,7 @@ import {
     sharedFunctionHasCallEffects,
     requiresStaticLoopIteration,
     runtimeProfileConstructionIntrinsics,
+    writtenOnceBegun,
     type ParameterizedResourceLoop,
     type ResourceLoop,
 } from "./compiler/resource-loops.js";
@@ -1181,6 +1182,12 @@ class Compiler implements LoweringServices {
      * popped around each statement's lowering.
      */
     private readonly loweringStatements: LoweringStatement[] = [];
+    /**
+     * For each closure being lowered that runs after the statement creating
+     * it, innermost last, how many statements stood when it began.
+     * @unjournaled Pushed and popped around each such closure's lowering.
+     */
+    private readonly laterBodies: number[] = [];
     public readonly erasedBrowserExpressions = new EmissionSet<number>();
     public readonly erasedBrowserInstrumentation = new EmissionSet<number>();
     /** Erased writes through DOM element receivers, refused with retained UI. */
@@ -1928,16 +1935,20 @@ class Compiler implements LoweringServices {
         let closure: CapturedClosure;
         try {
             closure = this.asyncActivations.withAsyncActivation(() =>
-                this.captureManagedClosureLines(() => {
-                    this.beginNativeFunctionBody(undefined, false, {
-                        coroutine: true,
-                    });
-                    try {
-                        if (!emitBody()) this.emitFallOffEnd();
-                    } finally {
-                        this.endNativeFunctionBody();
-                    }
-                }),
+                this.captureClosureLines(
+                    () => {
+                        this.beginNativeFunctionBody(undefined, false, {
+                            coroutine: true,
+                        });
+                        try {
+                            if (!emitBody()) this.emitFallOffEnd();
+                        } finally {
+                            this.endNativeFunctionBody();
+                        }
+                    },
+                    false,
+                    true,
+                ),
             );
         } finally {
             this.bindings.popScope();
@@ -8180,6 +8191,18 @@ class Compiler implements LoweringServices {
         emitBody: () => void,
         byReference: ClosureBorrowing = false,
     ): CapturedClosure {
+        return this.captureClosureLines(emitBody, byReference, false);
+    }
+
+    /**
+     * `captureManagedClosureLines`, for the entry's own body too
+     * (`entryBody`), which outlives its scope but runs where it is created.
+     */
+    private captureClosureLines(
+        emitBody: () => void,
+        byReference: ClosureBorrowing,
+        entryBody: boolean,
+    ): CapturedClosure {
         const capture = new ClosureCaptures(
             this.allocateTemporaryCppName("environment"),
             this.nextNativeBindingSequence,
@@ -8199,10 +8222,13 @@ class Compiler implements LoweringServices {
         // An environment borrowed for its scope (`true`, `"call"`) runs
         // inside it; any other closure outlives the loops around its creation.
         const outlivesScope = byReference !== true && byReference !== "call";
+        const runsLater = outlivesScope && !entryBody;
         if (outlivesScope) this.statements.enterCallbackBody();
+        if (runsLater) this.laterBodies.push(this.loweringStatements.length);
         try {
             lines = this.captureEmittedLines(emitBody, { functionBody: true });
         } finally {
+            if (runsLater) this.laterBodies.pop();
             if (outlivesScope) this.statements.leaveCallbackBody();
             if (deferred) {
                 this.deferredResourceCaptureDepths.delete(
@@ -10403,14 +10429,8 @@ class Compiler implements LoweringServices {
         const carriedState =
             carried?.collectionCardinality ??
             carried?.staticElementsOwner?.collectionCardinality;
-        if (carriedState) {
-            return carriedState.untrackedAliases ||
-                this.parameterizedResourceIterations.some((frame) =>
-                    carriedState.varyingIn.has(frame),
-                )
-                ? undefined
-                : carriedState.count;
-        }
+        if (carried && carriedState)
+            return this.collectionCount(carried, carriedState);
         const node = this.unwrap(this.resolveStaticExpression(expression));
         if (ts.isArrayLiteralExpression(node)) {
             let count = 0;
@@ -10428,22 +10448,83 @@ class Compiler implements LoweringServices {
             return count;
         }
         const value = this.knownValueWithoutEvaluation(node);
+        if (!value) return undefined;
         const state =
-            value?.collectionCardinality ??
-            value?.staticElementsOwner?.collectionCardinality;
-        if (state) {
-            return state.untrackedAliases ||
-                this.parameterizedResourceIterations.some((frame) =>
-                    state.varyingIn.has(frame),
-                )
-                ? undefined
-                : state.count;
-        }
+            value.collectionCardinality ??
+            value.staticElementsOwner?.collectionCardinality;
+        if (state) return this.collectionCount(value, state);
         return (
-            value?.tupleElements ??
-            value?.staticElementsOwner?.staticElements ??
-            value?.staticElements
+            value.tupleElements ??
+            (this.collectionFactsHold(value)
+                ? (value.staticElementsOwner?.staticElements ??
+                  value.staticElements)
+                : undefined)
         )?.length;
+    }
+
+    /** The size `state` knows for `value`'s collection where the walk stands. */
+    private collectionCount(
+        value: Value,
+        state: CollectionCardinality,
+    ): number | undefined {
+        return state.count === undefined ||
+            state.untrackedAliases ||
+            this.parameterizedResourceIterations.some((frame) =>
+                state.varyingIn.has(frame),
+            ) ||
+            !this.collectionFactsHold(value)
+            ? undefined
+            : state.count;
+    }
+
+    /**
+     * Whether the generation facts `value` carries for a collection (its
+     * size, its elements) describe it where the walk stands.
+     *
+     * A closure that runs after the statement creating it is lowered at that
+     * statement, so a fact that a binding declared outside the closure holds
+     * describes the collection there. It holds where the closure runs only
+     * if no code that can run once that statement begins writes the binding
+     * (`writtenOnceBegun`).
+     */
+    public collectionFactsHold(value: Value): boolean {
+        const begun = this.laterBodies.at(-1);
+        const owner = value.staticElementsOwner ?? value;
+        if (
+            begun === undefined ||
+            !(
+                owner.collectionCardinality ??
+                value.collectionCardinality ??
+                owner.staticElements ??
+                value.staticElements
+            )
+        )
+            return true;
+        return this.bindings
+            .collectionHolders(value)
+            .every(({ symbol, scope }) => {
+                // The statement the holder's block stands at, when lowered.
+                let index = this.loweringStatements.length - 1;
+                while (
+                    index >= 0 &&
+                    this.loweringStatements[index]!.scope !== scope
+                )
+                    index--;
+                // Declared while the closure is lowered: it runs there.
+                if (index >= begun) return true;
+                const declaration = symbol.valueDeclaration;
+                const name =
+                    declaration && ts.getNameOfDeclaration(declaration);
+                return (
+                    name !== undefined &&
+                    ts.isIdentifier(name) &&
+                    !writtenOnceBegun(
+                        this,
+                        name,
+                        this.loweringStatements[index]?.statement,
+                    )
+                );
+            });
     }
 
     /** A known size whose members no longer have individual static aliases. */

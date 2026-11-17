@@ -554,6 +554,7 @@ interface HandleCollectionsContext
             | "reachFeature"
             | "probeEmission"
             | "userFunctions"
+            | "collectionFactsHold"
         > {}
 
 /**
@@ -1723,7 +1724,8 @@ export class HandleCollections {
             (
                 value?.collectionCardinality ??
                 value?.staticElementsOwner?.collectionCardinality
-            )?.untrackedAliases
+            )?.untrackedAliases ||
+            (value && !this.context.collectionFactsHold(value))
         ) {
             return undefined;
         }

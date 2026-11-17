@@ -231,6 +231,7 @@ interface StatementLoweringContext extends Pick<
     | "emitNativeDataIteration"
     | "knownCollectionCardinality"
     | "runtimeCollectionCardinality"
+    | "collectionFactsHold"
     | "parameterizedResourceLoop"
     | "emitParameterizedResourceLoop"
     | "isInParameterizedResourceLoop"
@@ -3515,8 +3516,6 @@ export class StatementLowerer {
         const head = this.loopHead(context, statement);
         if (isSuspensionPoint(statement))
             return this.emitForAwait(context, statement, head);
-        // A retained callback can run after another closure registers members.
-        // Its initial empty cardinality is not a proof that its loop is empty.
         const subject = context.unwrap(statement.expression);
         const containerType = ts.isIdentifier(subject)
             ? (context.bindings.lookupOptional(subject)?.dataType ??
@@ -3526,11 +3525,6 @@ export class StatementLowerer {
             containerType && "element" in containerType
                 ? containerType.element
                 : undefined;
-        if (
-            liveElement?.kind === "function" &&
-            this.emitRuntimeForOf(context, statement, head)
-        )
-            return;
         const runtimeCardinality = context.runtimeCollectionCardinality(
             statement.expression,
         );
@@ -3714,8 +3708,10 @@ export class StatementLowerer {
             : undefined;
         const bound =
             binding?.tupleElements ??
-            binding?.staticElementsOwner?.staticElements ??
-            binding?.staticElements;
+            (binding && context.collectionFactsHold(binding)
+                ? (binding.staticElementsOwner?.staticElements ??
+                  binding.staticElements)
+                : undefined);
         if (!literal && !bound) return false;
         if (
             literal?.elements.some(
