@@ -793,6 +793,11 @@ const LIBRARY_OBJECT_KINDS: readonly (readonly [
     ["RequestInit", "dom", { kind: "request-init" }],
     ["URL", "dom", { kind: "url" }],
     ["ImageBitmap", "dom", { kind: "image-bitmap" }],
+    [
+        "OffscreenCanvasRenderingContext2D",
+        "dom",
+        { kind: "offscreen-canvas-2d" },
+    ],
     ["DOMRect", "dom", { kind: "dom-rect" }],
     ["DOMRectReadOnly", "dom", { kind: "dom-rect" }],
     ["IdleDeadline", "dom", { kind: "idle-deadline" }],
@@ -855,6 +860,7 @@ const WEB_PLATFORM_HEADERS: readonly (readonly [
     [["request-init"], "web_platform"],
     [["url"], "js_url"],
     [["image-bitmap"], "pal_image_bitmap"],
+    [["offscreen-canvas-2d"], "pal_canvas"],
     [["idle-deadline"], "pal_idle_callbacks"],
     [["uninhabited-object"], "pal_media_stream"],
     // A stored error or rejection listener spells the realm's error event.

@@ -1,4 +1,4 @@
-#include "pal_ui_canvas.hpp"
+#include <bblite/pal_canvas_pixels.hpp>
 
 #include <cassert>
 #include <cmath>

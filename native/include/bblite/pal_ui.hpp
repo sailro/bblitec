@@ -5,6 +5,7 @@
 
 #include <bblite/js_data.hpp>
 #include <bblite/runtime.hpp>
+#include <bblite/pal_canvas_pixels.hpp>
 #if BBLITE_WORKERS
 #include <bblite/js_promise.hpp>
 #endif
@@ -335,11 +336,13 @@ void ui_canvas_draw_image(Engine&, UiElementHandle, UiElementHandle, double, dou
 void ui_canvas_draw_image(Engine&, UiElementHandle, UiElementHandle, double, double, double, double,
                           double, double, double, double);
 /** `getImageData`'s result: the rectangle's unpremultiplied RGBA rows. */
-struct UiCanvasImageData {
-    double width = 0.0;
-    double height = 0.0;
-    js::U8Array data;
-};
+using UiCanvasImageData = pal::CanvasImageData;
+/**
+ * `canvas.toDataURL(type, quality)`: the whole canvas as `getImageData` composes it, encoded
+ * by `pal::encode_image_data_url`; a path, stroke or text draw throws.
+ */
+std::string ui_canvas_to_data_url(Engine&, UiElementHandle, std::optional<std::string>,
+                                  std::optional<double>);
 /**
  * `getImageData(sx, sy, sw, sh)` rasterized from what the canvas holds: putImageData pixels,
  * filled rectangles and image blits. A path, stroke or text draw refuses.

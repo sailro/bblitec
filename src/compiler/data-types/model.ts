@@ -147,6 +147,8 @@ interface DataKinds {
     url: { kind: "url" };
     /** A decoded ImageBitmap. */
     "image-bitmap": { kind: "image-bitmap" };
+    /** An OffscreenCanvas's 2D context, held as its canvas (`bblite/pal_canvas.hpp`). */
+    "offscreen-canvas-2d": { kind: "offscreen-canvas-2d" };
     /** A DOMRect an element's `getBoundingClientRect` measured (`dom-rects.ts`). */
     "dom-rect": { kind: "dom-rect" };
     gpu: { kind: "gpu" };

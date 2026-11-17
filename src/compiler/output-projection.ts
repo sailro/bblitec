@@ -50,6 +50,7 @@ export const featureSources: Record<Feature, string[]> = {
     "platform:media-stream": [],
     "image:runtime-decode": [],
     "image:packaged-bytes": [],
+    "image:canvas-encode": ["src/pal_image.cpp"],
     "platform:window": ["src/pal_window_realm.cpp", "src/pal_media_query.cpp"],
     "backend:sdl": ["src/pal_sdl.cpp", "src/pal_image.cpp"],
     "engine:device-recovery": [],

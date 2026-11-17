@@ -603,6 +603,7 @@ export const scalarsSinks: DataSinkOperations<
     | "request-init"
     | "url"
     | "image-bitmap"
+    | "offscreen-canvas-2d"
     | "dom-rect"
     | "gpu-adapter"
     | "gpu"
@@ -731,6 +732,7 @@ export const scalarsSinks: DataSinkOperations<
     "request-init": opaqueSink,
     url: opaqueSink,
     "image-bitmap": opaqueSink,
+    "offscreen-canvas-2d": opaqueSink,
     "dom-rect": opaqueSink,
     gpu: sameKindSink("gpu"),
     file: opaqueSink,

@@ -4,7 +4,9 @@
 
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace bbl::pal {
@@ -26,6 +28,27 @@ inline std::mutex& image_decoder_mutex() {
 }
 
 DecodedImage decode_image(std::span<const std::uint8_t> bytes);
+
+/** An encoded image: the MIME type it is in and its bytes. */
+struct EncodedImage {
+    std::string type;
+    std::vector<std::uint8_t> bytes;
+};
+
+/**
+ * Straight-alpha RGBA rows serialized as a canvas serializes its bitmap: `image/jpeg` (ASCII
+ * case-insensitive) encodes at Chromium's quality, `quality` in [0, 1] times 100 rounded and
+ * 0.92 otherwise, with each pixel composited onto opaque black; any other type is PNG.
+ */
+EncodedImage encode_image(std::span<const std::uint8_t> rgba, int width, int height,
+                          const std::string& type, std::optional<double> quality);
+
+/**
+ * `canvas.toDataURL(type, quality)`: `encode_image`'s bytes as a base64 data: URL; a canvas
+ * without pixels gives "data:,".
+ */
+std::string encode_image_data_url(std::span<const std::uint8_t> rgba, int width, int height,
+                                  const std::string& type, std::optional<double> quality);
 
 inline DecodedImage decode_image(const js::ArrayBuffer& buffer) {
     return decode_image(std::span<const std::uint8_t>{buffer.data(), buffer.byte_length()});

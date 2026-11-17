@@ -3400,6 +3400,7 @@ export type Feature =
     | "platform:media-stream"
     | "image:runtime-decode"
     | "image:packaged-bytes"
+    | "image:canvas-encode"
     | "text:data"
     | "text:layout"
     | "text:weight"

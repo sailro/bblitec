@@ -1875,6 +1875,11 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "texture-2d.ts loadTexture2D of an object URL, whose bytes the program holds; generation links the codecs of the images its packaged files and their archive members hold (image-codecs.ts)",
         consumers: CMAKE,
     },
+    "image:canvas-encode": {
+        provenance:
+            "HTMLCanvasElement.toDataURL and OffscreenCanvas.convertToBlob over the composed canvas pixels, encoded by the PNG and JPEG codecs it links",
+        consumers: CMAKE,
+    },
     "platform:window": {
         provenance:
             "the Window document, layout observers and native presentation host, independent of application and worker execution",

@@ -153,6 +153,8 @@ Backing dimensions, scale, full clear, fillRect/strokeRect, bounded paths, putIm
 bounded fillText. A canvas kept in a record, container or class field, and a 2D context kept in a class field, keep
 their roles. Offscreen pixels are premultiplied RGBA; closed producers can bake `getImageData`. Partial clear,
 source-rect blits, general transforms/clipping and non-convex tessellation refuse.
+`toDataURL(type, quality)` encodes the pixels `getImageData` composes as PNG, or JPEG onto black at `quality` in
+[0, 1] (0.92 otherwise); other types give PNG, a literal `image/webp` refuses, and a path, stroke or text draw throws.
 
 ## CSS
 

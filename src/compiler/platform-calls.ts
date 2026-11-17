@@ -68,6 +68,11 @@ import {
     uiQuerySelectorCpp,
 } from "./ui-query-selectors.js";
 import { valueKindOf } from "./type-facts.js";
+import {
+    canvasEncodeQuality,
+    canvasEncodeType,
+    imageDataSource,
+} from "./image-bitmaps.js";
 import { receiverType } from "./dynamic-binding-storage.js";
 import { knownCondition } from "./values/model.js";
 
@@ -256,6 +261,33 @@ export class PlatformCalls {
                 undefinedDefaults: { focusVisible: true },
             },
         ).focusVisible;
+    }
+
+    /**
+     * `canvas.toDataURL(type, quality)`: the canvas's composed pixels as a
+     * PNG, or a JPEG at `quality` (`ui_canvas_to_data_url`).
+     */
+    private compileCanvasDataUrl(
+        element: Value,
+        call: ts.CallExpression,
+    ): Value {
+        this.context.expectArgumentCount(call, 0, 2);
+        const [typeArgument, qualityArgument] = call.arguments;
+        this.context.reachFeature("image:canvas-encode", call);
+        const type = canvasEncodeType(
+            this.context,
+            typeArgument,
+            "canvas.toDataURL",
+        );
+        const quality = canvasEncodeQuality(
+            this.context,
+            qualityArgument,
+            "canvas.toDataURL",
+        );
+        return {
+            kind: "string",
+            cpp: `bbl::ui_canvas_to_data_url(${this.context.requireEngine(element, call)}, ${element.cpp}, ${type}, ${quality})`,
+        };
     }
 
     /**
@@ -1735,6 +1767,12 @@ export class PlatformCalls {
                 uiCanvasContext: true,
             };
         }
+        if (
+            element?.uiCanvas &&
+            !element.uiCanvasContext &&
+            callee.name === "toDataURL"
+        )
+            return this.compileCanvasDataUrl(element, call);
         if (element?.uiCanvasContext) {
             const engine = this.context.requireEngine(element, call);
             const number = (index: number): string =>
@@ -1872,50 +1910,18 @@ export class PlatformCalls {
                 }
                 case "putImageData": {
                     this.context.expectArgumentCount(call, 3, 3);
-                    const imageData = this.context.unwrap(argumentAt(call, 0));
-                    if (
-                        !ts.isNewExpression(imageData) ||
-                        this.context.libraryGlobal(imageData.expression) !==
-                            "ImageData" ||
-                        (imageData.arguments?.length ?? 0) !== 3
-                    ) {
-                        this.context.fail(
-                            argumentAt(call, 0),
-                            "Retained Canvas2D putImageData requires new ImageData(rgba, width, height).",
-                        );
-                    }
-                    let pixelsExpression = imageData.arguments![0]!;
-                    const pixelsConstructor =
-                        this.context.unwrap(pixelsExpression);
-                    if (
-                        ts.isNewExpression(pixelsConstructor) &&
-                        ts.isIdentifier(pixelsConstructor.expression) &&
-                        (pixelsConstructor.expression.text ===
-                            "Uint8ClampedArray" ||
-                            pixelsConstructor.expression.text ===
-                                "Uint8Array") &&
-                        pixelsConstructor.arguments?.length === 1
-                    ) {
-                        pixelsExpression = argumentAt(pixelsConstructor, 0);
-                    }
-                    const pixels = this.context.compileValue(pixelsExpression);
-                    if (
-                        pixels.kind !== "data" ||
-                        (pixels.dataType?.kind !== "u8array" &&
-                            pixels.dataType?.kind !== "u8clampedarray")
-                    ) {
-                        this.context.fail(
-                            pixelsExpression,
-                            "Retained Canvas2D ImageData pixels must lower to a Uint8Array or a Uint8ClampedArray.",
-                        );
-                    }
+                    const image = imageDataSource(
+                        this.context,
+                        argumentAt(call, 0),
+                        "Retained Canvas2D putImageData",
+                    );
                     return {
                         kind: "void",
                         cpp:
                             `bbl::ui_canvas_put_image_data(${engine}, ${element.cpp}, ` +
-                            `${pixels.cpp}, ` +
-                            `${this.context.compileNumber(imageData.arguments![1]!, "double")}, ` +
-                            `${this.context.compileNumber(imageData.arguments![2]!, "double")}, ` +
+                            `${image.pixels.cpp}, ` +
+                            `${this.context.compileNumber(image.width, "double")}, ` +
+                            `${this.context.compileNumber(image.height, "double")}, ` +
                             `${number(1)}, ${number(2)})`,
                     };
                 }

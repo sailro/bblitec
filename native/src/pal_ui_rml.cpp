@@ -6,6 +6,7 @@
 #include <bblite/features/workers.hpp>
 
 #include <bblite/pal_ui.hpp>
+#include <bblite/pal_canvas_pixels.hpp>
 #include <bblite/ui_selector.hpp>
 #include <bblite/pal_dom_events.hpp>
 #if BBLITE_HAS_BROWSER_FILE
@@ -49,7 +50,6 @@
 #include "pal_ui_filter.hpp"
 #include "pal_ui_snapshot.hpp"
 #include "pal_ui_opacity.hpp"
-#include "pal_ui_canvas.hpp"
 #include "pal_ui_defaults.hpp"
 #include "pal_ui_length_math.hpp"
 #include "pal_ui_form.hpp"
@@ -3056,14 +3056,6 @@ double cross(UiElementRecord::CanvasPoint a, UiElementRecord::CanvasPoint b) {
     return a.x * b.y - a.y * b.x;
 }
 
-void reset_canvas(UiElementRecord::CanvasState& canvas, double width, double height) {
-    const std::uint64_t next_pixel_revision = canvas.pixel_revision + 1;
-    canvas = {};
-    canvas.width = std::max(0.0, std::floor(width));
-    canvas.height = std::max(0.0, std::floor(height));
-    canvas.pixel_revision = next_pixel_revision;
-}
-
 void mark_canvas_changed(Engine& engine, UiElementRecord::CanvasState& canvas) {
     canvas.draw_revision = ++engine.ui_canvas_revision;
 }
@@ -3082,20 +3074,20 @@ UiElementHandle ui_primary_canvas(Engine& engine, std::string_view id) {
     ui_set_style_property(engine, canvas, "top", "0px");
     ui_set_style_property(engine, canvas, "width", "100%");
     ui_set_style_property(engine, canvas, "height", "100%");
-    reset_canvas(ui_canvas(engine, canvas), engine.options.width, engine.options.height);
+    pal::reset_canvas(ui_canvas(engine, canvas), engine.options.width, engine.options.height);
     ui_append_to_root(engine, canvas);
     return canvas;
 }
 
 void ui_canvas_set_width(Engine& engine, UiElementHandle element, double width) {
     auto& canvas = ui_canvas(engine, element);
-    reset_canvas(canvas, width, canvas.height);
+    pal::reset_canvas(canvas, width, canvas.height);
     mark_canvas_changed(engine, canvas);
 }
 
 void ui_canvas_set_height(Engine& engine, UiElementHandle element, double height) {
     auto& canvas = ui_canvas(engine, element);
-    reset_canvas(canvas, canvas.width, height);
+    pal::reset_canvas(canvas, canvas.width, height);
     mark_canvas_changed(engine, canvas);
 }
 
@@ -3410,21 +3402,8 @@ canvas_image_bitmap(Engine& engine, const std::string& source) {
     auto& cached = engine.ui_canvas_bitmaps[path];
     if (auto bitmap = cached.lock())
         return bitmap;
-    const auto image = pal::decode_image(js::ArrayBuffer(pal::read_binary_file(asset_path(path))));
-    auto bitmap = std::make_shared<UiElementRecord::CanvasBitmap>();
-    bitmap->width = image.width;
-    bitmap->height = image.height;
-    bitmap->pixels.resize(image.rgba.size());
-    for (std::size_t index = 0; index + 3 < image.rgba.size(); index += 4) {
-        const unsigned alpha = image.rgba[index + 3];
-        for (std::size_t channel = 0; channel < 3; ++channel) {
-            // Rounded, as Skia premultiplies decoded images.
-            const unsigned product = image.rgba[index + channel] * alpha + 128;
-            bitmap->pixels[index + channel] =
-                static_cast<std::uint8_t>((product + (product >> 8)) >> 8);
-        }
-        bitmap->pixels[index + 3] = static_cast<std::uint8_t>(alpha);
-    }
+    auto bitmap = pal::canvas_bitmap(
+        pal::decode_image(js::ArrayBuffer(pal::read_binary_file(asset_path(path)))));
     cached = bitmap;
     return bitmap;
 #else
@@ -3435,19 +3414,11 @@ canvas_image_bitmap(Engine& engine, const std::string& source) {
 }
 #endif
 
-/** A drawImage source: a canvas, or an image's pixels captured now. */
-struct CanvasImageSource {
-    UiElementHandle canvas{};
-    std::shared_ptr<const UiElementRecord::CanvasBitmap> bitmap;
-    double width = 0.0;
-    double height = 0.0;
-};
-
 /** Nothing while an image is still loading; a broken image throws InvalidStateError. */
-std::optional<CanvasImageSource> canvas_image_source(Engine& engine, UiElementHandle source) {
+std::optional<pal::CanvasImageSource> canvas_image_source(Engine& engine, UiElementHandle source) {
     const auto& record = ui_element(engine, source);
     if (record.canvas)
-        return CanvasImageSource{source, nullptr, record.canvas->width, record.canvas->height};
+        return pal::CanvasImageSource{source, nullptr, record.canvas->width, record.canvas->height};
     if (record.tag != "img")
         throw std::runtime_error("Canvas2D drawImage requires an image or canvas source.");
 #if BBLITE_WORKERS
@@ -3462,60 +3433,18 @@ std::optional<CanvasImageSource> canvas_image_source(Engine& engine, UiElementHa
         request->bitmap = canvas_image_bitmap(engine, request->source);
     const double width = request->bitmap->width;
     const double height = request->bitmap->height;
-    return CanvasImageSource{{}, request->bitmap, width, height};
+    return pal::CanvasImageSource{{}, request->bitmap, width, height};
 #else
     throw std::runtime_error("Canvas2D image draws require an asynchronous realm.");
 #endif
 }
 
 void retain_canvas_image(Engine& engine, UiElementHandle destination,
-                         const CanvasImageSource& image, double sx, double sy, double sw, double sh,
-                         double dx, double dy, double dw, double dh) {
+                         const pal::CanvasImageSource& image, double sx, double sy, double sw,
+                         double sh, double dx, double dy, double dw, double dh) {
     auto& canvas = ui_canvas(engine, destination);
-    for (const double value : {sx, sy, sw, sh, dx, dy, dw, dh})
-        if (!std::isfinite(value))
-            return;
-    if (sw == 0.0 || sh == 0.0 || dw == 0.0 || dh == 0.0 || image.width <= 0.0 ||
-        image.height <= 0.0)
-        return;
-    // Both rectangles normalize, as in Chromium: a negative extent does not mirror.
-    const auto normalize = [](double& start, double& extent) {
-        if (extent < 0.0) {
-            start += extent;
-            extent = -extent;
-        }
-    };
-    normalize(sx, sw);
-    normalize(sy, sh);
-    normalize(dx, dw);
-    normalize(dy, dh);
-    // The source rectangle clips to the image, the destination in proportion.
-    const double left = std::max(sx, 0.0);
-    const double top = std::max(sy, 0.0);
-    const double right = std::min(sx + sw, image.width);
-    const double bottom = std::min(sy + sh, image.height);
-    if (right <= left || bottom <= top)
-        return;
-    const double x_scale = dw / sw;
-    const double y_scale = dh / sh;
-    dx += (left - sx) * x_scale;
-    dy += (top - sy) * y_scale;
-    dw = (right - left) * x_scale;
-    dh = (bottom - top) * y_scale;
-    UiElementRecord::CanvasDrawCommand draw;
-    draw.kind = UiElementRecord::CanvasDrawCommand::Kind::Blit;
-    draw.source = image.canvas;
-    draw.bitmap = image.bitmap;
-    draw.source_x = left;
-    draw.source_y = top;
-    draw.source_width = right - left;
-    draw.source_height = bottom - top;
-    // The destination rectangle under the current transform.
-    draw.points = {canvas_point(canvas, dx, dy), canvas_point(canvas, dx + dw, dy),
-                   canvas_point(canvas, dx + dw, dy + dh), canvas_point(canvas, dx, dy + dh)};
-    draw.nearest_sampling = !canvas.drawing.image_smoothing_enabled;
-    canvas.draws.push_back(std::move(draw));
-    mark_canvas_changed(engine, canvas);
+    if (pal::retain_canvas_image(canvas, image, sx, sy, sw, sh, dx, dy, dw, dh))
+        mark_canvas_changed(engine, canvas);
 }
 
 } // namespace
@@ -3543,192 +3472,25 @@ void ui_canvas_draw_image(Engine& engine, UiElementHandle destination, UiElement
 
 UiCanvasImageData ui_canvas_get_image_data(Engine& engine, UiElementHandle element, double sx,
                                            double sy, double sw, double sh) {
+    return pal::compose_canvas_image_data(
+        ui_canvas(engine, element),
+        [&engine](UiElementHandle source) -> const UiElementRecord::CanvasState& {
+            return ui_canvas(engine, source);
+        },
+        sx, sy, sw, sh);
+}
+
+std::string ui_canvas_to_data_url(Engine& engine, UiElementHandle element,
+                                  std::optional<std::string> type, std::optional<double> quality) {
     const auto& canvas = ui_canvas(engine, element);
-    // The arguments are WebIDL longs: a non-finite one throws, the rest truncate.
-    for (const double value : {sx, sy, sw, sh})
-        if (!std::isfinite(value))
-            throw js::NamedError("TypeError", "Failed to execute 'getImageData' on "
-                                              "'CanvasRenderingContext2D': The provided value is "
-                                              "non-finite.");
-    auto x = static_cast<long long>(std::trunc(sx));
-    auto y = static_cast<long long>(std::trunc(sy));
-    auto width = static_cast<long long>(std::trunc(sw));
-    auto height = static_cast<long long>(std::trunc(sh));
+    const int width = std::max(0, static_cast<int>(std::floor(canvas.width)));
+    const int height = std::max(0, static_cast<int>(std::floor(canvas.height)));
     if (width == 0 || height == 0)
-        throw js::make_dom_exception(std::string("Failed to execute 'getImageData' on "
-                                                 "'CanvasRenderingContext2D': The source ") +
-                                         (width == 0 ? "width" : "height") + " is 0.",
-                                     "IndexSizeError");
-    if (width < 0) {
-        x += width;
-        width = -width;
-    }
-    if (height < 0) {
-        y += height;
-        height = -height;
-    }
-    const auto columns = static_cast<std::size_t>(width);
-    const auto rows = static_cast<std::size_t>(height);
-    const auto backing_width = static_cast<long long>(std::floor(canvas.width));
-    const auto backing_height = static_cast<long long>(std::floor(canvas.height));
-    // Premultiplied RGBA in [0, 1], stored as 8-bit after every draw as a canvas bitmap is.
-    std::vector<float> pixels(columns * rows * 4, 0.0f);
-    const auto at = [&](long long px, long long py) -> float* {
-        if (px < x || py < y || px >= x + width || py >= y + height || px < 0 || py < 0 ||
-            px >= backing_width || py >= backing_height)
-            return nullptr;
-        return &pixels[(static_cast<std::size_t>(py - y) * columns +
-                        static_cast<std::size_t>(px - x)) *
-                       4];
-    };
-    const auto blend = [&](long long px, long long py, const std::array<float, 4>& source) {
-        float* pixel = at(px, py);
-        if (!pixel)
-            return;
-        const float keep = 1.0f - source[3];
-        for (std::size_t channel = 0; channel < 4; ++channel)
-            pixel[channel] =
-                std::round(std::clamp(source[channel] + pixel[channel] * keep, 0.0f, 1.0f) *
-                           255.0f) /
-                255.0f;
-    };
-    if (!canvas.pixels.empty())
-        for (long long py = std::max(y, 0LL); py < std::min(y + height, backing_height); ++py)
-            for (long long px = std::max(x, 0LL); px < std::min(x + width, backing_width); ++px) {
-                const std::size_t offset =
-                    (static_cast<std::size_t>(py) * static_cast<std::size_t>(backing_width) +
-                     static_cast<std::size_t>(px)) *
-                    4;
-                if (offset + 3 >= canvas.pixels.size())
-                    continue;
-                float* pixel = at(px, py);
-                for (std::size_t channel = 0; channel < 4; ++channel)
-                    pixel[channel] = canvas.pixels[offset + channel] / 255.0f;
-            }
-    using Kind = UiElementRecord::CanvasDrawCommand::Kind;
-    for (const auto& draw : canvas.draws) {
-        if (draw.kind == Kind::FillRect) {
-            const auto color = pal::canvas_color(draw.color);
-            const std::array<float, 4> premultiplied{color.red / 255.0f, color.green / 255.0f,
-                                                     color.blue / 255.0f, color.alpha / 255.0f};
-            const auto xs = pal::canvas_coverage_bands(draw.destination_x,
-                                                       draw.destination_x + draw.destination_width);
-            const auto ys = pal::canvas_coverage_bands(
-                draw.destination_y, draw.destination_y + draw.destination_height);
-            for (const auto& band_y : ys)
-                for (const auto& band_x : xs) {
-                    const auto coverage = static_cast<float>(band_x.coverage * band_y.coverage);
-                    if (coverage <= 0.0f)
-                        continue;
-                    std::array<float, 4> source{};
-                    for (std::size_t channel = 0; channel < 4; ++channel)
-                        source[channel] = premultiplied[channel] * coverage;
-                    for (auto py = static_cast<long long>(band_y.start); py < band_y.end; ++py)
-                        for (auto px = static_cast<long long>(band_x.start); px < band_x.end; ++px)
-                            blend(px, py, source);
-                }
-            continue;
-        }
-        if (draw.kind != Kind::Blit || draw.points.size() != 4)
-            throw std::runtime_error(
-                "Reading back a Canvas2D path, stroke or text draw is not represented.");
-        // The source's premultiplied pixels: an image bitmap, or a pixel-only canvas.
-        int source_width = 0;
-        int source_height = 0;
-        const std::vector<std::uint8_t>* texels = nullptr;
-        if (draw.bitmap) {
-            source_width = draw.bitmap->width;
-            source_height = draw.bitmap->height;
-            texels = &draw.bitmap->pixels;
-        } else {
-            const auto& source = ui_canvas(engine, draw.source);
-            if (!source.draws.empty())
-                throw std::runtime_error(
-                    "Reading back a blit of a canvas with retained draws is not represented.");
-            source_width = static_cast<int>(std::floor(source.width));
-            source_height = static_cast<int>(std::floor(source.height));
-            texels = &source.pixels;
-        }
-        if (source_width <= 0 || source_height <= 0 ||
-            texels->size() < static_cast<std::size_t>(source_width) * source_height * 4)
-            continue;
-        const auto texel = [&](int tx, int ty) {
-            tx = std::clamp(tx, 0, source_width - 1);
-            ty = std::clamp(ty, 0, source_height - 1);
-            const std::size_t offset =
-                (static_cast<std::size_t>(ty) * source_width + static_cast<std::size_t>(tx)) * 4;
-            return std::array<float, 4>{(*texels)[offset] / 255.0f, (*texels)[offset + 1] / 255.0f,
-                                        (*texels)[offset + 2] / 255.0f,
-                                        (*texels)[offset + 3] / 255.0f};
-        };
-        // The destination quad maps the unit square: origin, u edge, v edge.
-        const auto origin = draw.points[0];
-        const double ux = draw.points[1].x - origin.x;
-        const double uy = draw.points[1].y - origin.y;
-        const double vx = draw.points[3].x - origin.x;
-        const double vy = draw.points[3].y - origin.y;
-        const double determinant = ux * vy - uy * vx;
-        if (std::abs(determinant) < 1e-12)
-            continue;
-        double left = origin.x;
-        double top = origin.y;
-        double right = origin.x;
-        double bottom = origin.y;
-        for (const auto& point : draw.points) {
-            left = std::min(left, point.x);
-            top = std::min(top, point.y);
-            right = std::max(right, point.x);
-            bottom = std::max(bottom, point.y);
-        }
-        // Pixels whose centres the quad covers, as the UI compositor rasterizes it.
-        for (auto py = static_cast<long long>(std::floor(top)); py < std::ceil(bottom); ++py)
-            for (auto px = static_cast<long long>(std::floor(left)); px < std::ceil(right); ++px) {
-                if (!at(px, py))
-                    continue;
-                const double dx = px + 0.5 - origin.x;
-                const double dy = py + 0.5 - origin.y;
-                const double u = (dx * vy - dy * vx) / determinant;
-                const double v = (ux * dy - uy * dx) / determinant;
-                if (u < 0.0 || u >= 1.0 || v < 0.0 || v >= 1.0)
-                    continue;
-                const double s = draw.source_x + u * draw.source_width;
-                const double t = draw.source_y + v * draw.source_height;
-                if (draw.nearest_sampling) {
-                    blend(px, py,
-                          texel(static_cast<int>(std::floor(s)), static_cast<int>(std::floor(t))));
-                    continue;
-                }
-                // Bilinear between texel centres, clamped at the texture edge.
-                const double fs = s - 0.5;
-                const double ft = t - 0.5;
-                const auto s0 = static_cast<int>(std::floor(fs));
-                const auto t0 = static_cast<int>(std::floor(ft));
-                const auto ws = static_cast<float>(fs - s0);
-                const auto wt = static_cast<float>(ft - t0);
-                const auto a = texel(s0, t0);
-                const auto b = texel(s0 + 1, t0);
-                const auto c = texel(s0, t0 + 1);
-                const auto d = texel(s0 + 1, t0 + 1);
-                std::array<float, 4> sample{};
-                for (std::size_t channel = 0; channel < 4; ++channel)
-                    sample[channel] = (a[channel] * (1 - ws) + b[channel] * ws) * (1 - wt) +
-                                      (c[channel] * (1 - ws) + d[channel] * ws) * wt;
-                blend(px, py, sample);
-            }
-    }
-    // ImageData holds unpremultiplied bytes.
-    std::vector<std::uint8_t> bytes(pixels.size(), 0);
-    for (std::size_t offset = 0; offset < pixels.size(); offset += 4) {
-        const float alpha = pixels[offset + 3];
-        if (alpha <= 0.0f)
-            continue;
-        for (std::size_t channel = 0; channel < 3; ++channel)
-            bytes[offset + channel] = static_cast<std::uint8_t>(
-                std::lround(std::clamp(pixels[offset + channel] / alpha, 0.0f, 1.0f) * 255.0f));
-        bytes[offset + 3] = static_cast<std::uint8_t>(std::lround(alpha * 255.0f));
-    }
-    return {static_cast<double>(width), static_cast<double>(height),
-            js::U8Array(js::ArrayBuffer(std::move(bytes)))};
+        return pal::encode_image_data_url({}, width, height, "", quality);
+    // The pixels getImageData composes; a path, stroke or text draw throws there.
+    const UiCanvasImageData image = ui_canvas_get_image_data(engine, element, 0, 0, width, height);
+    return pal::encode_image_data_url(std::span(image.data.data(), image.data.size()), width,
+                                      height, type.value_or("image/png"), quality);
 }
 
 void ui_canvas_set_font(Engine& engine, UiElementHandle element, std::string value) {
@@ -4984,45 +4746,8 @@ std::vector<GradientTextColor> gradient_text_colors(std::string_view palette) {
 }
 
 Rml::ColourbPremultiplied canvas_color(std::string_view source) {
-    double red = 0.0;
-    double green = 0.0;
-    double blue = 0.0;
-    double alpha = 1.0;
-    const std::string value(source);
-    if (value.size() == 4 && value[0] == '#') {
-        auto nibble = [](char digit) {
-            if (digit >= '0' && digit <= '9')
-                return digit - '0';
-            if (digit >= 'a' && digit <= 'f')
-                return digit - 'a' + 10;
-            if (digit >= 'A' && digit <= 'F')
-                return digit - 'A' + 10;
-            return 0;
-        };
-        red = nibble(value[1]) * 17;
-        green = nibble(value[2]) * 17;
-        blue = nibble(value[3]) * 17;
-    } else if (value.size() == 7 && value[0] == '#') {
-        unsigned parsed_red = 0;
-        unsigned parsed_green = 0;
-        unsigned parsed_blue = 0;
-        if (std::sscanf(value.c_str(), "#%02x%02x%02x", &parsed_red, &parsed_green, &parsed_blue) !=
-            3) {
-            return {};
-        }
-        red = parsed_red;
-        green = parsed_green;
-        blue = parsed_blue;
-    } else if (std::sscanf(value.c_str(), "rgba(%lf,%lf,%lf,%lf)", &red, &green, &blue, &alpha) !=
-               4) {
-        return {};
-    }
-    alpha = std::clamp(alpha, 0.0, 1.0);
-    const auto channel = [alpha](double component) {
-        return static_cast<Rml::byte>(std::clamp(std::lround(component * alpha), 0l, 255l));
-    };
-    return {channel(red), channel(green), channel(blue),
-            static_cast<Rml::byte>(std::lround(alpha * 255.0))};
+    const CanvasRgba color = canvas_rgba(source);
+    return {color.red, color.green, color.blue, color.alpha};
 }
 
 struct CanvasMesh {

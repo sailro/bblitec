@@ -1,7 +1,8 @@
 import { hostAccessorValue } from "./host-globals.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
-import { argumentAt, unwrapExpression } from "./syntax.js";
+import { argumentAt, propertyKey, unwrapExpression } from "./syntax.js";
+import { canvasEncodeQuality, canvasEncodeType } from "./image-bitmaps.js";
 import {
     declaredInDefaultLibrary,
     libraryName,
@@ -24,6 +25,8 @@ export interface CanvasContext
         Pick<
             LoweringServices,
             | "checker"
+            | "compileStringLiteral"
+            | "expectArgumentCount"
             | "isCanvasElement"
             | "reachFeature"
             | "callbackIdentity"
@@ -494,6 +497,17 @@ export function compileCanvasValue(
                 node,
                 (owner) => observerCall(owner, member),
             );
+        // The blob promise is the call's value; an `await` the unwrap passed
+        // settles it through the async lowering.
+        const offscreen =
+            member?.name === "getContext" ||
+            (member?.name === "convertToBlob" &&
+                !ts.isAwaitExpression(unwrapExpression(expression)))
+                ? canvasOwner(context, member.expression)
+                : undefined;
+        if (offscreen && member?.name === "getContext")
+            return offscreenCanvasContext(context, node, offscreen);
+        if (offscreen) return offscreenCanvasBlob(context, node, offscreen);
         if (
             member !== undefined &&
             member.name === "transferControlToOffscreen" &&
@@ -571,6 +585,107 @@ export function compileCanvasValue(
             };
     }
     return undefined;
+}
+
+/**
+ * `canvas.getContext("2d")` on an OffscreenCanvas: its 2D context, null while
+ * a WebGPU context owns the canvas (`bbl::pal::offscreen_canvas_context_2d`).
+ * A WebGPU context is the engine's, and context attributes are not lowered.
+ */
+function offscreenCanvasContext(
+    context: CanvasContext,
+    call: ts.CallExpression,
+    canvas: Value,
+): Value {
+    context.expectArgumentCount(call, 1, 2);
+    if (call.arguments.length === 2)
+        return context.fail(
+            argumentAt(call, 1),
+            "OffscreenCanvas.getContext context attributes are not lowered.",
+        );
+    if (context.compileStringLiteral(argumentAt(call, 0)) !== "2d")
+        return context.fail(
+            argumentAt(call, 0),
+            "OffscreenCanvas.getContext lowers the '2d' context; a WebGPU context is the engine's.",
+        );
+    const type = context.dataTypes.fromTsType(
+        context.checker.getTypeAtLocation(call),
+        call,
+    );
+    if (type?.kind !== "optional" || type.inner.kind !== "offscreen-canvas-2d")
+        return context.fail(
+            call,
+            "OffscreenCanvas.getContext('2d') requires its declared context type.",
+        );
+    return {
+        ...context.dataLowerer.leafValue(
+            `bbl::pal::offscreen_canvas_context_2d(${canvas.cpp})`,
+            type,
+        ),
+        impure: true,
+    };
+}
+
+/**
+ * `canvas.convertToBlob(options)` on an OffscreenCanvas: its pixels encoded
+ * on the native workers, resolving to a Blob
+ * (`bbl::pal::offscreen_canvas_convert_to_blob`). The options are an object
+ * literal of `type` and `quality`, read in source order.
+ */
+function offscreenCanvasBlob(
+    context: CanvasContext,
+    call: ts.CallExpression,
+    canvas: Value,
+): Value {
+    context.expectArgumentCount(call, 0, 1);
+    const receiver = context.bindings.pinValueToTemporary(
+        canvas,
+        "blob_canvas",
+    );
+    let type = "std::nullopt";
+    let quality = "std::nullopt";
+    const options = call.arguments[0] && context.unwrap(call.arguments[0]);
+    if (options && !ts.isObjectLiteralExpression(options))
+        return context.fail(
+            options,
+            "OffscreenCanvas.convertToBlob options require an object literal.",
+        );
+    for (const property of options?.properties ?? []) {
+        const name = ts.isPropertyAssignment(property)
+            ? propertyKey(property.name)
+            : undefined;
+        if (!ts.isPropertyAssignment(property) || !name)
+            return context.fail(
+                property,
+                "OffscreenCanvas.convertToBlob options require named members.",
+            );
+        if (name === "type")
+            type = canvasEncodeType(
+                context,
+                property.initializer,
+                "OffscreenCanvas.convertToBlob",
+            );
+        else if (name === "quality")
+            quality = canvasEncodeQuality(
+                context,
+                property.initializer,
+                "OffscreenCanvas.convertToBlob",
+            );
+        else
+            return context.fail(
+                property,
+                `OffscreenCanvas.convertToBlob option '${name}' is not lowered.`,
+            );
+    }
+    context.reachFeature("image:canvas-encode", call);
+    context.reachJsData();
+    return {
+        ...context.dataLowerer.leafValue(
+            `bbl::pal::offscreen_canvas_convert_to_blob(${receiver.cpp}, ${type}, ${quality})`,
+            { kind: "promise", result: { kind: "blob" } },
+        ),
+        impure: true,
+    };
 }
 
 export function emitCanvasAssignment(

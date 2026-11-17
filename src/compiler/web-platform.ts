@@ -19,6 +19,7 @@ import type { DataType } from "./data-types.js";
 import {
     compileImageBitmapCall,
     compileImageBitmapMethod,
+    compileOffscreenContextMethod,
     imageBitmapProperty,
 } from "./image-bitmaps.js";
 import {
@@ -65,6 +66,7 @@ const METHOD_OWNERS: ReadonlyMap<DataType["kind"], MethodLowerer> = new Map([
     ["byte-stream-controller", compileBodyStreamMethod],
     ["url", compileUrlMethod],
     ["image-bitmap", compileImageBitmapMethod],
+    ["offscreen-canvas-2d", compileOffscreenContextMethod],
     ["idle-deadline", compileIdleDeadlineMethod],
     ["uninhabited-object", compileUninhabitedMethod],
     ...INDEXED_DB_KINDS.map((kind) => [kind, compileIndexedDbMethod] as const),

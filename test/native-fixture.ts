@@ -770,7 +770,8 @@ export function runRmlUiFixture(
         "native/src",
         ...(options.includeDirectories ?? []).flatMap((path) => ["/I", path]),
         `test/fixtures/${name}-check.cpp`,
-        ...(options.imageDecoder ? ["native/src/pal_image.cpp"] : []),
+        // The UI unit links the image unit, as `ui:rml` does.
+        "native/src/pal_image.cpp",
         ...shared,
         "/link",
         join(rml, "lib/rmlui.lib"),

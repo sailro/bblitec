@@ -168,6 +168,12 @@ cancel })` is a program source; `new Response(stream, { status, statusText, head
   key ranges, cursor directions, `versionchange`/`blocked` events and event listeners refuse.
 - `createImageBitmap(blob, options)`: static options through `pal::image_bitmap_options`; WebP via libwebp. Resize/crop
   refuse; orientation metadata is not applied.
+- `createImageBitmap(new ImageData(rgba, w, h)[, sx, sy, sw, sh][, options])` (application realm): the crop over
+  transparent black, resized (`pixelated` nearest, other qualities bilinear) and `flipY`-flipped from the bytes at the
+  call; it resolves in a later task.
+- `OffscreenCanvas.getContext("2d")`, null under a WebGPU context: `drawImage` of an ImageBitmap only. `convertToBlob`
+  (`type`, `quality`) encodes its pixels on the native workers as `toDataURL` does ([UI](ui.md#canvas2d)). Other
+  members and context attributes refuse.
 - `setDracoBaseUrl`/`setKtx2DecoderUrl` must be generation-known and precede compressed loads. KTX1 selects a
   device-supported BC/ASTC candidate.
   `loadKtx2Texture2D` packages the pinned decoder's compressed mip chain for a known URL; each load selects its
