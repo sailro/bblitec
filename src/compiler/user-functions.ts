@@ -32,6 +32,7 @@ import {
     absenceOf,
     knownCondition,
     ownKeysKnown,
+    presenceFlagCpp,
     undefinedValue,
     valueDataType,
 } from "./values/model.js";
@@ -1937,9 +1938,10 @@ export class UserFunctionLowerer {
      * the call's arguments, captured at the return expression's evaluation,
      * before mutable storage erases them. Only primitives are copied, of the
      * record and of a current record one of its fields holds, and a field
-     * holding one is present; every read still uses the call's own
-     * result, held once. Unchanged where the body can return early or
-     * writes storage, its record has accessors, or the probe knows nothing.
+     * holding one is present, as is the result; every read still uses the
+     * call's own result, held once. Unchanged where the body can return
+     * early or writes storage, its record has accessors, or the probe knows
+     * nothing.
      */
     public withReturnedRecordFacts(
         context: UserFunctionContext,
@@ -2045,6 +2047,9 @@ export class UserFunctionLowerer {
                   "function_result",
                   ts.isExpression(call) ? call : undefined,
               );
+        // The body's one return is its literal, so the result holds an object.
+        if (presenceFlagCpp(held) !== undefined)
+            writable(held).optionalFoundCpp = "true";
         // A record a field holds knows the fields holding a primitive, each
         // present.
         const knownLeaves = (

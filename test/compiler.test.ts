@@ -6998,6 +6998,49 @@ void main();
     );
 });
 
+test("a native helper's returned record literal is an object an optional field holds", () => {
+    // `scaleOf` tests the optional `profile` its options hold: the record
+    // `profileOf()` returns is there. A helper that may return `undefined`
+    // leaves the test a run-time one.
+    const source = (helper: string): string =>
+        `import { createEngine, createSceneContext, createShaderMaterial, wgsl } from "@babylonjs/lite";
+interface Profile { readonly a: number }
+interface Opts { profile?: Profile | undefined }
+${helper}
+function scaleOf(opts: Opts): string { const p = opts.profile; return p ? p.a.toFixed(1) : "1.0"; }
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    const profile = profileOf();
+    const scale = scaleOf({ profile });
+    const vertex = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * \${scale}, 1.0); return out; }\`;
+    createShaderMaterial({ name: "m", vertexSource: wgsl\`\${vertex}\`, fragmentSource: wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+void main();
+`;
+    assert.deepEqual(
+        compileSource(
+            source(
+                "function profileOf(): Profile { return Object.freeze({ a: 0.4 }); }",
+            ),
+        ).manifest.customShaderPrograms.map(
+            (program) =>
+                /position \* ([0-9.]+)/.exec(program.vertexSource)?.[1] ?? "",
+        ),
+        ["0.4"],
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                source(
+                    "function profileOf(): Profile | undefined { return Math.random() > 2 ? undefined : Object.freeze({ a: 0.4 }); }",
+                ),
+            ),
+        /'vertex' is bound as data without a static string/,
+    );
+});
+
 test("a parameter's scalar no write in the program replaces keeps its value when another field is written", () => {
     // `opts.count` is written, so the parameter is mutated; the flags no write
     // in the program reaches keep their values, and the nine compose one program.
