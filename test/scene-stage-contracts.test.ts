@@ -23,6 +23,7 @@ test("scene attachments preserve MSAA and sprite contexts retain target, load an
     writeFileSync(
         join(output, "sdl-page-viewport.hpp"),
         [
+            cppFunction(sdlShared, "inline void set_pass_scissor("),
             cppFunction(sdlShared, "inline void set_pass_viewport("),
             cppFunction(
                 sdlShared,
