@@ -1266,6 +1266,70 @@ test("returns and labeled exits retain an explicit resource specialization bound
     );
 });
 
+// An input-driven menu: each pass awaits a choice and either returns or
+// rebuilds a world through a separately compiled async function.
+const menuHelpers = `
+        const answers = ["load", "load", "continue"];
+        let asked = 0;
+        async function pick(): Promise<string> {
+            await Promise.resolve();
+            return answers[asked++ % answers.length]!;
+        }
+        async function rebuild(engine: EngineContext, scene: SceneContext): Promise<boolean> {
+            await Promise.resolve();
+            addToScene(scene, createBox(engine));
+            return asked > 2;
+        }
+`;
+
+test("a loop whose passes generation cannot count keeps its returns and constructs at run time", () => {
+    // Nothing at generation counts the passes: the loop runs at run time,
+    // each construction it reaches a run-time call, and returns leave it.
+    const result = compileSource(
+        scene(
+            `
+        const openMenu = async (): Promise<void> => {
+            for (;;) {
+                const choice = await pick();
+                if (choice === "continue") return;
+                if (await rebuild(engine, scene)) return;
+                addToScene(scene, createPlane(engine));
+            }
+        };
+        await openMenu();
+    `,
+            menuHelpers,
+        ),
+    );
+    assert.match(
+        result.cpp,
+        /for \(; \(bbl::pal::EventLoop::current\(\)\.checkpoint\(\), true\); \) \{/,
+    );
+    assert.equal(result.cpp.match(/bbl::create_box\(/g)?.length, 1);
+    assert.equal(result.cpp.match(/bbl::create_plane\(/g)?.length, 1);
+});
+
+test("a counted resource loop awaiting each pass still refuses a return", () => {
+    // Three passes unroll, each composing its own box: a return that ends
+    // the expansion early changes how many there are.
+    assert.throws(
+        () =>
+            compileSource(
+                scene(
+                    `
+        for (let i = 0; i < 3; i++) {
+            const choice = await pick();
+            if (choice === "continue") return;
+            addToScene(scene, createBox(engine));
+        }
+    `,
+                    menuHelpers,
+                ),
+            ),
+        /return from a resource loop changes its composition count/,
+    );
+});
+
 test("runtime-dependent helper exits before glTF loads profile the loads", () => {
     // A load the runtime return skips moves no other ordinal: each loaded
     // document announces its own rows.

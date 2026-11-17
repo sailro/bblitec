@@ -2656,31 +2656,6 @@ export class StatementLowerer {
                 statement.statement,
                 new EmissionSet([indexSymbol]),
             );
-        if (needsSpecialization) {
-            forEachAnalysisNode(
-                statement.statement,
-                (node) => {
-                    if (ts.isReturnStatement(node)) {
-                        context.fail(
-                            node,
-                            "A return from a resource loop changes its composition count; " +
-                                "move the return outside the construction loop.",
-                        );
-                    }
-                    if (
-                        (ts.isBreakStatement(node) ||
-                            ts.isContinueStatement(node)) &&
-                        node.label
-                    ) {
-                        context.fail(
-                            node,
-                            "A labeled resource-loop exit cannot preserve static composition order.",
-                        );
-                    }
-                },
-                { functions: "skip" },
-            );
-        }
         if (
             (!this.bindsEnclosingLoop(statement.statement) ||
                 needsSpecialization ||
@@ -3121,6 +3096,37 @@ export class StatementLowerer {
                 "Static index-loop bodies cannot mutate the loop index.",
             );
         }
+        // Each unrolled pass composes its own resources: an exit that ends
+        // the expansion early would change how many there are. A loop whose
+        // passes cannot be counted at generation runs at run time instead,
+        // its constructions with it, and keeps its exits.
+        if (
+            reachesResource &&
+            context.requiresStaticDataIteration(statement.statement)
+        )
+            forEachAnalysisNode(
+                statement.statement,
+                (node) => {
+                    if (ts.isReturnStatement(node)) {
+                        context.fail(
+                            node,
+                            "A return from a resource loop changes its composition count; " +
+                                "move the return outside the construction loop.",
+                        );
+                    }
+                    if (
+                        (ts.isBreakStatement(node) ||
+                            ts.isContinueStatement(node)) &&
+                        node.label
+                    ) {
+                        context.fail(
+                            node,
+                            "A labeled resource-loop exit cannot preserve static composition order.",
+                        );
+                    }
+                },
+                { functions: "skip" },
+            );
         this.emitUnrolledLoop(
             context,
             statement,
