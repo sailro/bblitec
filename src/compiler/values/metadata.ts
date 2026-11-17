@@ -166,6 +166,7 @@ const resourceMetadataFields = {
         "postProcessTask",
         "postProcessComposite",
         "renderTask",
+        "singleSampleTarget",
         "effectTask",
         "copyTask",
         "screenSpaceTask",

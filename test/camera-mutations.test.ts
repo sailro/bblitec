@@ -518,7 +518,7 @@ test("TAA refuses lost camera ownership and late construction while preserving o
                     `await registerScene(scene);await startEngine(engine);` +
                     taa,
             ),
-        /TAA task creation after frame execution/,
+        /TAA tasks must be constructed and attached before initial scene registration/,
     );
     assert.throws(
         () => compileSource(prefix + `await registerScene(scene);` + taa),

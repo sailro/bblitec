@@ -1113,6 +1113,9 @@ struct DawnState : DawnDevice {
     /** The pin's single-sample `BLIT_SHADER` and `DEPTH_GRAB_SHADER` passes. */
     DawnRenderPipeline task_grab_pipeline;
     DawnRenderPipeline task_depth_grab_pipeline;
+    /** Their multisampled arms, `BLIT_MSAA_SHADER` and `DEPTH_GRAB_MSAA_SHADER`. */
+    DawnRenderPipeline task_grab_msaa_pipeline;
+    DawnRenderPipeline task_depth_grab_msaa_pipeline;
 #endif
 #if BBLITE_DEPTH_RESOLVE_TASK
     /** `createDepthResolveTask`'s pipeline, one per target depth format. */

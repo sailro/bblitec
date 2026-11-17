@@ -3143,6 +3143,8 @@ export interface ValueFields {
     postProcessComposite?: PostProcessCompositeManifest;
     /** Proven scene-render task factory result, including its constant aliases. */
     renderTask?: true;
+    /** A render task whose target is proven single-sample. */
+    singleSampleTarget?: true;
     /** Proven `createEffectRenderTask` result. */
     effectTask?: true;
     /** Proven `createCopyToTextureTask` result. */
@@ -3762,6 +3764,7 @@ export type Feature =
     | "frame-graph:task-mesh-removal"
     | "frame-graph:task-mesh-refresh"
     | "frame-graph:render-task-transmission"
+    | "frame-graph:multisampled-task-transmission"
     | "frame-graph:depth-resolve"
     | "frame-graph:color-texture-identity"
     | "frame-graph:task-material-override"

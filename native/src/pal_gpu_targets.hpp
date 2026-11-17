@@ -140,7 +140,6 @@ inline std::uint32_t task_transmission_mip_count(const RenderTaskTransmission& s
 
 /** What a render task's colour pass is, as the plan below refuses what it cannot split. */
 struct TaskColorPassShape {
-    bool multisampled = false;
     bool swapchain = false;
     /** The temporal source arm, whose pass is encoded outside the task. */
     bool temporal = false;
@@ -164,11 +163,7 @@ public:
 #if BBLITE_RENDER_TASK_TRANSMISSION
         if (!task.transmission)
             return;
-        // The pin's multisampled arms (the averaging blit and the sample-0
-        // depth resolve) are not lowered, and a swapchain cannot be sampled.
-        if (shape.multisampled)
-            throw std::runtime_error(
-                "Render-task transmission of a multisampled target is not lowered.");
+        // A swapchain cannot be sampled.
         if (shape.swapchain)
             throw std::runtime_error("Render-task transmission cannot grab the swapchain target.");
         if (shape.temporal)

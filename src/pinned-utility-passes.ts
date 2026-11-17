@@ -135,8 +135,7 @@ export function pinnedTransmissionModules(): PinnedUtilityModule[] {
 
 /**
  * What a render task's own grab adds (`enableRenderTaskTransmission`): the
- * colour grab and the `grabDepth` snapshot in the pin's single-sample arms,
- * the only ones the backends execute (a multisampled task target refuses).
+ * colour grab and the `grabDepth` snapshot in the pin's single-sample arms.
  * The raw mode composes no image processing.
  */
 export function pinnedTaskTransmissionModules(): PinnedUtilityModule[] {
@@ -150,6 +149,25 @@ export function pinnedTaskTransmissionModules(): PinnedUtilityModule[] {
             "transmission-depth-grab-single",
             depthGrabModule,
             "DEPTH_GRAB_SHADER",
+        ),
+    ];
+}
+
+/**
+ * What a render task's grab of a multisampled target adds: the pin's
+ * averaging colour blit and its sample-0 depth snapshot.
+ */
+export function pinnedMultisampledTaskTransmissionModules(): PinnedUtilityModule[] {
+    return [
+        packagedShader(
+            "transmission-grab",
+            transmissionModule,
+            "BLIT_MSAA_SHADER",
+        ),
+        packagedShader(
+            "transmission-depth-grab",
+            depthGrabModule,
+            "DEPTH_GRAB_MSAA_SHADER",
         ),
     ];
 }

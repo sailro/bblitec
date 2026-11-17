@@ -2182,6 +2182,9 @@ public:
                 capture_texture = nullptr;
             }
 #if BBLITE_HAS_TAA
+            // Only a frame running a TAA task submits temporally; any other
+            // encodes as a build without TAA does.
+            const bool temporal = frame_has_temporal_task(engine, data_.active_registered_scenes);
             // Queue occurrences, preserving task aliases and cross-scene order.
             // No draw is encoded if a later logical hook throws.
             std::vector<std::variant<PreparedSdlScenePass, PreparedSdlPostProcessPass>>
@@ -3028,7 +3031,7 @@ public:
                         }
 #endif
 #if BBLITE_HAS_TAA
-                        if (task.kind != FrameTaskKind::render &&
+                        if (temporal && task.kind != FrameTaskKind::render &&
                             task.kind != FrameTaskKind::post_process) {
                             throw std::runtime_error(
                                 "Temporal submission requires a prepared frame-task encoding adapter.");
@@ -3040,21 +3043,25 @@ public:
                             GpuRenderTarget& target = pal::resolve_gpu_target(
                                 engine, state.render_targets, task.render.target, target_user);
 #if BBLITE_HAS_TAA
-                            if (task.source_scene != graph_scene.state ||
-                                task.render.scene_stages ||
-                                task.render.shadow_generator.value != invalid_handle ||
-                                !target.color || target.color_format != state.frame_color_format) {
+                            if (temporal && (task.source_scene != graph_scene.state ||
+                                             task.render.scene_stages ||
+                                             task.render.shadow_generator.value != invalid_handle ||
+                                             !target.color ||
+                                             target.color_format != state.frame_color_format)) {
                                 throw std::runtime_error(
                                     "Temporal source requires a prepared Standard color pass in its owning scene.");
                             }
 #endif
                             CameraRecord* const task_camera = task_pass_camera(engine, task);
 #if BBLITE_HAS_TAA
-                            validate_temporal_source(engine, task, task_camera,
-                                                     handle_at(task_draw_lists, handle));
-                            prepare_temporal_scene_uniforms(
-                                task, task_camera, target.width, target.height, graph_extent.width,
-                                graph_extent.height, [](const float*, std::size_t) {});
+                            if (temporal) {
+                                validate_temporal_source(engine, task, task_camera,
+                                                         handle_at(task_draw_lists, handle));
+                                prepare_temporal_scene_uniforms(task, task_camera, target.width,
+                                                                target.height, graph_extent.width,
+                                                                graph_extent.height,
+                                                                [](const float*, std::size_t) {});
+                            }
 #endif
                             // `_writePassSceneUBO` folds the camera's own
                             // viewport into whichever extent the task was
@@ -3327,43 +3334,46 @@ public:
                                 task_depth_pointer = &task_depth;
                             }
 #if BBLITE_HAS_TAA
-                            // The temporal source's pass is encoded after its
-                            // post-process writes, outside this task.
-                            (void)pal::task_pass_breaks(task, {.temporal = true});
-                            timing_sequence.refuse("temporal anti-aliasing sources");
+                            if (temporal) {
+                                // The temporal source's pass is encoded after its
+                                // post-process writes, outside this task.
+                                (void)pal::task_pass_breaks(task, {.temporal = true});
+                                timing_sequence.refuse("temporal anti-aliasing sources");
 #if BBLITE_EXTERNAL_RENDERABLES
-                            refuse_external_renderables(graph_scene,
-                                                        "a temporal anti-aliasing source pass");
+                                refuse_external_renderables(graph_scene,
+                                                            "a temporal anti-aliasing source pass");
 #endif
-                            PreparedSdlScenePass prepared;
-                            prepared.target = target_info;
-                            if (task_depth_pointer)
-                                prepared.depth = *task_depth_pointer;
-                            if (const std::optional<PixelViewport> rectangle =
-                                    upstream::pass_camera_viewport(
-                                        task_camera, static_cast<double>(target.width),
-                                        static_cast<double>(target.height))) {
-                                prepared.viewport =
-                                    SDL_GPUViewport{static_cast<float>(rectangle->x),
-                                                    static_cast<float>(rectangle->y),
-                                                    static_cast<float>(rectangle->width),
-                                                    static_cast<float>(rectangle->height),
-                                                    0.0f,
-                                                    1.0f};
-                                prepared.scissor = SDL_Rect{rectangle->x, rectangle->y,
-                                                            rectangle->width, rectangle->height};
+                                PreparedSdlScenePass prepared;
+                                prepared.target = target_info;
+                                if (task_depth_pointer)
+                                    prepared.depth = *task_depth_pointer;
+                                if (const std::optional<PixelViewport> rectangle =
+                                        upstream::pass_camera_viewport(
+                                            task_camera, static_cast<double>(target.width),
+                                            static_cast<double>(target.height))) {
+                                    prepared.viewport =
+                                        SDL_GPUViewport{static_cast<float>(rectangle->x),
+                                                        static_cast<float>(rectangle->y),
+                                                        static_cast<float>(rectangle->width),
+                                                        static_cast<float>(rectangle->height),
+                                                        0.0f,
+                                                        1.0f};
+                                    prepared.scissor =
+                                        SDL_Rect{rectangle->x, rectangle->y, rectangle->width,
+                                                 rectangle->height};
+                                }
+                                upstream::sort_transparent_draws(
+                                    handle_at(task_draw_lists, handle).transparent, engine,
+                                    task_camera);
+                                draw_scene(graph_scene, graph_meshes, nullptr, {}, {}, task_matrix,
+                                           task_camera, task_pass_matrices, handle,
+                                           handle_at(task_draw_lists, handle), nullptr, nullptr,
+                                           nullptr, nullptr, nullptr, false, &prepared.draws,
+                                           task.scene_uniforms,
+                                           target_sample_count(state, target_record));
+                                temporal_passes.emplace_back(std::move(prepared));
+                                continue;
                             }
-                            upstream::sort_transparent_draws(
-                                handle_at(task_draw_lists, handle).transparent, engine,
-                                task_camera);
-                            draw_scene(graph_scene, graph_meshes, nullptr, {}, {}, task_matrix,
-                                       task_camera, task_pass_matrices, handle,
-                                       handle_at(task_draw_lists, handle), nullptr, nullptr,
-                                       nullptr, nullptr, nullptr, false, &prepared.draws,
-                                       task.scene_uniforms,
-                                       target_sample_count(state, target_record));
-                            temporal_passes.emplace_back(std::move(prepared));
-                            continue;
 #endif
 #if BBLITE_EXTERNAL_RENDERABLES
 #if BBLITE_PINNED_MATERIALS
@@ -3419,9 +3429,7 @@ public:
                             // execution) and its break: end the pass, grab, and
                             // resume loading what the first segment stored.
                             pal::TaskPassBreaks pass_breaks = pal::task_pass_breaks(
-                                task, {.multisampled = target_sample_count(state, target_record) !=
-                                                       SDL_GPU_SAMPLECOUNT_1,
-                                       .swapchain = target_record.swapchain,
+                                task, {.swapchain = target_record.swapchain,
                                        .billboard_stages =
                                            BBLITE_HAS_BILLBOARDS && task.render.scene_stages,
                                        .external_renderables = task_externals != nullptr});
@@ -3699,56 +3707,59 @@ public:
 #if BBLITE_HAS_POST_PROCESS
                         if (task.kind == FrameTaskKind::post_process) {
 #if BBLITE_HAS_TAA
-                            // Temporal builds encode every post-process pass
-                            // after the frame's final writes, outside its task.
-                            timing_sequence.refuse("post-process tasks of temporal frames");
-                            if (task.post_process.taa) {
-                                auto& taa = *task.post_process.taa;
-                                auto& source = engine.frame_tasks.at(
-                                    task.post_process.source_tasks.at(0).value);
-                                if (!source.source_scene || !source.scene_uniforms) {
-                                    throw std::runtime_error(
-                                        "Temporal task source has no retained scene UBO.");
+                            if (temporal) {
+                                // A temporal frame encodes every post-process pass
+                                // after the frame's final writes, outside its task.
+                                timing_sequence.refuse("post-process tasks of temporal frames");
+                                if (task.post_process.taa) {
+                                    auto& taa = *task.post_process.taa;
+                                    auto& source = engine.frame_tasks.at(
+                                        task.post_process.source_tasks.at(0).value);
+                                    if (!source.source_scene || !source.scene_uniforms) {
+                                        throw std::runtime_error(
+                                            "Temporal task source has no retained scene UBO.");
+                                    }
+                                    CameraRecord* camera = task_pass_camera(engine, source);
+                                    [[maybe_unused]] const double draws =
+                                        upstream::execute_taa_post_process(
+                                            taa, task.post_process.passes.at(0).params[0], camera,
+                                            [](CameraRecord* value) {
+                                                return upstream::scene_camera_change_key(*value);
+                                            },
+                                            [&](std::size_t child) {
+                                                write_sdl_gpu_post_process_uniforms(
+                                                    state, engine, handle, child, width, height);
+                                            },
+                                            [&](std::size_t child) -> std::optional<double> {
+                                                temporal_passes.emplace_back(
+                                                    prepare_post_process_pass(
+                                                        state, engine, handle, swapchain,
+                                                        swapchain_format, width, height, child,
+                                                        source_texture, target_texture, false));
+                                                return upstream::post_process_leaf_draw_count();
+                                            },
+                                            [&](TaaPostProcessState& value) {
+                                                const auto& blend = task.post_process.passes.at(0);
+                                                const auto extent = resolve_post_process_extent(
+                                                    pal::resolve_render_target(
+                                                        engine, blend.output_target, target_user),
+                                                    state.render_targets, blend, width, height);
+                                                advance_temporal_jitter(
+                                                    value, *source.scene_uniforms,
+                                                    extent.source_width, extent.source_height,
+                                                    [](std::size_t, const float*, std::size_t) {});
+                                            });
+                                    ++taa.execution_count;
+                                } else {
+                                    for (std::size_t child = 0;
+                                         child < task.post_process.passes.size(); ++child) {
+                                        temporal_passes.emplace_back(prepare_post_process_pass(
+                                            state, engine, handle, swapchain, swapchain_format,
+                                            width, height, child, source_texture, target_texture));
+                                    }
                                 }
-                                CameraRecord* camera = task_pass_camera(engine, source);
-                                [[maybe_unused]] const double draws =
-                                    upstream::execute_taa_post_process(
-                                        taa, task.post_process.passes.at(0).params[0], camera,
-                                        [](CameraRecord* value) {
-                                            return upstream::scene_camera_change_key(*value);
-                                        },
-                                        [&](std::size_t child) {
-                                            write_sdl_gpu_post_process_uniforms(
-                                                state, engine, handle, child, width, height);
-                                        },
-                                        [&](std::size_t child) -> std::optional<double> {
-                                            temporal_passes.emplace_back(prepare_post_process_pass(
-                                                state, engine, handle, swapchain, swapchain_format,
-                                                width, height, child, source_texture,
-                                                target_texture, false));
-                                            return upstream::post_process_leaf_draw_count();
-                                        },
-                                        [&](TaaPostProcessState& value) {
-                                            const auto& blend = task.post_process.passes.at(0);
-                                            const auto extent = resolve_post_process_extent(
-                                                pal::resolve_render_target(
-                                                    engine, blend.output_target, target_user),
-                                                state.render_targets, blend, width, height);
-                                            advance_temporal_jitter(
-                                                value, *source.scene_uniforms, extent.source_width,
-                                                extent.source_height,
-                                                [](std::size_t, const float*, std::size_t) {});
-                                        });
-                                ++taa.execution_count;
-                            } else {
-                                for (std::size_t child = 0; child < task.post_process.passes.size();
-                                     ++child) {
-                                    temporal_passes.emplace_back(prepare_post_process_pass(
-                                        state, engine, handle, swapchain, swapchain_format, width,
-                                        height, child, source_texture, target_texture));
-                                }
+                                continue;
                             }
-                            continue;
 #endif
                             // A composite records the chain its own factory
                             // built; a plain effect is the same loop over one.

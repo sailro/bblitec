@@ -1798,16 +1798,9 @@ export class SceneManifestRecorder {
         manifest: PostProcessCompositeManifest,
         site: ts.Node,
     ): void {
-        if (
-            manifest.intrinsic === "createTaaPostProcessTask" &&
-            (this.context.isInFrameCallback() ||
-                this.context.engineLifecycle.engineHasStarted())
-        ) {
-            this.context.fail(
-                site,
-                "TAA task creation after frame execution is not lowered; its source must retain scene UBO history from its first frame.",
-            );
-        }
+        // The factory gives its source the retained scene UBO a temporal
+        // frame packs (`create_persistent_scene_uniforms`), so a task created
+        // after frames ran starts from the block the source would pack.
         if (
             manifest.intrinsic === "createTaaPostProcessTask" &&
             this.context.hasRegisteredScene()

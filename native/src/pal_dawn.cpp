@@ -2078,8 +2078,12 @@ public:
         pass_scene = &scene;
         pass_meshes = &state.meshes;
 
-        if (scenes_run_frame_graphs(data_.active_registered_scenes)) {
-#if !BBLITE_HAS_TAA
+        // A temporal frame writes its tasks' blocks as their passes run.
+        if (scenes_run_frame_graphs(data_.active_registered_scenes)
+#if BBLITE_HAS_TAA
+            && !frame_has_temporal_task(engine, data_.active_registered_scenes)
+#endif
+        ) {
             for (std::size_t graph_layer = 0; graph_layer < data_.active_registered_scenes.size();
                  ++graph_layer) {
                 const Scene& graph_scene = *data_.active_registered_scenes[graph_layer];
@@ -2277,7 +2281,6 @@ public:
             }
             pass_scene = &scene;
             pass_meshes = &state.meshes;
-#endif
         }
     }
 
@@ -3085,6 +3088,9 @@ public:
                 frame_graph_presented = true;
             };
 #if BBLITE_HAS_TAA
+            // Only a frame running a TAA task submits temporally; any other
+            // encodes as a build without TAA does.
+            const bool temporal = frame_has_temporal_task(engine, data_.active_registered_scenes);
             {
                 for (const auto& registered : data_.active_registered_scenes) {
                     for (const TaskHandle handle : registered->frame_passes()) {
@@ -3149,7 +3155,7 @@ public:
                         }
 #endif
 #if BBLITE_HAS_TAA
-                        if (task.kind != FrameTaskKind::render &&
+                        if (temporal && task.kind != FrameTaskKind::render &&
                             task.kind != FrameTaskKind::post_process) {
                             throw std::runtime_error(
                                 "Temporal submission requires an admitted frame-task execution adapter.");
@@ -3165,77 +3171,85 @@ public:
                             // The camera the task's pass renders through: its
                             // viewport narrows the pass (`executePassBody`).
                             CameraRecord* const pass_camera = task_pass_camera(engine, task);
-#if !BBLITE_HAS_TAA
-                            const auto graph_extent =
-                                scene_surface_extent(engine, graph_scene, width, height);
-                            const auto binding_camera = build_kept_pass_camera(
-                                graph_scene, engine, pass_camera,
-                                task.render.canvas_size ? graph_extent.width
-                                                        : static_cast<double>(target.width),
-                                task.render.canvas_size ? graph_extent.height
-                                                        : static_cast<double>(target.height),
-                                data_.pass_blocks.task(handle));
-                            if (task.render.shadow_generator.value == invalid_handle) {
-                                write_material_uniforms(render_task.draw_lists.opaque,
-                                                        binding_camera.pass(), false,
-                                                        render_task.view_projection);
-                                write_material_uniforms(render_task.draw_lists.transparent,
-                                                        binding_camera.pass(), false,
-                                                        render_task.view_projection);
-                            }
-#endif
+                            // A temporal source writes its own blocks below.
+                            std::optional<PassCamera> binding_camera;
 #if BBLITE_HAS_TAA
-                            (void)pal::task_pass_breaks(task, {.temporal = true});
-                            if (task.source_scene != graph_scene.state ||
-                                task.render.scene_stages ||
-                                task.render.shadow_generator.value != invalid_handle ||
-                                !target.color || target.color_format != state.surface_format) {
-                                throw std::runtime_error(
-                                    "Temporal source requires an admitted Standard color pass in its owning scene.");
-                            }
-#if BBLITE_EXTERNAL_RENDERABLES
-                            refuse_external_renderables(graph_scene,
-                                                        "a temporal anti-aliasing source pass");
+                            if (!temporal)
 #endif
-                            // `validate_temporal_source` refuses a task
-                            // without a camera.
-                            CameraRecord* const source_camera = pass_camera;
-                            validate_temporal_source(engine, task, source_camera,
-                                                     render_task.draw_lists);
-                            const CameraRecord& task_camera = *source_camera;
-                            const auto graph_extent =
-                                scene_surface_extent(engine, graph_scene, width, height);
-                            restore_temporal_source_buffer(state, task, render_task);
-                            WGPUBuffer lights =
-                                graph_layer == 0
-                                    ? nullptr
-                                    : state.overlay_frames[graph_layer - 1].lights_uniforms;
-                            task_pinned_frame_group(state, render_task, lights);
-                            prepare_temporal_scene_uniforms(
-                                task, source_camera, target.width, target.height,
-                                graph_extent.width, graph_extent.height,
-                                [&](const float* data, std::size_t bytes) {
-                                    DawnGpuDevice{state.queue}.write_buffer(
-                                        render_task.pinned_scene_uniforms, 0, data, bytes);
-                                });
-                            const bool canvas_extent = task.render.canvas_size;
-                            const CameraPassMatrices task_camera_pass = camera_pass_matrices(
-                                graph_scene, engine, &task_camera,
-                                canvas_extent ? graph_extent.width
-                                              : static_cast<double>(target.width),
-                                canvas_extent ? graph_extent.height
-                                              : static_cast<double>(target.height));
-                            const ShaderPassMatrices matrices = task_camera_pass.pass();
-                            DawnGpuDevice{state.queue}.write_buffer(
-                                render_task.view_projection, 0,
-                                task_camera_pass.view_projection.data(),
-                                sizeof(task_camera_pass.view_projection));
-                            write_material_uniforms(render_task.draw_lists.opaque, matrices, false,
-                                                    render_task.view_projection);
-                            write_material_uniforms(render_task.draw_lists.transparent, matrices,
-                                                    false, render_task.view_projection);
-                            upstream::sort_transparent_draws(render_task.draw_lists.transparent,
-                                                             engine, source_camera);
+                            {
+                                const auto graph_extent =
+                                    scene_surface_extent(engine, graph_scene, width, height);
+                                binding_camera = build_kept_pass_camera(
+                                    graph_scene, engine, pass_camera,
+                                    task.render.canvas_size ? graph_extent.width
+                                                            : static_cast<double>(target.width),
+                                    task.render.canvas_size ? graph_extent.height
+                                                            : static_cast<double>(target.height),
+                                    data_.pass_blocks.task(handle));
+                                if (task.render.shadow_generator.value == invalid_handle) {
+                                    write_material_uniforms(render_task.draw_lists.opaque,
+                                                            binding_camera->pass(), false,
+                                                            render_task.view_projection);
+                                    write_material_uniforms(render_task.draw_lists.transparent,
+                                                            binding_camera->pass(), false,
+                                                            render_task.view_projection);
+                                }
+                            }
+#if BBLITE_HAS_TAA
+                            if (temporal) {
+                                (void)pal::task_pass_breaks(task, {.temporal = true});
+                                if (task.source_scene != graph_scene.state ||
+                                    task.render.scene_stages ||
+                                    task.render.shadow_generator.value != invalid_handle ||
+                                    !target.color || target.color_format != state.surface_format) {
+                                    throw std::runtime_error(
+                                        "Temporal source requires an admitted Standard color pass in its owning scene.");
+                                }
+#if BBLITE_EXTERNAL_RENDERABLES
+                                refuse_external_renderables(graph_scene,
+                                                            "a temporal anti-aliasing source pass");
+#endif
+                                // `validate_temporal_source` refuses a task
+                                // without a camera.
+                                CameraRecord* const source_camera = pass_camera;
+                                validate_temporal_source(engine, task, source_camera,
+                                                         render_task.draw_lists);
+                                const CameraRecord& task_camera = *source_camera;
+                                const auto graph_extent =
+                                    scene_surface_extent(engine, graph_scene, width, height);
+                                restore_temporal_source_buffer(state, task, render_task);
+                                WGPUBuffer lights =
+                                    graph_layer == 0
+                                        ? nullptr
+                                        : state.overlay_frames[graph_layer - 1].lights_uniforms;
+                                task_pinned_frame_group(state, render_task, lights);
+                                prepare_temporal_scene_uniforms(
+                                    task, source_camera, target.width, target.height,
+                                    graph_extent.width, graph_extent.height,
+                                    [&](const float* data, std::size_t bytes) {
+                                        DawnGpuDevice{state.queue}.write_buffer(
+                                            render_task.pinned_scene_uniforms, 0, data, bytes);
+                                    });
+                                const bool canvas_extent = task.render.canvas_size;
+                                const CameraPassMatrices task_camera_pass = camera_pass_matrices(
+                                    graph_scene, engine, &task_camera,
+                                    canvas_extent ? graph_extent.width
+                                                  : static_cast<double>(target.width),
+                                    canvas_extent ? graph_extent.height
+                                                  : static_cast<double>(target.height));
+                                const ShaderPassMatrices matrices = task_camera_pass.pass();
+                                DawnGpuDevice{state.queue}.write_buffer(
+                                    render_task.view_projection, 0,
+                                    task_camera_pass.view_projection.data(),
+                                    sizeof(task_camera_pass.view_projection));
+                                write_material_uniforms(render_task.draw_lists.opaque, matrices,
+                                                        false, render_task.view_projection);
+                                write_material_uniforms(render_task.draw_lists.transparent,
+                                                        matrices, false,
+                                                        render_task.view_projection);
+                                upstream::sort_transparent_draws(render_task.draw_lists.transparent,
+                                                                 engine, source_camera);
+                            }
 #endif
 #if BBLITE_SHADOW_RECEIVERS
                             if (task.render.shadow_generator.value <
@@ -3273,10 +3287,9 @@ public:
                                 ShaderPassMatrices caster_pass{caster.view_projection.data(),
                                                                &caster.view, nullptr};
                                 caster_pass.shadow_camera_facade = true;
-#if !BBLITE_HAS_TAA
-                                caster_pass.camera_position =
-                                    &binding_camera.matrices.camera_position;
-#endif
+                                if (binding_camera)
+                                    caster_pass.camera_position =
+                                        &binding_camera->matrices.camera_position;
                                 // Each caster list writes its draws' blocks once; a
                                 // cached generator's static and dynamic passes draw
                                 // different casters, so each list keeps its own mark.
@@ -3542,12 +3555,10 @@ public:
                             WGPURenderPipeline bound_pipeline = nullptr;
                             // The task's colour-pass plan (`_copies` reset per execution).
                             pal::TaskPassBreaks pass_breaks = pal::task_pass_breaks(
-                                task,
-                                {.multisampled = target_sample_count(state, target_record) > 1,
-                                 .swapchain = target_record.swapchain,
-                                 .billboard_stages =
-                                     BBLITE_HAS_BILLBOARDS && task.render.scene_stages,
-                                 .external_renderables = task_externals != nullptr});
+                                task, {.swapchain = target_record.swapchain,
+                                       .billboard_stages =
+                                           BBLITE_HAS_BILLBOARDS && task.render.scene_stages,
+                                       .external_renderables = task_externals != nullptr});
 #if BBLITE_HAS_BILLBOARDS
                             const auto draw_task_billboards = [&](BillboardDepthMode mode) {
                                 for (const DawnBillboardPass& billboard : state.billboard_passes) {
@@ -4017,69 +4028,72 @@ public:
 #if BBLITE_HAS_POST_PROCESS
                         if (task.kind == FrameTaskKind::post_process) {
 #if BBLITE_HAS_TAA
-                            const auto execute_pass =
-                                [&](std::size_t child, bool write_uniforms,
-                                    const WGPUPassTimestampWrites* timestamps = nullptr) {
-                                    auto prepared = prepare_dawn_post_process_pass(
-                                        state, engine, handle, width, height, child,
-                                        source_texture_view, write_uniforms);
-                                    encode_dawn_post_process_pass(encoder, surface_view, prepared,
-                                                                  timestamps);
-                                    if (prepared.presents) {
-                                        frame_graph_presented = true;
+                            if (temporal) {
+                                const auto execute_pass =
+                                    [&](std::size_t child, bool write_uniforms,
+                                        const WGPUPassTimestampWrites* timestamps = nullptr) {
+                                        auto prepared = prepare_dawn_post_process_pass(
+                                            state, engine, handle, width, height, child,
+                                            source_texture_view, write_uniforms);
+                                        encode_dawn_post_process_pass(encoder, surface_view,
+                                                                      prepared, timestamps);
+                                        if (prepared.presents) {
+                                            frame_graph_presented = true;
+                                        }
+                                        return upstream::post_process_leaf_draw_count();
+                                    };
+                                if (task.post_process.taa) {
+                                    auto& taa = *task.post_process.taa;
+                                    const auto source_handle = task.post_process.source_tasks.at(0);
+                                    auto& source = handle_at(engine.frame_tasks, source_handle);
+                                    auto& gpu_source = state.render_tasks.at(source_handle.value);
+                                    if (!source.source_scene)
+                                        throw std::runtime_error(
+                                            "Temporal source has no retained scene.");
+                                    restore_temporal_source_buffer(state, source, gpu_source);
+                                    CameraRecord* source_camera = task_pass_camera(engine, source);
+                                    [[maybe_unused]] const double draws =
+                                        upstream::execute_taa_post_process(
+                                            taa, task.post_process.passes.at(0).params[0],
+                                            source_camera,
+                                            [](CameraRecord* value) {
+                                                return upstream::scene_camera_change_key(*value);
+                                            },
+                                            [&](std::size_t child) {
+                                                write_dawn_post_process_uniforms(
+                                                    state, engine, handle, child, width, height,
+                                                    true);
+                                            },
+                                            [&](std::size_t child) -> std::optional<double> {
+                                                return execute_pass(child, false);
+                                            },
+                                            [&](TaaPostProcessState& value) {
+                                                const auto& blend = task.post_process.passes.at(0);
+                                                const auto extent = resolve_post_process_extent(
+                                                    pal::resolve_render_target(
+                                                        engine, blend.output_target, target_user),
+                                                    state.render_targets, blend, width, height);
+                                                advance_temporal_jitter(
+                                                    value, *source.scene_uniforms,
+                                                    extent.source_width, extent.source_height,
+                                                    [&](std::size_t offset, const float* data,
+                                                        std::size_t bytes) {
+                                                        DawnGpuDevice{state.queue}.write_buffer(
+                                                            gpu_source.pinned_scene_uniforms,
+                                                            offset, data, bytes);
+                                                    });
+                                            });
+                                    ++taa.execution_count;
+                                } else {
+                                    for (std::size_t child = 0;
+                                         child < task.post_process.passes.size(); ++child) {
+                                        const DawnPassTimestamps post_process_timestamps{
+                                            timing_sequence.pass()};
+                                        execute_pass(child, true, post_process_timestamps.get());
                                     }
-                                    return upstream::post_process_leaf_draw_count();
-                                };
-                            if (task.post_process.taa) {
-                                auto& taa = *task.post_process.taa;
-                                const auto source_handle = task.post_process.source_tasks.at(0);
-                                auto& source = handle_at(engine.frame_tasks, source_handle);
-                                auto& gpu_source = state.render_tasks.at(source_handle.value);
-                                if (!source.source_scene)
-                                    throw std::runtime_error(
-                                        "Temporal source has no retained scene.");
-                                restore_temporal_source_buffer(state, source, gpu_source);
-                                CameraRecord* source_camera = task_pass_camera(engine, source);
-                                [[maybe_unused]] const double draws =
-                                    upstream::execute_taa_post_process(
-                                        taa, task.post_process.passes.at(0).params[0],
-                                        source_camera,
-                                        [](CameraRecord* value) {
-                                            return upstream::scene_camera_change_key(*value);
-                                        },
-                                        [&](std::size_t child) {
-                                            write_dawn_post_process_uniforms(
-                                                state, engine, handle, child, width, height, true);
-                                        },
-                                        [&](std::size_t child) -> std::optional<double> {
-                                            return execute_pass(child, false);
-                                        },
-                                        [&](TaaPostProcessState& value) {
-                                            const auto& blend = task.post_process.passes.at(0);
-                                            const auto extent = resolve_post_process_extent(
-                                                pal::resolve_render_target(
-                                                    engine, blend.output_target, target_user),
-                                                state.render_targets, blend, width, height);
-                                            advance_temporal_jitter(
-                                                value, *source.scene_uniforms, extent.source_width,
-                                                extent.source_height,
-                                                [&](std::size_t offset, const float* data,
-                                                    std::size_t bytes) {
-                                                    DawnGpuDevice{state.queue}.write_buffer(
-                                                        gpu_source.pinned_scene_uniforms, offset,
-                                                        data, bytes);
-                                                });
-                                        });
-                                ++taa.execution_count;
-                            } else {
-                                for (std::size_t child = 0; child < task.post_process.passes.size();
-                                     ++child) {
-                                    const DawnPassTimestamps post_process_timestamps{
-                                        timing_sequence.pass()};
-                                    execute_pass(child, true, post_process_timestamps.get());
                                 }
+                                continue;
                             }
-                            continue;
 #endif
                             // A composite records the chain its own factory built; a
                             // plain effect is the same loop over one.

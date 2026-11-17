@@ -229,7 +229,8 @@ cancel })` is a program source; `new Response(stream, { status, statusText, head
 - `startEngine` inside a block (a catch clause, a branch, the entry promise's rejection handler) selects a realm.
 - `engine._renderFn` (the pin's frame function) can be wrapped; a wrapper that never calls it ends the native run.
 - After `stopEngine` no frame renders: the canvas keeps its last image, which a pending capture reads.
-- GPU task timing refuses TAA, screen-space and pass-less copy tasks, and on SDL_GPU colour/post-process tasks in TAA builds.
+- GPU task timing refuses TAA, screen-space and pass-less copy tasks, and on SDL_GPU colour/post-process tasks in frames
+  holding a TAA task.
 - `setGpuTimingEnabled` times each frame's commands on the task-timing device (application realm).
 - `captureScreenshot(engine)` (application realm, scene renderer): the next frame copies its presented image before
   native UI, and every request it serves resolves with one opaque RGBA8 `Screenshot`. An auxiliary surface refuses.
@@ -522,7 +523,9 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
 - `disposeRenderTargetTexture`: a later executed task or material using the target refuses; material plugin textures
   keep the image they bound. `disposeEffectWrapper`: a registered EffectRenderer drawing a wrapper with a uniform
   binding refuses.
-- TAA: one scene, explicit Standard color tasks, engine-format color, depth24plus-stencil8, single-sample inputs.
+- TAA: one scene, explicit Standard color tasks, engine-format color, depth24plus-stencil8, single-sample inputs, created
+  before its scene registers (after frames ran, too). These hold for frames whose frame graphs hold a TAA task; any
+  other frame of a program reaching TAA encodes every task kind as one without it.
 - `enableGeometryVelocity(task, { previousDepth })`, unconditional before scene registration: the task's PBR views write
   material-point velocity (previous world, bones and morph weights; previous view depth in Z), and every Standard
   LINEAR_VELOCITY view of the program writes its previous world, bones and morph weights with the same output. A
@@ -533,9 +536,10 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
 - `createDepthResolveTask` writes sample 0 of a multisampled target's depth into a single-sample target's depth
   through the pinned module, refusing as the pin's build does. A source the multisample gate draws single-sampled, and
   a target with stencil or more than one layer, refuse.
-- `enableRenderTaskTransmission` with `linear: false` on a single-sample, non-swapchain render task: the pass breaks
-  before transmissive transparent draws (`copyCount`) to grab colour, and with `grabDepth` depth (set before recording);
-  `grab.texture`/`depthTexture` read live for `setShaderTexture`. The linear arm and multisampled targets refuse.
+- `enableRenderTaskTransmission` with `linear: false` on a non-swapchain render task: the pass breaks before
+  transmissive transparent draws (`copyCount`) to grab colour, and with `grabDepth` depth (set before recording; a
+  multisampled target's grab too), a multisampled target through the pin's averaging blit and sample-0 depth;
+  `grab.texture`/`depthTexture` read live for `setShaderTexture`. The linear arm refuses.
 - Contact shadows, one-bounce GI, screen-space ambient occlusion
   (`createScreenSpaceAmbientOcclusionPostProcessTask`), EffectWrapper/EffectRenderer with bounded layouts and an
   add-equation blend state over `zero`, `one`, `src-alpha`, `one-minus-src-alpha`, `dst` and `dst-alpha`; custom

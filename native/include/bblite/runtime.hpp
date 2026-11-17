@@ -1995,6 +1995,11 @@ struct RenderTargetRecord {
      * `TEXTURE_BINDING`.
      */
     bool depth_binding = false;
+    /**
+     * A shader reads the multisampled colour attachment's samples (a render
+     * task's grab), which the pin's every colour attachment allows.
+     */
+    bool color_binding = false;
 };
 
 /** The pin's mixed cache tuple, named by its seven identity/value inputs. */
@@ -5740,6 +5745,16 @@ inline TransmissionGrab enable_render_task_transmission(Engine& engine, TaskHand
             target.sampled_depth = true;
         }
     }
+    // A multisampled target's grab averages its colour samples.
+    if (record.render.target.value != invalid_handle) {
+        auto& target = handle_at(engine.render_targets, record.render.target);
+        if (target.samples > 1 && target.has_color && !target.color_binding) {
+            if (record.record_state == FrameTaskRecordState::recorded)
+                throw std::runtime_error("enableRenderTaskTransmission on a multisampled target "
+                                         "must precede the task's recording.");
+            target.color_binding = true;
+        }
+    }
     return TransmissionGrab{task};
 }
 
@@ -7494,6 +7509,26 @@ inline void rebuild_canvas_task_targets(Engine& engine) {
                 record_task_color_views(engine, task);
         }
     }
+}
+
+/**
+ * Whether a registered scene's frame graph holds a TAA task. Only such a
+ * frame writes a source task's scene block after that task's pass is
+ * encoded (`advanceJitter`), so only it takes a backend's temporal
+ * submission; any other frame encodes as a program without TAA does.
+ */
+[[nodiscard]] inline bool
+frame_has_temporal_task(const Engine& engine, const std::vector<std::shared_ptr<Scene>>& scenes) {
+    for (const std::shared_ptr<Scene>& scene : scenes) {
+        if (!scene)
+            continue;
+        for (const TaskHandle handle : scene->frame_passes()) {
+            const FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
+            if (task.kind == FrameTaskKind::post_process && task.post_process.taa)
+                return true;
+        }
+    }
+    return false;
 }
 
 /**

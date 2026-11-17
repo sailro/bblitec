@@ -1692,6 +1692,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "(executePassWithTransmission, transmission-depth-grab.ts)",
         consumers: CMAKE,
     },
+    "frame-graph:multisampled-task-transmission": {
+        provenance:
+            "src/frame-graph/transmission.ts BLIT_MSAA_SHADER " +
+            "(transmission-depth-grab.ts DEPTH_GRAB_MSAA_SHADER)",
+        consumers: CMAKE,
+    },
     "frame-graph:depth-resolve": {
         provenance:
             "src/frame-graph/depth-resolve-task.ts createDepthResolveTask",

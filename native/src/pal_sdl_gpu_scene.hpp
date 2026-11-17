@@ -912,6 +912,9 @@ struct GpuState : SdlGpuDevice {
     /** The pin's single-sample `BLIT_SHADER` and `DEPTH_GRAB_SHADER` passes. */
     SDL_GPUGraphicsPipeline* task_grab_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* task_depth_grab_pipeline = nullptr;
+    /** Their multisampled arms, `BLIT_MSAA_SHADER` and `DEPTH_GRAB_MSAA_SHADER`. */
+    SDL_GPUGraphicsPipeline* task_grab_msaa_pipeline = nullptr;
+    SDL_GPUGraphicsPipeline* task_depth_grab_msaa_pipeline = nullptr;
     /** The depth grab's nearest sampler. */
     SDL_GPUSampler* task_depth_grab_sampler = nullptr;
 #endif

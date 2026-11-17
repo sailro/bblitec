@@ -467,7 +467,7 @@ export function compileRenderTargetOptions(
 export function compileRenderTaskOptions(
     context: EngineOptionContext,
     expression: ts.Expression,
-): string {
+): { cpp: string; singleSampleTarget: boolean } {
     const object = context.expectObjectLiteral(expression);
     validateObjectProperties(
         context,
@@ -552,8 +552,15 @@ export function compileRenderTaskOptions(
             ? context.compileStringLiteral(nameExpression)
             : "render-task",
     )}, ${target.cpp}, ${clearColor ? context.compileColor4(clearColor) : "std::nullopt"}, ${clear ? context.compileBoolean(clear) : "true"}, ${camera?.cpp ?? `${handleCppType("camera")}{}`}, ${camera ? "true" : "false"}, ${canvasSize ? context.compileBoolean(canvasSize) : "false"}, ${autoMirror ? context.compileBoolean(autoMirror) : "true"}, false, ${depth}, ${resolve.cpp}}`;
-    if (!depthClear && !sharedTarget) return options;
-    return `[&]() { auto options = ${options}; ${depthClear ? `options.depth_clear = ${context.compileBoolean(depthClear)};` : ""} ${sharedTarget ? `options.shared_target = ${context.compileBoolean(sharedTarget)};` : ""} return options; }()`;
+    // Whether the task's target is proven single-sample, whose grab reads no
+    // multisampled attachment.
+    const singleSampleTarget = signature?.samples === 1;
+    if (!depthClear && !sharedTarget)
+        return { cpp: options, singleSampleTarget };
+    return {
+        cpp: `[&]() { auto options = ${options}; ${depthClear ? `options.depth_clear = ${context.compileBoolean(depthClear)};` : ""} ${sharedTarget ? `options.shared_target = ${context.compileBoolean(sharedTarget)};` : ""} return options; }()`,
+        singleSampleTarget,
+    };
 }
 
 export function compileGeometryTaskOptions(

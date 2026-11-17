@@ -305,6 +305,13 @@ function compileRenderTaskTransmission(
     const engineCpp = context.requireEngine(task, call);
     reachRenderer(context, call);
     context.reachFeature("frame-graph:render-task-transmission", call);
+    // A target not proven single-sample may grab through the pin's
+    // multisampled arms.
+    if (!task.singleSampleTarget)
+        context.reachFeature(
+            "frame-graph:multisampled-task-transmission",
+            call,
+        );
     return {
         kind: "transmission-grab",
         cpp:
@@ -790,8 +797,11 @@ export function compileEngineIntrinsic(
                 kind: "task",
                 cpp:
                     `bbl::create_render_task(${engine.cpp}, ` +
-                    `${scene.cpp}, ${options})`,
+                    `${scene.cpp}, ${options.cpp})`,
                 renderTask: true,
+                ...(options.singleSampleTarget
+                    ? { singleSampleTarget: true as const }
+                    : {}),
                 engineCpp: engine.engineCpp ?? engine.cpp,
             };
         }

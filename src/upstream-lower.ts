@@ -406,6 +406,7 @@ import type {
 import { blitVertexWgsl } from "./shader-builtins-utility.js";
 import {
     pinnedMipBlitModule,
+    pinnedMultisampledTaskTransmissionModules,
     pinnedTaskTransmissionModules,
     pinnedTransmissionModules,
     type PinnedUtilityModule,
@@ -3328,6 +3329,9 @@ ${wgsl}`,
             }
             if (features.includes("frame-graph:render-task-transmission"))
                 for (const module of pinnedTaskTransmissionModules())
+                    deployUtility(module);
+            if (features.includes("frame-graph:multisampled-task-transmission"))
+                for (const module of pinnedMultisampledTaskTransmissionModules())
                     deployUtility(module);
             if (features.includes("frame-graph:depth-resolve"))
                 deployUtility(pinnedDepthResolveModule());

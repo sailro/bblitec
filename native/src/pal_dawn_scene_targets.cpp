@@ -106,7 +106,10 @@ void create_frame_graph_textures(DawnState& state, const Engine& engine, std::ui
                     // copy are the same kind of texture.
                     ? WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding |
                           WGPUTextureUsage_CopySrc | WGPUTextureUsage_CopyDst | canvas_storage
-                    : WGPUTextureUsage_RenderAttachment);
+                    // A task's grab loads a multisampled target's samples.
+                    : record.color_binding
+                          ? WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding
+                          : WGPUTextureUsage_RenderAttachment);
             target.color_view = create_dawn_texture_view(target.color, nullptr,
                                                          "wgpuTextureCreateView frame graph color");
             if (samples == 1) {
@@ -813,8 +816,7 @@ DawnState::TaskTransmission& prepare_task_transmission(DawnState& state, const E
     const RenderTargetRecord& target_record =
         pal::resolve_render_target(engine, record.render.target, pal::task_target_user(record));
     const DawnRenderTarget& target = handle_at(state.render_targets, record.render.target);
-    (void)task_pass_breaks(record, {.multisampled = target_sample_count(state, target_record) > 1,
-                                    .swapchain = target_record.swapchain});
+    (void)task_pass_breaks(record, {.swapchain = target_record.swapchain});
     if (state.task_transmissions.size() <= task.value)
         state.task_transmissions.resize(task.value + 1);
     DawnState::TaskTransmission& grab = state.task_transmissions[task.value];
@@ -861,42 +863,60 @@ void encode_task_transmission_grab(DawnState& state, const Engine& engine,
                                    WGPUCommandEncoder encoder, TaskHandle task) {
     DawnState::TaskTransmission& grab = prepare_task_transmission(state, engine, task);
     const FrameTaskRecord& record = handle_at(engine.frame_tasks, task);
-    const DawnRenderTarget& target = pal::resolve_gpu_target(
-        engine, state.render_targets, record.render.target, pal::task_target_user(record));
-    if (!target.sampled_color_view)
+    const pal::TargetUser user = pal::task_target_user(record);
+    const DawnRenderTarget& target =
+        pal::resolve_gpu_target(engine, state.render_targets, record.render.target, user);
+    // A multisampled target grabs through the pin's MSAA arms: the averaging
+    // blit over its colour samples and sample 0 of its depth.
+    const bool multisampled =
+        target_sample_count(state, pal::resolve_render_target(engine, record.render.target, user)) >
+        1;
+    const DawnTextureView& color_source =
+        multisampled ? target.color_view : target.sampled_color_view;
+    if (!color_source)
         pal::fail_render_target_has_no_texture();
-    if (!state.task_grab_pipeline)
-        state.task_grab_pipeline = fullscreen_grab_pipeline(state, "transmission-grab-single.frag",
-                                                            WGPUTextureFormat_RGBA16Float);
-    // blitToTransmission through the bilinear sampler the pin binds. The
-    // group is kept until the target's view changes (a rebuilt target).
-    if (grab.color_group_source != target.sampled_color_view.get()) {
+    DawnRenderPipeline& color_pipeline =
+        multisampled ? state.task_grab_msaa_pipeline : state.task_grab_pipeline;
+    if (!color_pipeline)
+        color_pipeline = fullscreen_grab_pipeline(
+            state, multisampled ? "transmission-grab.frag" : "transmission-grab-single.frag",
+            WGPUTextureFormat_RGBA16Float);
+    // blitToTransmission through the bilinear sampler the pin binds, or the
+    // MSAA blit's lone texture. The group is kept until the target's view
+    // changes (a rebuilt target).
+    if (grab.color_group_source != color_source.get()) {
         std::array<WGPUBindGroupEntry, 2> entries{};
         entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
         entries[0].binding = 0;
-        entries[0].textureView = target.sampled_color_view;
+        entries[0].textureView = color_source;
         entries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
         entries[1].binding = 1;
         entries[1].sampler = grab_bilinear_sampler(state);
-        grab.color_group = create_grab_group(state, state.task_grab_pipeline, entries);
-        grab.color_group_source = target.sampled_color_view;
+        grab.color_group = create_grab_group(
+            state, color_pipeline,
+            std::span<const WGPUBindGroupEntry>(entries).first(multisampled ? 1 : 2));
+        grab.color_group_source = color_source;
     }
-    encode_grab_pass(encoder, state.task_grab_pipeline, grab.level_view, grab.color_group);
+    encode_grab_pass(encoder, color_pipeline, grab.level_view, grab.color_group);
     encode_mip_chain(encoder, grab.mips);
     if (grab.depth) {
-        if (!state.task_depth_grab_pipeline)
-            state.task_depth_grab_pipeline = fullscreen_grab_pipeline(
-                state, "transmission-depth-grab-single.frag", WGPUTextureFormat_R32Float);
+        DawnRenderPipeline& depth_pipeline =
+            multisampled ? state.task_depth_grab_msaa_pipeline : state.task_depth_grab_pipeline;
+        if (!depth_pipeline)
+            depth_pipeline =
+                fullscreen_grab_pipeline(state,
+                                         multisampled ? "transmission-depth-grab.frag"
+                                                      : "transmission-depth-grab-single.frag",
+                                         WGPUTextureFormat_R32Float);
         if (grab.depth_group_source != target.depth_sampled_view.get()) {
             std::array<WGPUBindGroupEntry, 1> entries{};
             entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
             entries[0].binding = 0;
             entries[0].textureView = target.depth_sampled_view;
-            grab.depth_group = create_grab_group(state, state.task_depth_grab_pipeline, entries);
+            grab.depth_group = create_grab_group(state, depth_pipeline, entries);
             grab.depth_group_source = target.depth_sampled_view;
         }
-        encode_grab_pass(encoder, state.task_depth_grab_pipeline, grab.depth_view,
-                         grab.depth_group);
+        encode_grab_pass(encoder, depth_pipeline, grab.depth_view, grab.depth_group);
     }
 }
 
