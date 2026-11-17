@@ -213,6 +213,8 @@ cancel })` is a program source; `new Response(stream, { status, statusText, head
 - After `stopEngine` no frame renders: the canvas keeps its last image, which a pending capture reads.
 - GPU task timing refuses TAA, screen-space and pass-less copy tasks, and on SDL_GPU colour/post-process tasks in TAA builds.
 - `setGpuTimingEnabled` times each frame's commands on the task-timing device (application realm).
+- `captureScreenshot(engine)` (application realm, scene renderer): the next frame copies its presented image before
+  native UI, and every request it serves resolves with one opaque RGBA8 `Screenshot`. An auxiliary surface refuses.
 - Compute: generation-known WGSL, f32/u32/i32 writers (no f16), uniform/storage buffers, textures and samplers. Six-layer
   storage views with cube sampling need Dawn or patched SDL D3D12/Vulkan/Metal.
 - Right-handed programs (`babylon-lite-rh`) build the pin's right-handed variant: lowered sources read its folded

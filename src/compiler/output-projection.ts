@@ -58,6 +58,7 @@ export const featureSources: Record<Feature, string[]> = {
     // Each backend binds the device at createEngine; CMake derives the Dawn twin.
     "engine:webgpu-device": ["src/pal_sdl_gpu_webgpu_device.cpp"],
     "engine:gpu-task-timing": [],
+    "engine:screenshot": [],
     "profile:source": ["src/pal_source_profile.cpp"],
     "compute:storage-texture": [],
     "compute:texture-mipmaps": [],
@@ -1163,6 +1164,7 @@ ${(
     [
         ["compute:storage-texture", "pal_compute_storage_texture"],
         ["engine:gpu-task-timing", "pal_gpu_task_timing"],
+        ["engine:screenshot", "pal_screenshot"],
         ["compute:texture-mipmaps", "pal_compute_texture_mipmaps"],
         ["environment:procedural-sky", "pal_procedural_sky_environment"],
         ["environment:sky-atmosphere", "upstream/procedural_sky_atmosphere"],

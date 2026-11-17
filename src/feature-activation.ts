@@ -314,6 +314,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/engine/gpu-task-timing.ts + src/engine/gpu-task-timer.ts",
         consumers: CMAKE,
     },
+    "engine:screenshot": {
+        provenance:
+            "src/engine/screenshot.ts#captureScreenshot + " +
+            "src/engine/screenshot-readback.ts",
+        consumers: CMAKE,
+    },
     "profile:source": {
         provenance:
             "native-architecture: the --source-profile diagnostic's function scopes " +

@@ -55,6 +55,36 @@
 
 namespace bbl::pal {
 
+/** A texture's rows, copied by a copy pass recorded into a command buffer. */
+struct SdlTextureDownload {
+    OwnedSdlTransfer transfer;
+    std::uint32_t bytes_per_row = 0;
+};
+
+/** Records the copy of `texture` into a download buffer of `bytes_per_row`-byte rows. */
+inline SdlTextureDownload
+record_sdl_texture_download(SDL_GPUDevice* device, SDL_GPUCommandBuffer* command,
+                            SDL_GPUTexture* texture, std::uint32_t width, std::uint32_t height,
+                            std::uint32_t bytes_per_pixel, std::uint32_t bytes_per_row) {
+    SDL_GPUTransferBufferCreateInfo transfer_info{};
+    transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;
+    transfer_info.size = bytes_per_row * height;
+    SdlTextureDownload download{
+        OwnedSdlTransfer{SDL_CreateGPUTransferBuffer(device, &transfer_info), {device}},
+        bytes_per_row};
+    if (!download.transfer)
+        gpu_error("SDL_CreateGPUTransferBuffer readback");
+    SdlCopyPass copy{SDL_BeginGPUCopyPass(command)};
+    if (!copy)
+        gpu_error("SDL_BeginGPUCopyPass readback");
+    const SDL_GPUTextureRegion source{texture, 0, 0, 0, 0, 0, width, height, 1};
+    const SDL_GPUTextureTransferInfo destination{download.transfer.get(), 0,
+                                                 bytes_per_row / bytes_per_pixel, height};
+    SDL_DownloadFromGPUTexture(copy, &source, &destination);
+    copy.end();
+    return download;
+}
+
 #if BBLITE_VISUAL_CAPTURE
 inline void save_texture_png(SDL_GPUDevice* device, SdlGpuCommand& command,
                              SDL_GPUTexture* swapchain, SDL_GPUTextureFormat format,
@@ -64,21 +94,9 @@ inline void save_texture_png(SDL_GPUDevice* device, SdlGpuCommand& command,
         static_cast<std::uint32_t>(webgpu_texel_layout(sdl_webgpu_format_name(format)).bytes);
     const std::uint32_t source_row_bytes = width * bytes_per_pixel;
     const std::uint32_t aligned_row_bytes = (source_row_bytes + 255u) & ~255u;
-    SDL_GPUTransferBufferCreateInfo transfer_info{};
-    transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;
-    transfer_info.size = aligned_row_bytes * height;
-    OwnedSdlTransfer transfer{SDL_CreateGPUTransferBuffer(device, &transfer_info), {device}};
-    if (!transfer)
-        gpu_error("SDL_CreateGPUTransferBuffer screenshot");
-
-    SdlCopyPass copy{SDL_BeginGPUCopyPass(command)};
-    if (!copy)
-        gpu_error("SDL_BeginGPUCopyPass screenshot");
-    const SDL_GPUTextureRegion source{swapchain, 0, 0, 0, 0, 0, width, height, 1};
-    const SDL_GPUTextureTransferInfo destination{transfer.get(), 0,
-                                                 aligned_row_bytes / bytes_per_pixel, height};
-    SDL_DownloadFromGPUTexture(copy, &source, &destination);
-    copy.end();
+    const SdlTextureDownload download = record_sdl_texture_download(
+        device, command, swapchain, width, height, bytes_per_pixel, aligned_row_bytes);
+    const OwnedSdlTransfer& transfer = download.transfer;
     OwnedSdlFence fence{command.submit_with_fence(), {device}};
     if (!fence) {
         gpu_error("SDL_SubmitGPUCommandBufferAndAcquireFence");

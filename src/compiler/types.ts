@@ -3436,6 +3436,7 @@ export type Feature =
     // The WebGPU-subset device on the engine from createEngine (gpu.hpp).
     | "engine:webgpu-device"
     | "engine:gpu-task-timing"
+    | "engine:screenshot"
     // Per-source-function CPU scopes and allocation counters, reached only by
     // the `--source-profile` generation option (docs/debugging.md).
     | "profile:source"

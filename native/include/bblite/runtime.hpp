@@ -76,6 +76,7 @@ struct ComputeTextureAllocation;
 struct ComputeCommandEncoder;
 struct GpuRetirementState;
 struct GpuTaskTimingState;
+struct ScreenshotCaptures;
 class LoadedTexels;
 } // namespace pal
 
@@ -5018,6 +5019,8 @@ struct Engine {
     bool source_gpu_host_closed = false;
     std::shared_ptr<pal::GpuRetirementState> gpu_retirements;
     std::shared_ptr<pal::GpuTaskTimingState> gpu_task_timing;
+    /** `captureScreenshot`'s requests on the primary surface (`pal_screenshot.hpp`). */
+    std::shared_ptr<pal::ScreenshotCaptures> screenshot_captures;
     std::weak_ptr<ComputeStorageTextureRegistry> compute_storage_textures;
     std::function<void()> dispose_compute_textures;
     std::weak_ptr<UniformBufferRegistry> uniform_buffers;

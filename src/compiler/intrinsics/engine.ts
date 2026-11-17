@@ -154,12 +154,17 @@ import {
     compileGpuTaskTimingIntrinsic,
     type GpuTaskTimingIntrinsicContext,
 } from "./gpu-task-timing.js";
+import {
+    compileScreenshotIntrinsic,
+    type ScreenshotIntrinsicContext,
+} from "./screenshot.js";
 import { knownCondition } from "../values/model.js";
 
 export interface EngineIntrinsicContext
     extends
         IntrinsicCallContext,
         GpuTaskTimingIntrinsicContext,
+        ScreenshotIntrinsicContext,
         EngineOptionContext,
         Pick<
             LoweringServices,
@@ -342,6 +347,8 @@ export function compileEngineIntrinsic(
 ): Value | undefined {
     const timing = compileGpuTaskTimingIntrinsic(context, importedName, call);
     if (timing) return timing;
+    const screenshot = compileScreenshotIntrinsic(context, importedName, call);
+    if (screenshot) return screenshot;
     switch (importedName) {
         case "waitForGpuIdle":
         case "waitForGpuResourceRetirements": {

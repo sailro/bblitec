@@ -127,6 +127,10 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         features: ["engine:gpu-task-timing"],
     },
     {
+        source: "upstream/src/screenshot_readback.cpp",
+        features: ["engine:screenshot"],
+    },
+    {
         source: "upstream/src/device_recovery.cpp",
         features: ["engine:device-recovery"],
     },

@@ -37,6 +37,7 @@ interface FeatureMacro {
 export const featureMacros: readonly FeatureMacro[] = [
     { macro: "BBLITE_DEVICE_RECOVERY", anyOf: ["engine:device-recovery"] },
     { macro: "BBLITE_GPU_TASK_TIMING", anyOf: ["engine:gpu-task-timing"] },
+    { macro: "BBLITE_SCREENSHOT_CAPTURE", anyOf: ["engine:screenshot"] },
     { macro: "BBLITE_GPU_RETIREMENT", anyOf: ["engine:gpu-retirement"] },
     { macro: "BBLITE_THIN_INSTANCES", anyOf: ["mesh:thin-instances"] },
     { macro: "BBLITE_MESH_OPACITY", anyOf: ["mesh:opacity"] },

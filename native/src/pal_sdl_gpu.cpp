@@ -22,6 +22,7 @@
 #include "pal_gpu_shader_passes.hpp"
 #include <bblite/features/compute_frame_graph.hpp>
 #include <bblite/features/frame_post_submit.hpp>
+#include <bblite/features/screenshot_capture.hpp>
 #include <bblite/features/device_recovery.hpp>
 #include <bblite/features/has_billboards.hpp>
 #include <bblite/features/has_clustered_lights.hpp>
@@ -47,6 +48,9 @@
 
 #include "pal_sdl_gpu_scene.hpp"
 #include "pal_sdl_gpu_presentation.hpp"
+#if BBLITE_SCREENSHOT_CAPTURE
+#include "pal_sdl_gpu_screenshot.hpp"
+#endif
 #if BBLITE_EXTERNAL_RENDERABLES
 #include "pal_sdl_gpu_webgpu.hpp"
 #endif
@@ -4623,6 +4627,12 @@ public:
         [[maybe_unused]] auto& command = current_frame().command;
         [[maybe_unused]] auto& capture_texture = current_frame().capture_texture;
         [[maybe_unused]] auto& visible_color = current_frame().visible_color;
+#if BBLITE_SCREENSHOT_CAPTURE
+        // `captureScreenshot`'s copy of the presented image, before any native UI over it.
+        const SdlScreenshotCopy screenshot = record_sdl_screenshot(
+            engine, state.device, command, current_frame().graph ? capture_texture : visible_color,
+            swapchain_format, width, height);
+#endif
         if (current_frame().graph) {
             if (capture_texture == state.color && capture_texture) {
                 SDL_GPUBlitInfo present{};
@@ -4708,6 +4718,9 @@ public:
             }
             frozen_capture_ = {capture_frame ? visible_color : nullptr, width, height};
         }
+#if BBLITE_SCREENSHOT_CAPTURE
+        finish_sdl_screenshot(state.device, screenshot);
+#endif
         flush_frame_gpu_retirements(engine);
         finish_gpu_task_timing_frame(engine);
         resolve_gpu_frame_timer(engine);

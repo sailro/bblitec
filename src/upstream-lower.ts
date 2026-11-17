@@ -86,6 +86,7 @@ import {
     thinInstanceHeader,
 } from "./lowering/thin-instance-lowerer.js";
 import { lowerGpuTaskTiming } from "./lowering/gpu-task-timing-lowerer.js";
+import { lowerScreenshotReadback } from "./lowering/screenshot-readback-lowerer.js";
 import { lowerComputeTexture } from "./lowering/compute-texture-lowerer.js";
 import { lowerComputeTextureMipmaps } from "./lowering/compute-texture-mipmaps-lowerer.js";
 import { lowerStorageBuffer } from "./lowering/storage-buffer-lowerer.js";
@@ -1257,6 +1258,15 @@ class GeneratedSourceWriter {
         emitReached("upstream/src/gpu_task_timing.cpp", () =>
             lowerGpuTaskTiming(context),
         );
+        emitReached("upstream/src/screenshot_readback.cpp", () => {
+            // The scene renderer services the queue; no other renderer would.
+            if (!features.includes("renderer:scene"))
+                refuseGeneration(
+                    "engine:screenshot",
+                    "captureScreenshot is serviced by the scene renderer; this program renders without one.",
+                );
+            return lowerScreenshotReadback(context);
+        });
         emitReached("upstream/src/gpu_retirement.cpp", () =>
             lowerGpuRetirement(context),
         );
