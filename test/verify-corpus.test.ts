@@ -1,16 +1,26 @@
 import assert from "node:assert/strict";
+import { createHash, randomUUID } from "node:crypto";
+import {
+    existsSync,
+    mkdirSync,
+    readFileSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
+import { dirname, resolve } from "node:path";
 import test from "node:test";
 import type { BabylonLiteCorpusManifest } from "../src/upstream-corpus.js";
 import type { ExactCorpusManifest } from "../src/verify-corpus.js";
 import {
     classifyCorpusChecks,
     rightHandedFlagMismatches,
+    verifyChecks,
 } from "../src/verify-corpus.js";
 
 // The classification is the decidable half of `corpus:verify`: which URL
 // answers for a row, and whether the row is an upstream-tree file, a
 // pinned origin file, or a member of a pinned release archive. The
-// network comparison itself is the command, not a unit test.
+// live origin comparison itself is the command.
 
 const manifest: BabylonLiteCorpusManifest = {
     package: "@babylonjs/lite",
@@ -148,6 +158,65 @@ test("refuses an exact manifest pinned to a different commit", () => {
         () => classifyCorpusChecks(manifest, exact),
         /beef4567.*cafe0123/s,
     );
+});
+
+test("rejects a 200 HTML archive, recovers a poisoned cache entry and still checks member digests", async (t) => {
+    const url = `https://example.invalid/${randomUUID()}.zip`;
+    const path = resolve(
+        ".cache/assets",
+        createHash("sha256").update(url).digest("hex").slice(0, 32),
+    );
+    t.after(() => {
+        rmSync(path, { force: true });
+        rmSync(`${path}.type`, { force: true });
+    });
+    const zip = readFileSync("examples/assets/regression/texture-pack.zip");
+    const html = "<!doctype html>temporarily unavailable";
+    let requests = 0;
+    t.mock.method(globalThis, "fetch", (requested: string) => {
+        assert.equal(requested, url);
+        return Promise.resolve(
+            ++requests === 1
+                ? new Response(html, {
+                      headers: { "content-type": "application/zip" },
+                  })
+                : new Response(zip, {
+                      headers: { "content-type": "application/octet-stream" },
+                  }),
+        );
+    });
+    const member = {
+        kind: "archive-member",
+        label: "checker.png",
+        url,
+        sha256: "4f0d70066c42b14a9dd4d7a9b66bc6aa4d1cc04439810ac2e2ae5896bd180a63",
+    } as const;
+    const checks = [member, { ...member, sha256: "0".repeat(64) }];
+    const first = await verifyChecks(checks, false);
+    assert.equal(first[0]?.status, "unverifiable");
+    assert.match(first[0].detail, /No zip end-of-central-directory/);
+    assert.equal(existsSync(path), false);
+    assert.equal(existsSync(`${path}.type`), false);
+
+    // A previous release already cached a successful HTML response.
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, html);
+    writeFileSync(`${path}.type`, "text/html");
+    assert.equal((await verifyChecks(checks, true))[0]?.status, "unverifiable");
+    assert.equal(requests, 1);
+    const recovered = await verifyChecks(checks, false);
+    assert.deepEqual(
+        recovered.map((row) => row.status),
+        ["match", "mismatch"],
+    );
+    assert.equal(recovered[0]?.detail, "checker.png");
+    assert.deepEqual(readFileSync(path), zip);
+    assert.equal(
+        readFileSync(`${path}.type`, "utf8"),
+        "application/octet-stream",
+    );
+    assert.deepEqual(await verifyChecks(checks, true), recovered);
+    assert.equal(requests, 2);
 });
 
 test("refuses a generated row whose upstreamPath names no output file", () => {
