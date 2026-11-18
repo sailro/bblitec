@@ -5568,6 +5568,22 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
             }
             if (fallback.kind !== left.kind) {
+                // A scalar read that may miss (an element past the end)
+                // falls back to a value of its scalar type, which the
+                // fallback converts to as any sink of that type reads it
+                // (a slot a partial record assertion left optional).
+                const scalar = left.dataType;
+                if (
+                    scalar &&
+                    (scalar.kind === "number" ||
+                        scalar.kind === "boolean" ||
+                        scalar.kind === "string") &&
+                    left.kind === scalar.kind
+                )
+                    return this.leafValue(
+                        `(${leftFound} ? ${left.cpp} : ${fallbackForSink(scalar, `!(${leftFound})`)})`,
+                        scalar,
+                    );
                 this.context.fail(
                     expression.right,
                     `A missed search's fallback must be the same ` +

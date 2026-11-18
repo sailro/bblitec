@@ -4872,6 +4872,25 @@ check(
 `,
 );
 
+// An element read past the end falls back to a field a partial record
+// assertion left optional; the fallback reads as the element's number.
+check(
+    "a-missed-element-falls-back-to-a-field-a-partial-assertion-left-optional",
+    `
+    interface Tower { id: string; yaw: number }
+    const towers: Tower[] = [];
+    const built: number[] = [];
+    const tower = { id: "a" } as Tower;
+    tower.yaw = new Float32Array([0.5])[0]!;
+    towers.push(tower);
+    const first = towers.every((t, index) => (built[index] ?? t.yaw) === t.yaw);
+    if (!first) throw new Error("fallback");
+    built[0] = 2;
+    const second = towers.every((t, index) => (built[index] ?? t.yaw) === t.yaw);
+    if (second) throw new Error("element");
+`,
+);
+
 // A conditional whose arms generation knows absent selects the absence the
 // taken arm gives: the one both give, its condition still run, or
 // `undefined` against `null`.
