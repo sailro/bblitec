@@ -406,6 +406,7 @@ import type {
     ValueKind,
 } from "./compiler/types.js";
 import { isCompileTimeOnlyValue } from "./compiler/types.js";
+import { refuseUnreadablePart } from "./compiler/unreadable-values.js";
 import { ClassLowerer } from "./compiler/classes.js";
 import { ClassHierarchy } from "./compiler/class-members.js";
 import { EvaluationOrder } from "./compiler/evaluation-order.js";
@@ -4072,7 +4073,26 @@ class Compiler implements LoweringServices {
             }));
         const returned = this.returnedListItems(expression);
         if (returned) return returned;
-        return this.expectStaticArrayElements(expression).map(unboundListItem);
+        try {
+            return this.expectStaticArrayElements(expression).map(
+                unboundListItem,
+            );
+        } catch (error) {
+            // The reader reads every item: a list holding a part
+            // generation cannot read refuses with it.
+            const value =
+                error instanceof CompileError
+                    ? this.probeEmission(
+                          () =>
+                              unlessRefused(() =>
+                                  this.compileValue(expression),
+                              ),
+                          () => false,
+                      )
+                    : undefined;
+            if (value) refuseUnreadablePart(this, value, expression);
+            throw error;
+        }
     }
 
     /**
@@ -6684,16 +6704,31 @@ class Compiler implements LoweringServices {
             : undefined;
     }
 
-    public staticLiteralData(value: Value, expression: ts.Expression): unknown {
-        return this.currentStaticLiteral(value, expression);
+    public staticLiteralData(
+        value: Value,
+        expression: ts.Expression,
+        leaf?: (part: Value) => unknown,
+    ): unknown {
+        return this.currentStaticLiteral(
+            value,
+            expression,
+            undefined,
+            undefined,
+            leaf,
+        );
     }
 
-    /** Read complete current snapshots through the ordinary property ownership rules. */
+    /**
+     * Read complete current snapshots through the ordinary property
+     * ownership rules; `leaf` reads a part as the plain data it answers,
+     * where it answers any.
+     */
     private currentStaticLiteral(
         carried: Value,
         expression: ts.Expression,
         active: ReadonlySet<Value> = new Set(),
         projectedTypes: ReadonlySet<string> = new Set(),
+        leaf?: (part: Value) => unknown,
     ): unknown {
         if (
             carried.parameterBinding ||
@@ -6701,6 +6736,8 @@ class Compiler implements LoweringServices {
             !this.bindings.recordPropertiesAreCurrent(carried)
         )
             return undefined;
+        const read = leaf?.(carried);
+        if (read !== undefined) return read;
         const scalar =
             carried.staticString ??
             carried.staticNumber ??
@@ -6727,6 +6764,7 @@ class Compiler implements LoweringServices {
                     ),
                     nested,
                     projectedTypes,
+                    leaf,
                 ),
             );
             return values.every((value) => value !== undefined)
@@ -6799,6 +6837,7 @@ class Compiler implements LoweringServices {
                 access,
                 nested,
                 nestedTypes,
+                leaf,
             );
             if (value === undefined) return undefined;
             entries.push([field.sourceName, value]);
@@ -6988,6 +7027,10 @@ class Compiler implements LoweringServices {
                     [],
                     `Module constant '${constant.name.text}'`,
                 );
+            // A static reader reads all it resolves: a part generation
+            // cannot read refuses there.
+            if (value === undefined)
+                refuseUnreadablePart(this, carried, expression);
         } else if (
             ts.isCallExpression(resolved) &&
             !resolved.questionDotToken

@@ -179,6 +179,58 @@ export function nullValue(): Value<"json-null"> {
     return { kind: "json-null", cpp: "" };
 }
 
+/**
+ * A part of plain data the program holds where generation cannot read it:
+ * an object (its `typeof`, truthiness and presence are an array's), whose
+ * every read refuses with `refusal` ({@link unreadableRefusal}).
+ */
+export function unreadableValue(refusal: string): Value<"unreadable"> {
+    return {
+        kind: "unreadable",
+        cpp: "",
+        truthinessCpp: "true",
+        unreadableRefusal: refusal,
+    };
+}
+
+/** Why generation cannot read a value; undefined for a value it reads. */
+export function unreadableRefusal(value: Value): string | undefined {
+    return value.kind === "unreadable" ? value.unreadableRefusal : undefined;
+}
+
+/**
+ * Whether a value holds a part generation cannot read: it has no native
+ * storage, so it stays generation's (a compile-time aggregate, iterated and
+ * passed inline) until a read of that part refuses.
+ */
+export function holdsUnreadable(value: Value): boolean {
+    return heldUnreadableRefusal(value) !== undefined;
+}
+
+/**
+ * Why generation cannot read all of a value: the refusal of the first
+ * unreadable part ({@link unreadableRefusal}) its elements or members hold,
+ * at any depth.
+ */
+export function heldUnreadableRefusal(
+    value: Value,
+    visited: Set<Value> = new Set(),
+): string | undefined {
+    if (visited.has(value)) return undefined;
+    visited.add(value);
+    const own = unreadableRefusal(value);
+    if (own !== undefined) return own;
+    for (const part of [
+        ...(value.tupleElements ?? []),
+        ...(value.staticElements ?? []),
+        ...Object.values(value.recordProperties ?? {}),
+    ]) {
+        const held = heldUnreadableRefusal(part, visited);
+        if (held !== undefined) return held;
+    }
+    return undefined;
+}
+
 /** The property key a value folds to: its static text, or its static number's. */
 export function staticKeyOf(value: Value | undefined): string | undefined {
     return (

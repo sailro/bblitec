@@ -15,7 +15,8 @@
 // that variant's options with the redefinitions over them, and selected at
 // run time from the view's variant (`derived_shader_variant_<site>`). The
 // view keeps the source's slots, so a redefinition keeps the uniforms,
-// samplers and storage buffers its source declares.
+// samplers and storage buffers its source declares, and its program takes
+// no uniform defaults (`viewProgramFact`).
 import ts from "typescript";
 import { writable } from "./emission-transaction.js";
 import { jsonToValue } from "./json-value.js";
@@ -35,7 +36,11 @@ import {
     shaderMaterialField,
     shaderSourceFact,
     RuntimeLeaf,
+    UnreadableLeaf,
+    unreadableFactRefusal,
+    viewDefinitionFact,
     viewFields,
+    viewProgramFact,
     type RecordFact,
     type RecordFacts,
     type ShaderDerivationContext,
@@ -54,8 +59,12 @@ import type { CompiledShaderProgram, Value } from "./types.js";
 import {
     shaderVariantFacts,
     shaderVariantsOf,
+    unreadableRefusal,
+    unreadableValue,
+    valueDataType,
     withShaderVariants,
 } from "./values/model.js";
+import { unlessRefused } from "./compile-error.js";
 
 /** A `createMaterialView` over a ShaderMaterial. */
 export interface ShaderMaterialView {
@@ -168,7 +177,8 @@ function variantsField(
  * from (`bbl::shader_uniform_creation_lane`), at the offset each variant
  * lays the uniform out at. `path` is the leaf's: item, member, then lane.
  * The pin's field holds the creation's own array, so one the program may
- * change after the creation refuses: the material keeps its numbers.
+ * change after the creation is a value whose reads refuse
+ * (`unreadableValue`): the material keeps only its numbers.
  */
 function creationLaneLeaf(
     context: Pick<ShaderMaterialViewContext, "fail" | "sceneManifest">,
@@ -176,13 +186,17 @@ function creationLaneLeaf(
     data: unknown,
     leaf: RuntimeLeaf,
     path: readonly (string | number)[],
-    material: { readonly engine: string; readonly cpp: string },
+    material: () => { readonly engine: string; readonly cpp: string },
     node: ts.Node,
 ): Value {
     const [item, , lane] = path;
     const name: unknown = Array.isArray(data)
         ? Reflect.get(Object(data[Number(item)]), "name")
         : undefined;
+    if (leaf.shared)
+        return unreadableValue(
+            `'${spelled(node)}' reads a ShaderMaterial's '${String(path[1])}' of uniform '${String(name)}', the array its creation was given, which the program may change after the creation (${leaf.shared}); the material keeps only that array's numbers at its creation.`,
+        );
     const slots = variants.map((variant) => {
         const program = context.sceneManifest.reachedShaderProgram(
             variant,
@@ -192,11 +206,6 @@ function creationLaneLeaf(
             ? shaderUniformValueLayout(program.uniforms).get(name)
             : undefined;
     });
-    if (leaf.shared)
-        context.fail(
-            node,
-            `'${spelled(node)}' reads a ShaderMaterial's '${String(path[1])}' of uniform '${String(name)}', the array its creation was given, which the program may change after the creation (${leaf.shared}); the material keeps only that array's numbers at its creation.`,
-        );
     const slot = slots[0];
     if (
         !slot ||
@@ -209,9 +218,10 @@ function creationLaneLeaf(
             node,
             `'${spelled(node)}' reads a ShaderMaterial's uniform default at run time; the materials it may be lay that uniform out differently.`,
         );
+    const { engine, cpp } = material();
     const read = (index: number): Value => ({
         kind: "number",
-        cpp: `bbl::shader_uniform_creation_lane(${material.engine}, ${material.cpp}, ${slot.offset}u, ${index}u)`,
+        cpp: `bbl::shader_uniform_creation_lane(${engine}, ${cpp}, ${slot.offset}u, ${index}u)`,
         dataType: { kind: "number" },
     });
     if (!leaf.lanes) return read(typeof lane === "number" ? lane : 0);
@@ -272,14 +282,23 @@ export function readShaderMaterialFact(
     if (!holdsRuntimeLeaf(data))
         return jsonToValue(context, recipeFactPolicy, data, expression);
     // The leaves read the material once, where the field is read.
-    const held = context.bindings.pinValueToTemporary(
-        owner,
-        "shader_material",
-        expression.expression,
-    );
-    const reader = {
-        engine: context.requireEngine(held, expression),
-        cpp: held.cpp,
+    let reader: { readonly engine: string; readonly cpp: string } | undefined;
+    const readMaterial = (): {
+        readonly engine: string;
+        readonly cpp: string;
+    } => {
+        if (!reader) {
+            const held = context.bindings.pinValueToTemporary(
+                owner,
+                "shader_material",
+                expression.expression,
+            );
+            reader = {
+                engine: context.requireEngine(held, expression),
+                cpp: held.cpp,
+            };
+        }
+        return reader;
     };
     return jsonToValue(
         context,
@@ -287,17 +306,19 @@ export function readShaderMaterialFact(
         data,
         expression,
         (leaf, path) =>
-            leaf instanceof RuntimeLeaf
-                ? creationLaneLeaf(
-                      context,
-                      variants,
-                      data,
-                      leaf,
-                      path,
-                      reader,
-                      expression,
-                  )
-                : undefined,
+            leaf instanceof UnreadableLeaf
+                ? unreadableValue(leaf.refusal)
+                : leaf instanceof RuntimeLeaf
+                  ? creationLaneLeaf(
+                        context,
+                        variants,
+                        data,
+                        leaf,
+                        path,
+                        readMaterial,
+                        expression,
+                    )
+                  : undefined,
     );
 }
 
@@ -625,9 +646,55 @@ function programsThrough(
 }
 
 /**
- * The options a view's program compiles from: `facts`, a source variant's,
+ * A redefined declaration list: its items as `optionFact` reads them, or,
+ * where generation reads no items there, the plain data its value holds,
+ * a part it does not read a leaf (`UnreadableLeaf` for an unreadable value,
+ * `RuntimeLeaf` for a run-time number).
+ */
+function redefinedListFact(
+    context: Pick<
+        ShaderMaterialViewContext,
+        | "checker"
+        | "compileValue"
+        | "evaluationOrder"
+        | "probeEmission"
+        | "resolveStaticLiteral"
+        | "staticListItems"
+        | "staticLiteralData"
+    > &
+        Pick<LoweringServices, "program">,
+    expression: ts.Expression,
+): RecordFact {
+    const fact = optionFact(context, expression, true);
+    if (fact !== "runtime") return fact;
+    const data = context.probeEmission(
+        () =>
+            unlessRefused(() =>
+                context.staticLiteralData(
+                    context.compileValue(expression),
+                    expression,
+                    (part): unknown => {
+                        const refusal = unreadableRefusal(part);
+                        if (refusal !== undefined)
+                            return new UnreadableLeaf(refusal);
+                        return valueDataType(part)?.kind === "number" &&
+                            part.staticNumber === undefined
+                            ? new RuntimeLeaf(false)
+                            : undefined;
+                    },
+                ),
+            ),
+        () => false,
+    );
+    if (data === undefined) return "runtime";
+    return holdsRuntimeLeaf(data) ? { partial: data } : { json: data };
+}
+
+/**
+ * The options a view's program derives from: `facts`, a source variant's,
  * with each redefinition over them, and each option whose pinned default
- * reads a redefined one fixed at what the source resolved.
+ * reads a redefined one fixed at what the source resolved. The program
+ * reads them as `viewProgramFact` does.
  */
 function viewOptions(
     context: Pick<ShaderMaterialViewContext, "fail">,
@@ -638,10 +705,12 @@ function viewOptions(
     const options = new Map<string, RecordFact>();
     for (const [key, fact] of facts) {
         if (redefined.has(key)) continue;
-        if (runTimeFact(fact))
+        const program = viewProgramFact(key, fact);
+        if (runTimeFact(program))
             context.fail(
                 node,
-                `A ShaderMaterial view's program compiles from its source's options; the source's '${key}' option is decided at run time.`,
+                unreadableFactRefusal(program) ??
+                    `A ShaderMaterial view's program compiles from its source's options; the source's '${key}' option is decided at run time.`,
             );
         options.set(key, fact);
     }
@@ -736,13 +805,22 @@ export function compileShaderMaterialViewDefinitions(
                 new Map(
                     definitions.map(({ key, value }): [string, RecordFact] => {
                         const field = shaderMaterialField(key)!;
-                        const fact = field.stage
-                            ? shaderSourceFact(context, value, field.stage)
-                            : optionFact(context, value, field.items === true);
-                        if (runTimeFact(fact))
+                        const fact = viewDefinitionFact(
+                            field.option,
+                            field.stage
+                                ? shaderSourceFact(context, value, field.stage)
+                                : field.items
+                                  ? redefinedListFact(context, value)
+                                  : optionFact(context, value, false),
+                            (item) =>
+                                `'${spelled(value)}' gives a ShaderMaterial view's '${key}' a '${String(field.copies)}' of '${String(Reflect.get(item, "name"))}' the run time decides; a view's program takes none, so generation keeps none to read.`,
+                        );
+                        const program = viewProgramFact(field.option, fact);
+                        if (runTimeFact(program))
                             context.fail(
                                 value,
-                                `A ShaderMaterial view's '${key}' compiles into its program at generation; this value is decided at run time.`,
+                                unreadableFactRefusal(program) ??
+                                    `A ShaderMaterial view's '${key}' compiles into its program at generation; this value is decided at run time.`,
                             );
                         return [field.option, fact];
                     }),
@@ -766,12 +844,18 @@ export function compileShaderMaterialViewDefinitions(
         let compiled!: CompiledShaderMaterialOptions;
         for (const creation of creations) {
             const options = viewOptions(context, creation, redefined, call);
+            const program: RecordFacts = new Map(
+                [...options].map(([key, fact]) => [
+                    key,
+                    viewProgramFact(key, fact),
+                ]),
+            );
             compiled = compileVariantProgram(
                 context,
                 programs,
                 current,
-                { name: target, value: factsRecord(context, options, call) },
-                context.memberLiteral(target, [...options.keys()]),
+                { name: target, value: factsRecord(context, program, call) },
+                context.memberLiteral(target, [...program.keys()]),
                 {
                     node: call,
                     runtime:

@@ -81,6 +81,7 @@ import { loopBoundMayChange, walkReachedLoopNodes } from "./resource-loops.js";
 import { calledFunction } from "./symbols.js";
 import {
     handleFoundCpp,
+    holdsUnreadable,
     knownCondition,
     presentCopy,
     rebaseSpelling,
@@ -2248,6 +2249,9 @@ export class BindingScopes {
         label: string,
         node?: ts.Expression,
     ): Value {
+        // A value holding a part generation cannot read has no native
+        // storage: it escapes as generation holds it.
+        if (holdsUnreadable(value)) return value;
         if (value.ownedCpp !== undefined || isNativeOwnerRecord(value)) {
             return this.pinValueToTemporary(value, label, node);
         }

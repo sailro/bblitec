@@ -2069,6 +2069,12 @@ export type ValueKind =
     | "task"
     | "texture"
     | "tuple"
+    /**
+     * A part of plain data the program holds where generation cannot read
+     * it (`unreadableValue`): it passes on with the data holding it, and
+     * every read of it refuses with its `unreadableRefusal`.
+     */
+    | "unreadable"
     | "void";
 
 /**
@@ -2143,6 +2149,9 @@ export function isCompileTimeOnlyValue(kind: ValueKind): boolean {
         // `createHavokWorld`; a native build reaches its solver through
         // the PAL, so the binding exists for that call to accept.
         kind === "physics-engine-module" ||
+        // A part of plain data generation cannot read: it passes on with
+        // the data holding it, and a read of it refuses.
+        kind === "unreadable" ||
         isNodeParticleValue(kind)
     );
 }

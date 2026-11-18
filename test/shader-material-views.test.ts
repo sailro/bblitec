@@ -593,17 +593,177 @@ test("a ShaderMaterial field built from an option the run time decides refuses, 
             ),
         /input\.ts:\d+:\d+: Expected a string literal\./,
     );
-    // The pin's field holds the creation's own array, which the program
-    // writes after the material keeps its numbers.
+});
+
+/**
+ * A material whose `uTint` default is an array the program writes after the
+ * creation: the pin's `uniformDecls` holds that array, the material only the
+ * numbers it had.
+ */
+const sharedDefaultSource = (body: string): string => `${prelude}
+    import { setShaderUniform } from "@babylonjs/lite";
+    import type { ShaderUniformDecl } from "@babylonjs/lite";
+    const CARVE_MAP: [number, number, number, number] = [-64, -64, 1 / 128, 4];
+    const CARVE: ShaderUniformDecl = { name: "uCarve", type: "vec4<f32>", defaultValue: CARVE_MAP };
+    function hasDecl<T extends { name: string }>(decls: readonly T[], name: string): boolean {
+        return decls.some((decl) => decl.name === name);
+    }
+    function withDecl<T extends { name: string }>(decls: readonly T[], decl: T): T[] {
+        return hasDecl(decls, decl.name) ? [...decls] : [...decls, decl];
+    }
+    async function main(): Promise<void> {
+        const engine = await createEngine({});
+        const lanes: [number, number, number] = [Math.random(), 0.5, 0.25];
+        lanes[1] = 0.75;
+        const tinted = createShaderMaterial({ name: "tinted", vertexSource: wgsl\`\${VERT}\`, fragmentSource: wgsl\`\${surface("shaderUniforms.uTint")}\`, attributes: ["position"], uniforms: ["worldViewProjection", "world", { name: "uTint", type: "vec3<f32>", defaultValue: lanes }] });
+        draw(engine, tinted);
+        const decl = tinted.uniformDecls[2]!;
+        const leaf = decl.defaultValue as readonly number[];
+        const mesh = createMeshFromData(engine, "probe", new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]), new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]), new Uint32Array([0, 1, 2]));
+        ${body}
+    }
+    void main();
+`;
+
+const sharedDefaultRefusal =
+    /'tinted\.uniformDecls' reads a ShaderMaterial's 'defaultValue' of uniform 'uTint', the array its creation was given, which the program may change after the creation \('lanes': .*\); the material keeps only that array's numbers at its creation\./;
+
+/** That compiling `body` refuses with `sharedDefaultRefusal` on the line of `read`. */
+function refusesAtRead(body: string, read = body): void {
+    const source = sharedDefaultSource(body);
+    const at = source.split("\n").findIndex((text) => text.includes(read)) + 1;
+    assert.throws(
+        () => compileSource(source),
+        (error: unknown) =>
+            error instanceof Error &&
+            error.message.startsWith(`input.ts:${at}:`) &&
+            sharedDefaultRefusal.test(error.message),
+        body,
+    );
+}
+
+test("a ShaderMaterial default the program may change passes on with the declarations holding it", () => {
+    const compiled = compileSource(
+        sharedDefaultSource(`
+        // Spread, rebuilt and searched by a helper, the declarations keep
+        // the default without reading it.
+        const decls = withDecl(withDecl(tinted.uniformDecls, CARVE), { name: "uTint", type: "vec3<f32>" });        const copy = { ...decl };
+        const spread = [...tinted.uniformDecls];
+        mesh.position.x = decls.length;
+        mesh.position.y = hasDecl(decls, "uCarve") && decls[2]!.name === copy.name && spread.length === 3 ? 1 : 0;
+        // What any array answers folds.
+        mesh.name = typeof (copy.defaultValue ?? 0);
+        mesh.position.z = decl.defaultValue && decl.defaultValue !== undefined ? 1 : 0;
+        if (!leaf) throw new Error("absent");
+    `),
+    );
+    assert.match(compiled.cpp, /\.position\.x = 4\.0;/);
+    assert.match(compiled.cpp, /\.position\.y = 1\.0;/);
+    assert.match(compiled.cpp, /\.name = "object";/);
+    assert.match(compiled.cpp, /\.position\.z = 1\.0;/);
+    assert.doesNotMatch(compiled.cpp, /shader_uniform_creation_lane/);
+});
+
+test("each read of a ShaderMaterial default the program may change refuses at the read", () => {
+    for (const read of [
+        // Its members, elements and methods.
+        "mesh.position.x = leaf.length;",
+        "mesh.position.x = leaf[0]!;",
+        "mesh.position.x = leaf.map((lane) => lane * 2).length;",
+        "mesh.position.x = (decl.defaultValue as number[] | undefined)?.length ?? 0;",
+        "const copy = { ...decl }; mesh.position.x = (copy.defaultValue as number[]).length;",
+        // Its iteration and spread.
+        "for (const lane of leaf) mesh.position.x += lane;",
+        "mesh.position.x = [...leaf].length;",
+        "mesh.position.x = Math.max(...leaf);",
+        "const [first] = leaf; mesh.position.x = first!;",
+        // Native storage, a library call, a pinned call.
+        "const kept: (readonly number[])[] = []; kept.push(leaf); mesh.position.x = kept.length;",
+        "let held: readonly number[] = lanes; held = leaf; mesh.position.x = held.length;",
+        "const picked = Math.random() > 0.5 ? leaf : lanes; mesh.position.x = picked.length;",
+        "mesh.position.x = Float32Array.from(leaf).length;",
+        'setShaderUniform(tinted, "uTint", leaf);',
+        // Its identity.
+        "mesh.position.x = leaf === lanes ? 1 : 2;",
+        "mesh.position.x = [lanes as readonly number[]].includes(leaf) ? 1 : 2;",
+        "const keyed = new Map<readonly number[], number>(); keyed.set(leaf, 1); mesh.position.x = keyed.size;",
+        // A conversion.
+        'mesh.name = "tint " + leaf;',
+        "mesh.name = `tint ${leaf}`;",
+        "mesh.position.x = +(leaf as unknown as number);",
+    ])
+        refusesAtRead(read);
+});
+
+test("a ShaderMaterial created from declarations holding a default the program may change reads it, and refuses", () => {
+    const created = (uniforms: string): string =>
+        `draw(engine, createShaderMaterial({ name: "copy", vertexSource: wgsl\`\${VERT}\`, fragmentSource: wgsl\`\${surface("vec3<f32>(1.0)")}\`, attributes: ["position"], uniforms: ${uniforms} }));`;
+    for (const uniforms of [
+        "tinted.uniformDecls",
+        "[...tinted.uniformDecls]",
+        'withDecl(tinted.uniformDecls, { name: "uCarve", type: "f32" })',
+        "[decl]",
+        '[{ name: "uCopy", type: "vec3<f32>", defaultValue: decl.defaultValue }]',
+    ])
+        refusesAtRead(created(uniforms));
+});
+
+test("a ShaderMaterial view's program takes no defaults, so declarations it is given are not read", () => {
+    const viewed = (definition: string, read = ""): string => `
+        const view = createMaterialView(tinted, { features: 0 }) as ShaderMaterial;
+        ${definition}
+        draw(engine, view);
+        ${read}`;
+    const defined = (value: string): string =>
+        `Object.defineProperties(view, { fragmentSource: { value: wgsl\`\${NORMAL}\`, configurable: true }, uniformDecls: { value: ${value}, configurable: true } });`;
+    const compiled = compileSource(
+        sharedDefaultSource(
+            viewed(
+                `const decls = withDecl(tinted.uniformDecls, { name: "uTint", type: "vec3<f32>" });
+        ${defined("decls")}`,
+            ),
+        ),
+    );
+    const view = program(compiled, "tinted-1");
+    assert.match(view.fragmentSource, /normalize\(cross\(dpdx/);
+    assert.deepEqual(view.uniforms, program(compiled, "tinted").uniforms);
+    assert.deepEqual(view.uniformDefaults, []);
+    assert.match(compiled.cpp, /bbl::derive_shader_material_view\(/);
+    // The view's field holds what it was given: the source's default, and
+    // one the run time decides, whose reads refuse.
+    const readBack =
+        "mesh.position.x = (view.uniformDecls[2]!.defaultValue as number[]).length;";
+    refusesAtRead(
+        viewed(defined("[...tinted.uniformDecls]"), readBack),
+        readBack,
+    );
     assert.throws(
         () =>
             compileSource(
-                tinted(
-                    `{ name: "uTint", type: "vec3<f32>", defaultValue: lanes }`,
-                    "tinted.uniformDecls[2]!.name",
+                sharedDefaultSource(
+                    viewed(
+                        defined(
+                            '[tinted.uniformDecls[0]!, tinted.uniformDecls[1]!, { name: "uTint", type: "vec3<f32>", defaultValue: [lanes[0], 0, 0] }]',
+                        ),
+                        readBack,
+                    ),
                 ),
             ),
-        /'tinted\.uniformDecls' reads a ShaderMaterial's 'defaultValue' of uniform 'uTint', the array its creation was given, which the program may change after the creation \('lanes': .*\); the material keeps only that array's numbers at its creation\./,
+        /input\.ts:\d+:\d+: '\[tinted\.uniformDecls\[0\]!, .*\]' gives a ShaderMaterial view's 'uniformDecls' a 'defaultValue' of 'uTint' the run time decides; a view's program takes none, so generation keeps none to read\./,
+    );
+    // A leaf the program reads still refuses.
+    assert.throws(
+        () =>
+            compileSource(
+                sharedDefaultSource(
+                    viewed(
+                        defined(
+                            '[tinted.uniformDecls[0]!, tinted.uniformDecls[1]!, { name: "uTint", type: leaf as unknown as string }]',
+                        ),
+                    ),
+                ),
+            ),
+        sharedDefaultRefusal,
     );
 });
 
@@ -623,6 +783,27 @@ const runtimeDefaultsSource = `${prelude}
     }
     void main();
 `;
+
+test("a ShaderMaterial view over a material of run-time defaults compiles its program without them", () => {
+    const compiled = compileSource(
+        runtimeDefaultsSource.replace(
+            "draw(engine, named);",
+            `draw(engine, named);
+        const view = createMaterialView(tinted, { features: 0 }) as ShaderMaterial;
+        Object.defineProperty(view, "fragmentSource", { value: wgsl\`\${NORMAL}\`, configurable: true });
+        draw(engine, view);
+        // The view's field keeps its source's defaults, read from the view.
+        draw(engine, createShaderMaterial({ name: "back", vertexSource: wgsl\`\${VERT}\`, fragmentSource: wgsl\`\${surface("vec3<f32>(shaderUniforms.uBack)")}\`, attributes: ["position"], uniforms: ["worldViewProjection", "world", { name: "uBack", type: "f32", defaultValue: view.uniformDecls[2]!.defaultValue as number }] }));`,
+        ),
+    );
+    const view = program(compiled, "tinted-1");
+    assert.deepEqual(view.uniforms, program(compiled, "tinted").uniforms);
+    assert.deepEqual(view.uniformDefaults, []);
+    assert.match(
+        compiled.cpp,
+        /auto (\w+) = bbl::create_shader_material_view\([\s\S]*bbl::shader_uniform_creation_lane\(\w+, \1, 0u, 0u\)/,
+    );
+});
 
 test("a ShaderMaterial's uniformDecls holds the names and types the pin builds, its run-time defaults read from the numbers its creation kept", () => {
     const compiled = compileSource(runtimeDefaultsSource);

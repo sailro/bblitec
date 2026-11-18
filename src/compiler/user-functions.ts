@@ -30,6 +30,7 @@ import {
 } from "./binding-rebinds.js";
 import {
     absenceOf,
+    holdsUnreadable,
     knownCondition,
     ownKeysKnown,
     presenceFlagCpp,
@@ -183,6 +184,8 @@ import { returnsOnlyConstructedEvents } from "./uninitialized-handle.js";
 export interface CallbackInvocationOptions {
     coroutine?: true;
     frameDriven?: true;
+    /** The arguments have no native storage: the body runs inline, never shared. */
+    inline?: true;
     generator?: DataType<"iterator">;
     /** A concrete collection sink can retain its mapper's declared result model. */
     resultType?: DataType;
@@ -2683,6 +2686,7 @@ export class UserFunctionLowerer {
                 (value) =>
                     (value.staticJson !== undefined &&
                         (value.kind === "record" || value.kind === "tuple")) ||
+                    holdsUnreadable(value) ||
                     value.browserValue?.kind === "search-params" ||
                     (value.browserValue?.kind === "object" &&
                         value.browserValue.moduleUrl === true),
@@ -5771,7 +5775,10 @@ export class UserFunctionLowerer {
                         true,
                         false,
                     )
-                  : body?.coroutine || body?.frameDriven || body?.generator
+                  : body?.coroutine ||
+                      body?.frameDriven ||
+                      body?.generator ||
+                      body?.inline
                     ? undefined
                     : this.trySharedCall(
                           context,

@@ -38,9 +38,11 @@ import {
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { eventTargetCpp } from "./dom-targets.js";
+import { refuseUnreadable } from "./unreadable-values.js";
 import {
     absenceOf,
     absenceOfNull,
+    holdsUnreadable,
     knownAbsent,
     knownCondition,
     knownOwnKeys,
@@ -8778,6 +8780,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.context.requiresStaticDataIteration(callback)
         )
             return false;
+        // A tuple holding a part generation cannot read has no native
+        // storage to iterate.
+        const bound = this.context.bindings.lookupOptional(owner);
+        if (bound && holdsUnreadable(bound)) return false;
         const storage = this.dataTypeAt(owner);
         return (
             (storage?.kind === "vector" || storage?.kind === "span") &&
@@ -12613,6 +12619,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         dataType: DataType,
         node: ts.Node,
     ): string {
+        // Storage holds what it is given: a part generation cannot read
+        // has none.
+        refuseUnreadable(this.context, value, node);
         this.requireDocumentDictionaryConversion(value, dataType, node);
         // An object URL is a string naming its handle, which a revocation
         // by that string resolves.
@@ -13614,6 +13623,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const raw =
             this.compileDataPath(expression, "read") ??
             this.context.compileValue(expression);
+        // Storage holds what it is given: a part generation cannot read
+        // has none.
+        refuseUnreadable(this.context, raw, source);
         const narrowed =
             raw.kind === "data"
                 ? this.narrowOptional(

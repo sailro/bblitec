@@ -89,6 +89,21 @@ export class RuntimeLeaf {
 
 const runtimeLeafKey = "\u0000runtime";
 
+/**
+ * A leaf of a declaration list's plain data the list holds where generation
+ * cannot read it: a read of it refuses with `refusal` (`unreadableValue`).
+ */
+export class UnreadableLeaf {
+    constructor(readonly refusal: string) {}
+
+    /** The identity a reading of the facts records it by. */
+    public toJSON(): unknown {
+        return { [unreadableLeafKey]: this.refusal };
+    }
+}
+
+const unreadableLeafKey = "\u0000unreadable";
+
 /** Whether a fact holds a value only the run time holds, whole or in part. */
 export function runTimeFact(fact: RecordFact): boolean {
     return (
@@ -96,9 +111,10 @@ export function runTimeFact(fact: RecordFact): boolean {
     );
 }
 
-/** Whether plain data holds a `RuntimeLeaf`. */
+/** Whether plain data holds a leaf generation does not hold (`RuntimeLeaf`, `UnreadableLeaf`). */
 export function holdsRuntimeLeaf(json: unknown): boolean {
-    if (json instanceof RuntimeLeaf) return true;
+    if (json instanceof RuntimeLeaf || json instanceof UnreadableLeaf)
+        return true;
     if (Array.isArray(json)) return json.some(holdsRuntimeLeaf);
     return (
         typeof json === "object" &&
@@ -107,15 +123,31 @@ export function holdsRuntimeLeaf(json: unknown): boolean {
     );
 }
 
-/** A copy of plain data, each `RuntimeLeaf` kept as one. */
+/** The refusal of the first `UnreadableLeaf` a fact holds. */
+export function unreadableFactRefusal(fact: RecordFact): string | undefined {
+    const find = (json: unknown): string | undefined => {
+        if (json instanceof UnreadableLeaf) return json.refusal;
+        if (typeof json !== "object" || json === null) return undefined;
+        for (const part of Object.values(json)) {
+            const found = find(part);
+            if (found !== undefined) return found;
+        }
+        return undefined;
+    };
+    return typeof fact === "object" && "partial" in fact
+        ? find(fact.partial)
+        : undefined;
+}
+
+/** A copy of plain data, each leaf generation does not hold kept as one. */
 function copyPlainData(json: unknown): unknown {
     return JSON.parse(JSON.stringify(json), (_key, value: unknown) => {
-        if (
-            typeof value !== "object" ||
-            value === null ||
-            !Object.hasOwn(value, runtimeLeafKey)
-        )
-            return value;
+        if (typeof value !== "object" || value === null) return value;
+        if (Object.hasOwn(value, unreadableLeafKey))
+            return new UnreadableLeaf(
+                String(Reflect.get(value, unreadableLeafKey)),
+            );
+        if (!Object.hasOwn(value, runtimeLeafKey)) return value;
         const marker: unknown = Reflect.get(value, runtimeLeafKey);
         const [shape, shared]: unknown[] = Array.isArray(marker) ? marker : [];
         return new RuntimeLeaf(
@@ -542,6 +574,71 @@ export function shaderMaterialField(
 export function viewFields(): readonly string[] {
     return Object.keys(SHADER_MATERIAL_FIELDS).filter(
         (name) => !name.startsWith("_"),
+    );
+}
+
+/**
+ * `fact` with the member each item of declaration list option `key` copies
+ * into its field (`copies`) mapped by `map`, dropped where it answers
+ * undefined; any other fact as it is.
+ */
+function mapCopiedMembers(
+    key: string,
+    fact: RecordFact,
+    map: (member: unknown, item: object) => unknown,
+): RecordFact {
+    const copies = Object.values(SHADER_MATERIAL_FIELDS).find(
+        (field) => field.option === key,
+    )?.copies;
+    if (copies === undefined || typeof fact !== "object") return fact;
+    const data: unknown = "json" in fact ? fact.json : fact.partial;
+    if (!Array.isArray(data)) return fact;
+    const items = data.map((item: unknown): unknown => {
+        if (
+            typeof item !== "object" ||
+            item === null ||
+            Object.getPrototypeOf(item) !== Object.prototype ||
+            !Object.hasOwn(item, copies)
+        )
+            return item;
+        const mapped = map(Reflect.get(item, copies), item);
+        return Object.fromEntries(
+            Object.entries(item).flatMap(([name, value]) =>
+                name !== copies
+                    ? [[name, value]]
+                    : mapped === undefined
+                      ? []
+                      : [[name, mapped]],
+            ),
+        );
+    });
+    return holdsRuntimeLeaf(items) ? { partial: items } : { json: items };
+}
+
+/**
+ * Option `key`'s fact as a material view's program reads it: the pin's
+ * views take no defaults (a view draws with its source's uniform values),
+ * so the member each item copies into the field (`copies`) is not read.
+ */
+export function viewProgramFact(key: string, fact: RecordFact): RecordFact {
+    return mapCopiedMembers(key, fact, () => undefined);
+}
+
+/**
+ * Option `key`'s fact as a view's redefinition holds it, for reads of the
+ * view's field: a copied member (`copies`) holding a part the run time
+ * decides is a leaf a read refuses (`refusal` of the item), since the
+ * view's program takes none and generation keeps none.
+ */
+export function viewDefinitionFact(
+    key: string,
+    fact: RecordFact,
+    refusal: (item: object) => string,
+): RecordFact {
+    return mapCopiedMembers(key, fact, (member, item) =>
+        member instanceof UnreadableLeaf || !holdsRuntimeLeaf(member)
+            ? member
+            : new UnreadableLeaf(refusal(item)),
     );
 }
 

@@ -32,6 +32,8 @@ interface GenerationValuePayloads {
         };
     };
     "typed-array-constructor": { typedArrayConstructor?: TypedArrayKind };
+    /** Why generation cannot read the value: what a read of it refuses with. */
+    unreadable: { unreadableRefusal?: string };
 }
 
 export type ValuePayloads = GenerationValuePayloads & ValueMetadataPayloads;
@@ -45,6 +47,7 @@ export const generationPayloadFields = {
     "executed-url": ["executedUrl"],
     "animation-group-mask": ["animationGroupMask"],
     "typed-array-constructor": ["typedArrayConstructor"],
+    unreadable: ["unreadableRefusal"],
 } as const satisfies {
     [
         K in keyof GenerationValuePayloads

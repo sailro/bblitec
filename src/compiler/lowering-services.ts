@@ -399,9 +399,14 @@ export interface LoweringServices {
     ): ts.ObjectLiteralExpression;
     /**
      * The plain data a value holds when generation knows all of it and its
-     * facts are current; undefined otherwise. `expression` reads the value.
+     * facts are current; undefined otherwise. `expression` reads the value;
+     * `leaf` reads a part as the plain data it answers, where it answers any.
      */
-    staticLiteralData(value: Value, expression: ts.Expression): unknown;
+    staticLiteralData(
+        value: Value,
+        expression: ts.Expression,
+        leaf?: (part: Value) => unknown,
+    ): unknown;
     /**
      * An application function run once at generation per declaration and
      * arguments; its plain-data result. `pinnedStandIn` binds pinned imports

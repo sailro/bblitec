@@ -36,6 +36,7 @@ import ts from "typescript";
 import {
     absenceOf,
     absenceOfNull,
+    holdsUnreadable,
     knownCondition,
     ownKeysKnown,
     staticKeyOf,
@@ -226,6 +227,7 @@ import {
     type DataType,
 } from "./data-types.js";
 import { isBinaryDataType } from "./data-types/typed-arrays.js";
+import { refuseUnreadableRead, unlessUnreadable } from "./unreadable-values.js";
 import { readCallableProperty } from "./properties.js";
 import {
     compileJsonCall,
@@ -678,6 +680,13 @@ export class ExpressionLowerer {
     }
 
     public compileValue(expression: ts.Expression): Value {
+        const value = this.compileValueOf(expression);
+        // A part generation cannot read refuses where its use reads it.
+        refuseUnreadableRead(this.context, value, expression);
+        return value;
+    }
+
+    private compileValueOf(expression: ts.Expression): Value {
         const forced =
             this.context.valueOverrides.size > 0
                 ? this.context.valueOverrides.get(expression)
@@ -1498,80 +1507,32 @@ export class ExpressionLowerer {
                               element: destination.element,
                           }
                         : this.context.dataLowerer.dataTypeAt(unwrapped);
+                const spreadLanes = (): Value => ({
+                    kind: "tuple",
+                    cpp: "",
+                    tupleElements: this.context.dataLowerer
+                        .spreadLaneValues(
+                            unwrapped.elements,
+                            (element) =>
+                                this.builtLane(
+                                    this.laneValue(element),
+                                    element,
+                                ),
+                            "Array spread requires a concrete native array element type.",
+                        )
+                        .map(({ value }) => value),
+                });
                 if (dataType?.kind !== "vector" && dataType?.kind !== "tuple")
-                    return {
-                        kind: "tuple",
-                        cpp: "",
-                        tupleElements: this.context.dataLowerer
-                            .spreadLaneValues(
-                                unwrapped.elements,
-                                (element) =>
-                                    this.builtLane(
-                                        this.laneValue(element),
-                                        element,
-                                    ),
-                                "Array spread requires a concrete native array element type.",
-                            )
-                            .map(({ value }) => value),
-                    };
-                if (
-                    dataType.kind === "vector" &&
-                    !this.context.dataTypes.carriesBorrowedPlatformEvent(
-                        dataType.element,
-                    ) &&
-                    [
-                        "number",
-                        "boolean",
-                        "string",
-                        "enum",
-                        "union",
-                        "struct",
-                    ].includes(dataType.element.kind)
-                ) {
-                    let elements: readonly Value[] | undefined;
-                    const copiedRecordSources: Value[] = [];
-                    const value = this.context.bindings.pinValueToTemporary(
-                        {
-                            kind: "data",
-                            cpp: this.context.dataLowerer.compileVectorSink(
-                                unwrapped,
-                                dataType,
-                                (evaluated) => {
-                                    elements = evaluated;
-                                },
-                                copiedRecordSources,
-                            ),
-                            dataType,
-                            freshData: true,
-                        },
-                        "array_literal",
-                        unwrapped,
-                    );
-                    if (elements)
-                        this.context.dataLowerer.retainArrayLiteralFacts(
-                            value,
-                            {
-                                kind: "tuple",
-                                cpp: "",
-                                tupleElements: [...elements],
-                            },
-                            unwrapped,
-                        );
-                    if (!value.staticElements)
-                        for (const source of copiedRecordSources)
-                            this.context.dataLowerer.invalidateRecordArrayFacts(
-                                source,
-                            );
-                    return value;
-                }
-                return {
-                    kind: "data",
-                    cpp: this.context.dataLowerer.compileForSink(
-                        unwrapped,
-                        dataType,
+                    return spreadLanes();
+                // An array holding a part generation cannot read has no
+                // native storage: it is generation's, its lanes as spread.
+                const native = unlessUnreadable(() =>
+                    this.context.keptEmission(
+                        () => this.nativeSpreadArray(unwrapped, dataType),
+                        () => true,
                     ),
-                    dataType,
-                };
+                );
+                return native ?? spreadLanes();
             }
             const pins = this.context.evaluationOrder.operandsToPin(
                 unwrapped.elements,
@@ -2861,6 +2822,61 @@ export class ExpressionLowerer {
         }
         const staticNumber = staticNumberValue(this.context, expression);
         return staticNumber === undefined ? value : { ...value, staticNumber };
+    }
+
+    /** A spread array literal stored natively as `dataType`. */
+    private nativeSpreadArray(
+        unwrapped: ts.ArrayLiteralExpression,
+        dataType: DataType<"vector" | "tuple">,
+    ): Value {
+        if (
+            dataType.kind === "vector" &&
+            !this.context.dataTypes.carriesBorrowedPlatformEvent(
+                dataType.element,
+            ) &&
+            ["number", "boolean", "string", "enum", "union", "struct"].includes(
+                dataType.element.kind,
+            )
+        ) {
+            let elements: readonly Value[] | undefined;
+            const copiedRecordSources: Value[] = [];
+            const value = this.context.bindings.pinValueToTemporary(
+                {
+                    kind: "data",
+                    cpp: this.context.dataLowerer.compileVectorSink(
+                        unwrapped,
+                        dataType,
+                        (evaluated) => {
+                            elements = evaluated;
+                        },
+                        copiedRecordSources,
+                    ),
+                    dataType,
+                    freshData: true,
+                },
+                "array_literal",
+                unwrapped,
+            );
+            if (elements)
+                this.context.dataLowerer.retainArrayLiteralFacts(
+                    value,
+                    {
+                        kind: "tuple",
+                        cpp: "",
+                        tupleElements: [...elements],
+                    },
+                    unwrapped,
+                );
+            if (!value.staticElements)
+                for (const source of copiedRecordSources)
+                    this.context.dataLowerer.invalidateRecordArrayFacts(source);
+            return value;
+        }
+        return {
+            kind: "data",
+            cpp: this.context.dataLowerer.compileForSink(unwrapped, dataType),
+            dataType,
+        };
     }
 
     /**
@@ -5240,6 +5256,7 @@ export class ExpressionLowerer {
                             values,
                             call,
                             method === "forEach",
+                            holdsUnreadable(owner),
                         ),
                 );
             return method === "map"
@@ -5251,6 +5268,13 @@ export class ExpressionLowerer {
                 : result;
         };
         if (method === "some") {
+            // A predicate whose body runs no code leaves only its bindings
+            // behind, so the answer generation knows is the whole call.
+            const pure =
+                local !== undefined &&
+                ts.isArrowFunction(local) &&
+                !ts.isBlock(local.body) &&
+                !this.runsCode(local.body);
             // Keep each callback's statements inside its short-circuited
             // operand. Emitting all bodies first would execute skipped calls.
             const predicates = elements.map((element, index) => {
@@ -5268,13 +5292,29 @@ export class ExpressionLowerer {
                             );
                     }),
                 );
-                return lines.length
-                    ? `([&]() -> bool { ${lines.join("\n")} return ${condition}; }())`
-                    : `(${condition})`;
+                return {
+                    cpp: lines.length
+                        ? `([&]() -> bool { ${lines.join("\n")} return ${condition}; }())`
+                        : `(${condition})`,
+                    known:
+                        lines.length && !pure
+                            ? undefined
+                            : knownCondition(condition),
+                };
             });
+            // Predicates generation knows, up to the first that holds,
+            // answer the search.
+            const first = predicates.findIndex(({ known }) => known !== false);
+            if (first < 0 || predicates[first]!.known === true)
+                return {
+                    kind: "boolean",
+                    cpp: first < 0 ? "false" : "true",
+                    staticBoolean: first >= 0,
+                    dataType: { kind: "boolean" },
+                };
             return {
                 kind: "boolean",
-                cpp: predicates.length ? predicates.join(" || ") : "false",
+                cpp: predicates.map(({ cpp }) => cpp).join(" || "),
                 dataType: { kind: "boolean" },
             };
         }
@@ -5327,6 +5367,8 @@ export class ExpressionLowerer {
         arguments_: readonly Value[],
         call: ts.CallExpression,
         discardReturn = false,
+        /** The tuple has no native storage (`holdsUnreadable`): each call runs inline. */
+        inline = false,
     ): Value {
         if (
             ts.isIdentifier(callback) ||
@@ -5340,6 +5382,7 @@ export class ExpressionLowerer {
                 arguments_,
                 call,
                 discardReturn,
+                inline ? { inline: true } : undefined,
             );
         }
         const tuple = arguments_[0];

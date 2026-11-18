@@ -621,8 +621,11 @@ export function valueConsumer(at: ts.Expression): ValueConsumer {
  */
 export type ValueUse = { readonly held: boolean } & (
     | { readonly kind: "member"; readonly access: MemberAccess }
-    /** Called, tested or compared. */
-    | { readonly kind: "read" }
+    /**
+     * Called, tested or compared: `at` is the expression its reader
+     * consumes, past the selections and literals that yield it.
+     */
+    | { readonly kind: "read"; readonly at: ts.Expression }
     /** An expression statement's value or `void`'s operand. */
     | { readonly kind: "discarded" }
     | {
@@ -662,7 +665,7 @@ export function valueUse(value: ts.Expression): ValueUse {
                 continue;
             case "operand":
                 // A selection's test or `,`'s left operand is read, not yielded.
-                if (!consumer.yielded) return { held, kind: "read" };
+                if (!consumer.yielded) return { held, kind: "read", at };
                 at = outermostWrapper(consumer.selection);
                 continue;
             case "member":
@@ -670,16 +673,12 @@ export function valueUse(value: ts.Expression): ValueUse {
             case "called":
             case "compared":
             case "tested":
-                return { held, kind: "read" };
+                return { held, kind: "read", at };
             case "operator":
-                return {
-                    held,
-                    kind:
-                        consumer.operator.operatorToken.kind ===
-                        ts.SyntaxKind.InstanceOfKeyword
-                            ? "read"
-                            : "handed",
-                };
+                return consumer.operator.operatorToken.kind ===
+                    ts.SyntaxKind.InstanceOfKeyword
+                    ? { held, kind: "read", at }
+                    : { held, kind: "handed" };
             case "discarded":
                 return { held, kind: "discarded" };
             case "returned":
