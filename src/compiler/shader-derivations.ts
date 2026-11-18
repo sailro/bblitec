@@ -46,17 +46,84 @@ import {
     variableKind,
 } from "./syntax.js";
 import { isPinnedType } from "./data-types.js";
-import { arrayShape, callSignatures, presentMembers } from "./type-facts.js";
+import {
+    arrayShape,
+    callSignatures,
+    holdsOnly,
+    presentMembers,
+} from "./type-facts.js";
 import type { CompiledShaderMaterialOptions } from "./shader-material.js";
 import type { ShaderStage } from "../shader-ir.js";
 import type { CompiledShaderProgram, Value } from "./types.js";
 import { absenceOf, undefinedValue, valueForKind } from "./values/model.js";
 
 /**
- * One own key of a record: plain data generation knows, `undefined`, or a
+ * One own key of a record: plain data generation knows, plain data some of
+ * whose leaves only the run time holds (`RuntimeLeaf`), `undefined`, or a
  * value only the run time holds.
  */
-export type RecordFact = { readonly json: unknown } | "undefined" | "runtime";
+export type RecordFact =
+    | { readonly json: unknown }
+    | { readonly partial: unknown }
+    | "undefined"
+    | "runtime";
+
+/**
+ * A leaf of a declaration list's plain data only the run time holds: a
+ * number, or (`lanes`) an array of numbers; `shared` says why the array may
+ * change after the list holds it, where it may.
+ */
+export class RuntimeLeaf {
+    constructor(
+        readonly lanes: boolean,
+        readonly shared?: string,
+    ) {}
+
+    /** The identity a reading of the facts records it by. */
+    public toJSON(): unknown {
+        return {
+            [runtimeLeafKey]: [this.lanes ? "lanes" : "number", this.shared],
+        };
+    }
+}
+
+const runtimeLeafKey = "\u0000runtime";
+
+/** Whether a fact holds a value only the run time holds, whole or in part. */
+export function runTimeFact(fact: RecordFact): boolean {
+    return (
+        fact === "runtime" || (typeof fact === "object" && "partial" in fact)
+    );
+}
+
+/** Whether plain data holds a `RuntimeLeaf`. */
+export function holdsRuntimeLeaf(json: unknown): boolean {
+    if (json instanceof RuntimeLeaf) return true;
+    if (Array.isArray(json)) return json.some(holdsRuntimeLeaf);
+    return (
+        typeof json === "object" &&
+        json !== null &&
+        Object.values(json).some(holdsRuntimeLeaf)
+    );
+}
+
+/** A copy of plain data, each `RuntimeLeaf` kept as one. */
+function copyPlainData(json: unknown): unknown {
+    return JSON.parse(JSON.stringify(json), (_key, value: unknown) => {
+        if (
+            typeof value !== "object" ||
+            value === null ||
+            !Object.hasOwn(value, runtimeLeafKey)
+        )
+            return value;
+        const marker: unknown = Reflect.get(value, runtimeLeafKey);
+        const [shape, shared]: unknown[] = Array.isArray(marker) ? marker : [];
+        return new RuntimeLeaf(
+            shape === "lanes",
+            typeof shared === "string" ? shared : undefined,
+        );
+    });
+}
 
 /** A record's own keys in order, with what each holds. */
 export type RecordFacts = ReadonlyMap<string, RecordFact>;
@@ -368,6 +435,13 @@ interface ShaderMaterialField {
     /** Generation reads the field as the plain data the pin builds (`pinnedShaderMaterialField`). */
     readonly built?: true;
     /**
+     * The member of each option item the pin copies into the field's item
+     * at the same index, reading it otherwise only in checks the creation
+     * made (`compileShaderUniformComponents`): its run-time leaves are the
+     * field's.
+     */
+    readonly copies?: string;
+    /**
      * The native list holding the field's names (`bbl::ShaderDeclarationList`);
      * `names` where its entries are the names themselves.
      */
@@ -404,6 +478,7 @@ const SHADER_MATERIAL_FIELDS: Readonly<Record<string, ShaderMaterialField>> = {
         option: "uniforms",
         items: true,
         built: true,
+        copies: "defaultValue",
         nativeList: { cpp: "bbl::ShaderDeclarationList::uniforms" },
     },
     samplerDecls: {
@@ -572,19 +647,23 @@ const shaderMaterialModule = "src/material/shader/shader-material.ts";
 /** @unjournaled Pure functions of facts nothing writes once recorded. */
 const pinnedFields = new WeakMap<
     RecordFacts,
-    Map<string, { readonly json: unknown } | string>
+    Map<
+        string,
+        { readonly json: unknown } | { readonly partial: unknown } | string
+    >
 >();
 
 /**
  * A field of the ShaderMaterial the pin's `createShaderMaterial` builds
- * from options `facts`, as plain data; a string says why generation does
- * not hold it. The pin runs over the options it validates whatever it
- * builds and the ones the field reads (`SHADER_MATERIAL_FIELDS`).
+ * from options `facts`, as plain data, with the run-time leaves of the
+ * members it copies (`copies`) where it copies them; a string says why
+ * generation does not hold it. The pin runs over the options it validates
+ * whatever it builds and the ones the field reads (`SHADER_MATERIAL_FIELDS`).
  */
 export function pinnedShaderMaterialField(
     facts: RecordFacts,
     field: string,
-): { readonly json: unknown } | string {
+): { readonly json: unknown } | { readonly partial: unknown } | string {
     let fields = pinnedFields.get(facts);
     if (!fields) {
         fields = new Map();
@@ -600,15 +679,30 @@ export function pinnedShaderMaterialField(
         ...(built.reads ?? [built.option]),
     ];
     const options: Record<string, unknown> = {};
-    let result: { readonly json: unknown } | string | undefined;
+    /** The copied members holding run-time leaves, by item index. */
+    let copied: ReadonlyMap<number, unknown> = new Map();
+    let result:
+        | { readonly json: unknown }
+        | { readonly partial: unknown }
+        | string
+        | undefined;
     for (const key of read) {
         const fact = facts.get(key);
         if (fact === undefined || fact === "undefined") continue;
-        if (fact === "runtime") {
+        if (fact !== "runtime" && "json" in fact) {
+            options[key] = fact.json;
+            continue;
+        }
+        const items =
+            fact !== "runtime" && key === built.option
+                ? copiedLeaves(fact.partial, built.copies)
+                : undefined;
+        if (!items) {
             result = `its '${key}' option is decided at run time`;
             break;
         }
-        options[key] = fact.json;
+        options[key] = items.options;
+        copied = items.copied;
     }
     if (result === undefined) {
         const material = pinnedModuleFunction(
@@ -623,10 +717,59 @@ export function pinnedShaderMaterialField(
             throw new Error(
                 `Pinned createShaderMaterial no longer builds '${field}'.`,
             );
-        result = { json: JSON.parse(JSON.stringify(value)) as unknown };
+        for (const [index, member] of copied) {
+            const item: unknown = Array.isArray(value)
+                ? value[index]
+                : undefined;
+            const key = built.copies;
+            if (
+                key === undefined ||
+                typeof item !== "object" ||
+                item === null ||
+                !Object.hasOwn(item, key)
+            )
+                throw new Error(
+                    `Pinned createShaderMaterial no longer copies '${String(key)}' into '${field}' item by item.`,
+                );
+            Reflect.set(item, key, member);
+        }
+        result = holdsRuntimeLeaf(value)
+            ? { partial: copyPlainData(value) }
+            : { json: JSON.parse(JSON.stringify(value)) as unknown };
     }
     fields.set(field, result);
     return result;
+}
+
+/**
+ * A declaration list whose run-time leaves all sit in the member `member`
+ * of its items: the list the pin runs over, each such member `undefined`
+ * (the pin builds the rest without it), and the members themselves by item
+ * index. Undefined where a leaf sits elsewhere.
+ */
+function copiedLeaves(
+    list: unknown,
+    member: string | undefined,
+):
+    | { readonly options: unknown[]; readonly copied: Map<number, unknown> }
+    | undefined {
+    if (!Array.isArray(list) || member === undefined) return undefined;
+    const copied = new Map<number, unknown>();
+    const options = list.map((item: unknown, index): unknown => {
+        if (!holdsRuntimeLeaf(item)) return item;
+        if (
+            typeof item !== "object" ||
+            item === null ||
+            Array.isArray(item) ||
+            !Object.entries(item).every(
+                ([key, value]) => key === member || !holdsRuntimeLeaf(value),
+            )
+        )
+            return notJson;
+        copied.set(index, Reflect.get(item, member));
+        return { ...item, [member]: undefined };
+    });
+    return options.includes(notJson) ? undefined : { options, copied };
 }
 
 /**
@@ -637,10 +780,13 @@ export function pinnedShaderMaterialField(
 export function shaderOptionFacts(
     context: Pick<
         ShaderDerivationContext,
+        | "checker"
         | "compileValue"
+        | "evaluationOrder"
         | "objectProperties"
         | "objectProperty"
         | "probeEmission"
+        | "program"
         | "propertyName"
         | "resolveStaticLiteral"
         | "staticListItems"
@@ -677,8 +823,11 @@ export function shaderOptionFacts(
 export function optionFact(
     context: Pick<
         ShaderDerivationContext,
+        | "checker"
         | "compileValue"
+        | "evaluationOrder"
         | "probeEmission"
+        | "program"
         | "resolveStaticLiteral"
         | "staticListItems"
     >,
@@ -740,12 +889,19 @@ function expressionFact(
     });
 }
 
-/** A declaration list's items, each read within the bindings it was spelled in. */
+/**
+ * A declaration list's items, each read within the bindings it was spelled
+ * in: a part generation does not hold is a `RuntimeLeaf` where it is one
+ * (`runtimeLeaf`).
+ */
 function listFact(
     context: Pick<
         ShaderDerivationContext,
+        | "checker"
         | "compileValue"
+        | "evaluationOrder"
         | "probeEmission"
+        | "program"
         | "resolveStaticLiteral"
         | "staticListItems"
     >,
@@ -764,11 +920,41 @@ function listFact(
                                 context.resolveStaticLiteral(node),
                         },
                         item.node,
+                        (node) => runtimeLeaf(context, node),
                     ),
             ),
         );
-        return items.includes(notJson) ? "runtime" : { json: items };
+        if (items.includes(notJson)) return "runtime";
+        return holdsRuntimeLeaf(items) ? { partial: items } : { json: items };
     });
+}
+
+/**
+ * What a part of a declaration list only the run time holds is as a leaf:
+ * a number, or an array of numbers, shared where something other than the
+ * list may write its elements once the list holds it (it is no fresh
+ * literal, and a write reaches arrays of its type).
+ */
+function runtimeLeaf(
+    context: Pick<
+        ShaderDerivationContext,
+        "checker" | "evaluationOrder" | "program"
+    >,
+    expression: ts.Expression,
+): RuntimeLeaf | typeof notJson {
+    const type = context.checker.getTypeAtLocation(expression);
+    if (holdsOnly(type, ["number"])) return new RuntimeLeaf(false);
+    const shape = arrayShape(context.checker, type);
+    if (!shape || !holdsOnly(shape.element, ["number"])) return notJson;
+    const written =
+        ts.isArrayLiteralExpression(unwrapExpression(expression)) ||
+        !shape.mutable
+            ? undefined
+            : arrayWriteObservation(context, type, type, expression);
+    return new RuntimeLeaf(
+        true,
+        written && `'${expression.getText()}': ${written}`,
+    );
 }
 
 /** The binding an options argument names, when it holds one object for its scope. */
@@ -987,12 +1173,16 @@ function recipeStore(
         writtenFact(context, recipeType, {
             ...Object.fromEntries(
                 [...members].flatMap(([name, fact]) =>
-                    typeof fact === "object" ? [[name, fact.json]] : [],
+                    typeof fact === "object" && "json" in fact
+                        ? [[name, fact.json]]
+                        : [],
                 ),
             ),
             [memberName]: Object.fromEntries(
                 [...creation.options].flatMap(([name, fact]) =>
-                    typeof fact === "object" ? [[name, fact.json]] : [],
+                    typeof fact === "object" && "json" in fact
+                        ? [[name, fact.json]]
+                        : [],
                 ),
             ),
         });
@@ -1200,7 +1390,8 @@ export function compileVariantProgram(
 /**
  * Facts as the compile-time record a synthesized options literal reads:
  * each `extra` member first, plain data as itself, an absent member as
- * `undefined`, and a member only the run time holds as `runtime` reads it.
+ * `undefined`, and a member the run time holds, whole or in part, as
+ * `runtime` reads it.
  */
 export function factsRecord(
     context: Pick<ShaderDerivationContext, "cppString" | "fail">,
@@ -1218,7 +1409,7 @@ export function factsRecord(
             ...Object.fromEntries(
                 [...facts].map(([key, fact]) => {
                     if (fact === "undefined") return [key, undefinedValue()];
-                    if (typeof fact === "object")
+                    if (typeof fact === "object" && "json" in fact)
                         return [
                             key,
                             jsonToValue(

@@ -318,6 +318,7 @@ export class IntrinsicOptions {
             expression,
             uniform,
             lengthCheck,
+            "float",
         );
     }
 

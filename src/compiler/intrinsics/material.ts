@@ -1242,9 +1242,13 @@ function shaderMaterialValue(
             initializer: materialCpp,
         });
         for (const uniform of dynamicUniforms) {
+            // A creation's own numbers stay the material's beside its floats.
+            const [lane, initialize] = uniform.creation
+                ? ["double", "initialize_shader_uniform_creation_values"]
+                : ["float", "initialize_shader_uniform_values"];
             context.emit({
                 kind: "expression",
-                code: `([&]() { const std::array<float, ${uniform.components.length}> values{${uniform.components.join(", ")}}; bbl::initialize_shader_uniform_values(${engine}, ${material}, ${uniform.offset}u, ${uniform.components.length}u, values.data()); }());`,
+                code: `([&]() { const std::array<${lane}, ${uniform.components.length}> values{${uniform.components.join(", ")}}; bbl::${initialize}(${engine}, ${material}, ${uniform.offset}u, ${uniform.components.length}u, values.data()); }());`,
             });
         }
         materialCpp = material;

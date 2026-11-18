@@ -103,6 +103,7 @@ export interface ShaderMaterialContext
             | "emitDiscardedValue"
             | "probeEmission"
             | "program"
+            | "evaluationOrder"
             | "unwrap"
             | "fail"
         > {}
@@ -197,6 +198,11 @@ export interface CompiledShaderMaterialOptions {
     dynamicUniforms?: Array<{
         offset: number;
         components: string[];
+        /**
+         * The components are the creation option's own numbers, which the
+         * material keeps for its `uniformDecls`.
+         */
+        creation?: true;
     }>;
     /** The options as read, where a material may derive from them. */
     creation?: RecordFacts;
@@ -268,12 +274,19 @@ export function compileShaderMaterialOptions(
     }
     const attributes = compileStaticStringArray(context, attributesExpression);
     validateShaderAttributes(context, attributesExpression, attributes);
+    // Where generation keeps the creation's options, the material keeps
+    // the numbers a run-time default holds, which `uniformDecls` copies.
+    const keepsCreation = keepsShaderCreations(context);
     const {
         signatures: declaredUniforms,
         defaults: uniformDefaults,
         dynamicDefaults,
     } = uniformsExpression && !absentShaderOption(context, uniformsExpression)
-        ? compileShaderUniformSignatures(context, uniformsExpression)
+        ? compileShaderUniformSignatures(
+              context,
+              uniformsExpression,
+              keepsCreation ? "double" : "float",
+          )
         : { signatures: [], defaults: [], dynamicDefaults: [] };
     const dynamicSourceUniforms = [
         ...compiledVertex.dynamicUniforms,
@@ -283,7 +296,13 @@ export function compileShaderMaterialOptions(
         ...declaredUniforms,
         ...dynamicSourceUniforms.map(({ name, type }) => `${name}:${type}`),
     ];
-    const dynamicInitializers = [...dynamicSourceUniforms, ...dynamicDefaults];
+    const dynamicInitializers = [
+        ...dynamicSourceUniforms,
+        ...dynamicDefaults.map((initializer) => ({
+            ...initializer,
+            ...(keepsCreation ? { creation: true as const } : {}),
+        })),
+    ];
     // `createShaderMaterial` asserts one namespace across the uniform,
     // sampler and define names it generates, so the set is built once here
     // and each normalizer adds its own to it.
@@ -502,7 +521,7 @@ export function compileShaderMaterialOptions(
         context.objectProperty(object, "transmissive"),
         false,
     );
-    const creation = keepsShaderCreations(context)
+    const creation = keepsCreation
         ? shaderOptionFacts(context, object, {
               ...(staticName === undefined
                   ? {}
@@ -518,12 +537,13 @@ export function compileShaderMaterialOptions(
         ...(creation ? { creation } : {}),
         ...(dynamicInitializers.length > 0
             ? {
-                  dynamicUniforms: dynamicInitializers.map(
-                      ({ name, components }) => ({
-                          offset: valueLayout.get(name)!.offset,
-                          components,
-                      }),
-                  ),
+                  dynamicUniforms: dynamicInitializers.map((initializer) => ({
+                      offset: valueLayout.get(initializer.name)!.offset,
+                      components: initializer.components,
+                      ...("creation" in initializer
+                          ? { creation: initializer.creation }
+                          : {}),
+                  })),
               }
             : {}),
     };
@@ -826,6 +846,8 @@ function compileShaderDefines(
 function compileShaderUniformSignatures(
     context: ShaderMaterialContext,
     expression: ts.Expression,
+    /** The C++ type run-time defaults' lanes compile to. */
+    precision: "float" | "double",
 ): {
     signatures: string[];
     defaults: CompiledShaderUniformDefault[];
@@ -929,6 +951,7 @@ function compileShaderUniformSignatures(
                                 type: uniformType,
                             },
                             "normalizeUniformValue",
+                            precision,
                         ),
                     });
                 }
@@ -1183,10 +1206,12 @@ export function compileShaderUniformComponents(
     uniform: Pick<ShaderUniformSlot, "count" | "name" | "type">,
     /** The pinned function whose length check this mirrors: the setter's, or a default's. */
     lengthCheck: ShaderUniformLengthCheck,
+    /** The lanes' C++ type: the uniform's floats, or a creation's own numbers. */
+    precision: "float" | "double",
 ): string[] {
     const { count } = uniform;
     if (count === 1) {
-        return [context.compileNumber(expression, "float")];
+        return [context.compileNumber(expression, precision)];
     }
     const resolved = context.resolveStaticExpression(expression);
     if (
@@ -1195,7 +1220,7 @@ export function compileShaderUniformComponents(
         !resolved.elements.some(ts.isSpreadElement)
     ) {
         return resolved.elements.map((element) =>
-            context.compileNumber(element, "float"),
+            context.compileNumber(element, precision),
         );
     }
     // `[...lanes]` copies one array-like: the writer reads the same lanes
@@ -1210,6 +1235,7 @@ export function compileShaderUniformComponents(
             resolved.elements[0].expression,
             uniform,
             lengthCheck,
+            precision,
         );
     // `[...rgb, 1]`: each element in order, a numeric tuple spread as its
     // lanes.
@@ -1232,7 +1258,7 @@ export function compileShaderUniformComponents(
                 expression,
                 `Expected a ${count}-component array value.`,
             );
-        return lanes.map(({ value }) => context.castNumber(value, "float"));
+        return lanes.map(({ value }) => context.castNumber(value, precision));
     }
     // A tuple's lanes are double values -- a `?? [0.7, 0.82, 0.92]` default
     // lowers each literal as one -- while the setter takes floats, and the
@@ -1259,7 +1285,7 @@ export function compileShaderUniformComponents(
         : compiled;
     if (value.kind === "tuple" && value.tupleElements?.length === count) {
         return value.tupleElements.map((element) =>
-            context.castNumber(element, "float"),
+            context.castNumber(element, precision),
         );
     }
     if (
@@ -1267,7 +1293,7 @@ export function compileShaderUniformComponents(
         value.dataType?.kind === "tuple" &&
         value.dataType.arity === count
     ) {
-        return tupleComponents(value.cpp, count, "float");
+        return tupleComponents(value.cpp, count, precision);
     }
     const numericArray =
         value.dataType?.kind === "vector" &&
@@ -1309,10 +1335,10 @@ export function compileShaderUniformComponents(
         const float = value.dataType?.kind === "f32array";
         return Array.from({ length: count }, (_, index) =>
             numericArray
-                ? `static_cast<float>(${array}[${index}u])`
-                : float
+                ? `static_cast<${precision}>(${array}[${index}u])`
+                : float && precision === "float"
                   ? `${array}.load(${index}u)`
-                  : `static_cast<float>(${array}.load(${index}u))`,
+                  : `static_cast<${precision}>(${array}.load(${index}u))`,
         );
     }
     context.fail(expression, `Expected a ${count}-component array value.`);

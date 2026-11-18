@@ -372,7 +372,9 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
   whose entry is read only through `name`; its `attributes` take `.includes(name)`, `.some(arrow)` and `for...of`
   over the names. Other reads of `vertexSource`, `fragmentSource` and the three lists are the plain data the pinned
   `createShaderMaterial` builds from the options of the material's generation-known variants, when every variant
-  agrees; otherwise they refuse. Reads of `_uniformValues`, `_textureSlots` and `_storageBufferSlots` refuse.
+  agrees; otherwise they refuse. A uniform `defaultValue` the run time decides, a number or a fresh array of numbers,
+  reads the numbers the material's creation was given; a shared array the program may write refuses.
+  Reads of `_uniformValues`, `_textureSlots` and `_storageBufferSlots` refuse.
   A local function call that refuses with a ShaderMaterial argument of run-time variant compiles once per variant
   the program's `createShaderMaterial` calls create, later ones included, and takes at run time the arm its
   argument's variant selects through a generated table; a variant outside the table throws.

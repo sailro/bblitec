@@ -42,6 +42,8 @@ ${cppFunction(factory, "MaterialRecord& shader_material(")}
 ${declarationLists ? cppFunction(factory, "const std::vector<std::string>& shader_declaration_names(") : ""}
 ${lowerShaderUniformSnapshot(context)}
 ${cppFunction(factory, "void initialize_shader_uniform_values(")}
+${cppFunction(factory, "void initialize_shader_uniform_creation_values(")}
+${cppFunction(factory, "double shader_uniform_creation_lane(")}
 ${cppFunction(factory, "void set_shader_uniform_values(")}
 ${factory.slice(factory.indexOf("void set_shader_uniform_value("), factory.indexOf("// setShaderTexture:"))}
 }

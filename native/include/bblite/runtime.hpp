@@ -8432,6 +8432,11 @@ void set_shader_uniform_values(Engine& engine, MaterialHandle material, std::uin
                                std::uint32_t count, const float* values);
 void initialize_shader_uniform_values(Engine& engine, MaterialHandle material, std::uint32_t offset,
                                       std::uint32_t count, const float* values);
+void initialize_shader_uniform_creation_values(Engine& engine, MaterialHandle material,
+                                               std::uint32_t offset, std::uint32_t count,
+                                               const double* values);
+[[nodiscard]] double shader_uniform_creation_lane(Engine& engine, MaterialHandle material,
+                                                  std::uint32_t offset, std::uint32_t lane);
 /** The pin installs cached shader writers process-wide for subsequent uploads. */
 inline bool shader_uniform_caching_enabled = false;
 inline void enable_shader_uniform_caching() { shader_uniform_caching_enabled = true; }

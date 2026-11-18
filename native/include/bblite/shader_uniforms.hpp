@@ -24,6 +24,8 @@ struct ShaderUniformState {
     double version = 0;
     double ubo_version = 0;
     std::shared_ptr<ShaderUniformRangeUpdates> range_updates;
+    /** The numbers run-time creation options held, by uniform offset, which `uniformDecls` copies. */
+    std::vector<std::pair<std::uint32_t, std::vector<double>>> creation_lanes;
 };
 
 /** Live aliases never invalidate this per-material serialized packet themselves. */

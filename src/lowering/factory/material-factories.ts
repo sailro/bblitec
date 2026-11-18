@@ -581,6 +581,32 @@ void initialize_shader_uniform_values(
     throw std::runtime_error("Shader uniform initialization offset is absent.");
 }
 
+// A default the run time decides: the material keeps the option's own numbers,
+// which the pin's \`uniformDecls\` copies, beside the floats it initializes.
+void initialize_shader_uniform_creation_values(
+    Engine& engine, MaterialHandle material, std::uint32_t offset,
+    std::uint32_t count, const double* values) {
+    std::vector<float> lanes;
+    lanes.reserve(count);
+    for (std::uint32_t lane = 0; lane < count; ++lane) lanes.push_back(static_cast<float>(values[lane]));
+    initialize_shader_uniform_values(engine, material, offset, count, lanes.data());
+    shader_material(engine, material).shader_uniforms->creation_lanes.emplace_back(
+        offset, std::vector<double>(values, values + count));
+}
+
+// One number of a uniform's run-time creation default; a view reads its
+// source's.
+double shader_uniform_creation_lane(
+    Engine& engine, MaterialHandle material, std::uint32_t offset,
+    std::uint32_t lane) {
+    const MaterialRecord& record = ${recordAt("engine.materials", "material")};
+    const MaterialHandle owner =
+        record.source_material.value == invalid_handle ? material : record.source_material;
+    for (const auto& [at, lanes] : shader_material(engine, owner).shader_uniforms->creation_lanes)
+        if (at == offset && lane < lanes.size()) return lanes[lane];
+    throw std::runtime_error("A shader uniform's creation default is absent.");
+}
+
 // Offset setter shared by setShaderUniform/setShaderFloat/
 // setShaderVector3: the compiler resolves (variant, uniform name) to the
 // flat value offset through the reflected layout at compile time.

@@ -25,19 +25,23 @@ import {
     effectFreeOptions,
     factsRecord,
     fieldsReadingOthers,
+    holdsRuntimeLeaf,
     isShaderMaterialType,
     optionFact,
     optionsBinding,
     pinnedShaderMaterialField,
     recipeFactPolicy,
+    runTimeFact,
     shaderMaterialField,
     shaderSourceFact,
+    RuntimeLeaf,
     viewFields,
     type RecordFact,
     type RecordFacts,
     type ShaderDerivationContext,
 } from "./shader-derivations.js";
 import type { CompiledShaderMaterialOptions } from "./shader-material.js";
+import { shaderUniformValueLayout } from "../shader-material-programs.js";
 import { statementsBeside, unwrapExpression, variableKind } from "./syntax.js";
 import type { CompiledShaderProgram, Value } from "./types.js";
 import {
@@ -102,7 +106,8 @@ function spelled(node: ts.Node): string {
 
 /**
  * The one reading of a ShaderMaterial field every variant `variants` names
- * gives, or a refusal naming why generation does not hold it.
+ * gives, as plain data that may hold run-time leaves (`RuntimeLeaf`), or a
+ * refusal naming why generation does not hold it.
  */
 function variantsField(
     context: Pick<ShaderMaterialViewContext, "fail" | "sceneManifest">,
@@ -110,7 +115,7 @@ function variantsField(
     field: string,
     node: ts.Node,
 ): unknown {
-    let found: { readonly json: unknown } | undefined;
+    let found: unknown;
     for (const variant of variants) {
         const creations =
             context.sceneManifest.shaderDerivations.creationsOf(variant);
@@ -126,18 +131,81 @@ function variantsField(
                     node,
                     `'${spelled(node)}' reads a ShaderMaterial's '${field}', which generation does not hold for shader variant '${variant}': ${read}.`,
                 );
+            const data = "json" in read ? read.json : read.partial;
             if (
-                found &&
-                JSON.stringify(found.json) !== JSON.stringify(read.json)
+                found !== undefined &&
+                JSON.stringify(found) !== JSON.stringify(data)
             )
                 context.fail(
                     node,
                     `'${spelled(node)}' reads a ShaderMaterial's '${field}', which differs between the materials it may be; the run time decides which.`,
                 );
-            found = read;
+            found = data;
         }
     }
-    return found!.json;
+    return found;
+}
+
+/**
+ * A run-time leaf of a uniform's `defaultValue` the field copied
+ * (`copies`): the lanes the material's creation initialized the uniform
+ * from (`bbl::shader_uniform_creation_lane`), at the offset each variant
+ * lays the uniform out at. `path` is the leaf's: item, member, then lane.
+ * The pin's field holds the creation's own array, so one the program may
+ * change after the creation refuses: the material keeps its numbers.
+ */
+function creationLaneLeaf(
+    context: Pick<ShaderMaterialViewContext, "fail" | "sceneManifest">,
+    variants: readonly string[],
+    data: unknown,
+    leaf: RuntimeLeaf,
+    path: readonly (string | number)[],
+    material: { readonly engine: string; readonly cpp: string },
+    node: ts.Node,
+): Value {
+    const [item, , lane] = path;
+    const name: unknown = Array.isArray(data)
+        ? Reflect.get(Object(data[Number(item)]), "name")
+        : undefined;
+    const slots = variants.map((variant) => {
+        const program = context.sceneManifest.reachedShaderProgram(
+            variant,
+            node,
+        );
+        return typeof name === "string"
+            ? shaderUniformValueLayout(program.uniforms).get(name)
+            : undefined;
+    });
+    if (leaf.shared)
+        context.fail(
+            node,
+            `'${spelled(node)}' reads a ShaderMaterial's '${String(path[1])}' of uniform '${String(name)}', the array its creation was given, which the program may change after the creation (${leaf.shared}); the material keeps only that array's numbers at its creation.`,
+        );
+    const slot = slots[0];
+    if (
+        !slot ||
+        slots.some(
+            (other) =>
+                other?.offset !== slot.offset || other.count !== slot.count,
+        )
+    )
+        context.fail(
+            node,
+            `'${spelled(node)}' reads a ShaderMaterial's uniform default at run time; the materials it may be lay that uniform out differently.`,
+        );
+    const read = (index: number): Value => ({
+        kind: "number",
+        cpp: `bbl::shader_uniform_creation_lane(${material.engine}, ${material.cpp}, ${slot.offset}u, ${index}u)`,
+        dataType: { kind: "number" },
+    });
+    if (!leaf.lanes) return read(typeof lane === "number" ? lane : 0);
+    return {
+        kind: "tuple",
+        cpp: "",
+        tupleElements: Array.from({ length: slot.count }, (_, index) =>
+            read(index),
+        ),
+    };
 }
 
 /**
@@ -149,7 +217,12 @@ function variantsField(
 export function readShaderMaterialFact(
     context: Pick<
         ShaderMaterialViewContext,
-        "checker" | "cppString" | "fail" | "sceneManifest"
+        | "bindings"
+        | "checker"
+        | "cppString"
+        | "fail"
+        | "requireEngine"
+        | "sceneManifest"
     >,
     owner: Value,
     expression: ts.PropertyAccessExpression,
@@ -179,11 +252,36 @@ export function readShaderMaterialFact(
             expression,
             `'${spelled(expression)}' reads a ShaderMaterial's '${field}', which its shader variant decides; this material's variant is decided at run time.`,
         );
+    const data = variantsField(context, variants, field, expression);
+    if (!holdsRuntimeLeaf(data))
+        return jsonToValue(context, recipeFactPolicy, data, expression);
+    // The leaves read the material once, where the field is read.
+    const held = context.bindings.pinValueToTemporary(
+        owner,
+        "shader_material",
+        expression.expression,
+    );
+    const reader = {
+        engine: context.requireEngine(held, expression),
+        cpp: held.cpp,
+    };
     return jsonToValue(
         context,
         recipeFactPolicy,
-        variantsField(context, variants, field, expression),
+        data,
         expression,
+        (leaf, path) =>
+            leaf instanceof RuntimeLeaf
+                ? creationLaneLeaf(
+                      context,
+                      variants,
+                      data,
+                      leaf,
+                      path,
+                      reader,
+                      expression,
+                  )
+                : undefined,
     );
 }
 
@@ -384,7 +482,7 @@ function viewOptions(
     const options = new Map<string, RecordFact>();
     for (const [key, fact] of facts) {
         if (redefined.has(key)) continue;
-        if (fact === "runtime")
+        if (runTimeFact(fact))
             context.fail(
                 node,
                 `A ShaderMaterial view's program compiles from its source's options; the source's '${key}' option is decided at run time.`,
@@ -423,7 +521,7 @@ function slotLayout(program: CompiledShaderProgram): string {
  * its variants derives, chosen at run time from the view's own.
  */
 export function compileShaderMaterialViewDefinitions(
-    context: ShaderMaterialViewContext,
+    context: ShaderMaterialViewContext & Pick<LoweringServices, "program">,
     call: ts.CallExpression,
     target: ts.Identifier,
     defined: readonly ViewDefinition[],
@@ -476,7 +574,7 @@ export function compileShaderMaterialViewDefinitions(
                         const fact = field.stage
                             ? shaderSourceFact(context, value, field.stage)
                             : optionFact(context, value, field.items === true);
-                        if (fact === "runtime")
+                        if (runTimeFact(fact))
                             context.fail(
                                 value,
                                 `A ShaderMaterial view's '${key}' compiles into its program at generation; this value is decided at run time.`,

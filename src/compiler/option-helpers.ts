@@ -775,11 +775,22 @@ export interface StaticJsonContext extends Pick<
  * Two families read a document straight out of the scene's own text — a node
  * material's graph and a node particle's — and both draw the same line: a
  * literal is data and cannot drift, so it is folded, while anything the
- * source computes is a module generation runs instead.
+ * source computes is a module generation runs instead. With `leaf`, a part
+ * that is not JSON holds what `leaf` reads it as, `notJson` where nothing.
  */
 export function staticJsonValue(
     context: StaticJsonContext,
     expression: ts.Expression,
+    leaf?: (expression: ts.Expression) => unknown,
+): unknown {
+    const value = staticJsonData(context, expression, leaf);
+    return value === notJson && leaf ? leaf(expression) : value;
+}
+
+function staticJsonData(
+    context: StaticJsonContext,
+    expression: ts.Expression,
+    leaf: ((expression: ts.Expression) => unknown) | undefined,
 ): unknown {
     const node = context.resolveStaticExpression(expression);
     if (ts.isObjectLiteralExpression(node)) {
@@ -789,7 +800,7 @@ export function staticJsonValue(
         const value: Record<string, unknown> = {};
         for (const { kind, key, value: initializer } of members) {
             if (kind !== "property") return notJson;
-            const member = staticJsonValue(context, initializer);
+            const member = staticJsonValue(context, initializer, leaf);
             if (member === notJson) return notJson;
             // An own `["__proto__"]` key is data; `=` would set the prototype.
             Object.defineProperty(value, key, {
@@ -810,7 +821,7 @@ export function staticJsonValue(
             ) {
                 return notJson;
             }
-            const member = staticJsonValue(context, element);
+            const member = staticJsonValue(context, element, leaf);
             if (member === notJson) return notJson;
             values.push(member);
         }

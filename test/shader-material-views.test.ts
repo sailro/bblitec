@@ -381,17 +381,135 @@ test("a run-time ShaderMaterial split refuses past its arm bound", () => {
 });
 
 test("a ShaderMaterial field built from an option the run time decides refuses, naming the variant", () => {
-    assert.throws(
-        () =>
-            compileSource(`${prelude}
+    const tinted = (uniform: string, read: string): string => `${prelude}
     async function main(): Promise<void> {
         const engine = await createEngine({});
-        const tinted = createShaderMaterial({ name: "tinted", vertexSource: wgsl\`\${VERT}\`, fragmentSource: wgsl\`\${surface("vec3<f32>(shaderUniforms.uTint)")}\`, attributes: ["position"], uniforms: ["worldViewProjection", "world", { name: "uTint", type: "f32", defaultValue: Math.random() }] });
+        const lanes: [number, number, number] = [Math.random(), 0.5, 0.25];
+        lanes[1] = 0.75;
+        const tinted = createShaderMaterial({ name: "tinted", vertexSource: wgsl\`\${VERT}\`, fragmentSource: wgsl\`\${surface("vec3<f32>(1.0)")}\`, attributes: ["position"], uniforms: ["worldViewProjection", "world", ${uniform}] });
         draw(engine, tinted);
-        console.log(tinted.uniformDecls.map((decl) => decl.name).join());
+        draw(engine, createShaderMaterial({ name: String(${read}), vertexSource: wgsl\`\${VERT}\`, fragmentSource: wgsl\`\${surface("vec3<f32>(1.0)")}\`, attributes: ["position"], uniforms: ["worldViewProjection", "world"] }));
     }
     void main();
-`),
-        /'tinted\.uniformDecls' reads a ShaderMaterial's 'uniformDecls', which generation does not hold for shader variant 'tinted': its 'uniforms' option is decided at run time\./,
+`;
+    // A run-time name decides the field, and the material it would name.
+    assert.throws(
+        () =>
+            compileSource(
+                tinted(
+                    `{ name: Math.random() > 0.5 ? "uA" : "uB", type: "f32" }`,
+                    "tinted.uniformDecls.length",
+                ),
+            ),
+        /input\.ts:\d+:\d+: Expected a string literal\./,
+    );
+    // The pin's field holds the creation's own array, which the program
+    // writes after the material keeps its numbers.
+    assert.throws(
+        () =>
+            compileSource(
+                tinted(
+                    `{ name: "uTint", type: "vec3<f32>", defaultValue: lanes }`,
+                    "tinted.uniformDecls[2]!.name",
+                ),
+            ),
+        /'tinted\.uniformDecls' reads a ShaderMaterial's 'defaultValue' of uniform 'uTint', the array its creation was given, which the program may change after the creation \('lanes': .*\); the material keeps only that array's numbers at its creation\./,
+    );
+});
+
+const runtimeDefaultsSource = `${prelude}
+    async function main(): Promise<void> {
+        const engine = await createEngine({});
+        const tint = Date.now() > 0 ? 0.1 : 0.2;
+        const tinted = createShaderMaterial({ name: "tinted", vertexSource: wgsl\`\${VERT}\`, fragmentSource: wgsl\`\${surface("vec3<f32>(shaderUniforms.uTint)")}\`, attributes: ["position"], uniforms: ["worldViewProjection", "world", { name: "uTint", type: "f32", defaultValue: tint }, { name: "uMix", type: "vec4<f32>", defaultValue: [tint, 0.5, tint * 3, 1] }, { name: "uFresh", type: "vec2<f32>", defaultValue: [...[tint, 0.25]] }] });
+        draw(engine, tinted);
+        // The declarations' names and types are the pin's; their run-time
+        // defaults are the numbers the creation was given.
+        const decls = tinted.uniformDecls;
+        const mix = decls[3]!.defaultValue as readonly number[];
+        const fresh = decls[4]!.defaultValue as readonly number[];
+        const named = createShaderMaterial({ name: decls.length === 5 && decls[1]!.type === "mat4x4<f32>" && decls[3]!.name === "uMix" && decls[3]!.type === "vec4<f32>" && decls[4]!.name === "uFresh" && fresh.length === 2 ? "named" : "unnamed", vertexSource: wgsl\`\${VERT}\`, fragmentSource: wgsl\`\${surface("vec3<f32>(shaderUniforms.uCopy.xyz)")}\`, attributes: ["position"], uniforms: ["worldViewProjection", "world", { name: "uCopy", type: "vec4<f32>", defaultValue: [decls[2]!.defaultValue as number, mix[1]!, mix[2]!, fresh[0]!] }] });
+        draw(engine, named);
+    }
+    void main();
+`;
+
+test("a ShaderMaterial's uniformDecls holds the names and types the pin builds, its run-time defaults read from the numbers its creation kept", () => {
+    const compiled = compileSource(runtimeDefaultsSource);
+    program(compiled, "named");
+    const escaped = (text: string): string =>
+        text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // The creation keeps each run-time default's own numbers, as doubles.
+    const kept = (offset: number, values: readonly string[]): RegExp =>
+        new RegExp(
+            `const std::array<double, ${values.length}> values\\{${values.join(", ")}\\}; bbl::initialize_shader_uniform_creation_values\\(\\w+, \\w+, ${offset}u, ${values.length}u, values\\.data\\(\\)\\);`,
+        );
+    assert.match(compiled.cpp, kept(0, ["v_tint"]));
+    assert.match(
+        compiled.cpp,
+        kept(1, ["v_tint", "0\\.5", escaped("(v_tint * 3.0)"), "1\\.0"]),
+    );
+    assert.match(compiled.cpp, kept(5, ["v_tint", "0\\.25"]));
+    // A default the run time decides reads the material's lanes; a static
+    // one stays generation's.
+    const lane = (offset: number, index: number): string =>
+        escaped(`bbl::shader_uniform_creation_lane(`) +
+        `\\w+, \\w+, ${offset}u, ${index}u\\)`;
+    assert.match(
+        compiled.cpp,
+        kept(0, [lane(0, 0), "0\\.5", lane(1, 2), lane(5, 0)]),
+    );
+});
+
+test("a ShaderMaterial natively keeps a run-time default's own numbers beside the floats it draws with, and a view reads its source's", (t) => {
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native compiler required.");
+        return;
+    }
+    const { compiled, cpp } = compileShaderMaterialFixture(
+        runtimeDefaultsSource,
+    );
+    const views = new FactoryLowerer(
+        new LoweringContext(),
+    ).lowerNoColorMaterialViews(false, false, false, false, true).source;
+    const tinted = compiled.manifest.customShaderPrograms.findIndex(
+        (candidate) => candidate.name === "tinted",
+    );
+    runGeneratedProgram(
+        native,
+        "shader-material-views/creation-lanes",
+        `
+${cpp}
+#include <algorithm>
+#include <array>
+#include <cstdio>
+namespace bbl {
+namespace {
+${cppFunction(views, "MaterialHandle create_no_color_material_view(")}
+}
+${cppFunction(views, "MaterialHandle create_shader_material_view(")}
+}
+int main(){
+    bbl::Engine engine;
+    const auto material = bbl::create_shader_material(engine, ${tinted}u);
+    const std::array<double, 4> mix{0.1, 0.5, 0.30000000000000004, 1.0};
+    bbl::initialize_shader_uniform_creation_values(engine, material, 1u, 4u, mix.data());
+    const auto view = bbl::create_shader_material_view(engine, material);
+    const auto& slots = bbl::shader_material(engine, material).shader_uniforms->slots;
+    const auto& slot = *std::find_if(slots.begin(), slots.end(), [](const bbl::ShaderUniformSlot& candidate) { return candidate.offset == 1u; });
+    // The doubles the creation was given, and the floats the uniform draws with.
+    std::printf("%.17g %.17g %.9g ", bbl::shader_uniform_creation_lane(engine, material, 1u, 0u), bbl::shader_uniform_creation_lane(engine, view, 1u, 2u), static_cast<double>(slot.value.load(0u)));
+    try {
+        static_cast<void>(bbl::shader_uniform_creation_lane(engine, material, 0u, 0u));
+    } catch (const std::runtime_error& error) {
+        std::printf("%s", error.what());
+    }
+}
+`,
+        {
+            expectedOutput:
+                "0.10000000000000001 0.30000000000000004 0.100000001 A shader uniform's creation default is absent.",
+        },
     );
 });
