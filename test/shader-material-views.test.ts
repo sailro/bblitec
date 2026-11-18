@@ -143,6 +143,56 @@ test("a view whose fragment a statement redefines draws the program derived from
     assert.ok(compiled.manifest.features.includes("material:shader-view"));
 });
 
+test("a view redefined on the branches of a run-time test draws the program of the branch that ran, and later redefinitions derive from each", () => {
+    const compiled = compileSource(`${prelude}
+    async function main(): Promise<void> {
+        const engine = await createEngine({});
+        const ground = createShaderMaterial(${groundOptions});
+        const view = createMaterialView(ground, { features: 0 }) as ShaderMaterial;
+        if (Math.random() > 0.5) {
+            Object.defineProperty(view, "fragmentSource", { value: wgsl\`\${NORMAL}\`, configurable: true });
+        } else {
+            Object.defineProperty(view, "blend", { value: { color: { operation: "add", srcFactor: "zero", dstFactor: "one" }, alpha: { operation: "add", srcFactor: "zero", dstFactor: "one" } } });
+        }
+        Object.defineProperty(view, "depthOnlyFragment", { value: true });
+        draw(engine, view);
+    }
+    void main();
+`);
+    const programs = compiled.manifest.customShaderPrograms;
+    const id = (name: string): number =>
+        programs.findIndex((candidate) => candidate.name === name);
+    // Each branch derives from the source; the last definition derives
+    // from the program of each branch, the one that ran selected.
+    const normal = program(compiled, "ground-1");
+    const blended = program(compiled, "ground-2");
+    assert.match(normal.fragmentSource, /normalize\(cross\(dpdx/);
+    assert.deepEqual(blended.blend, ["zero", "one", "zero", "one"]);
+    const derives = [
+        ...compiled.cpp.matchAll(
+            /bbl::derive_shader_material_view\(\w+, \w+, ([^;]*), false\);/g,
+        ),
+    ].map(([, variant]) => variant);
+    assert.deepEqual(derives.slice(0, 2), [
+        `${id("ground-1")}u`,
+        `${id("ground-2")}u`,
+    ]);
+    const site = derives[2]!.match(/derived_shader_variant_(\d+)\(/)?.[1];
+    assert.ok(site, "the last definition selects from the view's variant");
+    const table = cppFunction(
+        compiled.cpp,
+        `inline std::uint32_t derived_shader_variant_${site}(`,
+    );
+    assert.doesNotMatch(table, new RegExp(`case ${id("ground")}u:`));
+    for (const from of ["ground-1", "ground-2"]) {
+        const to = table.match(
+            new RegExp(`case ${id(from)}u: return (\\d+)u;`),
+        )?.[1];
+        assert.ok(to, from);
+        assert.equal(programs[Number(to)]!.depthOnlyFragment, true, from);
+    }
+});
+
 const variantsSource = `${prelude}
     async function main(): Promise<void> {
         const engine = await createEngine({});
@@ -238,8 +288,16 @@ test("a view refuses redefinitions generation cannot derive a program from", () 
             /A ShaderMaterial view's 'fragmentSource' is redefined by a literal data descriptor/,
         ],
         [
-            `if (Math.random() > 0.5) Object.defineProperty(view, "fragmentSource", { value: NORMAL });`,
-            /A ShaderMaterial view's program is redefined by a statement after the view's `const` declaration, in the same block/,
+            `while (Math.random() > 2) Object.defineProperty(view, "fragmentSource", { value: NORMAL });`,
+            /A ShaderMaterial view's program is redefined by a statement after the view's `const` declaration, in its block or the `if` branches there, before any other use of the view/,
+        ],
+        [
+            `draw(engine, view); Object.defineProperty(view, "fragmentSource", { value: NORMAL });`,
+            /A ShaderMaterial view's program is redefined by a statement after the view's `const` declaration, in its block or the `if` branches there, before any other use of the view/,
+        ],
+        [
+            `const redefine = (): void => { Object.defineProperty(view, "fragmentSource", { value: NORMAL }); }; redefine();`,
+            /A ShaderMaterial view's program is redefined by a statement after the view's `const` declaration, in its block or the `if` branches there, before any other use of the view/,
         ],
         [
             `setTint(String(Math.random())); Object.defineProperty(view, "fragmentSource", { value: tint });`,

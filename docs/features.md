@@ -383,8 +383,9 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
   `createShaderNoColorMaterialView` shares source uniforms and resource bindings; it and `createStandardNoColorMaterialView`
   may run in a loop of run-time passes. `createMaterialView(source, { features: 0 })` over a ShaderMaterial shares
   them too. On such a view, effect-free `Object.defineProperty`/`defineProperties` data descriptors after its `const`
-  declaration in the same block redefine its sources, `attributes`, declaration lists and pipeline state; the view
-  draws a program compiled per source variant and selected at run time. Redefinitions declaring other uniforms,
+  declaration, in its block or that block's `if` branches and before any other use of the view, redefine its sources,
+  `attributes`, declaration lists and pipeline state; the view draws a program compiled per source variant and
+  branch, selected at run time. Redefinitions declaring other uniforms,
   samplers or storage buffers, slot maps or other fields, run-time values, or a source of unknown variant refuse.
   Depth-only render tasks use each
   material's pipeline, including custom vertex transforms and `depthOnlyFragment` discards.

@@ -42,7 +42,14 @@ import {
 } from "./shader-derivations.js";
 import type { CompiledShaderMaterialOptions } from "./shader-material.js";
 import { shaderUniformValueLayout } from "../shader-material-programs.js";
-import { statementsBeside, unwrapExpression, variableKind } from "./syntax.js";
+import { bindingReferences } from "./binding-references.js";
+import { isLibraryStatic } from "./symbols.js";
+import {
+    outermostWrapper,
+    statementsBeside,
+    unwrapExpression,
+    variableKind,
+} from "./syntax.js";
 import type { CompiledShaderProgram, Value } from "./types.js";
 import {
     shaderVariantFacts,
@@ -58,6 +65,10 @@ export interface ShaderMaterialView {
     readonly sourceName?: ts.Identifier;
     /** Each program the view may draw, by variant name, to the source variant it derives from. */
     readonly programs: ReadonlyMap<string, string>;
+    /** The programs the view was declared with, before any definition. */
+    readonly declared: ReadonlyMap<string, string>;
+    /** The programs each definition statement left the view with. */
+    readonly defined: ReadonlyMap<ts.Statement, ReadonlyMap<string, string>>;
 }
 
 export type ShaderMaterialViewContext = Omit<
@@ -355,6 +366,7 @@ export function compileCreateMaterialView(
         ts.isIdentifier(declaration.name)
             ? declaration.name
             : undefined;
+    const programs = new Map(variants.map((variant) => [variant, variant]));
     return {
         kind: "material",
         cpp: `bbl::create_shader_material_view(${engine}, ${source.cpp})`,
@@ -363,7 +375,9 @@ export function compileCreateMaterialView(
         shaderMaterialView: {
             source,
             ...(sourceName ? { sourceName } : {}),
-            programs: new Map(variants.map((variant) => [variant, variant])),
+            programs,
+            declared: programs,
+            defined: new Map(),
         },
     };
 }
@@ -443,29 +457,134 @@ function viewRedefinitions(
     });
 }
 
+/** Whether a node is the target of an `Object.defineProperty` / `Object.defineProperties` call. */
+function definesOn(checker: ts.TypeChecker, node: ts.Node): boolean {
+    const call = outermostWrapper(node).parent;
+    return (
+        ts.isCallExpression(call) &&
+        call.arguments[0] === outermostWrapper(node) &&
+        (isLibraryStatic(
+            checker,
+            call.expression,
+            "Object",
+            "defineProperty",
+        ) ||
+            isLibraryStatic(
+                checker,
+                call.expression,
+                "Object",
+                "defineProperties",
+            ))
+    );
+}
+
 /**
- * Whether a definition statement runs exactly where the view's declaration
- * does: a statement after it in the same block.
+ * The view's declaration and a definition's statement, when the statement
+ * runs where the declaration does: after the view's `const` declaration in
+ * its block, or inside the blocks and `if` branches of a statement there,
+ * before every other use of the view. Undefined for any other statement.
  */
-function followsDeclaration(
-    context: Pick<ShaderMaterialViewContext, "symbols">,
+function definitionReach(
+    context: Pick<ShaderMaterialViewContext, "checker" | "symbols"> &
+        Pick<LoweringServices, "program">,
     call: ts.CallExpression,
     view: ts.Identifier,
-): boolean {
+):
+    | {
+          readonly declared: ts.VariableStatement;
+          readonly statement: ts.ExpressionStatement;
+      }
+    | undefined {
     const statement = call.parent;
-    const declaration = context.symbols.valueSymbol(view)?.valueDeclaration;
+    const symbol = context.symbols.valueSymbol(view);
+    const declaration = symbol?.valueDeclaration;
     const declared =
         declaration && ts.isVariableDeclaration(declaration)
             ? declaration.parent.parent
             : undefined;
-    return (
-        ts.isExpressionStatement(statement) &&
-        unwrapExpression(statement.expression) === call &&
-        declared !== undefined &&
-        ts.isVariableStatement(declared) &&
-        variableKind(declaration!) === "const" &&
-        (statementsBeside(declared, "after")?.includes(statement) ?? false)
+    if (
+        !ts.isExpressionStatement(statement) ||
+        unwrapExpression(statement.expression) !== call ||
+        !declared ||
+        !ts.isVariableStatement(declared) ||
+        variableKind(declaration!) !== "const"
+    )
+        return undefined;
+    const after = statementsBeside(declared, "after") ?? [];
+    let node: ts.Node = statement;
+    while (!after.some((sibling) => sibling === node)) {
+        const parent = node.parent;
+        if (
+            !ts.isBlock(parent) &&
+            !(ts.isIfStatement(parent) && parent.expression !== node)
+        )
+            return undefined;
+        node = parent;
+    }
+    // Until then the view is only redefined, so the programs it may draw
+    // are the ones its definitions derived.
+    const between = bindingReferences(
+        context.program,
+        context.checker,
+        symbol!,
+    ).filter(
+        (reference) =>
+            reference.pos > declared.end && reference.end <= statement.pos,
     );
+    return between.every(
+        (reference) =>
+            definesOn(context.checker, reference) &&
+            ts.findAncestor(reference, ts.isFunctionLike) ===
+                ts.findAncestor(declared, ts.isFunctionLike),
+    )
+        ? { declared, statement }
+        : undefined;
+}
+
+/**
+ * The programs a view may draw once `statements`, which `statement` may
+ * be inside, ran up to it (`until`) or through every one: those it was
+ * declared with, through each definition (`defined`), the branches of an
+ * `if` joined.
+ */
+function programsThrough(
+    view: ShaderMaterialView,
+    statements: readonly ts.Statement[],
+    programs: ReadonlyMap<string, string>,
+    until?: ts.Statement,
+): ReadonlyMap<string, string> {
+    const ran = (
+        node: ts.Statement,
+        before: ReadonlyMap<string, string>,
+    ): ReadonlyMap<string, string> => {
+        const left = view.defined.get(node);
+        if (left) return left;
+        if (ts.isBlock(node))
+            return programsThrough(view, node.statements, before);
+        if (!ts.isIfStatement(node)) return before;
+        return new Map([
+            ...ran(node.thenStatement, before),
+            ...(node.elseStatement ? ran(node.elseStatement, before) : before),
+        ]);
+    };
+    const holds = (node: ts.Node | undefined): node is ts.Statement =>
+        node !== undefined &&
+        until !== undefined &&
+        node.pos <= until.pos &&
+        until.end <= node.end;
+    for (const statement of statements) {
+        if (statement === until) return programs;
+        // The block or branch `until` runs in (`definitionReach`).
+        const inner = ts.isBlock(statement)
+            ? statement.statements
+            : ts.isIfStatement(statement)
+              ? [statement.thenStatement, statement.elseStatement].filter(holds)
+              : [];
+        if (holds(statement) && inner.length > 0)
+            return programsThrough(view, inner, programs, until);
+        programs = ran(statement, programs);
+    }
+    return programs;
 }
 
 /**
@@ -528,13 +647,18 @@ export function compileShaderMaterialViewDefinitions(
 ): Value {
     const view = context.bindings.lookupOptional(target)!;
     const facts = view.shaderMaterialView!;
-    if (!followsDeclaration(context, call, target))
+    const reach = definitionReach(context, call, target);
+    if (!reach)
         context.fail(
             call,
-            "A ShaderMaterial view's program is redefined by a statement after the view's `const` declaration, in the same block: the program it draws is then the one every later use reads.",
+            "A ShaderMaterial view's program is redefined by a statement after the view's `const` declaration, in its block or the `if` branches there, before any other use of the view: the programs it may draw are then the ones every later use reads.",
         );
+    const { declared, statement } = reach;
+    const after = statementsBeside(declared, "after")!;
+    // The programs the view may draw where the statement runs.
+    const current = programsThrough(facts, after, facts.declared, statement);
     const definitions = viewRedefinitions(context, defined);
-    if (facts.programs.size === 0)
+    if (current.size === 0)
         context.fail(
             call,
             "A ShaderMaterial view derives its program from its source's shader variant; this source's variant is decided at run time.",
@@ -550,7 +674,7 @@ export function compileShaderMaterialViewDefinitions(
             call,
             "A ShaderMaterial view's redefinitions are evaluated at generation, once per source variant, into its programs; these write storage or run code with effects.",
         );
-    if (facts.programs.size > 1 && !facts.sourceName)
+    if (current.size > 1 && !facts.sourceName)
         context.fail(
             call,
             "A ShaderMaterial view over a material of several variants reads its source per variant through a `const` or a parameter nothing reassigns.",
@@ -558,7 +682,7 @@ export function compileShaderMaterialViewDefinitions(
     const source = facts.source;
     const compileRedefinitions = (variant: string): RecordFacts =>
         context.bindings.withBoundParameters(
-            facts.sourceName && facts.programs.size > 1
+            facts.sourceName && current.size > 1
                 ? [
                       {
                           name: facts.sourceName,
@@ -586,7 +710,7 @@ export function compileShaderMaterialViewDefinitions(
     const derived = new Map<string, string>();
     const programs = new Map<number, CompiledShaderMaterialOptions>();
     let transmissive: boolean | undefined;
-    for (const [program, sourceVariant] of facts.programs) {
+    for (const [program, sourceVariant] of current) {
         const redefined = compileRedefinitions(sourceVariant);
         const creations =
             context.sceneManifest.shaderDerivations.creationsOf(program);
@@ -655,8 +779,26 @@ export function compileShaderMaterialViewDefinitions(
         kind: "expression",
         code: `bbl::derive_shader_material_view(${engine}, ${view.cpp}, ${variant}, ${transmissive ? "true" : "false"});`,
     });
-    const updated = withShaderVariants(view, [...derived.keys()]);
-    writable(updated).shaderMaterialView = { ...facts, programs: derived };
+    // Later uses read the programs every path through the statements up to
+    // this one's may leave.
+    const recorded: ShaderMaterialView = {
+        ...facts,
+        defined: new Map([...facts.defined, [statement, derived]]),
+    };
+    const top = after.find(
+        (sibling) =>
+            sibling.pos <= statement.pos && statement.end <= sibling.end,
+    )!;
+    const reachable = programsThrough(
+        recorded,
+        after.slice(0, after.indexOf(top) + 1),
+        facts.declared,
+    );
+    const updated = withShaderVariants(view, [...reachable.keys()]);
+    writable(updated).shaderMaterialView = {
+        ...recorded,
+        programs: reachable,
+    };
     context.bindings.rebindCompileTimeValue(target, updated);
     return { kind: "void", cpp: "" };
 }
