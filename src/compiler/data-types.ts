@@ -1257,6 +1257,31 @@ function fieldStorage(type: DataType): DataType {
           : type;
 }
 
+/** Whether storage is an array or a map, which a document can hold as one. */
+function isContainerStorage(type: DataType): boolean {
+    return (
+        type.kind === "vector" || type.kind === "span" || type.kind === "map"
+    );
+}
+
+/**
+ * The side storing a field as an array or a map where the other side holds
+ * it as a document: JavaScript holds one object under both, which a native
+ * copy splits.
+ */
+function typedSideOfDocument(
+    held: DataType,
+    stored: DataType,
+): "held" | "stored" | undefined {
+    const from = fieldStorage(held),
+        to = fieldStorage(stored);
+    return from.kind === "json" && isContainerStorage(to)
+        ? "stored"
+        : to.kind === "json" && isContainerStorage(from)
+          ? "held"
+          : undefined;
+}
+
 /** Whether field storage holds records, directly or in an array. */
 function holdsRecordStorage(type: DataType): boolean {
     return (
@@ -4158,38 +4183,50 @@ export class DataTypeRegistry {
             target && this.checker.getNonNullableType(target.type);
         const union = targetRecord?.isUnion() === true;
         const lacked = lackedField(sourceFields, targetFields);
+        const split = targetFields.find((field) => {
+            const from = sourceFields.find(
+                (candidate) => candidate.sourceName === field.sourceName,
+            );
+            return (
+                from !== undefined &&
+                typedSideOfDocument(from.type, field.type) !== undefined
+            );
+        });
         // A union view of a stored record always shares its layout.
         const observed =
             !source || !target
                 ? "its record types have no checked source"
                 : lacked
                   ? `its records lack '${lacked.sourceName}'`
-                  : sharedArray
-                    ? "the array holding them is one shared array"
-                    : sourceType.name !== targetType.name &&
-                        [...sourceFields, ...targetFields].some(
-                            (field) => field.accessorReceiver,
-                        )
-                      ? "receiver-aware property slots retain their owner"
-                      : union && this.isReferenceStruct(sourceType.name)
-                        ? "a union view shares its arm's storage"
-                        : recordCopyObservation(
-                              observation,
-                              source.type,
-                              target.type,
-                              targetFields.map((field) => field.sourceName),
-                              sourceFields.some(
-                                  (field) =>
-                                      !targetFields.some(
-                                          (candidate) =>
-                                              candidate.sourceName ===
-                                              field.sourceName,
-                                      ),
-                              ),
-                              argument,
-                          );
+                  : split
+                    ? `a copy splits the one object '${split.sourceName}' holds`
+                    : sharedArray
+                      ? "the array holding them is one shared array"
+                      : sourceType.name !== targetType.name &&
+                          [...sourceFields, ...targetFields].some(
+                              (field) => field.accessorReceiver,
+                          )
+                        ? "receiver-aware property slots retain their owner"
+                        : union && this.isReferenceStruct(sourceType.name)
+                          ? "a union view shares its arm's storage"
+                          : recordCopyObservation(
+                                observation,
+                                source.type,
+                                target.type,
+                                targetFields.map((field) => field.sourceName),
+                                sourceFields.some(
+                                    (field) =>
+                                        !targetFields.some(
+                                            (candidate) =>
+                                                candidate.sourceName ===
+                                                field.sourceName,
+                                        ),
+                                ),
+                                argument,
+                            );
         // A copy lent to a callee that only reads it lives for the call.
-        if (observed === undefined || (lentForCall && !lacked)) return;
+        if (observed === undefined || (lentForCall && !lacked && !split))
+            return;
         this.requireSharedValueViews(sourceType, targetType);
         const sourceByName = new Map(
             sourceFields.map((field) => [field.sourceName, field]),
@@ -4450,10 +4487,6 @@ export class DataTypeRegistry {
                     compare(left.result, right.result);
             }
         };
-        const container = (type: DataType): boolean =>
-            type.kind === "vector" ||
-            type.kind === "span" ||
-            type.kind === "map";
         const fields = (
             left: readonly DataStructField[],
             right: readonly DataStructField[],
@@ -4466,12 +4499,11 @@ export class DataTypeRegistry {
             for (const field of right) {
                 const from = sources.get(field.sourceName);
                 if (!from) continue;
-                const held = fieldStorage(from.type);
-                const stored = fieldStorage(field.type);
+                const side = typedSideOfDocument(from.type, field.type);
                 const typed =
-                    held.kind === "json" && container(stored)
+                    side === "stored"
                         ? rightRecord
-                        : stored.kind === "json" && container(held)
+                        : side === "held"
                           ? leftRecord
                           : undefined;
                 // A document holds no method or accessor: a record type
@@ -10916,8 +10948,24 @@ export class DataTypeRegistry {
         this.structsByName.set(definition.name, definition);
     }
 
-    /** An owned result's field layout, without changing how its source type specializes elsewhere. */
+    /**
+     * An owned result's field layout, without changing how its source type
+     * specializes elsewhere. A layout retaining a declared record (`retains`)
+     * keeps that record's checked source, so stores join it as they join
+     * the declared record.
+     */
     public ownedRecordType(
+        fields: readonly Omit<DataStructField, "name">[],
+        retains?: DataType<"struct">,
+    ): DataType<"struct"> {
+        const layout = this.ownedLayout(fields);
+        const source = retains && this.nativeRecordSources.get(retains.name);
+        if (source && !this.nativeRecordSources.has(layout.name))
+            this.nativeRecordSources.set(layout.name, source);
+        return layout;
+    }
+
+    private ownedLayout(
         fields: readonly Omit<DataStructField, "name">[],
     ): DataType<"struct"> {
         const stored = fields.map((field) => ({

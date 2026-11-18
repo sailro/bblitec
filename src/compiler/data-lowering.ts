@@ -4070,7 +4070,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return represented.some(
             (field, index) => !dataTypesEqual(field.type, fields[index]!.type),
         )
-            ? this.context.dataTypes.ownedRecordType(represented)
+            ? this.context.dataTypes.ownedRecordType(represented, type)
             : type;
     }
 

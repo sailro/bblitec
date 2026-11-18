@@ -410,3 +410,36 @@ int run_window_application(WorkerEntry initialize, EngineOptions) {
         },
     );
 });
+
+test("an awaited record's owned layout stores as a narrower record it is held as", () => {
+    // The loader's record pairs its material with the engine and holds a
+    // parsed document, so it settles as an owned layout of `Wall`; storing
+    // it as `Brick` joins the declared records the layout retains.
+    const result = compileSource(`
+        import { createShaderMaterial, wgsl, createEngine } from "@babylonjs/lite";
+        import type { ShaderMaterial } from "@babylonjs/lite";
+        const VERT = \`@vertex fn mainVertex(input: VertexInput) -> @builtin(position) vec4<f32> { return vec4<f32>(input.position, 1.0); }\`;
+        const FRAG = \`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+        interface Cell { id: string }
+        interface Wall { cells: Cell[]; material: ShaderMaterial; setWinter(amount: number): void }
+        interface Brick { cells: Cell[]; setWinter(amount: number): void }
+        const kept: Brick[] = [];
+        async function loadWall(): Promise<Wall> {
+            const response = await fetch(new URLSearchParams(location.search).get("catalog") ?? "data:application/json,{}");
+            const catalog = (await response.json()) as { cells: Cell[] };
+            const material = createShaderMaterial({ name: "wall", vertexSource: wgsl\`\${VERT}\`, fragmentSource: wgsl\`\${FRAG}\`, attributes: ["position"], uniforms: ["worldViewProjection"] });
+            return { cells: catalog.cells, material, setWinter(amount: number): void { console.log(amount); } };
+        }
+        function keep(brick: Brick): void {
+            kept.push(brick);
+        }
+        async function main(): Promise<void> {
+            const canvas = document.createElement("canvas");
+            await createEngine(canvas);
+            const assets = await loadWall();
+            keep(assets);
+        }
+        void main();
+    `);
+    assert.match(result.cpp, /kept/);
+});
