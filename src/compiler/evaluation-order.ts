@@ -59,6 +59,7 @@ import {
     isValueReference,
     objectLiteralMembers,
     outermostWrapper,
+    wrappedParent,
 } from "./syntax.js";
 import {
     holdsOnly,
@@ -376,6 +377,37 @@ function cannotFollow(access: DirectAccess): void {
 
 /** Code a call runs: a function body, or a class field's initializer. */
 type Unit = ts.FunctionLikeDeclaration | ts.PropertyDeclaration;
+
+/**
+ * What `hasModuleEffects` counts: abrupt completion too (`abrupt`), or only
+ * work an evaluation that completes may do (`completing`).
+ */
+export type ModuleEffectMode = "abrupt" | "completing";
+
+/** The library's error constructors: one a `throw` constructs is only its value. */
+const LIBRARY_ERRORS: ReadonlySet<string> = new Set([
+    "Error",
+    "AggregateError",
+    "EvalError",
+    "RangeError",
+    "ReferenceError",
+    "SyntaxError",
+    "TypeError",
+    "URIError",
+]);
+
+/** Whether a construction is the value a `throw` throws, of a library error. */
+function thrownLibraryError(
+    checker: ts.TypeChecker,
+    construction: ts.CallExpression | ts.NewExpression,
+): boolean {
+    const name = libraryGlobal(checker, construction.expression);
+    return (
+        name !== undefined &&
+        LIBRARY_ERRORS.has(name) &&
+        ts.isThrowStatement(wrappedParent(construction))
+    );
+}
 
 function isUnit(node: ts.Node): node is ts.FunctionLikeDeclaration {
     return (
@@ -961,10 +993,16 @@ export class EvaluationOrder {
     private readonly accesses = new WeakMap<ts.Node, Access>();
     /** @unjournaled A cache of whether one unit answers from its arguments alone. */
     private readonly deterministic = new Map<Unit, boolean>();
-    /** @unjournaled Module effects depend only on checked source bodies. */
-    private readonly moduleEffects = new WeakMap<ts.Node, boolean>();
-    /** @unjournaled Different initializers share the effects of their checked callees. */
-    private readonly moduleUnitEffects = new WeakMap<Unit, boolean>();
+    /** @unjournaled Module effects depend only on checked source bodies, one map per `ModuleEffectMode`. */
+    private readonly moduleEffects = {
+        abrupt: new WeakMap<ts.Node, boolean>(),
+        completing: new WeakMap<ts.Node, boolean>(),
+    };
+    /** @unjournaled Different initializers share the effects of their checked callees, one map per `ModuleEffectMode`. */
+    private readonly moduleUnitEffects = {
+        abrupt: new WeakMap<Unit, boolean>(),
+        completing: new WeakMap<Unit, boolean>(),
+    };
     /** @unjournaled The library's `any[]` (`mayHoldArray`), null without one. */
     private anyArray: ts.Type | null | undefined;
 
@@ -1084,20 +1122,29 @@ export class EvaluationOrder {
      * Work which cannot stay in a generation-only module: host observations,
      * unknown calls and abrupt completion. Writes to source-owned storage are
      * deliberately separate; the module planner tracks their observed owners.
+     * With `completing`, a `throw` and the library error it constructs
+     * (`throw new Error(...)`) are not such work: an evaluation generation
+     * runs in place of the run time's either completes as the run time's
+     * would, or refuses.
      */
-    public hasModuleEffects(node: ts.Node): boolean {
-        const known = this.moduleEffects.get(node);
+    public hasModuleEffects(
+        node: ts.Node,
+        mode: ModuleEffectMode = "abrupt",
+    ): boolean {
+        const nodeCache = this.moduleEffects[mode];
+        const unitCache = this.moduleUnitEffects[mode];
+        const known = nodeCache.get(node);
         if (known !== undefined) return known;
         const active = new Set<Unit>();
         const visitUnit = (unit: Unit): boolean => {
-            const known = this.moduleUnitEffects.get(unit);
+            const known = unitCache.get(unit);
             if (known !== undefined) return known;
             // A reachable cycle remains conservative even without host effects.
             if (active.has(unit)) return true;
             active.add(unit);
             try {
                 const result = visit(unitRoots(unit), unit);
-                this.moduleUnitEffects.set(unit, result);
+                unitCache.set(unit, result);
                 return result;
             } finally {
                 active.delete(unit);
@@ -1111,7 +1158,8 @@ export class EvaluationOrder {
                     (current) => {
                         if (effects) return "skip";
                         if (
-                            ts.isThrowStatement(current) ||
+                            (ts.isThrowStatement(current) &&
+                                mode === "abrupt") ||
                             isSuspensionPoint(current, { yield: true }) ||
                             ts.isTaggedTemplateExpression(current) ||
                             ts.isWhileStatement(current) ||
@@ -1129,7 +1177,14 @@ export class EvaluationOrder {
                             if (
                                 !callees ||
                                 (callees === "library" &&
-                                    !this.moduleLocalLibraryCall(current))
+                                    !this.moduleLocalLibraryCall(current) &&
+                                    !(
+                                        mode === "completing" &&
+                                        thrownLibraryError(
+                                            this.checker,
+                                            current,
+                                        )
+                                    ))
                             )
                                 effects = true;
                         } else if (
@@ -1175,7 +1230,7 @@ export class EvaluationOrder {
             return false;
         };
         const result = visit([node]);
-        this.moduleEffects.set(node, result);
+        nodeCache.set(node, result);
         return result;
     }
 

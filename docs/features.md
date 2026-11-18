@@ -369,7 +369,8 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
   per stored source variant; the material takes the variant derived from its source's at run time, a loop's element
   key included. A store compiled
   after the derivation, a record the program may write, options lifting run-time numbers, transmissive options or
-  options whose evaluation has effects refuse.
+  options whose evaluation has effects refuse. Such options and a view's redefinitions are evaluated at generation:
+  a `throw` they may reach is no effect, and one that throws there refuses.
   Generation-selected nullish uniform, sampler, external-texture, storage-buffer and define declarations use the pinned
   empty defaults, including absent retained fields and getters.
   `uniformDecls`, `samplerDecls` and `storageBufferDecls` of a run-time material take `.some(arrow)` and `for...of`

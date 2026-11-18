@@ -211,6 +211,31 @@ const variantsSource = `${prelude}
     void main();
 `;
 
+test("a view's redefinition may reach a throw: generation evaluates it, and one that throws there refuses", () => {
+    const source = (check: string): string => `${prelude}
+    function capture(fragment: string): string {
+        if (${check}) throw new Error("expected one fragment entry point");
+        return fragment.replace("vWorldPos.y", "0.5");
+    }
+    async function main(): Promise<void> {
+        const engine = await createEngine({});
+        const ground = createShaderMaterial(${groundOptions});
+        const view = createMaterialView(ground, { features: 0 }) as ShaderMaterial;
+        Object.defineProperty(view, "fragmentSource", { value: capture(ground.fragmentSource), configurable: true });
+        draw(engine, view);
+    }
+    void main();
+`;
+    const compiled = compileSource(
+        source(`fragment.split("@fragment").length !== 2`),
+    );
+    assert.match(program(compiled, "ground-1").fragmentSource, /uTint \* 0\.5/);
+    assert.throws(
+        () => compileSource(source(`fragment.length > 0`)),
+        /A ShaderMaterial view's 'fragmentSource' compiles into its program at generation; this value is decided at run time\./,
+    );
+});
+
 test("a view over a material of several variants derives one program per variant, chosen at run time from the view's", () => {
     const compiled = compileSource(variantsSource);
     const programs = compiled.manifest.customShaderPrograms;

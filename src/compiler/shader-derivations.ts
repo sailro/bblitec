@@ -1299,6 +1299,8 @@ function writtenFact(
 /**
  * Whether evaluating an options literal writes nothing and runs no code with
  * effects; the pin's `wgsl` tag returns its text, so its spans are what run.
+ * Generation evaluates it in place of the run time: one that throws there
+ * refuses, so a `throw` it may reach is no effect (`completing`).
  */
 export function effectFreeOptions(
     context: Pick<ShaderDerivationContext, "evaluationOrder" | "symbols">,
@@ -1314,7 +1316,7 @@ export function effectFreeOptions(
                   );
         return (
             !context.evaluationOrder.writesStorage(node) &&
-            !context.evaluationOrder.hasModuleEffects(node)
+            !context.evaluationOrder.hasModuleEffects(node, "completing")
         );
     };
     return objectLiteralMembers(object).every((member) =>
