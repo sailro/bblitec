@@ -316,9 +316,11 @@ void require_shader_external_textures(const Engine& engine, const RenderPlan& pl
         for (std::size_t slot = info.samplers.size() - info.external_textures;
              slot < info.samplers.size(); ++slot) {
             const char* name = info.samplers[slot];
+            const auto owner = shader_slot_owner(engine, material, ShaderDeclarationList::samplers,
+                                                 static_cast<std::uint32_t>(slot));
             const ExternalTexture* texture =
-                slot < material.shader_external_textures.size()
-                    ? material.shader_external_textures[slot].get()
+                owner.slot < owner.material.shader_external_textures.size()
+                    ? owner.material.shader_external_textures[owner.slot].get()
                     : nullptr;
             if (!texture) {
                 throw std::runtime_error(${noSource});

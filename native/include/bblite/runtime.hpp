@@ -3420,6 +3420,20 @@ struct LocalCubemapRecord {
     bool overrides_environment = false;
 };
 
+/** A ShaderMaterial view's table entry for a slot the view holds itself. */
+inline constexpr std::uint32_t own_shader_slot = invalid_handle;
+
+/**
+ * A ShaderMaterial view's `_textureSlots` and `_storageBufferSlots`, in the
+ * declaration order of shader variant `variant`: the source slot each entry
+ * aliases, or `own_shader_slot` for one the view's own lists hold.
+ */
+struct ShaderViewSlots {
+    std::uint32_t variant = invalid_handle;
+    std::vector<std::uint32_t> samplers;
+    std::vector<std::uint32_t> storage_buffers;
+};
+
 struct MaterialRecord {
     std::uint64_t ubo_version = 0;
     std::shared_ptr<LocalCubemapRecord> local_environment;
@@ -3799,9 +3813,11 @@ struct MaterialRecord {
     // bindings resolved against the scene's `textures` record. Empty for
     // every other family, and for a program that samples nothing.
     std::vector<FileTexture> shader_textures;
-    /** Sampler slots changed since their shared GPU texture upload. */
+    /** A ShaderMaterial view's slot tables; null where the material holds every slot. */
+    std::shared_ptr<const ShaderViewSlots> shader_view_slots;
+    /** Sampler slots changed since their shared GPU texture upload (`shader_slot_version`). */
     std::uint64_t shader_texture_version = 0;
-    /** Texture or storage slots changed since a shader bind group was built. */
+    /** Texture or storage slots changed since a shader bind group was built (`shader_slot_version`). */
     std::uint64_t shader_resource_version = 0;
     /** Shader slots a render target fills, resolved where each draw binds them. */
     std::vector<std::optional<RenderTextureRef>> shader_render_textures;
@@ -8500,6 +8516,45 @@ void set_shader_storage_buffer_by_name(Engine& engine, MaterialHandle material,
                                        const std::string& name, StorageBufferHandle buffer);
 /** A ShaderMaterial list: `uniformDecls`, `samplerDecls`, `storageBufferDecls` or `attributes`. */
 enum class ShaderDeclarationList : std::uint8_t { uniforms, samplers, storage_buffers, attributes };
+
+/** The material and slot holding one of a shader material's declared slots. */
+template <class Record> struct ShaderSlotOwner {
+    Record& material;
+    std::uint32_t slot;
+};
+
+/**
+ * Where a shader material's declared sampler or storage-buffer `slot` lives:
+ * its own lists, or the source slot its view table aliases.
+ */
+template <class EngineRef, class Record>
+ShaderSlotOwner<Record> shader_slot_owner(EngineRef& engine, Record& material,
+                                          ShaderDeclarationList list, std::uint32_t slot) {
+    if (list != ShaderDeclarationList::samplers && list != ShaderDeclarationList::storage_buffers)
+        throw std::runtime_error("A shader slot owner is a sampler's or a storage buffer's.");
+    if (!material.shader_view_slots)
+        return {material, slot};
+    const auto& table = list == ShaderDeclarationList::samplers
+                            ? material.shader_view_slots->samplers
+                            : material.shader_view_slots->storage_buffers;
+    if (slot >= table.size())
+        throw std::runtime_error(
+            "A shader view's table does not hold the slot its variant declares.");
+    if (table[slot] == own_shader_slot)
+        return {material, slot};
+    return {handle_at(engine.materials, material.source_material), table[slot]};
+}
+
+/**
+ * A shader material's `shader_texture_version` or `shader_resource_version`
+ * as its uploads read it: a view's follows its own changes and its source's.
+ */
+inline std::uint64_t shader_slot_version(const Engine& engine, const MaterialRecord& material,
+                                         std::uint64_t MaterialRecord::* version) {
+    return material.shader_view_slots
+               ? material.*version + handle_at(engine.materials, material.source_material).*version
+               : material.*version;
+}
 /** The names a shader material's declaration list holds, in declaration order. */
 const std::vector<std::string>& shader_declaration_names(Engine& engine, MaterialHandle material,
                                                          ShaderDeclarationList list);
@@ -8584,8 +8639,10 @@ MaterialHandle create_node_esm_shadow_material_view(Engine& engine, MaterialHand
                                                     ShadowGeneratorHandle generator);
 MaterialHandle create_pbr_no_color_material_view(Engine& engine, MaterialHandle source);
 MaterialHandle create_shader_no_color_material_view(Engine& engine, MaterialHandle source);
-/** `createMaterialView(source, { features: 0 })` over a ShaderMaterial: its slots stay the source's. */
+/** `createMaterialView(source, { features: 0 })` over a ShaderMaterial: its slots alias the source's. */
 MaterialHandle create_shader_material_view(Engine& engine, MaterialHandle source);
+/** A shader view's slot tables, laid out by name for its variant's declarations. */
+void bind_shader_view_slots(Engine& engine, MaterialHandle view);
 /** The program a shader view draws: one generation derived from its redefined properties. */
 void derive_shader_material_view(Engine& engine, MaterialHandle view, std::uint32_t variant,
                                  bool transmissive);

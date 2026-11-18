@@ -1374,9 +1374,9 @@ SDL_GPUBuffer* shader_storage_buffer(GpuState& state, const Engine& engine,
 
 /** Bind ordinary shader textures and resolve CSM pseudo-textures live. */
 void bind_shader_material_textures(GpuState& state, SDL_GPURenderPass* pass,
-                                   [[maybe_unused]] const Scene& scene,
-                                   [[maybe_unused]] const Engine& engine, MaterialHandle material,
-                                   std::uint32_t variant, const GpuMesh& mesh);
+                                   [[maybe_unused]] const Scene& scene, const Engine& engine,
+                                   MaterialHandle material, std::uint32_t variant,
+                                   const GpuMesh& mesh);
 
 // Geometry-task helpers shared by the PBR and Standard variant
 // pipelines; the definitions sit with the transmission helpers below.

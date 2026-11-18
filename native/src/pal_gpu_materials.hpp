@@ -8,6 +8,7 @@
 #include <bblite/features/has_pbr_renderer.hpp>
 #include <bblite/features/has_standard_uv_transform.hpp>
 #include <bblite/features/mesh_opacity.hpp>
+#include <bblite/features/shadows_csm.hpp>
 
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
@@ -105,14 +106,21 @@ inline FeatureBinding feature_binding([[maybe_unused]] std::string_view name) {
     return FeatureBinding::none;
 }
 
-/** Shader views inherit resource bindings from their source material. */
-inline const MaterialRecord& shader_resource_material(const Engine& engine,
-                                                      const MaterialRecord& material) {
-    return material.shader_material && material.source_material.value != invalid_handle
-               ? handle_at(engine.materials, material.source_material)
-               : material;
+/**
+ * Whether the owner of a shader sampler slot (`shader_slot_owner`) fills it
+ * from a render target or a CSM receiver, which each draw binds, rather
+ * than from an uploaded image.
+ */
+inline bool shader_slot_binds_per_draw(const MaterialRecord& owner, std::size_t slot) {
+    if (slot < owner.shader_render_textures.size() && owner.shader_render_textures[slot])
+        return true;
+#if BBLITE_SHADOWS_CSM
+    return slot < owner.shader_csm_textures.size() &&
+           owner.shader_csm_textures[slot].value != invalid_handle;
+#else
+    return false;
+#endif
 }
-const MaterialRecord& shader_resource_material(const Engine&, const MaterialRecord&&) = delete;
 
 #if BBLITE_NODE_VARIANTS > 0
 /** The composed graph's declared streams decide which pool a draw binds. */

@@ -131,9 +131,9 @@ const shaderDeclarationNamesCpp = `const std::vector<std::string>& shader_declar
 
 /**
  * `createMaterialView(source, { features: 0 })` over a ShaderMaterial, and
- * the program its redefined properties derive. The view keeps the source's
- * slots (`shader_resource_material`), which a derived program declares
- * alike; its own record draws the derived variant.
+ * the program its redefined properties derive. Its own record draws the
+ * derived variant over slots its tables read by name
+ * (`bind_shader_view_slots`).
  */
 const shaderMaterialViewsCpp = `
 MaterialHandle create_shader_material_view(
@@ -154,7 +154,7 @@ void derive_shader_material_view(
     }
     apply_shader_material_variant(record, variant);
     record.shader_transmissive = transmissive;
-    record.shader_uniform_upload.reset();
+    bind_shader_view_slots(engine, view);
 }
 
 std::uint32_t shader_material_view_variant(
@@ -166,6 +166,137 @@ std::uint32_t shader_material_view_variant(
     }
     return record.shader_variant;
 }
+`;
+
+/**
+ * A ShaderMaterial view's slots, read through its source by name as the
+ * pin's view reads `_uniformValues`, `_textureSlots` and
+ * `_storageBufferSlots` through its prototype: each name its variant
+ * declares keeps the entry its table gave that name, else aliases the
+ * source's slot of that name, else is the view's own.
+ */
+const shaderViewSlotsCpp = `namespace {
+
+std::vector<std::string_view> shader_sampler_names(const upstream::ShaderVariantInfo& info) {
+    return {info.samplers.begin(), info.samplers.end()};
+}
+
+std::vector<std::string_view> shader_storage_names(const upstream::ShaderVariantInfo& info) {
+    std::vector<std::string_view> names;
+    for (const auto& slot : info.storage_buffers) names.emplace_back(slot.name);
+    return names;
+}
+
+// One list's table laid out for \`names\`: the entry \`previous\` (laid out for
+// \`previous_names\`) gave each name, else the source slot of that name, else
+// the view's own. \`moved\` takes each own entry's index in the view's lists
+// before, or invalid_handle.
+std::vector<std::uint32_t> shader_view_table(
+    const std::vector<std::string_view>& names,
+    const std::vector<std::string_view>& source_names,
+    const std::vector<std::string_view>& previous_names,
+    const std::vector<std::uint32_t>& previous,
+    std::vector<std::uint32_t>& moved) {
+    const auto index_of = [](const std::vector<std::string_view>& list, std::string_view name) {
+        return static_cast<std::uint32_t>(std::find(list.begin(), list.end(), name) - list.begin());
+    };
+    std::vector<std::uint32_t> table;
+    moved.assign(names.size(), invalid_handle);
+    for (std::size_t slot = 0; slot < names.size(); ++slot) {
+        const std::uint32_t before = index_of(previous_names, names[slot]);
+        if (before < previous.size()) {
+            table.push_back(previous[before]);
+            if (previous[before] == own_shader_slot) moved[slot] = before;
+            continue;
+        }
+        const std::uint32_t aliased = index_of(source_names, names[slot]);
+        table.push_back(aliased < source_names.size() ? aliased : own_shader_slot);
+    }
+    return table;
+}
+
+// The view's own entries at the indices its new table gives them; a slot it
+// never filled stays absent, as a material's unset slot is.
+template <class Value>
+void move_own_shader_slots(std::vector<Value>& list, const std::vector<std::uint32_t>& moved) {
+    std::vector<Value> placed;
+    for (std::size_t slot = 0; slot < moved.size(); ++slot) {
+        if (moved[slot] >= list.size()) continue;
+        if (placed.size() <= slot) placed.resize(slot + 1);
+        placed[slot] = std::move(list[moved[slot]]);
+    }
+    list = std::move(placed);
+}
+
+} // namespace
+
+// Uniform slots alias by sharing their source's value and revision; a
+// view's uploads follow its own versions and its source's.
+void bind_shader_view_slots(Engine& engine, MaterialHandle view) {
+    MaterialRecord& record = ${recordAt("engine.materials", "view")};
+    const MaterialRecord& source = ${recordAt("engine.materials", "record.source_material")};
+    if (!record.shader_material || !source.shader_uniforms)
+        throw std::runtime_error("A shader view's slots read a ShaderMaterial source.");
+    const auto& info = upstream::shader_variant_info(record.shader_variant);
+    const auto& source_info = upstream::shader_variant_info(source.shader_variant);
+    const ShaderViewSlots previous = record.shader_view_slots ? *record.shader_view_slots : ShaderViewSlots{};
+    const auto* previous_info = record.shader_view_slots ? &upstream::shader_variant_info(previous.variant) : nullptr;
+    if (!record.shader_view_slots) {
+        // A new view holds none of its source's slots.
+        record.shader_textures.clear();
+        record.shader_render_textures.clear();
+        record.shader_csm_textures.clear();
+        record.shader_external_textures.clear();
+        record.shader_storage_buffers.clear();
+        record.shader_texture_version = 0;
+        record.shader_resource_version = 0;
+        auto state = std::make_shared<ShaderUniformState>();
+        state->slots = source.shader_uniforms->slots;
+        record.shader_uniforms = std::move(state);
+    } else {
+        ++record.shader_texture_version;
+        ++record.shader_resource_version;
+    }
+    auto table = std::make_shared<ShaderViewSlots>();
+    table->variant = record.shader_variant;
+    std::vector<std::uint32_t> moved;
+    table->samplers = shader_view_table(shader_sampler_names(info), shader_sampler_names(source_info),
+        previous_info ? shader_sampler_names(*previous_info) : std::vector<std::string_view>{},
+        previous.samplers, moved);
+    move_own_shader_slots(record.shader_textures, moved);
+    move_own_shader_slots(record.shader_render_textures, moved);
+    move_own_shader_slots(record.shader_csm_textures, moved);
+    for (std::size_t slot = info.samplers.size() - info.external_textures; slot < info.samplers.size(); ++slot)
+        if (table->samplers[slot] == own_shader_slot)
+            throw std::runtime_error(std::string("A ShaderMaterial view binds its source's external texture '") +
+                                     info.samplers[slot] + "', which the source does not declare.");
+    table->storage_buffers = shader_view_table(shader_storage_names(info), shader_storage_names(source_info),
+        previous_info ? shader_storage_names(*previous_info) : std::vector<std::string_view>{},
+        previous.storage_buffers, moved);
+    move_own_shader_slots(record.shader_storage_buffers, moved);
+    auto& state = *record.shader_uniforms;
+    state.source = source.shader_uniforms;
+    for (auto& slot : state.slots) slot.offset = invalid_handle;
+    for (const auto& declared : info.uniform_slots) {
+        ShaderUniformSlot* slot = find_shader_uniform(state, declared.name);
+        if (!slot) {
+            auto values = declared.defaults;
+            if (values.empty()) values = default_shader_uniform_values(declared.name, declared.count);
+            state.slots.push_back(ShaderUniformSlot{declared.name, declared.type, invalid_handle,
+                normalize_shader_uniform_value(declared.name, declared.type, declared.count, values)});
+            slot = &state.slots.back();
+        } else if (slot->type != declared.type) {
+            throw std::runtime_error(std::string("A ShaderMaterial view declares uniform '") + declared.name +
+                                     "' as " + declared.type + "; the slot it reads holds " + slot->type + ".");
+        }
+        slot->offset = declared.offset;
+    }
+    record.shader_uniform_values = info.defaults;
+    record.shader_uniform_values.resize(info.value_count, 0.0f);
+    record.shader_uniform_upload.reset();
+    record.shader_view_slots = std::move(table);
+}
+
 `;
 
 /**
@@ -394,12 +525,15 @@ void queue_node_material_group(Scene& scene, MeshHandle mesh) {
         rangeUpdates = false,
         declarationLists = false,
         creationLanes = false,
+        views = false,
     }: {
         rangeUpdates?: boolean;
         /** The scene reads a ShaderMaterial's declaration lists. */
         declarationLists?: boolean;
         /** A creation keeps its run-time uniform defaults' own numbers. */
         creationLanes?: boolean;
+        /** The scene may create material views (`material_views.cpp`). */
+        views?: boolean;
     } = {}): LoweredSource {
         const modulePath = "src/material/shader/shader-material.ts";
         const { declaration } = this.context.functionDeclaration(
@@ -551,7 +685,7 @@ MaterialHandle create_shader_material(
         if (values.empty()) values = default_shader_uniform_values(slot.name, slot.count);
         material.shader_uniforms->slots.push_back(ShaderUniformSlot{
             slot.name, slot.type, slot.offset,
-            normalize_shader_uniform_value(slot.name, slot.type, slot.count, values), 0.0});
+            normalize_shader_uniform_value(slot.name, slot.type, slot.count, values)});
     }
     engine.materials.push_back(material);
     return MaterialHandle{static_cast<std::uint32_t>(engine.materials.size() - 1)};
@@ -571,7 +705,7 @@ MaterialRecord& shader_material(Engine& engine, MaterialHandle handle) {
     return material;
 }
 
-// Construction installs defaults without the setter's equal-value suppression.
+${views ? shaderViewSlotsCpp : ""}// Construction installs defaults without the setter's equal-value suppression.
 void initialize_shader_uniform_values(
     Engine& engine, MaterialHandle material, std::uint32_t offset,
     std::uint32_t count, const float* values) {
@@ -2176,6 +2310,7 @@ void release_material_view_gpu(
         nodePcfCasters = false,
         viewGpuRelease = false,
         shaderViews = false,
+        shaderMaterials = shaderViews,
     ): LoweredSource {
         const nodeCasters = nodeEsmCasters || nodePcfCasters;
         const standardModule = "src/material/standard/no-color-view.ts";
@@ -2327,9 +2462,19 @@ MaterialHandle create_no_color_material_view(
         source_record.source_material.value == invalid_handle
             ? source
             : source_record.source_material;
+${
+    shaderMaterials
+        ? `    // A shader view reads its slots through its source's.
+    view.shader_view_slots.reset();
     engine.materials.push_back(std::move(view));
-    return MaterialHandle{
+    const MaterialHandle created{
         static_cast<std::uint32_t>(engine.materials.size() - 1)};
+    if (shader) bind_shader_view_slots(engine, created);
+    return created;`
+        : `    engine.materials.push_back(std::move(view));
+    return MaterialHandle{
+        static_cast<std::uint32_t>(engine.materials.size() - 1)};`
+}
 }
 
 } // namespace

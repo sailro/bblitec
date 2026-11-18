@@ -5,13 +5,17 @@
 
 namespace bbl {
 
-/** The pin owns one independent Float32Array for every declared uniform. */
+/**
+ * The pin owns one independent Float32Array for every declared uniform. A
+ * view's slot aliasing its source's shares the array and its revision
+ * (`slot._v`), at the offset the view's own variant lays it out.
+ */
 struct ShaderUniformSlot {
     std::string name;
     std::string type;
     std::uint32_t offset = invalid_handle;
     js::F32Array value;
-    double version = 0;
+    std::shared_ptr<double> version = std::make_shared<double>(0.0);
 };
 
 /** `enableShaderUniformRangeUpdates`: the before-render callback each scene received. */
@@ -26,7 +30,14 @@ struct ShaderUniformState {
     std::shared_ptr<ShaderUniformRangeUpdates> range_updates;
     /** The numbers run-time creation options held, by uniform offset, which `uniformDecls` copies. */
     std::vector<std::pair<std::uint32_t, std::vector<double>>> creation_lanes;
+    /** A view's source's slots, whose version its uploads also follow. */
+    std::shared_ptr<const ShaderUniformState> source;
 };
+
+/** `material._uniformVersion` as an upload reads it: a view's follows its own and its source's. */
+inline double shader_uniform_version(const ShaderUniformState& state) {
+    return state.source ? state.version + state.source->version : state.version;
+}
 
 /** Live aliases never invalidate this per-material serialized packet themselves. */
 struct ShaderUniformUploadState {

@@ -217,7 +217,7 @@ export function lowerShaderUniformApi(context: LoweringContext): string {
         ],
         ["slot.decl.name", { cpp: "slot->name", type: "string" }],
         ["slot.decl.type", { cpp: "slot->type", type: "string" }],
-        ["slot._v", { cpp: "slot->version", type: "scalar" }],
+        ["slot._v", { cpp: "(*slot->version)", type: "scalar" }],
         ["material._uniformVersion", { cpp: "state.version", type: "scalar" }],
         ["material._uboVersion", { cpp: "state.ubo_version", type: "scalar" }],
         [
@@ -401,7 +401,10 @@ export function lowerShaderUniformSnapshot(context: LoweringContext): string {
             "state._shaderCustomVersion",
             { cpp: "upload.version", type: "scalar" },
         ],
-        ["material._uniformVersion", { cpp: "state.version", type: "scalar" }],
+        [
+            "material._uniformVersion",
+            { cpp: "shader_uniform_version(state)", type: "scalar" },
+        ],
     ]);
     const gate = lowerPinnedBody(file, [guard], {
         bindings: gateBindings,
@@ -453,7 +456,7 @@ export function lowerShaderUniformSnapshot(context: LoweringContext): string {
         [skip, assignment],
         {
             bindings: new Map<string, PinnedBinding>([
-                ["version", { cpp: "slot.version", type: "scalar" }],
+                ["version", { cpp: "(*slot.version)", type: "scalar" }],
                 [
                     "plan.versions",
                     {
@@ -577,7 +580,7 @@ export function lowerShaderUniformRangeUpdates(
         ["spec", { cpp: "material", type: "opaque", absentCpp: absent }],
         ["data", { cpp: "material", type: "opaque", absentCpp: absent }],
         ["buffer", { cpp: "material", type: "opaque", absentCpp: absent }],
-        ["slot._v", { cpp: "slot.version", type: "scalar" }],
+        ["slot._v", { cpp: "(*slot.version)", type: "scalar" }],
     ]);
     const calls = new Map<string, (args: readonly string[]) => string>([
         ["dirty.clear", () => "dirty.clear()"],

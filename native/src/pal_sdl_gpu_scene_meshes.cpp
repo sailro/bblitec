@@ -239,19 +239,20 @@ void sync_shader_storage_buffers(GpuState& state, const Engine& engine,
 }
 
 SDL_GPUBuffer* shader_storage_buffer(GpuState& state, const Engine& engine,
-                                     const MaterialRecord& view,
+                                     const MaterialRecord& material,
                                      const upstream::ShaderVariantInfo& info,
                                      const std::string& name) {
-    const MaterialRecord& material = shader_resource_material(engine, view);
     const auto declared = std::find_if(
         info.storage_buffers.begin(), info.storage_buffers.end(),
         [&](const upstream::ShaderStorageBufferInfo& candidate) { return name == candidate.name; });
     if (declared == info.storage_buffers.end())
         return nullptr;
-    const std::size_t slot = static_cast<std::size_t>(declared - info.storage_buffers.begin());
-    if (slot >= material.shader_storage_buffers.size())
+    const auto owner =
+        shader_slot_owner(engine, material, ShaderDeclarationList::storage_buffers,
+                          static_cast<std::uint32_t>(declared - info.storage_buffers.begin()));
+    if (owner.slot >= owner.material.shader_storage_buffers.size())
         return nullptr;
-    const StorageBufferHandle handle = material.shader_storage_buffers[slot];
+    const StorageBufferHandle handle = owner.material.shader_storage_buffers[owner.slot];
     if (handle.value < state.storage_buffers.size() &&
         handle_at(state.storage_buffers, handle).lost && engine.assert_storage_buffer_handle)
         engine.assert_storage_buffer_handle(engine, handle.value);
@@ -269,12 +270,10 @@ SDL_GPUSampler* sdl_render_texture_sampler(GpuState& state, const TextureSampler
 }
 
 void bind_shader_material_textures(GpuState& state, SDL_GPURenderPass* pass,
-                                   [[maybe_unused]] const Scene& scene,
-                                   [[maybe_unused]] const Engine& engine,
+                                   [[maybe_unused]] const Scene& scene, const Engine& engine,
                                    MaterialHandle material_handle, std::uint32_t variant,
                                    const GpuMesh& mesh) {
-    const MaterialRecord& material =
-        shader_resource_material(engine, handle_at(engine.materials, material_handle));
+    const MaterialRecord& material = handle_at(engine.materials, material_handle);
     const auto& uploaded = shader_draw_textures(state.shared_shader_material_textures,
                                                 mesh.shared_shader_textures, material_handle)
                                .bindings;
@@ -283,11 +282,13 @@ void bind_shader_material_textures(GpuState& state, SDL_GPURenderPass* pass,
                              std::size_t slot) -> SDL_GPUTextureSamplerBinding {
         if (slot == std::numeric_limits<std::size_t>::max())
             gpu_error(shader_sampler_unmapped(info, name).c_str());
+        const auto owner = shader_slot_owner(engine, material, ShaderDeclarationList::samplers,
+                                             static_cast<std::uint32_t>(slot));
 #if BBLITE_SHADOWS_CSM
-        if (slot < material.shader_csm_textures.size() &&
-            material.shader_csm_textures[slot].value != invalid_handle) {
+        if (owner.slot < owner.material.shader_csm_textures.size() &&
+            owner.material.shader_csm_textures[owner.slot].value != invalid_handle) {
 #if BBLITE_SHADOW_RECEIVERS
-            const ShadowGeneratorHandle generator = material.shader_csm_textures[slot];
+            const ShadowGeneratorHandle generator = owner.material.shader_csm_textures[owner.slot];
             if (generator.value >= state.shadow_generators.size())
                 pal::refuse_invalid_frame_handle("Shader CSM receiver has an invalid generator.");
             if (!handle_at(state.shadow_generators, generator).map ||
@@ -301,9 +302,9 @@ void bind_shader_material_textures(GpuState& state, SDL_GPURenderPass* pass,
         }
 #endif
         // Resolve targets per draw so resize/rebuild replaces both stages' views.
-        if (slot < material.shader_render_textures.size() &&
-            material.shader_render_textures[slot]) {
-            const RenderTextureRef& reference = *material.shader_render_textures[slot];
+        if (owner.slot < owner.material.shader_render_textures.size() &&
+            owner.material.shader_render_textures[owner.slot]) {
+            const RenderTextureRef& reference = *owner.material.shader_render_textures[owner.slot];
 #if BBLITE_RENDER_TASK_TRANSMISSION
             if (reference.source == RenderTextureSource::transmission_color ||
                 reference.source == RenderTextureSource::transmission_depth)
@@ -456,7 +457,8 @@ void upload_material_slot_texture(GpuState& state, SharedMaterialTextures& textu
     binding.sampler = create_texture_sampler(state.device, data.sampler);
 }
 
-void upload_shader_material_textures(GpuState& state, const MaterialRecord& material,
+void upload_shader_material_textures(GpuState& state, const Engine& engine,
+                                     const MaterialRecord& material,
                                      SharedShaderMaterialTextures& textures) {
     if (material.node_material) {
         for (const FileTexture& texture : material.shader_textures) {
@@ -477,24 +479,19 @@ void upload_shader_material_textures(GpuState& state, const MaterialRecord& mate
                 textures.bindings.emplace_back();
                 continue;
             }
-            if (slot >= material.shader_textures.size()) {
-                gpu_error(
-                    shader_sampler_shortfall(shader_info, material.shader_textures.size()).c_str());
-            }
-#if BBLITE_SHADOWS_CSM
-            const bool csm_texture = slot < material.shader_csm_textures.size() &&
-                                     material.shader_csm_textures[slot].value != invalid_handle;
-#else
-            constexpr bool csm_texture = false;
-#endif
-            if (csm_texture || (slot < material.shader_render_textures.size() &&
-                                material.shader_render_textures[slot]))
+            const auto owner = shader_slot_owner(engine, material, ShaderDeclarationList::samplers,
+                                                 static_cast<std::uint32_t>(slot));
+            const auto& owned = owner.material.shader_textures;
+            if (owner.slot >= owned.size())
+                gpu_error(shader_sampler_shortfall(shader_info, owned.size()).c_str());
+            if (shader_slot_binds_per_draw(owner.material, owner.slot))
                 textures.bindings.emplace_back();
             else
-                upload_material_slot_texture(state, textures, material.shader_textures[slot].data);
+                upload_material_slot_texture(state, textures, owned[owner.slot].data);
         }
     }
-    textures.texture_version = material.shader_texture_version;
+    textures.texture_version =
+        shader_slot_version(engine, material, &MaterialRecord::shader_texture_version);
 }
 
 SharedShaderMaterialTextures& ensure_shader_material_textures(GpuState& state, const Engine& engine,
@@ -504,8 +501,7 @@ SharedShaderMaterialTextures& ensure_shader_material_textures(GpuState& state, c
         return *existing;
     auto created = std::make_unique<SharedShaderMaterialTextures>(state.device);
     created->material = material;
-    upload_shader_material_textures(
-        state, shader_resource_material(engine, handle_at(engine.materials, material)), *created);
+    upload_shader_material_textures(state, engine, handle_at(engine.materials, material), *created);
     state.shared_shader_material_textures.push_back(std::move(created));
     return *state.shared_shader_material_textures.back();
 }
@@ -513,12 +509,13 @@ SharedShaderMaterialTextures& ensure_shader_material_textures(GpuState& state, c
 void refresh_shader_material_textures(GpuState& state, const Engine& engine) {
     bool changed = false;
     for (const auto& textures : state.shared_shader_material_textures) {
-        const auto* view = handle_find(engine.materials, textures->material);
-        const auto* material = view ? &shader_resource_material(engine, *view) : nullptr;
-        if (!material || textures->texture_version == material->shader_texture_version)
+        const auto* material = handle_find(engine.materials, textures->material);
+        if (!material ||
+            textures->texture_version ==
+                shader_slot_version(engine, *material, &MaterialRecord::shader_texture_version))
             continue;
         SharedShaderMaterialTextures replacement(state.device);
-        upload_shader_material_textures(state, *material, replacement);
+        upload_shader_material_textures(state, engine, *material, replacement);
         textures->swap(replacement);
         textures->texture_version = replacement.texture_version;
         changed = true;

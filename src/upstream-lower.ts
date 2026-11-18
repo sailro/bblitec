@@ -1910,6 +1910,7 @@ ${lowerThinInstanceSync(context)}
                 creationLanes: features.includes(
                     "material:shader-uniform-creation-lanes",
                 ),
+                views: this.reaches("upstream/src/material_views.cpp"),
             }),
         );
         emitReached("upstream/src/material_shader_external.cpp", () =>
@@ -1969,6 +1970,7 @@ ${lowerThinInstanceSync(context)}
                 nodePcfCasters,
                 features.includes("material:view-gpu-release"),
                 features.includes("material:shader-view"),
+                this.reaches("upstream/src/material_shader.cpp"),
             ),
         );
         this.emitMeshFactories(features, factories, generated);

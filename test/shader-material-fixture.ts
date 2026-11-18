@@ -6,7 +6,7 @@ import {
     lowerShaderUniformApi,
     lowerShaderUniformSnapshot,
 } from "../src/lowering/shader-uniforms.js";
-import { cppFunction } from "./native-fixture.js";
+import { cppFunction, cppSection } from "./native-fixture.js";
 
 /** Actual emitted material construction, metadata and uniform bodies without a GPU window. */
 export function compileShaderMaterialFixture(source: string) {
@@ -22,6 +22,7 @@ export function compileShaderMaterialFixture(source: string) {
     const factory = new FactoryLowerer(context).lowerShaderMaterialFactory({
         declarationLists,
         creationLanes,
+        views: true,
     }).source;
     const plan = new RendererLowerer(context).lowerRenderPlan({
         shaderPrograms: compiled.manifest.customShaderPrograms,
@@ -43,6 +44,7 @@ ${lowerShaderUniformApi(context)}
 ${cppFunction(factory, "void apply_shader_material_variant(")}
 ${cppFunction(factory, "MaterialHandle create_shader_material(")}
 ${cppFunction(factory, "MaterialRecord& shader_material(")}
+${cppSection(factory, "namespace {\n\nstd::vector<std::string_view> shader_sampler_names(", "// Construction installs defaults")}
 ${declarationLists ? cppFunction(factory, "const std::vector<std::string>& shader_declaration_names(") : ""}
 ${lowerShaderUniformSnapshot(context)}
 ${cppFunction(factory, "void initialize_shader_uniform_values(")}

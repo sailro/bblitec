@@ -723,3 +723,95 @@ int main(){
         },
     );
 });
+
+const slotTablesSource = `${prelude}
+    async function main(): Promise<void> {
+        const engine = await createEngine({});
+        draw(engine, createShaderMaterial(${groundOptions}));
+        draw(engine, createShaderMaterial({ name: "wider", vertexSource: wgsl\`\${VERT}\`, fragmentSource: wgsl\`\${surface("shaderUniforms.uTint + shaderUniforms.uExtra.xyz")}\`, attributes: ["position"], uniforms: ["worldViewProjection", "world", { name: "uExtra", type: "vec4<f32>", defaultValue: [4, 3, 2, 1] }, { name: "uTint", type: "vec3<f32>" }], samplers: ["carve", "albedo"], storageBuffers: [{ name: "extra", type: "array<vec4<f32>>" }, { name: "points", type: "array<vec4<f32>>" }] }));
+        draw(engine, createShaderMaterial({ name: "clash", vertexSource: wgsl\`\${VERT}\`, fragmentSource: wgsl\`\${surface("shaderUniforms.uTint.xyz")}\`, attributes: ["position"], uniforms: ["worldViewProjection", "world", { name: "uTint", type: "vec4<f32>" }] }));
+    }
+    void main();
+`;
+
+test("a view's slots natively alias its source's by name, the names only its variant declares are its own, and its uploads follow both", (t) => {
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native compiler required.");
+        return;
+    }
+    const { compiled, cpp } = compileShaderMaterialFixture(slotTablesSource);
+    const views = new FactoryLowerer(
+        new LoweringContext(),
+    ).lowerNoColorMaterialViews(false, false, false, false, true).source;
+    const id = (name: string): number =>
+        compiled.manifest.customShaderPrograms.findIndex(
+            (candidate) => candidate.name === name,
+        );
+    runGeneratedProgram(
+        native,
+        "shader-material-views/slot-tables",
+        `
+${cpp}
+#include <array>
+#include <cstdio>
+namespace bbl {
+namespace {
+${cppFunction(views, "MaterialHandle create_no_color_material_view(")}
+}
+${cppFunction(views, "MaterialHandle create_shader_material_view(")}
+${cppFunction(views, "void derive_shader_material_view(")}
+}
+int main(){
+    using bbl::ShaderDeclarationList;
+    bbl::Engine engine;
+    const auto source = bbl::create_shader_material(engine, ${id("ground")}u);
+    bbl::handle_at(engine.materials, source).shader_textures.resize(2);
+    bbl::handle_at(engine.materials, source).shader_storage_buffers = {bbl::StorageBufferHandle{5}};
+    const auto view = bbl::create_shader_material_view(engine, source);
+    const auto where = [&](ShaderDeclarationList list, std::uint32_t slot) {
+        const auto owner = bbl::shader_slot_owner(engine, bbl::handle_at(engine.materials, view), list, slot);
+        std::printf("%s%u ", &owner.material == &bbl::handle_at(engine.materials, source) ? "source" : "own", owner.slot);
+    };
+    // A new view aliases each slot of its source.
+    where(ShaderDeclarationList::samplers, 0); where(ShaderDeclarationList::samplers, 1); where(ShaderDeclarationList::storage_buffers, 0);
+    bbl::derive_shader_material_view(engine, view, ${id("wider")}u, false);
+    // carve and extra are the view's own; albedo and points stay its source's.
+    where(ShaderDeclarationList::samplers, 0); where(ShaderDeclarationList::samplers, 1);
+    where(ShaderDeclarationList::storage_buffers, 0); where(ShaderDeclarationList::storage_buffers, 1);
+    try { where(ShaderDeclarationList::samplers, 2); } catch (const std::runtime_error& error) { std::printf("| %s | ", error.what()); }
+    auto& own = bbl::handle_at(engine.materials, view);
+    auto& from = bbl::handle_at(engine.materials, source);
+    const auto version = [&] { return bbl::shader_slot_version(engine, own, &bbl::MaterialRecord::shader_texture_version); };
+    const auto before = version();
+    ++from.shader_texture_version;
+    const auto followed = version();
+    ++own.shader_texture_version;
+    std::printf("%d%d ", followed > before ? 1 : 0, version() > followed ? 1 : 0);
+    const auto offset = [](std::uint32_t variant, const char* name) {
+        for (const auto& slot : bbl::upstream::shader_variant_info(variant).uniform_slots)
+            if (std::string_view(slot.name) == name) return slot.offset;
+        throw std::runtime_error("no uniform");
+    };
+    // uTint is the source's slot at the view's offset; uExtra the view's own default.
+    const auto uniforms = [&] {
+        const auto& values = bbl::shader_uniform_render_values(own);
+        for (const char* name : {"uTint", "uExtra"})
+            for (std::uint32_t lane = 0; lane < (name[1] == 'T' ? 3u : 4u); ++lane)
+                std::printf("%g,", static_cast<double>(values.at(offset(${id("wider")}u, name) + lane)));
+        std::printf(" ");
+    };
+    bbl::set_shader_uniform(engine, source, "uTint", std::array<double, 3>{0.0, 1.0, 0.0});
+    uniforms();
+    bbl::set_shader_uniform(engine, source, "uTint", std::array<double, 3>{0.5, 0.0, 1.0});
+    uniforms();
+    const auto clash = bbl::create_shader_material_view(engine, source);
+    try { bbl::derive_shader_material_view(engine, clash, ${id("clash")}u, false); } catch (const std::runtime_error& error) { std::printf("| %s", error.what()); }
+}
+`,
+        {
+            expectedOutput:
+                "source0 source1 source0 own0 source0 own0 source0 | A shader view's table does not hold the slot its variant declares. | 11 0,1,0,4,3,2,1, 0.5,0,1,4,3,2,1, | A ShaderMaterial view declares uniform 'uTint' as vec4<f32>; the slot it reads holds vec3<f32>.",
+        },
+    );
+});
