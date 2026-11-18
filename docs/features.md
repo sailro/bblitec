@@ -43,6 +43,7 @@ Rules:
 - A Babylon Lite call completes with `undefined` where its pinned body does, as a source function's must.
 - An unread `await` (`await x;`, `void await x`, a comma's left) of a non-thenable takes its turn and drops the value.
 - A stored class field that some constructions bind to one value and others leave absent keeps a presence slot.
+  One that constructions bind to different instances of a local class stores that class.
 - A class instance built before anything stored one replays with its class shared from that construction; a field
   holding a stored class is a slot. A record type (an interface, `Pick<C, K>`) storing one class's instances where the
   program can observe a copy is stored as those instances.
