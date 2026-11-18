@@ -534,14 +534,17 @@ function definitionReach(
         node = parent;
     }
     // Until then the view is only redefined, so the programs it may draw
-    // are the ones its definitions derived.
+    // are the ones its definitions derived. A reference on another branch
+    // of an `if` holding the statement does not run before it.
     const between = bindingReferences(
         context.program,
         context.checker,
         symbol!,
     ).filter(
         (reference) =>
-            reference.pos > declared.end && reference.end <= statement.pos,
+            reference.pos > declared.end &&
+            reference.end <= statement.pos &&
+            !onOtherBranch(reference, statement),
     );
     return between.every(
         (reference) =>
@@ -551,6 +554,28 @@ function definitionReach(
     )
         ? { declared, statement }
         : undefined;
+}
+
+/** Whether two nodes sit on the two branches of one `if` statement. */
+function onOtherBranch(node: ts.Node, other: ts.Node): boolean {
+    const branch = (
+        inside: ts.Node,
+        statement: ts.IfStatement,
+    ): ts.Node | undefined =>
+        ts.findAncestor(
+            inside,
+            (ancestor) =>
+                ancestor === statement.thenStatement ||
+                ancestor === statement.elseStatement,
+        );
+    return (
+        ts.findAncestor(node, (ancestor) => {
+            if (!ts.isIfStatement(ancestor)) return false;
+            const own = branch(node, ancestor);
+            const theirs = branch(other, ancestor);
+            return own !== undefined && theirs !== undefined && own !== theirs;
+        }) !== undefined
+    );
 }
 
 /**

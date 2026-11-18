@@ -236,6 +236,29 @@ test("a view's redefinition may reach a throw: generation evaluates it, and one 
     );
 });
 
+test("a view's redefinition on one branch of a run-time test follows uses of the view on the other branch", () => {
+    const compiled = compileSource(`${prelude}
+    async function main(): Promise<void> {
+        const engine = await createEngine({});
+        const ground = createShaderMaterial(${groundOptions});
+        const view = createMaterialView(ground, { features: 0 }) as ShaderMaterial;
+        if (Math.random() > 0.5) {
+            draw(engine, view);
+        } else {
+            Object.defineProperty(view, "fragmentSource", { value: wgsl\`\${NORMAL}\`, configurable: true });
+            draw(engine, view);
+        }
+    }
+    void main();
+`);
+    // The redefinition derives from the source, the program the view
+    // draws on the branch that does not redefine it.
+    assert.match(
+        program(compiled, "ground-1").fragmentSource,
+        /normalize\(cross\(dpdx/,
+    );
+});
+
 test("a view over a material of several variants derives one program per variant, chosen at run time from the view's", () => {
     const compiled = compileSource(variantsSource);
     const programs = compiled.manifest.customShaderPrograms;

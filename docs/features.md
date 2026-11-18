@@ -388,8 +388,8 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
   `createShaderNoColorMaterialView` shares source uniforms and resource bindings; it and `createStandardNoColorMaterialView`
   may run in a loop of run-time passes. `createMaterialView(source, { features: 0 })` over a ShaderMaterial shares
   them too. On such a view, effect-free `Object.defineProperty`/`defineProperties` data descriptors after its `const`
-  declaration, in its block or that block's `if` branches and before any other use of the view, redefine its sources,
-  `attributes`, declaration lists and pipeline state; the view draws a program compiled per source variant and
+  declaration, in its block or that block's `if` branches and before any other use of the view on their path, redefine
+  its sources, `attributes`, declaration lists and pipeline state; the view draws a program compiled per source variant and
   branch, selected at run time. A source of run-time variant may be any variant the program creates, as such a call's
   argument may. Redefinitions declaring other uniforms,
   samplers or storage buffers, slot maps or other fields, run-time values, or a source of a variant the program never
