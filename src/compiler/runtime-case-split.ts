@@ -194,6 +194,12 @@ export function compileWithRuntimeCaseSplit(
             (product, selector) => product * selector.outcomes.length,
             1,
         );
+        if (arms === 0)
+            context.sceneManifest.shaderDerivations.refuseWithoutCreations(
+                () => {
+                    throw error;
+                },
+            );
         if (arms > MAX_ARMS)
             throw beyondSplit(
                 error,
@@ -1015,14 +1021,16 @@ function runtimeSelectors(
                 value.sceneShaderVariant !== undefined
             )
                 continue;
+            // With no variant created yet the call takes no arm: a later
+            // creation restarts lowering with it (`ShaderCreationsRequired`),
+            // and with none the call's refusal stands (`refuseUncreated`).
             const variants =
                 value.possibleSceneShaderVariants ??
                 runtimeShaderVariants(context);
-            if (variants.length > 0)
-                variable.push({
-                    ...group,
-                    outcomes: variants.map((variant) => ({ variant })),
-                });
+            variable.push({
+                ...group,
+                outcomes: variants.map((variant) => ({ variant })),
+            });
             continue;
         }
         if (group.kind === "constant") {
@@ -1354,6 +1362,9 @@ function splitCall(
         }
         const test = tests[depth]!;
         const selector = selectors[depth]!;
+        // No variant created yet: the variant table, read above, throws
+        // before any arm (`refuseWithoutCreations`).
+        if (selector.outcomes.length === 0) return;
         // Truth is the truth test; an optional boolean's falsy one its
         // presence (after truth, false); the last outcome is the rest.
         const guard = (outcome: Outcome): string =>

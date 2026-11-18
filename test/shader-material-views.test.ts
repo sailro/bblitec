@@ -373,6 +373,47 @@ test("a call reading a run-time ShaderMaterial's fields compiles once per varian
     assert.ok(compiled.cpp.includes(`if (${site[1]} == 0u) {`));
 });
 
+const unshadedSource = (late: boolean): string => `${prelude}
+    import { createStandardMaterial } from "@babylonjs/lite";
+    import type { Mesh } from "@babylonjs/lite";
+    function fields(material: ShaderMaterial): number {
+        return material.samplerDecls.length * 1000 + material.fragmentSource.length;
+    }
+    async function main(): Promise<void> {
+        const engine = await createEngine({});
+        const made = createMeshFromData(engine, "tri", new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]), new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]), new Uint32Array([0, 1, 2]));
+        made.material = createStandardMaterial();
+        addToScene(createSceneContext(engine), made);
+        const registry = { add(target: Mesh): number { return fields(target.material as ShaderMaterial); } };
+        console.log(registry.add(made));
+        ${late ? `made.material = createShaderMaterial({ name: "late", vertexSource: wgsl\`\${VERT}\`, fragmentSource: wgsl\`\${surface("vec3<f32>(1.0)")}\`, attributes: ["position"], uniforms: ["worldViewProjection", "world"] }); console.log(registry.add(made));` : ""}
+    }
+    void main();
+`;
+
+test("a call reading a run-time ShaderMaterial's fields before any creation takes the arms of the later ones, and refuses where the program creates none", () => {
+    const table = (compiled: ReturnType<typeof compileSource>): string => {
+        const site = compiled.cpp.match(
+            /= bblscene::derived_shader_variant_(\d+)\(bbl::shader_material_variant\(/,
+        );
+        assert.ok(site, "variant arm selection");
+        return cppFunction(
+            compiled.cpp,
+            `inline std::uint32_t derived_shader_variant_${site[1]}(`,
+        );
+    };
+    // With no variant at all the call's own refusal stands.
+    assert.throws(
+        () => compileSource(unshadedSource(false)),
+        /'material\.samplerDecls' reads a ShaderMaterial's 'samplerDecls', which its shader variant decides; this material's variant is decided at run time\./,
+    );
+    const compiled = compileSource(unshadedSource(true));
+    const late = compiled.manifest.customShaderPrograms.findIndex(
+        ({ name }) => name === "late",
+    );
+    assert.match(table(compiled), new RegExp(`case ${late}u: return 0u;`));
+});
+
 test("a run-time ShaderMaterial split refuses past its arm bound", () => {
     assert.throws(
         () => compileSource(runtimeSource(81)),

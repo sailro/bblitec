@@ -260,6 +260,8 @@ export class ShaderDerivationRecorder {
     private readonly created = new EmissionSet<string>();
     /** The created variants each run-time variant split compiled arms for. */
     private readonly splits = emissionArray<ReadonlySet<string>>();
+    /** The refusals of the sites that met no created variant. */
+    private readonly uncreated = emissionArray<() => never>();
 
     /**
      * Records the options a variant compiled from, once per distinct
@@ -286,6 +288,20 @@ export class ShaderDerivationRecorder {
     /** Records the created variants a run-time variant split compiled arms for. */
     public recordSplit(variants: readonly string[]): void {
         this.splits.push(new Set(variants));
+    }
+
+    /**
+     * Records the refusal of a site a run-time variant split compiled
+     * before any variant was created: a later creation compiles it again
+     * (`splitLedger`), and it stands where the program creates none.
+     */
+    public refuseWithoutCreations(refuse: () => never): void {
+        this.uncreated.push(refuse);
+    }
+
+    /** Refuses as the first site that met no created variant, where the program creates none. */
+    public refuseUncreated(): void {
+        if (this.created.size === 0) this.uncreated[0]?.();
     }
 
     /**

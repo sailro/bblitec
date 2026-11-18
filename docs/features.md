@@ -377,7 +377,8 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
   Reads of `_uniformValues`, `_textureSlots` and `_storageBufferSlots` refuse.
   A local function call that refuses with a ShaderMaterial argument of run-time variant compiles once per variant
   the program's `createShaderMaterial` calls create, later ones included, and takes at run time the arm its
-  argument's variant selects through a generated table; a variant outside the table throws.
+  argument's variant selects through a generated table; a variant outside the table throws. Compiled before any
+  creation, it takes the arms of the later ones; where the program creates none, it refuses.
   A typed uniform declaration of a system matrix (`mat4x4<f32>`, no default) is that system uniform.
   `createShaderNoColorMaterialView` shares source uniforms and resource bindings; it and `createStandardNoColorMaterialView`
   may run in a loop of run-time passes. `createMaterialView(source, { features: 0 })` over a ShaderMaterial shares

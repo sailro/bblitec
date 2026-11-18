@@ -1477,6 +1477,7 @@ class Compiler implements LoweringServices {
             this.sceneManifest.reachedShaderPrograms,
         );
         if (ledger) throw new ShaderCreationsRequired(ledger);
+        this.sceneManifest.shaderDerivations.refuseUncreated();
         const particles = this.sceneManifest.reachedNodeParticles;
         if (
             particles.nativeProvider &&
