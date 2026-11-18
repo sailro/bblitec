@@ -16,8 +16,12 @@ export function compileShaderMaterialFixture(source: string) {
     const declarationLists = compiled.manifest.features.includes(
         "material:shader-declaration-lists",
     );
+    const creationLanes = compiled.manifest.features.includes(
+        "material:shader-uniform-creation-lanes",
+    );
     const factory = new FactoryLowerer(context).lowerShaderMaterialFactory({
         declarationLists,
+        creationLanes,
     }).source;
     const plan = new RendererLowerer(context).lowerRenderPlan({
         shaderPrograms: compiled.manifest.customShaderPrograms,
@@ -42,8 +46,8 @@ ${cppFunction(factory, "MaterialRecord& shader_material(")}
 ${declarationLists ? cppFunction(factory, "const std::vector<std::string>& shader_declaration_names(") : ""}
 ${lowerShaderUniformSnapshot(context)}
 ${cppFunction(factory, "void initialize_shader_uniform_values(")}
-${cppFunction(factory, "void initialize_shader_uniform_creation_values(")}
-${cppFunction(factory, "double shader_uniform_creation_lane(")}
+${creationLanes ? cppFunction(factory, "void initialize_shader_uniform_creation_values(") : ""}
+${creationLanes ? cppFunction(factory, "double shader_uniform_creation_lane(") : ""}
 ${cppFunction(factory, "void set_shader_uniform_values(")}
 ${factory.slice(factory.indexOf("void set_shader_uniform_value("), factory.indexOf("// setShaderTexture:"))}
 }

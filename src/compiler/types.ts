@@ -3549,6 +3549,7 @@ export type Feature =
     | "material:shader"
     | "material:shader-uniform-ranges"
     | "material:shader-declaration-lists"
+    | "material:shader-uniform-creation-lanes"
     | "material:shader-storage"
     | "material:shader-external-texture"
     | "material:standard"

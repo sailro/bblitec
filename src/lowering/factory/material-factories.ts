@@ -393,10 +393,13 @@ void queue_node_material_group(Scene& scene, MeshHandle mesh) {
     public lowerShaderMaterialFactory({
         rangeUpdates = false,
         declarationLists = false,
+        creationLanes = false,
     }: {
         rangeUpdates?: boolean;
         /** The scene reads a ShaderMaterial's declaration lists. */
         declarationLists?: boolean;
+        /** A creation keeps its run-time uniform defaults' own numbers. */
+        creationLanes?: boolean;
     } = {}): LoweredSource {
         const modulePath = "src/material/shader/shader-material.ts";
         const { declaration } = this.context.functionDeclaration(
@@ -581,7 +584,9 @@ void initialize_shader_uniform_values(
     throw std::runtime_error("Shader uniform initialization offset is absent.");
 }
 
-// A default the run time decides: the material keeps the option's own numbers,
+${
+    creationLanes
+        ? `// A default the run time decides: the material keeps the option's own numbers,
 // which the pin's \`uniformDecls\` copies, beside the floats it initializes.
 void initialize_shader_uniform_creation_values(
     Engine& engine, MaterialHandle material, std::uint32_t offset,
@@ -607,7 +612,9 @@ double shader_uniform_creation_lane(
     throw std::runtime_error("A shader uniform's creation default is absent.");
 }
 
-// Offset setter shared by setShaderUniform/setShaderFloat/
+`
+        : ""
+}// Offset setter shared by setShaderUniform/setShaderFloat/
 // setShaderVector3: the compiler resolves (variant, uniform name) to the
 // flat value offset through the reflected layout at compile time.
 void set_shader_uniform_values(

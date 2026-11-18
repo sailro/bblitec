@@ -1243,6 +1243,11 @@ function shaderMaterialValue(
         });
         for (const uniform of dynamicUniforms) {
             // A creation's own numbers stay the material's beside its floats.
+            if (uniform.creation)
+                context.reachFeature(
+                    "material:shader-uniform-creation-lanes",
+                    call,
+                );
             const [lane, initialize] = uniform.creation
                 ? ["double", "initialize_shader_uniform_creation_values"]
                 : ["float", "initialize_shader_uniform_values"];

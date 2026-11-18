@@ -158,6 +158,7 @@ export const featureSources: Record<Feature, string[]> = {
     "material:shader": [],
     "material:shader-uniform-ranges": [],
     "material:shader-declaration-lists": [],
+    "material:shader-uniform-creation-lanes": [],
     // Storage buffers are owned by the common runtime record and uploaded by
     // whichever already-reached scene renderer is selected.
     "material:shader-storage": [],

@@ -837,6 +837,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "(uniformDecls, samplerDecls, storageBufferDecls)",
         consumers: CMAKE,
     },
+    "material:shader-uniform-creation-lanes": {
+        provenance:
+            "src/material/shader/shader-material.ts createShaderMaterial " +
+            "(uniformDecls copies each declaration's defaultValue)",
+        consumers: CMAKE,
+    },
     "material:shader-storage": {
         provenance:
             "src/material/shader/storage-buffer.ts + " +

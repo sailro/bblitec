@@ -1901,6 +1901,9 @@ ${lowerThinInstanceSync(context)}
                 declarationLists: features.includes(
                     "material:shader-declaration-lists",
                 ),
+                creationLanes: features.includes(
+                    "material:shader-uniform-creation-lanes",
+                ),
             }),
         );
         emitReached("upstream/src/material_shader_external.cpp", () =>

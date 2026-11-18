@@ -600,6 +600,29 @@ test("a ShaderMaterial's uniformDecls holds the names and types the pin builds, 
     );
 });
 
+test("only a program whose creations keep run-time defaults defines the creation-lane functions", () => {
+    const feature = "material:shader-uniform-creation-lanes";
+    assert.ok(
+        compileSource(runtimeDefaultsSource).manifest.features.includes(
+            feature,
+        ),
+    );
+    assert.ok(
+        !compileSource(variantsSource).manifest.features.includes(feature),
+    );
+    const factory = (creationLanes: boolean): string =>
+        new FactoryLowerer(new LoweringContext()).lowerShaderMaterialFactory({
+            creationLanes,
+        }).source;
+    for (const name of [
+        "initialize_shader_uniform_creation_values(",
+        "shader_uniform_creation_lane(",
+    ]) {
+        assert.ok(factory(true).includes(name), name);
+        assert.ok(!factory(false).includes(name), name);
+    }
+});
+
 test("a ShaderMaterial natively keeps a run-time default's own numbers beside the floats it draws with, and a view reads its source's", (t) => {
     const native = optionalNativeFixtureTools(false);
     if (!native) {
