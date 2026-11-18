@@ -4872,6 +4872,47 @@ check(
 `,
 );
 
+// A conditional whose arms generation knows absent selects the absence the
+// taken arm gives: the one both give, its condition still run, or
+// `undefined` against `null`.
+check(
+    "a-conditional-whose-arms-give-one-absence-is-that-absence",
+    `
+    const gate = new Float32Array([0, 1]);
+    const off = gate[0]! > 0;
+    const unset: { a?: unknown; b?: unknown } = {};
+    const both = off ? unset.a : unset.b;
+    if (both !== undefined || typeof both !== "undefined") throw new Error("undefined pair");
+    const nulls = off ? null : null;
+    if (nulls !== null) throw new Error("null pair");
+    let runs = 0;
+    const tick = (): boolean => ++runs > 1;
+    const counted = tick() ? undefined : undefined;
+    if (counted !== undefined || runs !== 1) throw new Error("condition effects " + runs);
+`,
+);
+
+check(
+    "a-conditional-over-undefined-and-null-gives-its-taken-arms-absence",
+    `
+    const gate = new Float32Array([0, 1]);
+    const off = gate[0]! > 0;
+    const on = gate[1]! > 0;
+    const unset: { a?: unknown } = {};
+    const missed = off ? unset.a : null;
+    if (missed !== null || typeof missed !== "object") throw new Error("null arm " + missed);
+    const taken = on ? unset.a : null;
+    if (taken !== undefined || taken === null) throw new Error("undefined arm " + taken);
+    function body(entity: unknown): object | null {
+        const hit = entity as { kind?: unknown; animal?: { animal?: unknown } } | null;
+        const found = hit?.kind === "animal" ? hit.animal?.animal : null;
+        return typeof found === "object" && found !== null ? found : null;
+    }
+    const spheres: { kind: "sphere" }[] = [{ kind: "sphere" }];
+    if (body(on ? spheres[0] : null) !== null || body(off ? spheres[0] : null) !== null) throw new Error("absent body");
+`,
+);
+
 check(
     "fixed-record-entry-projection",
     `

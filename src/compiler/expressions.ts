@@ -1720,8 +1720,7 @@ export class ExpressionLowerer {
             (unwrapped.operatorToken.kind ===
                 ts.SyntaxKind.AmpersandAmpersandToken ||
                 unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken) &&
-            (!this.runsCode(unwrapped.left) ||
-                !this.context.evaluationOrder.writesStorage(unwrapped.left))
+            this.skippable(unwrapped.left)
         ) {
             let leftValue: Value | undefined;
             const truthiness = this.context.probeEmission(
@@ -2598,6 +2597,17 @@ export class ExpressionLowerer {
             pureCall: (call) =>
                 isLibraryNumberFormatter(this.context.checker, call),
         });
+    }
+
+    /**
+     * Whether generation may leave `expression` unevaluated: it runs no
+     * code, or none that writes storage.
+     */
+    private skippable(expression: ts.Expression): boolean {
+        return (
+            !this.runsCode(expression) ||
+            !this.context.evaluationOrder.writesStorage(expression)
+        );
     }
 
     private compileBrowserValue(expression: ts.Expression): Value {
@@ -3636,6 +3646,34 @@ export class ExpressionLowerer {
                     }
                 });
             if (converted) [whenTrue, whenFalse] = converted;
+        }
+        // Two absences generation knows and no storage above holds: one
+        // both arms give is the selection's, its condition still run unless
+        // skippable; `undefined` against `null` selects as the dynamic value
+        // each arm is.
+        const trueAbsence = absenceOf(whenTrue);
+        const falseAbsence = absenceOf(whenFalse);
+        if (trueAbsence !== undefined && falseAbsence !== undefined) {
+            if (trueAbsence === falseAbsence) {
+                if (
+                    knownCondition(condition) === undefined &&
+                    !(
+                        ts.isConditionalExpression(node) &&
+                        this.skippable(node.condition)
+                    )
+                )
+                    this.context.emitDiscardedValue(booleanValue(condition));
+                return trueAbsence === "undefined"
+                    ? undefinedValue()
+                    : nullValue();
+            }
+            const dynamic: DataType = { kind: "json" };
+            const trueArm = this.selectedArmValue(whenTrue, dynamic, node);
+            const falseArm = this.selectedArmValue(whenFalse, dynamic, node);
+            return this.context.dataLowerer.leafValue(
+                `(${condition} ? ${trueArm.cpp} : ${falseArm.cpp})`,
+                dynamic,
+            );
         }
         const ownedResourceType: DataType<"handle"> | undefined =
             whenTrue.dataType?.kind === "handle" &&
@@ -6043,10 +6081,7 @@ export class ExpressionLowerer {
                 ? browserCondition.value
                     ? "true"
                     : "false"
-                : !this.runsCode(unwrapped.condition) ||
-                    !this.context.evaluationOrder.writesStorage(
-                        unwrapped.condition,
-                    )
+                : this.skippable(unwrapped.condition)
                   ? this.context.probeEmission(
                         () =>
                             this.context.conditions.compileCondition(

@@ -33,6 +33,7 @@ Rules:
 - RGB and vector tuple inputs accept conditional expressions; only the selected arm evaluates.
 - Loose equality across types refuses. Telling `null` from `undefined` needs tagged storage; otherwise strict comparison refuses.
   An array keeps the tag per element, and a map built from `[key, record]` pairs reads the record lane checked.
+  A conditional of an `undefined` arm and a `null` arm that no typed storage holds is a dynamic value.
 - A binding TypeScript types `any` (`var observer = null`) is stored as the type assigned to it, nullable as its
   initializer; member calls through it, and through its properties (`c.signal`), dispatch on that stored type and
   throw when it is absent.
