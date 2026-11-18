@@ -53,12 +53,15 @@ export interface RecordComponent {
  * instantiated generic alias (`Record<K, T>` and `Record<string, U>`
  * share `Record`), an instantiated generic interface or class, an
  * instantiated type literal (every instantiation carries the literal's
- * one symbol) -- or where there is no name.
+ * one symbol) -- or where there is no name. Every checker type of one
+ * generic alias instantiation is one identity (`aliasInstantiationType`).
  */
 export function recordIdentity(
     checker: ts.TypeChecker,
     type: ts.Type,
 ): ts.Symbol | ts.Type {
+    const aliased = aliasInstantiationType(checker, type);
+    if (aliased) return aliased;
     const object = type as ts.ObjectType;
     const instantiated =
         (type.aliasSymbol !== undefined &&
@@ -107,6 +110,46 @@ export function instantiatedRecord(
     const created = { generic, arguments: [...arguments_] };
     known.push(created);
     return created;
+}
+
+/**
+ * @unjournaled The checker type each generic alias instantiation is
+ * identified by, the first one met, kept across replays.
+ */
+const aliasInstantiationTypes = new WeakMap<InstantiatedRecord, ts.Type>();
+
+/**
+ * The one checker type standing for every checker type of a generic alias
+ * under one complete argument list. A reference through an import that
+ * omits defaulted arguments is a checker type apart from the one a
+ * complete reference names, carrying only the arguments it spells; each
+ * argument it omits is its parameter's default as declared.
+ */
+function aliasInstantiationType(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): ts.Type | undefined {
+    const alias = type.aliasSymbol;
+    const parameters = alias?.declarations?.find(
+        ts.isTypeAliasDeclaration,
+    )?.typeParameters;
+    if (!alias || !parameters) return undefined;
+    const spelled = type.aliasTypeArguments ?? [];
+    const arguments_: ts.Type[] = [];
+    for (const [index, parameter] of parameters.entries()) {
+        const argument =
+            spelled[index] ??
+            checker.getDefaultFromTypeParameter(
+                checker.getTypeAtLocation(parameter),
+            );
+        if (!argument) return undefined;
+        arguments_.push(argument);
+    }
+    const instantiation = instantiatedRecord(alias, arguments_);
+    const identified = aliasInstantiationTypes.get(instantiation);
+    if (identified) return identified;
+    aliasInstantiationTypes.set(instantiation, type);
+    return type;
 }
 
 /** Libraries whose record types keep the layout their declarations give them. */

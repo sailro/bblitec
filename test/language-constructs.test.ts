@@ -18699,6 +18699,60 @@ test("imported module records run their members on the one object their module c
     await executeGeneratedAssertions(t, "imported-module-records", cpp);
 });
 
+test("an imported generic alias omitting its defaulted argument is one record type with its complete instantiation", async (t) => {
+    const cpp = compileModules(
+        resolve("artifacts/imported-alias-default-argument"),
+        [
+            [
+                "sources",
+                `export interface Texture { width: number }
+                export type Source<T extends Texture | null = Texture> = (() => T) & {
+                    onResize?: (callback: () => void) => () => void;
+                };
+                export const listeners: Array<() => void> = [];
+                export function make(texture: Texture): Source {
+                    return Object.assign(() => texture, {
+                        onResize: (callback: () => void) => { listeners.push(callback); return () => {}; },
+                    });
+                }
+                export type Tagged<K extends string, T extends Texture | null = Texture> = (() => T) & { key?: K };
+                export function tag(texture: Texture): Tagged<"a"> {
+                    return Object.assign(() => texture, { key: "a" as const });
+                }`,
+            ],
+        ],
+        `import { listeners, make, tag, type Source, type Tagged, type Texture } from "./sources.js";
+        const tagged: Tagged<"a">[] = [tag({ width: 1 })];
+        const complete: Tagged<"a", Texture>[] = tagged;
+        complete.push(tag({ width: 2 }));
+        if (tagged.length !== 2 || tagged[1] !== complete[1] || tagged[1]!.key !== "a" || tagged[1]!().width !== 2)
+            throw new Error("spelled argument");
+        interface Holder { readonly live: Source; readonly enabled: boolean }
+        const made: Source[] = [];
+        function build(texture: Texture, enabled: boolean): Holder {
+            if (!enabled) return { live: () => texture, enabled };
+            const live = make(texture);
+            made.push(live);
+            return { live, enabled };
+        }
+        const texture: Texture = { width: 3 };
+        const holders: Holder[] = [];
+        for (const enabled of [true, false, Math.random() < 2]) holders.push(build(texture, enabled));
+        let resized = 0;
+        for (const holder of holders) {
+            if (holder.live() !== texture) throw new Error("call");
+            holder.live.onResize?.(() => { resized++; });
+        }
+        for (const listener of listeners) listener();
+        if (resized !== 2 || made.length !== 2 || holders[0]!.live !== made[0] || holders[2]!.live !== made[1])
+            throw new Error("one record");
+        const replaced = (callback: () => void) => { callback(); return () => {}; };
+        holders[0]!.live.onResize = replaced;
+        if (made[0]!.onResize !== replaced || holders[2]!.live.onResize === replaced) throw new Error("one slot");`,
+    );
+    await executeGeneratedAssertions(t, "imported-alias-default-argument", cpp);
+});
+
 test("imported capability records issue class instances behind empty-object tokens", async (t) => {
     const cpp = compileModules(
         resolve("artifacts/imported-capability-records"),
