@@ -15,7 +15,10 @@ import {
     forEachReturn,
 } from "../src/compiler/loop-control.js";
 import { createCompilerProgram } from "../src/compiler/program.js";
-import { oneObjectObservation } from "../src/compiler/record-observations.js";
+import {
+    oneObjectObservation,
+    rebuiltObjectObservation,
+} from "../src/compiler/record-observations.js";
 import {
     parameterIsMutated,
     parameterIsReadOnly,
@@ -281,6 +284,68 @@ test("a Math call folds only where every engine agrees", () => {
             name,
         );
     }
+});
+
+test("an object a literal rebuilds at each read is told apart only by a read that does more than read it", () => {
+    const { program, checker, sourceFile } = createCompilerProgram(
+        `
+        import { createEngine, createRenderTarget } from "@babylonjs/lite";
+        type Size = Parameters<typeof createRenderTarget>[0]["size"];
+        declare function external(size: Size): void;
+        const engine = await createEngine({});
+        const wide = engine.drawCallCount > 0;
+        function measure(opts: { size: Size }): number {
+            const size = opts.size;
+            return "scale" in size ? size.scale : 1;
+        }
+        function grow(opts: { size: Size }): void { if ("scale" in opts.size) opts.size.scale = 2; }
+        function same(a: Size, b: Size): boolean { return a === b; }
+        function run(this: unknown): void {}
+        const read = wide ? { surface: engine, scale: 0.5 } : engine;
+        createRenderTarget({ format: "rgba8unorm", samples: 1, size: read });
+        if (read !== undefined) console.log(measure({ size: read }), typeof read, \`\${measure({ size: read })}\`);
+        const written = wide ? { surface: engine, scale: 0.5 } : engine;
+        grow({ size: written });
+        const compared = wide ? { surface: engine, scale: 0.5 } : engine;
+        console.log(same(compared, compared));
+        const kept = wide ? { surface: engine, scale: 0.5 } : engine;
+        const all: Size[] = [kept];
+        const foreign = wide ? { surface: engine, scale: 0.5 } : engine;
+        external(foreign);
+        const called = wide ? { surface: engine, scale: 0.5, run } : engine;
+        if ("run" in called) called.run();
+        const nested = wide ? { surface: engine, scale: 0.5, inner: { depth: 1 } } : engine;
+        console.log(all.length, measure({ size: nested }));
+    `,
+        "test/analysis-rebuilt-object.ts",
+    );
+    const reasons: Record<string, string> = {};
+    forEachAnalysisNode(sourceFile, (node) => {
+        if (
+            ts.isVariableDeclaration(node) &&
+            ts.isIdentifier(node.name) &&
+            node.initializer &&
+            ts.isConditionalExpression(node.initializer)
+        )
+            reasons[node.name.text] =
+                rebuiltObjectObservation(
+                    {
+                        program,
+                        checker,
+                        evaluationOrder: undefined as never,
+                    },
+                    node,
+                ) ?? "none";
+    });
+    assert.deepEqual(reasons, {
+        read: "none",
+        written: "the program writes through it",
+        compared: "the program compares it by identity",
+        kept: "the program keeps it",
+        foreign: "the program hands it to code it does not hold",
+        called: "the program calls a method of it",
+        nested: "a literal it creates holds another",
+    });
 });
 
 test("a tuple an options literal hands to a callee that only reads its elements keeps no identity", () => {

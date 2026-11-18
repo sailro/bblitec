@@ -71,6 +71,39 @@ export function bindingReferences(
 }
 
 /**
+ * The expressions reading a variable declared by name, when each runs in
+ * the activation that runs the declaration: no function lies between the
+ * declaration's statement and a read. `repeated` says whether the binding
+ * may be read more than once: more than one read, or a loop between the
+ * statement and a read. Undefined otherwise.
+ */
+export function activationBindingReads(
+    program: ts.Program,
+    checker: ts.TypeChecker,
+    declaration: ts.VariableDeclaration,
+): { reads: readonly ts.Expression[]; repeated: boolean } | undefined {
+    const symbol = ts.isIdentifier(declaration.name)
+        ? declaredSymbol(checker, declaration.name)
+        : undefined;
+    const references = symbol
+        ? bindingReferences(program, checker, symbol)
+        : [];
+    if (references.length === 0) return undefined;
+    const block = declaration.parent.parent.parent;
+    let repeated = references.length > 1;
+    for (const reference of references)
+        for (
+            let node: ts.Node = reference.parent;
+            node !== block;
+            node = node.parent
+        ) {
+            if (!node.parent || ts.isFunctionLike(node)) return undefined;
+            if (ts.isIterationStatement(node, false)) repeated = true;
+        }
+    return { reads: references, repeated };
+}
+
+/**
  * The one expression reading a variable declared by name, when it is read
  * once per binding: no function or loop lies between the declaration's
  * statement and the read. Undefined otherwise.
@@ -80,27 +113,8 @@ export function soleBindingRead(
     checker: ts.TypeChecker,
     declaration: ts.VariableDeclaration,
 ): ts.Expression | undefined {
-    const symbol = ts.isIdentifier(declaration.name)
-        ? declaredSymbol(checker, declaration.name)
-        : undefined;
-    const references = symbol
-        ? bindingReferences(program, checker, symbol)
-        : [];
-    const reference = references[0];
-    if (references.length !== 1 || !reference) return undefined;
-    const block = declaration.parent.parent.parent;
-    for (
-        let node: ts.Node = reference.parent;
-        node !== block;
-        node = node.parent
-    )
-        if (
-            !node.parent ||
-            ts.isFunctionLike(node) ||
-            ts.isIterationStatement(node, false)
-        )
-            return undefined;
-    return reference;
+    const found = activationBindingReads(program, checker, declaration);
+    return found && !found.repeated ? found.reads[0] : undefined;
 }
 
 /**

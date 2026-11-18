@@ -97,6 +97,10 @@ Rules:
   at run time. An object argument that can only be one of a few module constants (through `??`, `?:` and members
   every store sets to one) splits per constant, tested on the first string members that differ; a split left with no
   run-time test compiles the call once.
+- A `const` selecting between plain arms with no common native storage (`c ? { surface: engine, scale } : engine`) is
+  evaluated at each read in its function: a render target size keeps each arm's sizing, and a local call handed it,
+  directly or as a record member, compiles once per outcome of its condition. Read again or in a loop, it refuses where
+  a read writes, compares, calls into or keeps its object.
 - Recursive groups evaluate a caller-independent default once at the root; other defaults refuse. A function a call
   passes counts as a call the callee may make: directly, as a literal in a record or array, or as a named async
   function there.

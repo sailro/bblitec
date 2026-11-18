@@ -143,7 +143,10 @@ export function armSpecializesCall(
  * free of writes, no argument assigns or constructs, and an argument's calls
  * go to module-level functions that receive none of the bindings the tests
  * read (such a function reaches a local binding only through its
- * arguments). With more than two tests, the call splits only on those whose
+ * arguments). A name whose declaration deferred its selection
+ * (`deferredSelection`) is tested by that selection's condition, which
+ * nothing an argument does changes: it alone splits a call whose arguments
+ * do more. With more than two tests, the call splits only on those whose
  * staying a runtime test, with every other test fixed, still refuses; a call
  * that depends on more than `MAX_SELECTORS`, whose tests' outcomes make
  * more than `MAX_ARMS` arms, or that reads more than
@@ -692,7 +695,8 @@ export function moduleLevelCallee(
  * spelling it, and the records they name, when the call can be split on
  * them: no argument assigns, constructs or suspends, its calls go to
  * module-level functions handed none of the bindings the tests read, and
- * no test writes.
+ * no test writes. A deferred selection's condition splits it whatever its
+ * arguments do.
  */
 function selectorTests(
     context: CaseSplitContext,
@@ -714,7 +718,12 @@ function selectorTests(
             return true;
         return ts.forEachChild(node, effects) ?? false;
     };
-    if (call.arguments.some(effects)) return undefined;
+    // What an argument does may change what a test reads, but not a
+    // deferred selection's condition, which reads only bindings nothing
+    // rebinds (`deferrableSelection`): only such tests split a call whose
+    // arguments do more than read.
+    const effectful = call.arguments.some(effects);
+    const unchanging = new Set<ts.Expression>();
     // Each distinct test with every place it appears.
     const groups: (Selector & { nodes: ts.Expression[] })[] = [];
     const addGroup = (
@@ -788,28 +797,38 @@ function selectorTests(
     };
     const visit = (node: ts.Node): void => {
         if (ts.isFunctionLike(node)) return;
-        if (ts.isConditionalExpression(node))
-            addGroup("condition", node.condition);
-        // A value of a few outcomes a module's function is handed
-        // (`build(optionsFor(kind))`) selects the call it builds for.
-        if (ts.isCallExpression(node) && calls.includes(node))
-            for (const argument of node.arguments) {
-                const kind = selectorKind(
-                    context.checker.getTypeAtLocation(argument),
-                );
-                if (
-                    (kind === "literal" || kind === "boolean") &&
-                    !containsSelection(argument)
-                )
-                    addGroup(kind, argument);
-            }
-        if (ts.isPropertyAssignment(node)) valuePosition(node.initializer);
-        if (ts.isShorthandPropertyAssignment(node)) valuePosition(node.name);
-        if (ts.isSpreadAssignment(node)) valuePosition(node.expression);
+        // A name whose declaration deferred its selection reads it here.
+        const deferred =
+            ts.isIdentifier(node) && context.bindings.deferredSelection(node);
+        if (deferred) {
+            unchanging.add(deferred.condition);
+            addGroup("condition", deferred.condition);
+        }
+        if (!effectful) {
+            if (ts.isConditionalExpression(node))
+                addGroup("condition", node.condition);
+            // A value of a few outcomes a module's function is handed
+            // (`build(optionsFor(kind))`) selects the call it builds for.
+            if (ts.isCallExpression(node) && calls.includes(node))
+                for (const argument of node.arguments) {
+                    const kind = selectorKind(
+                        context.checker.getTypeAtLocation(argument),
+                    );
+                    if (
+                        (kind === "literal" || kind === "boolean") &&
+                        !containsSelection(argument)
+                    )
+                        addGroup(kind, argument);
+                }
+            if (ts.isPropertyAssignment(node)) valuePosition(node.initializer);
+            if (ts.isShorthandPropertyAssignment(node))
+                valuePosition(node.name);
+            if (ts.isSpreadAssignment(node)) valuePosition(node.expression);
+        }
         ts.forEachChild(node, visit);
     };
     call.arguments.forEach((argument) => {
-        valuePosition(argument);
+        if (!effectful) valuePosition(argument);
         visit(argument);
     });
     if (
@@ -830,7 +849,9 @@ function selectorTests(
     };
     const roots = new Set<ts.Symbol>();
     for (const test of [
-        ...groups.map((group) => group.test),
+        ...groups
+            .map((group) => group.test)
+            .filter((test) => !unchanging.has(test)),
         ...records.map((record) => record.nodes[0]!),
     ]) {
         if (context.evaluationOrder.writesStorage(test)) return undefined;

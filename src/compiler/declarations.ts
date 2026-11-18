@@ -2,7 +2,7 @@
 // typed data declarations, recursive and forward callback bindings, and
 // array/object binding patterns, lowered into the scope stack's bindings.
 import ts from "typescript";
-import { soleBindingRead } from "./binding-references.js";
+import { activationBindingReads } from "./binding-references.js";
 import { isRebound } from "./binding-rebinds.js";
 import {
     absenceOf,
@@ -61,6 +61,7 @@ import { nativeReturnTsType } from "./native-return-type.js";
 import { isNativeOwnerRecord } from "./native-owner-carrier.js";
 import { NativeRecordStorageRequired } from "./native-record-storage.js";
 import { recordPropertyKeys } from "./object-statics.js";
+import { rebuiltObjectObservation } from "./record-observations.js";
 import { ownKeyOrder } from "./record-key-orders.js";
 import {
     nullability,
@@ -1045,11 +1046,14 @@ export class DeclarationLowerer {
     }
 
     /**
-     * A `const` whose conditional initializer can be read where its one
-     * reference is, with the same result: the condition and both arms read
+     * A `const` whose conditional initializer can be read where each of its
+     * references is, with the same result: the condition and both arms read
      * only bindings nothing rebinds and build only plain literals (no call,
-     * member read, construction or write), and the reference is in the same
-     * function with no loop between them, so it is evaluated once there.
+     * member read, construction or write), and every reference is in the
+     * same function. A reference evaluated more than once (several
+     * references, or a loop between) rebuilds an arm's object literals
+     * each time, which must not be told from the one object JavaScript
+     * keeps (`rebuiltObjectObservation`).
      */
     private deferrableSelection(
         declaration: ts.VariableDeclaration,
@@ -1133,9 +1137,20 @@ export class DeclarationLowerer {
                 armKind === ts.SyntaxKind.TrueKeyword)
         )
             return undefined;
-        return soleBindingRead(this.context.program, checker, declaration)
-            ? selection
-            : undefined;
+        const found = activationBindingReads(
+            this.context.program,
+            checker,
+            declaration,
+        );
+        if (
+            !found ||
+            (found.repeated &&
+                someAnalysisNode(selection, ts.isObjectLiteralExpression) &&
+                rebuiltObjectObservation(this.context, declaration) !==
+                    undefined)
+        )
+            return undefined;
+        return selection;
     }
 
     /** Whether a selection has no one native storage (its arms differ). */

@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { writeGuardRejects } from "./value-guards.js";
-import { forEachAnalysisNode } from "./analysis-walk.js";
+import { forEachAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
 import { isOpaqueEngineObject, pinnedSourceHandleKind } from "./data-types.js";
 import type { EvaluationOrder } from "./evaluation-order.js";
 import { callOnlyReadsArgument } from "./parameter-effects.js";
@@ -861,21 +861,7 @@ function identityUses(
     const array = checker.isArrayLikeType(
         checker.getTypeAtLocation(declaration.name),
     );
-    // The expressions that read the object: references of the names that
-    // hold it, and reads of a member a callee was handed it as.
-    const followed: ts.Symbol[] = [];
-    const reads: ts.Expression[] = [];
-    const follow = (name: ts.BindingName): void => {
-        const symbol = ts.isIdentifier(name)
-            ? declaredSymbol(checker, name)
-            : undefined;
-        if (symbol && !followed.includes(symbol)) {
-            followed.push(symbol);
-            reads.push(
-                ...bindingReferences(context.program, context.checker, symbol),
-            );
-        }
-    };
+    const { reads, follow } = objectReads(context);
     follow(declaration.name);
     let reason: string | undefined;
     for (let index = 0; index < reads.length && !reason; index++) {
@@ -898,16 +884,17 @@ function identityUses(
             parent.expression !== use
         ) {
             const position = parent.arguments?.indexOf(use) ?? -1;
-            const callee = calledDeclaration(checker, parent);
-            // The engine takes what it is handed in its own storage:
-            // a record or array converts at the call.
             if (
-                (callee && declarationOrigin(callee) === "babylon") ||
+                engineTakesArgument(checker, use) ||
                 (ts.isCallExpression(parent) &&
                     callOnlyReadsArgument(checker, parent, position))
             )
                 continue;
-            const parameter = programParameter(callee, parent, position);
+            const parameter = programParameter(
+                calledDeclaration(checker, parent),
+                parent,
+                position,
+            );
             if (parameter) follow(parameter.name);
             else if (array) reason = storedIdentity(context, use);
         } else if (array && !onlyReads(use, parent)) {
@@ -920,6 +907,171 @@ function identityUses(
     const uses = { ...(reason ? { reason } : {}), tokens };
     identityUseAnswers.set(declaration, uses);
     return uses;
+}
+
+/**
+ * The expressions that read an object, as a walk over them finds more:
+ * `follow` adds the references of a name that holds it, once per name; the
+ * walk adds the reads of a member a callee was handed it as.
+ */
+function objectReads(context: RecordObservationContext): {
+    readonly reads: ts.Expression[];
+    readonly follow: (name: ts.BindingName) => void;
+} {
+    const followed = new Set<ts.Symbol>();
+    const reads: ts.Expression[] = [];
+    const follow = (name: ts.BindingName): void => {
+        const symbol = ts.isIdentifier(name)
+            ? declaredSymbol(context.checker, name)
+            : undefined;
+        if (symbol && !followed.has(symbol)) {
+            followed.add(symbol);
+            reads.push(
+                ...bindingReferences(context.program, context.checker, symbol),
+            );
+        }
+    };
+    return { reads, follow };
+}
+
+/** @unjournaled Pure functions of the checked program, kept across replays. */
+const rebuiltAnswers = new WeakMap<ts.VariableDeclaration, string | null>();
+
+/**
+ * Why rebuilding, at each read of a declaration's binding, the objects its
+ * initializer's literals create could be told apart from the one object
+ * JavaScript keeps, or undefined when nothing can. The reads are followed
+ * as {@link oneObjectObservation} follows them -- through wrappers,
+ * selections, aliases, the parameters of program functions it is handed to
+ * and the reads of the member an object literal hands it as -- and each
+ * only reads the object: reads a member without calling it, tests,
+ * stringifies, spreads or enumerates it, compares it with a nullish
+ * literal, or hands it to a callee that only reads it, or to the engine,
+ * which takes what a call hands it, however nested in literals, in its own
+ * storage. A literal nested in another is rebuilt where its member is read,
+ * which no read names.
+ */
+export function rebuiltObjectObservation(
+    context: RecordObservationContext,
+    declaration: ts.VariableDeclaration,
+): string | undefined {
+    const known = rebuiltAnswers.get(declaration);
+    if (known !== undefined) return known ?? undefined;
+    const { checker } = context;
+    const nested =
+        declaration.initializer !== undefined &&
+        someAnalysisNode(
+            declaration.initializer,
+            (node) =>
+                ts.isObjectLiteralExpression(node) &&
+                node.properties.some((property) =>
+                    someAnalysisNode(property, ts.isObjectLiteralExpression),
+                ),
+        );
+    let reason = nested ? "a literal it creates holds another" : undefined;
+    const { reads, follow } = objectReads(context);
+    follow(declaration.name);
+    for (let index = 0; index < reads.length && !reason; index++) {
+        const use = flowingUse(reads[index]!);
+        const consumer = valueConsumer(use);
+        switch (consumer.kind) {
+            case "member":
+                if (writeSiteOf(consumer.access))
+                    reason = "the program writes through it";
+                else if (
+                    valueConsumer(outermostWrapper(consumer.access)).kind ===
+                    "called"
+                )
+                    reason = "the program calls a method of it";
+                break;
+            case "compared": {
+                const { left, right } = consumer.comparison;
+                if (
+                    nullishLiteral(checker, left === use ? right : left) ===
+                    undefined
+                )
+                    reason = "the program compares it by identity";
+                break;
+            }
+            case "switched":
+                reason = "the program compares it by identity";
+                break;
+            case "initializer":
+                if (ts.isIdentifier(consumer.declaration.name))
+                    follow(consumer.declaration.name);
+                break;
+            case "argument": {
+                if (
+                    engineTakesArgument(checker, use) ||
+                    (ts.isCallExpression(consumer.call) &&
+                        callOnlyReadsArgument(
+                            checker,
+                            consumer.call,
+                            consumer.index,
+                        ))
+                )
+                    break;
+                const parameter = programParameter(
+                    calledDeclaration(checker, consumer.call),
+                    consumer.call,
+                    consumer.index,
+                );
+                if (parameter) follow(parameter.name);
+                else reason = "the program hands it to code it does not hold";
+                break;
+            }
+            case "property":
+            case "element": {
+                if (engineTakesArgument(checker, use)) break;
+                const member = handedMemberReads(context, use);
+                if (member)
+                    reads.push(
+                        ...member.filter((read) => !reads.includes(read)),
+                    );
+                else reason = "the program keeps it";
+                break;
+            }
+            case "spread":
+            case "operator":
+            case "operand":
+            case "keyed":
+            case "tested":
+            case "stringified":
+            case "enumerated":
+            case "discarded":
+                break;
+            default:
+                reason = "the program keeps it";
+        }
+    }
+    rebuiltAnswers.set(declaration, reason ?? null);
+    return reason;
+}
+
+/**
+ * Whether the engine takes `use` as what a call hands it, however nested in
+ * literals: in its own storage, converted at the call.
+ */
+function engineTakesArgument(
+    checker: ts.TypeChecker,
+    use: ts.Expression,
+): boolean {
+    let holder: ts.Node = use;
+    while (
+        ts.isPropertyAssignment(holder.parent) ||
+        ts.isShorthandPropertyAssignment(holder.parent) ||
+        ts.isObjectLiteralExpression(holder.parent) ||
+        ts.isArrayLiteralExpression(holder.parent) ||
+        isExpressionWrapper(holder.parent)
+    )
+        holder = holder.parent;
+    const call = holder.parent;
+    const callee =
+        (ts.isCallExpression(call) || ts.isNewExpression(call)) &&
+        call.expression !== holder
+            ? calledDeclaration(checker, call)
+            : undefined;
+    return callee !== undefined && declarationOrigin(callee) === "babylon";
 }
 
 /**
@@ -977,22 +1129,7 @@ function storedIdentity(
     use: ts.Expression,
 ): string | undefined {
     const { checker } = context;
-    let holder: ts.Node = use;
-    while (
-        ts.isPropertyAssignment(holder.parent) ||
-        ts.isShorthandPropertyAssignment(holder.parent) ||
-        ts.isObjectLiteralExpression(holder.parent) ||
-        ts.isArrayLiteralExpression(holder.parent) ||
-        isExpressionWrapper(holder.parent)
-    )
-        holder = holder.parent;
-    const call = holder.parent;
-    const callee =
-        (ts.isCallExpression(call) || ts.isNewExpression(call)) &&
-        call.expression !== holder
-            ? calledDeclaration(checker, call)
-            : undefined;
-    if (callee && declarationOrigin(callee) === "babylon") return undefined;
+    if (engineTakesArgument(checker, use)) return undefined;
     const slot = checker.getNonNullableType(
         checker.getContextualType(use) ?? checker.getTypeAtLocation(use),
     );
