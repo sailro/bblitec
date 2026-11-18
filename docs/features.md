@@ -385,8 +385,10 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
   them too. On such a view, effect-free `Object.defineProperty`/`defineProperties` data descriptors after its `const`
   declaration, in its block or that block's `if` branches and before any other use of the view, redefine its sources,
   `attributes`, declaration lists and pipeline state; the view draws a program compiled per source variant and
-  branch, selected at run time. Redefinitions declaring other uniforms,
-  samplers or storage buffers, slot maps or other fields, run-time values, or a source of unknown variant refuse.
+  branch, selected at run time. A source of run-time variant may be any variant the program creates, as such a call's
+  argument may. Redefinitions declaring other uniforms,
+  samplers or storage buffers, slot maps or other fields, run-time values, or a source of a variant the program never
+  creates refuse.
   Depth-only render tasks use each
   material's pipeline, including custom vertex transforms and `depthOnlyFragment` discards.
   `releaseMaterialViewGpu` drops a shader view's own packed custom uniforms; a later draw repacks them.

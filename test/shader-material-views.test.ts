@@ -304,11 +304,6 @@ test("a view refuses redefinitions generation cannot derive a program from", () 
             /A ShaderMaterial view's 'fragmentSource' compiles into its program at generation; this value is decided at run time\./,
         ],
         [
-            `Object.defineProperty(view, "fragmentSource", { value: NORMAL });`,
-            /A ShaderMaterial view derives its program from its source's shader variant; this source's variant is decided at run time\./,
-            "material",
-        ],
-        [
             `Object.defineProperty(ground, "fragmentSource", { value: NORMAL });`,
             /Object\.defineProperty redefines a ShaderMaterial's properties only on a material view a `const` names/,
         ],
@@ -319,6 +314,51 @@ test("a view refuses redefinitions generation cannot derive a program from", () 
     ];
     for (const [statement, refusal, source] of cases)
         assert.throws(() => compileSource(view(statement, source)), refusal);
+});
+
+test("a view over a material of run-time variant derives a program per variant the program creates, later creations included", () => {
+    const source = (creates: boolean): string => `${prelude}
+    import { createStandardMaterial } from "@babylonjs/lite";
+    import type { Mesh } from "@babylonjs/lite";
+    function derive(mesh: Mesh): ShaderMaterial {
+        const material = mesh.material as ShaderMaterial;
+        const view = createMaterialView(material, { features: 0 }) as ShaderMaterial;
+        Object.defineProperty(view, "fragmentSource", { value: wgsl\`\${NORMAL}\` });
+        return view;
+    }
+    async function main(): Promise<void> {
+        const engine = await createEngine({});
+        const mesh = createMeshFromData(engine, "tri", new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]), new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]), new Uint32Array([0, 1, 2]));
+        mesh.material = createStandardMaterial();
+        const registry = { add(target: Mesh): ShaderMaterial { return derive(target); } };
+        draw(engine, registry.add(mesh));
+        ${creates ? `mesh.material = createShaderMaterial(${groundOptions}); draw(engine, registry.add(mesh));` : ""}
+    }
+    void main();
+`;
+    assert.throws(
+        () => compileSource(source(false)),
+        /A ShaderMaterial view derives its program from its source's shader variant; this source's variant is decided at run time, and the program creates none\./,
+    );
+    const compiled = compileSource(source(true));
+    const programs = compiled.manifest.customShaderPrograms;
+    const id = (name: string): number =>
+        programs.findIndex((candidate) => candidate.name === name);
+    assert.match(
+        program(compiled, "ground-1").fragmentSource,
+        /normalize\(cross\(dpdx/,
+    );
+    const site = compiled.cpp.match(
+        /bbl::derive_shader_material_view\(\w+, \w+, bblscene::derived_shader_variant_(\d+)\(bbl::shader_material_view_variant\(/,
+    )?.[1];
+    assert.ok(site, "the view selects its program from its run-time variant");
+    assert.match(
+        cppFunction(
+            compiled.cpp,
+            `inline std::uint32_t derived_shader_variant_${site}(`,
+        ),
+        new RegExp(`case ${id("ground")}u: return ${id("ground-1")}u;`),
+    );
 });
 
 test("a derived view natively draws the variant derived from its source's, keeping the source's slots", (t) => {

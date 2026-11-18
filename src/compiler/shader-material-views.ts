@@ -69,6 +69,11 @@ export interface ShaderMaterialView {
     readonly declared: ReadonlyMap<string, string>;
     /** The programs each definition statement left the view with. */
     readonly defined: ReadonlyMap<ts.Statement, ReadonlyMap<string, string>>;
+    /**
+     * The source's variant is the run time's, so a program is selected
+     * from the view's variant even where one variant is created.
+     */
+    readonly runtimeSource?: true;
 }
 
 export type ShaderMaterialViewContext = Omit<
@@ -299,7 +304,8 @@ export function readShaderMaterialFact(
 /**
  * `createMaterialView(source, { features: 0 })` over a ShaderMaterial: a
  * view drawing the source's program over its slots until a statement
- * redefines it (`compileShaderMaterialViewDefinitions`).
+ * redefines it (`compileShaderMaterialViewDefinitions`), over each variant
+ * the source may be (`runtimeShaderVariants` where the run time decides).
  */
 export function compileCreateMaterialView(
     context: Pick<
@@ -315,7 +321,10 @@ export function compileCreateMaterialView(
         | "symbols"
         | "unwrap"
     > &
-        Pick<LoweringServices, "expectKind">,
+        Pick<
+            LoweringServices,
+            "expectKind" | "reachShaderCreations" | "sceneManifest"
+        >,
     call: ts.CallExpression,
 ): Value {
     context.expectArgumentCount(call, 2, 2);
@@ -356,7 +365,9 @@ export function compileCreateMaterialView(
     const engine = context.requireEngine(source, call);
     context.reachFeature("material:shader", call);
     context.reachFeature("material:shader-view", call);
-    const variants = shaderVariantsOf(source) ?? [];
+    // A source of run-time variant may be any the program creates.
+    const known = shaderVariantsOf(source);
+    const variants = known ?? runtimeShaderVariants(context);
     const binding = optionsBinding(context, sourceExpression);
     const declaration = binding?.symbol.valueDeclaration;
     const sourceName =
@@ -378,6 +389,7 @@ export function compileCreateMaterialView(
             programs,
             declared: programs,
             defined: new Map(),
+            ...(known ? {} : { runtimeSource: true as const }),
         },
     };
 }
@@ -658,10 +670,14 @@ export function compileShaderMaterialViewDefinitions(
     // The programs the view may draw where the statement runs.
     const current = programsThrough(facts, after, facts.declared, statement);
     const definitions = viewRedefinitions(context, defined);
+    // A source of no variant created yet derives none; a later creation
+    // compiles it again (`refuseWithoutCreations`).
     if (current.size === 0)
-        context.fail(
-            call,
-            "A ShaderMaterial view derives its program from its source's shader variant; this source's variant is decided at run time.",
+        context.sceneManifest.shaderDerivations.refuseWithoutCreations(() =>
+            context.fail(
+                call,
+                "A ShaderMaterial view derives its program from its source's shader variant; this source's variant is decided at run time, and the program creates none.",
+            ),
         );
     // Generation evaluates the redefinitions, once per source variant, into
     // the programs; the run time evaluates none of them.
@@ -767,7 +783,7 @@ export function compileShaderMaterialViewDefinitions(
     const engine = context.requireEngine(view, call);
     const ids = new Map([...programs].map(([from, { id }]) => [from, id]));
     const variant =
-        ids.size === 1
+        ids.size === 1 && !facts.runtimeSource
             ? `${[...ids.values()][0]!}u`
             : context.sceneManifest.shaderDerivations.derivedVariantCpp(
                   undefined,
