@@ -5478,11 +5478,22 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 const type = left.dataType;
                 // A literal the left's record type cannot hold (a field it
                 // requires is missing) is stored, with the left, as the
-                // record type the result is stored as.
+                // record type the result is stored as: the sink's, else the
+                // one the expression's context (a parameter) declares.
+                const contextual = this.context.checker.getContextualType(
+                    expression,
+                );
+                const result =
+                    sink ??
+                    (contextual &&
+                        this.context.dataTypes.fromTsType(
+                            contextual,
+                            expression,
+                        ));
                 const shared =
                     type.kind === "struct" &&
-                    sink?.kind === "struct" &&
-                    !dataTypesEqual(sink, type) &&
+                    result?.kind === "struct" &&
+                    !dataTypesEqual(result, type) &&
                     this.context.probeEmission(
                         () =>
                             unlessRefused(() =>
@@ -5493,7 +5504,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                                 ),
                             ) === undefined,
                     )
-                        ? sink
+                        ? result
                         : undefined;
                 if (shared)
                     return this.coalesceDistinctRecords(

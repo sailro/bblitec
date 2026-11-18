@@ -4872,6 +4872,23 @@ check(
 `,
 );
 
+// A missed element falls back to an empty literal its record type cannot
+// hold: both are stored as the narrower record the parameter declares.
+check(
+    "a-missed-record-element-falls-back-to-a-literal-of-the-parameters-record",
+    `
+    interface Tower { id?: number; level: number; yaw: number }
+    const towers: Tower[] = [{ id: 7, level: 1, yaw: new Float32Array([0.5])[0]! }];
+    function hostIdentity(tower: Pick<Tower, "id">, index: number): number {
+        return tower.id ?? -(index + 1);
+    }
+    const lanes = new Int32Array([0, 2]);
+    const found = hostIdentity(towers[lanes[0]!] ?? {}, lanes[0]!);
+    if (found !== 7) throw new Error("present " + found);
+    const missed = hostIdentity(towers[lanes[1]!] ?? {}, lanes[1]!);
+    if (missed !== -3) throw new Error("fallback " + missed);
+`,
+);
 // An element read past the end falls back to a field a partial record
 // assertion left optional; the fallback reads as the element's number.
 check(
