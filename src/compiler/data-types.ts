@@ -2906,6 +2906,42 @@ export class DataTypeRegistry {
         return { ...source, documentFields: [field] };
     }
 
+    /**
+     * One layout storing property `name` that one record type stores as a
+     * document and another as an array or map holds one value: each record
+     * type storing it typed stores it as a document too (`documentFields`),
+     * as `requireSharedValueViews` rules for the fields of shared records.
+     */
+    private requireDocumentProperty(
+        name: string,
+        [left, right]: readonly [DataType, DataType],
+        declared: readonly { readonly owner: ts.Type }[],
+        values: readonly { readonly mapped: DataType | undefined }[],
+        node: ts.Node,
+    ): void {
+        if (
+            !(left.kind === "json" && isContainerStorage(right)) &&
+            !(right.kind === "json" && isContainerStorage(left))
+        )
+            return;
+        for (const [index, { mapped }] of values.entries()) {
+            if (!mapped || !isContainerStorage(fieldStorage(mapped))) continue;
+            const owner = declared[index]!.owner;
+            const property = this.checker.getPropertyOfType(owner, name);
+            if (
+                !property ||
+                (property.declarations ?? []).some((declaration) =>
+                    this.documentProperties.has(declaration),
+                )
+            )
+                continue;
+            throw new NativeRecordStorageRequired({
+                ...this.recordDemand(owner, node),
+                documentFields: [name],
+            });
+        }
+    }
+
     /** The document demand naming record type `record` itself; undefined where it has the layout. */
     private ownDocumentDemand(
         record: ts.Type,
@@ -9212,8 +9248,16 @@ export class DataTypeRegistry {
                     stored = next;
                     continue;
                 }
-                if (mapped)
+                if (mapped) {
                     this.requireSharedValueViews(stored, storage(mapped));
+                    this.requireDocumentProperty(
+                        name,
+                        [stored, storage(mapped)],
+                        declared.slice(0, index + 1),
+                        values.slice(0, index + 1),
+                        node,
+                    );
+                }
                 const storedValues = values.filter(storing);
                 unionField =
                     this.unionFieldStorage(
