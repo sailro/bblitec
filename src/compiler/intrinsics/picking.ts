@@ -64,6 +64,7 @@ export interface PickingIntrinsicContext
             | "evaluator"
             | "compileStaticString"
             | "probeEmission"
+            | "runModelCall"
         > {}
 
 /**
@@ -680,10 +681,12 @@ function pickDiscard(
 
 /**
  * The generation-known members of every rule `expression` can hold: each
- * arm of a conditional, an object literal through the constants and calls
- * that resolve to it (`resolveStaticLiteral`), its spreads in order. The
- * key and the WGSL the pin splices fold to their text; each storage
- * entry's `data` is the run-time half and is not read here.
+ * arm of a conditional; an object literal through the constants and calls
+ * that resolve to it (`resolveStaticLiteral`), its spreads in order; or
+ * what a model run of the application call building it settles with
+ * (`modelPickDiscardRule`). The key and the WGSL the pin splices fold to
+ * their text; each storage entry's `data` is the run-time half and is not
+ * read here.
  */
 function foldPickDiscardRules(
     context: PickingIntrinsicContext,
@@ -696,7 +699,52 @@ function foldPickDiscardRules(
         return selectionArms(selection).flatMap((arm) =>
             foldPickDiscardRules(context, arm),
         );
-    const members = staticObjectMembers(context, node);
+    const resolved = ruleLiteral(context, node);
+    return [
+        ts.isCallExpression(resolved)
+            ? modelPickDiscardRule(context, resolved)
+            : literalPickDiscardRule(context, resolved),
+    ];
+}
+
+/** A rule's members, as the manifest records them; refuses what is not lowered. */
+function pickDiscardRuleRow(
+    context: PickingIntrinsicContext,
+    node: ts.Node,
+    members: {
+        key: string | undefined;
+        wgsl: string | undefined;
+        worldAdjustWgsl: string | undefined;
+        vertexData: string | undefined;
+        storage: PickDiscardRuleManifest["storage"];
+    },
+): PickDiscardRuleManifest {
+    const { key, wgsl, worldAdjustWgsl, vertexData, storage } = members;
+    if (key === undefined || wgsl === undefined)
+        return context.fail(
+            node,
+            "A pickAsync `discard` rule names its `key` and `wgsl`.",
+        );
+    if (worldAdjustWgsl !== undefined || vertexData !== undefined)
+        return context.fail(
+            node,
+            "A pickAsync `discard` rule's `worldAdjustWgsl` and `vertexData` are not lowered: they select the advanced picking pipeline for every candidate (`needsAdvancedPipeline`).",
+        );
+    return {
+        key,
+        wgsl,
+        ...(worldAdjustWgsl !== undefined ? { worldAdjustWgsl } : {}),
+        ...(vertexData !== undefined ? { vertexData } : {}),
+        storage,
+    };
+}
+
+/** A rule written as an object literal: its members' generation-known text. */
+function literalPickDiscardRule(
+    context: PickingIntrinsicContext,
+    literal: ts.Expression,
+): PickDiscardRuleManifest {
+    const members = staticObjectMembers(context, literal);
     const optional = (name: string): ts.Expression | undefined => {
         const member = members.get(name);
         return member && !isNullishLiteral(context.checker, member)
@@ -707,62 +755,105 @@ function foldPickDiscardRules(
         const member = optional(name);
         return member && staticRuleText(context, member, name);
     };
-    const key = text("key");
-    const wgsl = text("wgsl");
-    if (key === undefined || wgsl === undefined)
-        return context.fail(
-            node,
-            "A pickAsync `discard` rule names its `key` and `wgsl`.",
-        );
-    const worldAdjustWgsl = text("worldAdjustWgsl");
-    const vertexData = text("vertexData");
-    if (worldAdjustWgsl !== undefined || vertexData !== undefined)
-        return context.fail(
-            node,
-            "A pickAsync `discard` rule's `worldAdjustWgsl` and `vertexData` are not lowered: they select the advanced picking pipeline for every candidate (`needsAdvancedPipeline`).",
-        );
     const list = optional("storage");
-    return [
-        {
-            key,
-            wgsl,
-            ...(worldAdjustWgsl !== undefined ? { worldAdjustWgsl } : {}),
-            ...(vertexData !== undefined ? { vertexData } : {}),
-            storage: (list ? staticArrayElements(context, list) : []).map(
-                (element) => {
-                    const entry = staticObjectMembers(context, element);
-                    const name = entry.get("name");
-                    const type = entry.get("type");
-                    const vertex = entry.get("vertex");
-                    if (!name || !type)
-                        return context.fail(
-                            element,
-                            "A pickAsync `discard` storage entry names its `name` and `type`.",
-                        );
-                    const stage =
-                        vertex && !isNullishLiteral(context.checker, vertex)
-                            ? context.probeEmission(
-                                  () =>
-                                      staticBooleanOf(
-                                          context.compileValue(vertex),
-                                      ),
-                                  () => false,
-                              )
-                            : false;
-                    if (stage === undefined)
-                        return context.fail(
-                            vertex!,
-                            "A pickAsync `discard` storage entry's `vertex` is a generation-known boolean: it selects the bind group layout the composed pipeline declares.",
-                        );
-                    return {
-                        name: staticRuleText(context, name, "name"),
-                        type: staticRuleText(context, type, "type"),
-                        vertex: stage,
-                    };
-                },
-            ),
-        },
-    ];
+    return pickDiscardRuleRow(context, literal, {
+        key: text("key"),
+        wgsl: text("wgsl"),
+        worldAdjustWgsl: text("worldAdjustWgsl"),
+        vertexData: text("vertexData"),
+        storage: (list ? staticArrayElements(context, list) : []).map(
+            (element) => {
+                const entry = staticObjectMembers(context, element);
+                const name = entry.get("name");
+                const type = entry.get("type");
+                const vertex = entry.get("vertex");
+                if (!name || !type)
+                    return context.fail(
+                        element,
+                        "A pickAsync `discard` storage entry names its `name` and `type`.",
+                    );
+                const stage =
+                    vertex && !isNullishLiteral(context.checker, vertex)
+                        ? context.probeEmission(
+                              () =>
+                                  staticBooleanOf(context.compileValue(vertex)),
+                              () => false,
+                          )
+                        : false;
+                if (stage === undefined)
+                    return context.fail(
+                        vertex!,
+                        "A pickAsync `discard` storage entry's `vertex` is a generation-known boolean: it selects the bind group layout the composed pipeline declares.",
+                    );
+                return {
+                    name: staticRuleText(context, name, "name"),
+                    type: staticRuleText(context, type, "type"),
+                    vertex: stage,
+                };
+            },
+        ),
+    });
+}
+
+/**
+ * A rule an application call builds -- a composer over parts whose storage
+ * closes over run-time state -- read from a model run of the call
+ * (`runModelCall`): its key, WGSL and storage layout are text and flags the
+ * run settles with, and each entry's `data` a function it never calls. The
+ * native pick checks the rule it is handed against this one
+ * (`prepare_pick_discard`).
+ */
+function modelPickDiscardRule(
+    context: PickingIntrinsicContext,
+    call: ts.CallExpression,
+): PickDiscardRuleManifest {
+    const label = `pickAsync's discard rule '${call.expression.getText()}(...)'`;
+    const run = context.runModelCall(call, label);
+    const refuse = (message: string): never =>
+        context.fail(call, `${label} ${message}`);
+    const read = (owner: unknown, name: string): unknown => {
+        if (typeof owner !== "object" || owner === null || !run.isPlain(owner))
+            return refuse(
+                `settles with a value that is not plain data where '${name}' is read.`,
+            );
+        return (owner as Record<string, unknown>)[name];
+    };
+    const text = (owner: unknown, name: string): string | undefined => {
+        const value = read(owner, name);
+        if (value === undefined || value === null) return undefined;
+        return typeof value === "string"
+            ? value
+            : refuse(`settles with a '${name}' that is not text.`);
+    };
+    const rule = run.value;
+    const list = read(rule, "storage");
+    if (list !== undefined && list !== null && !Array.isArray(list))
+        return refuse("settles with a 'storage' that is not a list.");
+    return pickDiscardRuleRow(context, call, {
+        key: text(rule, "key"),
+        wgsl: text(rule, "wgsl"),
+        worldAdjustWgsl: text(rule, "worldAdjustWgsl"),
+        vertexData: text(rule, "vertexData"),
+        // A list of this realm: the run's own carries its realm's prototype.
+        storage: Array.from((list ?? []) as unknown[]).map((entry) => {
+            const name = text(entry, "name");
+            const type = text(entry, "type");
+            const vertex = read(entry, "vertex");
+            if (name === undefined || type === undefined)
+                return refuse(
+                    "settles with a storage entry without its 'name' and 'type'.",
+                );
+            if (
+                vertex !== undefined &&
+                vertex !== null &&
+                typeof vertex !== "boolean"
+            )
+                return refuse(
+                    "settles with a storage entry whose 'vertex' is not a boolean.",
+                );
+            return { name, type, vertex: vertex === true };
+        }),
+    });
 }
 
 /** A rule member the composed WGSL splices, as its generation-known text. */

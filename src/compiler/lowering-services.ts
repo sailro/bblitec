@@ -419,6 +419,12 @@ export interface LoweringServices {
      * as the run's realm holds it. The run reads no module constant the
      * program writes through (`written`).
      */
+    /**
+     * A model run of a call (`model`): what its first evaluation settles
+     * with, its engine and platform values opaque; the caller checks what
+     * it reads against the program's own values.
+     */
+    runModelCall(call: ts.CallExpression, label: string): ExecutedResult;
     runCallOverHeldData(
         call: ts.CallExpression,
         held: (identifier: ts.Identifier) => ExecutedArgument | undefined,

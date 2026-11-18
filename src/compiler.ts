@@ -210,6 +210,7 @@ import {
 } from "./compiler/option-helpers.js";
 import {
     executeApplicationFunction,
+    holdsEngineValue,
     runApplicationFunction,
     type ExecutedFunctionContext,
     type ExecutedScalar,
@@ -6419,6 +6420,25 @@ class Compiler implements LoweringServices {
         return result;
     }
 
+    public runModelCall(
+        call: ts.CallExpression,
+        label: string,
+    ): ExecutedResult {
+        return runApplicationFunction(
+            this.generationRunContext(
+                (identifier) => this.staticScalar(identifier),
+                {
+                    model: true,
+                    opaque: (identifier) =>
+                        holdsEngineValue(this.checker, identifier),
+                },
+            ),
+            call,
+            [],
+            label,
+        );
+    }
+
     public runCallOverHeldData(
         call: ts.CallExpression,
         held: (identifier: ts.Identifier) => ExecutedArgument | undefined,
@@ -6442,7 +6462,12 @@ class Compiler implements LoweringServices {
         foldEnclosing: ExecutedFunctionContext["foldEnclosing"],
         more: Pick<
             ExecutedFunctionContext,
-            "writtenThrough" | "pinnedStandIn" | "standInText" | "unreadNumbers"
+            | "writtenThrough"
+            | "pinnedStandIn"
+            | "standInText"
+            | "unreadNumbers"
+            | "model"
+            | "opaque"
         >,
     ): ExecutedFunctionContext {
         return {

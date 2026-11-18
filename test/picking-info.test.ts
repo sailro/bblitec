@@ -684,3 +684,59 @@ test("a discard rule's modules splice its WGSL and storage into each pick pipeli
             !none!.regular.includes("@group(2)"),
     );
 });
+
+test("a discard rule an application call composes folds from a model run of the call, its engine values opaque", () => {
+    const program = (key: string) => `
+        import {createEngine,createSceneContext,createGpuPicker,createSphere,pickAsync,type EngineContext,type Mesh,type PickDiscardRule,type SceneContext} from "@babylonjs/lite";
+        interface Part { key: string; fn: string; wgsl: string; name: string; data(mesh: Mesh): Float32Array | null }
+        const registries = new WeakMap<EngineContext, Part>();
+        function registry(engine: EngineContext, scene: SceneContext): Part {
+            let part = registries.get(engine);
+            if (part) return part;
+            const marked = createSphere(engine, {});
+            part = {
+                key: ${key},
+                fn: "partHit",
+                wgsl: "fn partHit(input: PickDiscardInput) -> bool { return partData[0] > 0.5; }",
+                name: "partData",
+                data: (mesh) => (mesh === marked ? new Float32Array([1]) : null),
+            };
+            registries.set(engine, part);
+            return part;
+        }
+        function compose(parts: readonly Part[]): PickDiscardRule {
+            return {
+                key: parts.map((part) => part.key).join("+"),
+                wgsl: parts.map((part) => part.wgsl).join("\\n") +
+                    "\\nfn shouldDiscardPick(input: PickDiscardInput) -> bool { return " +
+                    parts.map((part) => part.fn + "(input)").join(" || ") + "; }",
+                storage: parts.map((part) => ({ name: part.name, type: "array<f32>", data: (mesh: Mesh) => part.data(mesh) })),
+            };
+        }
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            const rule = compose([registry(engine, scene)]);
+            await pickAsync(createGpuPicker(scene), 0, 0, { discard: rule });
+        }
+        void main();
+    `;
+    assert.deepEqual(
+        compileSource(program(`"part"`)).manifest.pickDiscardRules,
+        [
+            {
+                key: "part",
+                wgsl:
+                    "fn partHit(input: PickDiscardInput) -> bool { return partData[0] > 0.5; }\n" +
+                    "fn shouldDiscardPick(input: PickDiscardInput) -> bool { return partHit(input); }",
+                storage: [
+                    { name: "partData", type: "array<f32>", vertex: false },
+                ],
+            },
+        ],
+    );
+    assert.throws(
+        () => compileSource(program(`"part" + String(scene.meshes.length)`)),
+        /discard rule 'compose\(\.\.\.\)' threw at generation: it reads 'meshes' of 'scene'/,
+    );
+});
