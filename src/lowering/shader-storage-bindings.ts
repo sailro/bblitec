@@ -77,9 +77,7 @@ void set_shader_storage_buffer_by_name(
     const auto found = std::find_if(slots.begin(), slots.end(), [&](const auto& slot) { return name == slot.name; });
     const auto* storage = handle_find(engine.storage_buffers, buffer);
 ${checks}
-    const auto slot = static_cast<std::uint32_t>(found - slots.begin());
-    if (record.shader_storage_buffers.size() <= slot || record.shader_storage_buffers[slot] != buffer)
-        set_shader_storage_buffer(engine, material, slot, buffer);
+    set_shader_storage_buffer(engine, material, static_cast<std::uint32_t>(found - slots.begin()), buffer);
 }
 `;
 }

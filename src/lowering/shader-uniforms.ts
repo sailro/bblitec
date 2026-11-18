@@ -638,7 +638,10 @@ ${tail}
 }
 
 void enable_shader_uniform_range_updates(Engine& engine, Scene& scene, MaterialHandle material) {
-    auto& state = *shader_material(engine, material).shader_uniforms;
+    const auto& record = shader_material(engine, material);
+    if (record.shader_view_slots)
+        throw std::runtime_error("enableShaderUniformRangeUpdates over a ShaderMaterial view is unsupported.");
+    auto& state = *record.shader_uniforms;
     if (!state.range_updates) state.range_updates = std::make_shared<ShaderUniformRangeUpdates>();
     auto& registrations = state.range_updates->scenes;
     std::erase_if(registrations, [](const auto& entry) { return entry.first.expired(); });

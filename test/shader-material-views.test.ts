@@ -4,6 +4,9 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { FactoryLowerer } from "../src/lowering/factory-lowerer.js";
+import { lowerShaderExternalTextures } from "../src/lowering/shader-external-texture.js";
+import { lowerShaderUniformRangeUpdates } from "../src/lowering/shader-uniforms.js";
+import { pinnedError } from "./pinned-errors.js";
 import { compileShaderMaterialFixture } from "./shader-material-fixture.js";
 import {
     cppFunction,
@@ -730,6 +733,7 @@ const slotTablesSource = `${prelude}
         draw(engine, createShaderMaterial(${groundOptions}));
         draw(engine, createShaderMaterial({ name: "wider", vertexSource: wgsl\`\${VERT}\`, fragmentSource: wgsl\`\${surface("shaderUniforms.uTint + shaderUniforms.uExtra.xyz")}\`, attributes: ["position"], uniforms: ["worldViewProjection", "world", { name: "uExtra", type: "vec4<f32>", defaultValue: [4, 3, 2, 1] }, { name: "uTint", type: "vec3<f32>" }], samplers: ["carve", "albedo"], storageBuffers: [{ name: "extra", type: "array<vec4<f32>>" }, { name: "points", type: "array<vec4<f32>>" }] }));
         draw(engine, createShaderMaterial({ name: "clash", vertexSource: wgsl\`\${VERT}\`, fragmentSource: wgsl\`\${surface("shaderUniforms.uTint.xyz")}\`, attributes: ["position"], uniforms: ["worldViewProjection", "world", { name: "uTint", type: "vec4<f32>" }] }));
+        draw(engine, createShaderMaterial({ name: "screen", vertexSource: wgsl\`\${VERT}\`, fragmentSource: wgsl\`@fragment fn mainFragment(@location(0) vWorldPos: vec3<f32>) -> @location(0) vec4<f32> { return textureSampleBaseClampToEdge(frame, frameSampler, vWorldPos.xy); }\`, attributes: ["position"], uniforms: ["worldViewProjection", "world"], externalTextures: ["frame"] }));
     }
     void main();
 `;
@@ -812,6 +816,103 @@ int main(){
         {
             expectedOutput:
                 "source0 source1 source0 own0 source0 own0 source0 | A shader view's table does not hold the slot its variant declares. | 11 0,1,0,4,3,2,1, 0.5,0,1,4,3,2,1, | A ShaderMaterial view declares uniform 'uTint' as vec4<f32>; the slot it reads holds vec3<f32>.",
+        },
+    );
+});
+
+test("setters on a view natively write the slot its table names, by name, and move the view's own versions", (t) => {
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native compiler required.");
+        return;
+    }
+    const { compiled, cpp } = compileShaderMaterialFixture(slotTablesSource);
+    const context = new LoweringContext();
+    const factory = new FactoryLowerer(context).lowerShaderMaterialFactory({
+        views: true,
+    }).source;
+    const views = new FactoryLowerer(context).lowerNoColorMaterialViews(
+        false,
+        false,
+        false,
+        false,
+        true,
+    ).source;
+    const external = lowerShaderExternalTextures(context).source;
+    const id = (name: string): number =>
+        compiled.manifest.customShaderPrograms.findIndex(
+            (candidate) => candidate.name === name,
+        );
+    runGeneratedProgram(
+        native,
+        "shader-material-views/setters",
+        `#include <bit>
+#include <iterator>
+#include <utility>
+${cpp}
+#include <array>
+#include <cstdio>
+namespace bbl {
+namespace {
+${cppFunction(views, "MaterialHandle create_no_color_material_view(")}
+bool external_texture_resolvers_installed = false;
+}
+${cppFunction(views, "MaterialHandle create_shader_material_view(")}
+${cppFunction(views, "void derive_shader_material_view(")}
+${["void set_shader_texture(", "void set_shader_render_texture(", "void set_shader_storage_buffer(", "void set_shader_storage_buffer_by_name("].map((signature) => cppFunction(factory, signature)).join("\n")}
+void set_shader_pixels_texture(Engine&, MaterialHandle, std::uint32_t, const PixelsTexture&) { throw std::runtime_error("no frame"); }
+${["VideoHandle create_baked_video(int ready_state)", "ExternalTextureHandle create_external_texture(", "void set_shader_external_texture("].map((signature) => cppFunction(external, signature)).join("\n")}
+${lowerShaderUniformRangeUpdates(context)}
+}
+int main(){
+    bbl::Engine engine;
+    engine.storage_buffers.resize(2);
+    const auto source = bbl::create_shader_material(engine, ${id("ground")}u);
+    const auto view = bbl::create_shader_material_view(engine, source);
+    bbl::derive_shader_material_view(engine, view, ${id("wider")}u, false);
+    const auto& from = bbl::handle_at(engine.materials, source);
+    const auto& own = bbl::handle_at(engine.materials, view);
+    const auto lanes = [&](bbl::MaterialHandle material, const char* name) {
+        const auto values = std::get<bbl::js::F32Array>(bbl::get_shader_uniform(engine, material, name));
+        for (std::size_t lane = 0; lane < values.size(); ++lane) std::printf("%g,", static_cast<double>(values.load(lane)));
+        std::printf(" ");
+    };
+    // uTint is its source's slot: the view writes the source's value and moves its own version only.
+    bbl::set_shader_uniform(engine, view, "uTint", std::array<double, 3>{0.25, 0.5, 0.75});
+    lanes(source, "uTint");
+    std::printf("%g %g ", from.shader_uniforms->version, own.shader_uniforms->version);
+    // uExtra is the view's own.
+    bbl::set_shader_uniform(engine, view, "uExtra", std::array<double, 4>{1.0, 2.0, 3.0, 4.0});
+    lanes(view, "uExtra");
+    try { lanes(source, "uExtra"); } catch (const std::runtime_error& error) { std::printf("| %s | ", error.what()); }
+    // An offset the compiler resolved is the view's own variant's.
+    for (const auto& slot : bbl::upstream::shader_variant_info(${id("wider")}u).uniform_slots)
+        if (std::string_view(slot.name) == "uTint") bbl::set_shader_uniform_value(engine, view, slot.offset, 1.0f, 0.0f, 0.0f);
+    lanes(source, "uTint");
+    // albedo is its source's slot, carve the view's own.
+    bbl::FileTexture albedo; albedo.identity = 7;
+    bbl::set_shader_texture(engine, view, bbl::shader_texture_slot_by_name(engine, view, "albedo", false), albedo);
+    bbl::FileTexture carve; carve.identity = 9;
+    bbl::set_shader_texture(engine, view, bbl::shader_texture_slot_by_name(engine, view, "carve", false), carve);
+    std::printf("%llu %llu %zu %zu %llu ", static_cast<unsigned long long>(from.shader_textures.at(0).identity), static_cast<unsigned long long>(own.shader_textures.at(0).identity), from.shader_textures.size(), own.shader_textures.size(), static_cast<unsigned long long>(from.shader_texture_version + from.shader_resource_version));
+    // points is its source's slot, extra the view's own.
+    bbl::set_shader_storage_buffer_by_name(engine, view, "points", bbl::StorageBufferHandle{1});
+    bbl::set_shader_storage_buffer_by_name(engine, view, "extra", bbl::StorageBufferHandle{0});
+    std::printf("%u %u %llu ", from.shader_storage_buffers.at(0).value, own.shader_storage_buffers.at(0).value, static_cast<unsigned long long>(from.shader_resource_version));
+    // An external texture binds on the view's source (getMaterialSource).
+    const auto screen = bbl::create_shader_material(engine, ${id("screen")}u);
+    const auto shown = bbl::create_shader_material_view(engine, screen);
+    const auto frame = bbl::create_external_texture(bbl::create_baked_video(4));
+    bbl::set_shader_external_texture(engine, shown, 0u, frame);
+    std::printf("%d %zu %llu ", bbl::handle_at(engine.materials, screen).shader_external_textures.at(0) == frame ? 1 : 0, bbl::handle_at(engine.materials, shown).shader_external_textures.size(), static_cast<unsigned long long>(bbl::handle_at(engine.materials, shown).shader_resource_version));
+    bbl::Scene scene;
+    scene.engine = &engine;
+    try { bbl::enable_shader_uniform_range_updates(engine, scene, view); } catch (const std::runtime_error& error) { std::printf("| %s", error.what()); }
+}
+`,
+        {
+            expectedOutput: `0.25,0.5,0.75, 0 1 1,2,3,4, | ${pinnedError('ShaderMaterial: uniform "${a0}" was not declared.', { module: "src/material/shader/shader-material.ts", name: "getShaderUniform" })} | 1,0,0, 7 9 1 1 0 1 0 0 1 0 0 | enableShaderUniformRangeUpdates over a ShaderMaterial view is unsupported.`,
+            flags: ["/DBBLITE_GPU_INSTANCING=0"],
         },
     );
 });

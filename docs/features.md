@@ -387,8 +387,10 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
   A typed uniform declaration of a system matrix (`mat4x4<f32>`, no default) is that system uniform.
   `createShaderNoColorMaterialView` shares source uniforms and resource bindings; it and `createStandardNoColorMaterialView`
   may run in a loop of run-time passes. `createMaterialView(source, { features: 0 })` over a ShaderMaterial shares
-  them too, each slot by name, and its draws follow its source's writes. On such a view, effect-free
-  `Object.defineProperty`/`defineProperties` data descriptors after its `const`
+  them too, each slot by name, and its draws follow its source's writes. Uniform, texture and storage-buffer setters
+  on a view write the slot of that name and move the view's own versions, which its draws also follow;
+  `setShaderExternalTexture` binds the source's slot, and `enableShaderUniformRangeUpdates` over a view refuses.
+  On such a view, effect-free `Object.defineProperty`/`defineProperties` data descriptors after its `const`
   declaration, in its block or that block's `if` branches and before any other use of the view on their path, redefine
   its sources, `attributes`, declaration lists and pipeline state; the view draws a program compiled per source variant and
   branch, selected at run time. A source of run-time variant may be any variant the program creates, as such a call's

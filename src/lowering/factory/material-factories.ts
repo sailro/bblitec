@@ -696,11 +696,8 @@ MaterialRecord& shader_material(Engine& engine, MaterialHandle handle) {
         throw std::runtime_error("Invalid shader material handle.");
     }
     MaterialRecord& material = ${recordAt("engine.materials", "handle")};
-    if (!material.shader_material) {
+    if (!material.shader_material || !material.shader_uniforms) {
         throw std::runtime_error("Material is not a shader material.");
-    }
-    if (material.source_material.value != invalid_handle || !material.shader_uniforms) {
-        throw std::runtime_error("Shader uniform access requires owned material slots; shader views are unsupported.");
     }
     return material;
 }
@@ -813,6 +810,8 @@ ${lowerShaderTextureNameBinding(this.context)}
 
 // setShaderTexture: the pin stores the Texture2D on the slot the sampler
 // name owns and bumps _resourceVersion so the group-1 bind group rebuilds.
+// A view's slot is the one its table names; the versions that move are those
+// of the material the call names.
 // Texture uploads and resource groups follow separate versions: replacing
 // storage changes a group without re-uploading its unchanged images.
 void set_shader_texture(
@@ -826,18 +825,19 @@ void set_shader_texture(
         return;
     }
     MaterialRecord& record = shader_material(engine, material);
-    if (record.shader_textures.size() <= slot) {
-        record.shader_textures.resize(slot + 1);
+    const auto [slots, at] = shader_slot_owner(engine, record, ShaderDeclarationList::samplers, slot);
+    if (slots.shader_textures.size() <= at) {
+        slots.shader_textures.resize(at + 1);
     }
-    const FileTexture& previous = record.shader_textures[slot];
+    const FileTexture& previous = slots.shader_textures[at];
     const bool same_image = texture.data.pixels
         ? previous.data.pixels == texture.data.pixels
         : texture.identity != 0 && previous.identity == texture.identity;
-    const bool render_bound = slot < record.shader_render_textures.size() &&
-                              record.shader_render_textures[slot].has_value();
+    const bool render_bound = at < slots.shader_render_textures.size() &&
+                              slots.shader_render_textures[at].has_value();
 #if BBLITE_SHADOWS_CSM
-    const bool csm_bound = slot < record.shader_csm_textures.size() &&
-                          record.shader_csm_textures[slot].value != invalid_handle;
+    const bool csm_bound = at < slots.shader_csm_textures.size() &&
+                          slots.shader_csm_textures[at].value != invalid_handle;
 #else
     constexpr bool csm_bound = false;
 #endif
@@ -850,12 +850,12 @@ void set_shader_texture(
         previous.data.premultiply_alpha == texture.data.premultiply_alpha &&
         previous.data.gpu_source == texture.data.gpu_source)
         return;
-    record.shader_textures[slot] = std::move(texture);
-    if (slot < record.shader_render_textures.size())
-        record.shader_render_textures[slot].reset();
+    slots.shader_textures[at] = std::move(texture);
+    if (at < slots.shader_render_textures.size())
+        slots.shader_render_textures[at].reset();
 #if BBLITE_SHADOWS_CSM
-    if (slot < record.shader_csm_textures.size())
-        record.shader_csm_textures[slot] = {};
+    if (at < slots.shader_csm_textures.size())
+        slots.shader_csm_textures[at] = {};
 #endif
     ++record.shader_texture_version;
     ++record.shader_resource_version;
@@ -874,22 +874,23 @@ void set_shader_render_texture(
                               texture.source == RenderTextureSource::transmission_depth;
     if (texture.source != RenderTextureSource::render_target && !transmission)
         throw std::runtime_error("setShaderTexture requires a render target or transmission texture.");
-    if (record.shader_textures.size() <= slot) {
-        record.shader_textures.resize(slot + 1);
+    const auto [slots, at] = shader_slot_owner(engine, record, ShaderDeclarationList::samplers, slot);
+    if (slots.shader_textures.size() <= at) {
+        slots.shader_textures.resize(at + 1);
     }
-    if (record.shader_render_textures.size() <= slot) {
-        record.shader_render_textures.resize(slot + 1);
+    if (slots.shader_render_textures.size() <= at) {
+        slots.shader_render_textures.resize(at + 1);
     }
-    const auto& previous = record.shader_render_textures[slot];
+    const auto& previous = slots.shader_render_textures[at];
     if (previous && previous->source == texture.source &&
         previous->target == texture.target && previous->task == texture.task &&
         previous->depth_only == texture.depth_only)
         return;
-    record.shader_render_textures[slot] = texture;
-    record.shader_textures[slot] = {};
+    slots.shader_render_textures[at] = texture;
+    slots.shader_textures[at] = {};
 #if BBLITE_SHADOWS_CSM
-    if (slot < record.shader_csm_textures.size())
-        record.shader_csm_textures[slot] = {};
+    if (at < slots.shader_csm_textures.size())
+        slots.shader_csm_textures[at] = {};
 #endif
     ++record.shader_texture_version;
     ++record.shader_resource_version;
@@ -905,12 +906,13 @@ void set_shader_storage_buffer(
         ${recordAt("engine.storage_buffers", "buffer")}.disposed) {
         throw std::runtime_error("Invalid shader storage buffer.");
     }
-    if (record.shader_storage_buffers.size() <= slot) {
-        record.shader_storage_buffers.resize(slot + 1);
+    const auto [slots, at] = shader_slot_owner(engine, record, ShaderDeclarationList::storage_buffers, slot);
+    if (slots.shader_storage_buffers.size() <= at) {
+        slots.shader_storage_buffers.resize(at + 1);
     }
-    if (record.shader_storage_buffers[slot] == buffer)
+    if (slots.shader_storage_buffers[at] == buffer)
         return;
-    record.shader_storage_buffers[slot] = buffer;
+    slots.shader_storage_buffers[at] = buffer;
     ++record.shader_resource_version;
 }
 
@@ -928,18 +930,19 @@ void set_shader_csm_texture(
             ShadowFilter::csm_directional) {
         throw std::runtime_error("Invalid CSM receiver texture.");
     }
-    if (record.shader_textures.size() <= slot) {
-        record.shader_textures.resize(slot + 1);
+    const auto [slots, at] = shader_slot_owner(engine, record, ShaderDeclarationList::samplers, slot);
+    if (slots.shader_textures.size() <= at) {
+        slots.shader_textures.resize(at + 1);
     }
-    if (record.shader_csm_textures.size() <= slot) {
-        record.shader_csm_textures.resize(slot + 1);
+    if (slots.shader_csm_textures.size() <= at) {
+        slots.shader_csm_textures.resize(at + 1);
     }
-    if (record.shader_csm_textures[slot].value == generator.value)
+    if (slots.shader_csm_textures[at].value == generator.value)
         return;
-    record.shader_csm_textures[slot] = generator;
-    record.shader_textures[slot] = {};
-    if (slot < record.shader_render_textures.size())
-        record.shader_render_textures[slot].reset();
+    slots.shader_csm_textures[at] = generator;
+    slots.shader_textures[at] = {};
+    if (at < slots.shader_render_textures.size())
+        slots.shader_render_textures[at].reset();
     ++record.shader_texture_version;
     ++record.shader_resource_version;
 }

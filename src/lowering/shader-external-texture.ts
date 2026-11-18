@@ -282,6 +282,12 @@ void set_shader_external_texture(
     std::uint32_t slot,
     ExternalTextureHandle texture) {
     MaterialRecord& record = shader_material(engine, material);
+    // \`getMaterialSource\`: a view binds its source's slot.
+    if (record.shader_view_slots) {
+        const auto owner = shader_slot_owner(engine, record, ShaderDeclarationList::samplers, slot);
+        set_shader_external_texture(engine, record.source_material, owner.slot, std::move(texture));
+        return;
+    }
     external_texture_resolvers_installed = true;
     if (record.shader_external_textures.size() <= slot) {
         record.shader_external_textures.resize(slot + 1);
