@@ -72,15 +72,20 @@ inline void release_effect_resources(SDL_GPUDevice*, EffectResources&) noexcept;
 using EffectPass = OwnedGpuRecord<EffectResources, std::remove_pointer_t<SDL_GPUDevice*>,
                                   release_effect_resources>;
 
-/** Upload factory pixels or the already-rounded texel of a solid texture. */
+/** Upload factory pixels (2D or 3D) or the already-rounded texel of a solid texture. */
 inline OwnedSdlTexture upload_effect_image(SDL_GPUDevice* device, const EffectTextureSlot& slot) {
     if (slot.pixels_texture) {
         const auto& texture = *slot.pixels_texture;
+        const SDL_GPUTextureFormat format = texture.srgb ? SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB
+                                                         : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+        if (texture.depth)
+            return OwnedSdlTexture{upload_3d_texture(device, texture.rgba.data(),
+                                                     texture.rgba.size(), texture.width,
+                                                     texture.height, *texture.depth, format,
+                                                     "SDL_CreateGPUTexture effect 3D pixels"),
+                                   {device}};
         return OwnedSdlTexture{upload_2d_texture(device, texture.rgba.data(), texture.rgba.size(),
-                                                 texture.width, texture.height,
-                                                 texture.srgb
-                                                     ? SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB
-                                                     : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+                                                 texture.width, texture.height, format,
                                                  "SDL_CreateGPUTexture effect pixels"),
                                {device}};
     }

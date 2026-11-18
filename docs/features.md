@@ -274,7 +274,7 @@ Backends per platform: [backends](backends.md#backend-comparison). Commands: [An
 
 `enableGltfCameras` and `enableGltfCpuTangents` must precede loading. `updateTexture2DFromPixels` and
 `queue.writeTexture` write `createTexture2DFromPixels` textures; other sources, fractional or out-of-bounds regions, and
-texels a sprite atlas copied throw. Other runtime texture uploads and 3D textures are unsupported.
+texels a sprite atlas copied throw. Other runtime texture uploads are unsupported.
 
 `loadGltf(engine, await response.arrayBuffer())` loads the one packaged file the fetch serves (GLB or `data:` URIs), in
 an application realm too; bytes held in a binding refuse. `decodeAudioData` of such a read links that file's decoder
@@ -569,6 +569,7 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
   vertices refuse.
   Effect textures come from solid/pixel factories or render targets, with 2D float or depth layouts;
   scene frame graphs sample depth through `textureLoad`. Effect samplers use the `filtering` binding type.
+  `viewDimension: "3d"` float layouts take `createTexture3DFromPixels` textures, which bind nowhere else.
 - `createSsaoTask` (XeGTAO): every quality, view normals from a geometry task or reconstructed from depth, temporal
   reconstruction with a geometry `velocityTexture` (and `velocityHasPreviousDepth`), `resetSsaoTemporal`,
   `enableSsaoHalfResolution`, `enableSsaoMotionPruning`, live `enabled`/`radius`/`intensity`/`historySamples`.

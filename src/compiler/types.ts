@@ -495,6 +495,8 @@ export interface EffectBindingManifest {
     kind: "uniform" | "texture" | "sampler";
     /** Explicit texture layout sample type; the pin defaults to float. */
     textureSampleType?: "float" | "depth";
+    /** A texture layout's `viewDimension: "3d"`; absent is the pin's 2d default. */
+    viewDimension?: "3d";
     /** `uniformByteLength` after the pin's align4; 0 for the other kinds. */
     uniformBytes: number;
     /**
@@ -3766,6 +3768,7 @@ export type Feature =
     | "texture:ktx2"
     | "texture:pixels"
     | "texture:pixels-writes"
+    | "texture:pixels-3d"
     | "sprite:billboard"
     | "sprite:billboard-axis-locked"
     | "sprite:billboard-cutout"

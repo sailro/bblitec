@@ -1383,6 +1383,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/texture/pixels-texture.ts (updateTexture2DFromPixels, queue.writeTexture)",
         consumers: CMAKE,
     },
+    "texture:pixels-3d": {
+        provenance: "src/texture/pixels-texture.ts (createTexture3DFromPixels)",
+        consumers: CMAKE,
+    },
     "sprite:custom-shader": {
         provenance:
             "src/sprite/sprite-custom-shader.ts + src/sprite/custom-shader-core.ts",

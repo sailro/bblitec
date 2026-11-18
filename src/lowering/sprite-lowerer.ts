@@ -1411,6 +1411,7 @@ SpriteAtlasHandle create_grid_sprite_atlas(
     Engine& engine,
     const PixelsTexture& texture,
     GridSpriteAtlasOptions options) {
+    require_planar_pixels_texture(texture);
     SpriteAtlasRecord atlas;
     atlas.rgba = share_texels(texture.rgba.snapshot());
     atlas.width = texture.width;
@@ -1493,7 +1494,7 @@ Sprite2DLayerHandle create_sprite_2d_layer(
     // draws that program, its extra textures bind after the atlas, and
     // its params start zeroed.
     layer.custom_shader = options.custom_shader;
-    layer.custom_textures = std::move(options.custom_textures);
+    layer.custom_textures = planar_pixels_textures(std::move(options.custom_textures));
     layer.custom_texture_names = std::move(options.custom_texture_names);
     layer.opacity = options.opacity;
     layer.visible = options.visible;

@@ -41,7 +41,7 @@ template <typename Image> class EffectTextureImages {
         if (slot.render_texture)
             return {};
         if (slot.pixels_texture) {
-            const TextureData source = pixels_texture_data(*slot.pixels_texture);
+            const TextureData source = pixels_texture_image(*slot.pixels_texture);
             return images_.acquire(source, source.srgb, {}, [&] { return upload(slot); });
         }
         return images_.acquire({}, false, slot.texture.texel, [&] { return upload(slot); });

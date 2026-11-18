@@ -1087,12 +1087,12 @@ inline SDL_GPUSampler* create_texture_sampler(SDL_GPUDevice* device,
     info.mipmap_mode = gpu_mipmap_mode(sampler.mipmap_mode);
     info.address_mode_u = gpu_address_mode(sampler.address_u);
     info.address_mode_v = gpu_address_mode(sampler.address_v);
-    // Mirror the pinned descriptor exactly, as the Dawn twin does: the
-    // pin never sets addressModeW, so W stays at the WebGPU clamp
-    // default, and only the noMip path overrides the LOD clamp
+    // Mirror the pinned descriptor exactly, as the Dawn twin does: W is
+    // the WebGPU clamp default unless a 3D texture's sampler names it,
+    // and only the noMip path overrides the LOD clamp
     // (gltf-sampler-desc.ts leaves lodMaxClamp at the default 32
     // otherwise).
-    info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    info.address_mode_w = gpu_address_mode(sampler.address_w);
     info.max_anisotropy = sampler.max_anisotropy;
     info.max_lod = std::min(sampler.max_lod, 32.0f);
     info.enable_anisotropy = sampler.max_anisotropy > 1.0f;
@@ -1128,6 +1128,35 @@ upload_2d_texture(SDL_GPUDevice* device, const void* bytes, std::size_t byte_siz
 
     upload_2d_texture_into(device, texture.get(), bytes, byte_size, width, height, label,
                            texture_info.num_levels);
+    return texture.release();
+}
+
+/**
+ * A sampled 3D texture (`dimension: "3d"`) of one level, written from `width` x `height` x
+ * `depth` tightly packed texels: x fastest, then y, then z.
+ */
+inline SDL_GPUTexture* upload_3d_texture(SDL_GPUDevice* device, const void* bytes,
+                                         std::size_t byte_size, std::uint32_t width,
+                                         std::uint32_t height, std::uint32_t depth,
+                                         SDL_GPUTextureFormat format, const char* label) {
+    if (!bytes && byte_size)
+        throw std::runtime_error("SDL texture write has no source bytes.");
+    SDL_GPUTextureCreateInfo texture_info{};
+    texture_info.type = SDL_GPU_TEXTURETYPE_3D;
+    texture_info.format = format;
+    texture_info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    texture_info.width = width;
+    texture_info.height = height;
+    texture_info.layer_count_or_depth = depth;
+    texture_info.num_levels = 1;
+    texture_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    OwnedSdlTexture texture{SDL_CreateGPUTexture(device, &texture_info), {device}};
+    if (!texture.get())
+        gpu_error(label);
+    SdlTextureDestination destination{device, texture.get(), 1, nullptr, true};
+    SdlGpuWriteDevice{device}.write_texture(destination,
+                                            {static_cast<const std::uint8_t*>(bytes), byte_size},
+                                            {}, {width, height, depth});
     return texture.release();
 }
 

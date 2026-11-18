@@ -32,7 +32,8 @@ export function pinnedEffectVariantsHeader(
                     `EffectBindingKind::${binding.kind}, ` +
                     `${binding.uniformBytes}u, ` +
                     `${Math.max(0, binding.texture)}u, ` +
-                    `${binding.textureSampleType === "depth"}},`,
+                    `${binding.textureSampleType === "depth"}, ` +
+                    `${binding.viewDimension === "3d"}},`,
             );
         }
         const blend = effect.blend
@@ -87,6 +88,8 @@ struct EffectVariantBinding {
     std::uint32_t texture;
     /** A declared depth texture; otherwise the pin's float sample layout. */
     bool depth_texture;
+    /** A declared \`viewDimension: "3d"\` texture; otherwise the pin's 2d view. */
+    bool volume_texture;
 };
 
 ${cpp.table("EffectVariantBinding", "effect_variant_bindings", bindingRows.length, `${bindingRows.join("\n") || "    // No reached effect declares one."}`)}

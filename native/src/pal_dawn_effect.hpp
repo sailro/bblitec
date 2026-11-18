@@ -34,11 +34,15 @@
 
 namespace bbl::pal {
 
-/** Upload factory pixels or the already-rounded texel of a solid texture. */
+/** Upload factory pixels (2D or 3D) or the already-rounded texel of a solid texture. */
 inline DawnTexture upload_dawn_effect_image(WGPUDevice device, WGPUQueue queue,
                                             const EffectTextureSlot& slot) {
     if (slot.pixels_texture) {
         const auto& texture = *slot.pixels_texture;
+        if (texture.depth)
+            return DawnTexture{upload_dawn_rgba_volume(
+                device, queue, texture.rgba.data(), texture.rgba.size(), texture.width,
+                texture.height, *texture.depth, texture.srgb)};
         return DawnTexture{upload_dawn_rgba_texture(device, queue, texture.rgba.data(),
                                                     texture.rgba.size(), texture.width,
                                                     texture.height, 1, texture.srgb)};
@@ -87,9 +91,9 @@ inline DawnEffectPass create_dawn_effect_pass(DawnDevice& device_state, const En
     DawnEffectPass pass;
 
     // The descriptor's own layout, entry for entry: `bindingLayoutEntry`
-    // gives a uniform `{ type: "uniform" }`, a texture float or depth/2d, and a
-    // sampler `filtering`, all at fragment visibility unless the descriptor
-    // named another — and the reached slice names none.
+    // gives a uniform `{ type: "uniform" }`, a texture float or depth over a
+    // 2d or 3d view, and a sampler `filtering`, all at fragment visibility
+    // unless the descriptor named another — and the reached slice names none.
     // The textures first, in their declared order: a sampler can precede the
     // texture it samples in binding order. The lookup and its not-set refusal
     // are the shared `effect_texture_slot`; a render target's view is bound
@@ -141,7 +145,8 @@ inline DawnEffectPass create_dawn_effect_pass(DawnDevice& device_state, const En
         } else if (binding.kind == upstream::EffectBindingKind::texture) {
             layout.texture.sampleType =
                 binding.depth_texture ? WGPUTextureSampleType_Depth : WGPUTextureSampleType_Float;
-            layout.texture.viewDimension = WGPUTextureViewDimension_2D;
+            layout.texture.viewDimension =
+                binding.volume_texture ? WGPUTextureViewDimension_3D : WGPUTextureViewDimension_2D;
             if (std::find(render_bindings.begin(), render_bindings.end(), binding.binding) !=
                 render_bindings.end())
                 pass.render_textures.emplace_back(group_entries.size(), binding.binding);

@@ -17,9 +17,10 @@ import { handleCppType } from "../data-types/handles.js";
 import { retainedOptions, emitPresentOption } from "./retained-options.js";
 import {
     addressModeCppByPin,
-    pixelsTexture2DOptionFields,
+    pixelsTextureOptionFields,
     pixelsTextureOptionsCpp,
     textureFilterCppByPin,
+    type PixelsTextureFactory,
 } from "../../pinned-address-modes.js";
 import {
     staticTableValue,
@@ -314,25 +315,23 @@ function isSpriteDepthMode(
 }
 
 /**
- * `PixelsTexture2DOptions`, as the record the generated factory resolves
+ * A pixels factory's options (`PixelsTexture2DOptions`,
+ * `PixelsTexture3DOptions`), as the record the generated factory resolves
  * against the pin's own defaults.
  *
- * The four sampler fields keep their pinned string literals. `srgb` is the
+ * The sampler fields keep their pinned string literals. `srgb` is the
  * separate format bit: it selects `rgba8unorm-srgb`, changing how a sampled
  * texel decodes rather than how it is filtered or addressed.
  */
 function pixelsSamplerOptions(
     context: SpriteIntrinsicContext,
     expression: ts.Expression | undefined,
+    factory: PixelsTextureFactory,
 ): { cpp: string; named: Record<string, string> } {
     if (!expression) {
         return { cpp: "", named: {} };
     }
-    const options = optionsRecord(
-        context,
-        expression,
-        "createTexture2DFromPixels",
-    );
+    const options = optionsRecord(context, expression, factory);
     const named: Record<string, string> = {};
     for (const [field, value] of Object.entries(
         options?.recordProperties ?? {},
@@ -341,30 +340,31 @@ function pixelsSamplerOptions(
             if (value.kind !== "boolean" || value.staticBoolean === undefined) {
                 context.fail(
                     expression,
-                    "createTexture2DFromPixels srgb must be a boolean literal.",
+                    `${factory} srgb must be a boolean literal.`,
                 );
             }
             named[field] = value.staticBoolean ? "true" : "false";
             continue;
         }
-        if (!pixelsTexture2DOptionFields.includes(field)) {
+        if (!pixelsTextureOptionFields(factory).includes(field)) {
             context.fail(
                 expression,
-                `createTexture2DFromPixels '${field}' is not lowered; ` +
+                `${factory} '${field}' is not lowered; ` +
                     "the reached slice is its sampler and sRGB options.",
             );
         }
         if (value.staticString === undefined) {
             context.fail(
                 expression,
-                `createTexture2DFromPixels ${field} is one of the pinned ` +
-                    "string literals.",
+                `${factory} ${field} is one of the pinned string literals.`,
             );
         }
         named[field] = value.staticString;
     }
-    const cpp = pixelsTextureOptionsCpp(named, (message) =>
-        context.fail(expression, message),
+    const cpp = pixelsTextureOptionsCpp(
+        named,
+        (message) => context.fail(expression, message),
+        factory,
     );
     return { cpp: cpp ? `, ${cpp}` : "", named };
 }
@@ -1911,6 +1911,29 @@ function compileClearBillboardSprites(
     };
 }
 
+/**
+ * A pixels factory's `data` argument as its native factory takes it: the
+ * packaged bytes of a zero-argument module producer baked at generation, or
+ * a reached runtime Uint8Array, which travels directly and so preserves
+ * WAD/decoded/generated pixel workflows.
+ */
+function pixelsData(
+    context: SpriteIntrinsicContext,
+    call: ts.CallExpression,
+    factory: PixelsTextureFactory,
+): { cpp: string; baked?: { cpp: string; source: string } } {
+    const baked = context.probePixelsAsset(argumentAt(call, 1));
+    if (baked) return { cpp: `bbl::asset_path(${baked.cpp})`, baked };
+    const runtime = context.compileValue(argumentAt(call, 1));
+    if (!(runtime.kind === "data" && runtime.dataType?.kind === "u8array")) {
+        context.fail(
+            argumentAt(call, 1),
+            `${factory} pixels must run at generation through a bakeable module producer or evaluate to a native Uint8Array.`,
+        );
+    }
+    return { cpp: runtime.cpp };
+}
+
 function compileCreateTexture2DFromPixels(
     context: SpriteIntrinsicContext,
     call: ts.CallExpression,
@@ -1918,32 +1941,19 @@ function compileCreateTexture2DFromPixels(
     context.expectArgumentCount(call, 4, 5);
     const engine = context.compileValue(argumentAt(call, 0));
     context.expectKind(engine, "engine", argumentAt(call, 0));
-    // A zero-argument module producer remains bakeable. A reached
-    // runtime Uint8Array instead travels directly to the native
-    // factory, preserving WAD/decoded/generated pixel workflows.
-    const bakedPixels = context.probePixelsAsset(argumentAt(call, 1));
-    const runtimePixels = bakedPixels
-        ? undefined
-        : context.compileValue(argumentAt(call, 1));
-    if (
-        runtimePixels &&
-        !(
-            runtimePixels.kind === "data" &&
-            runtimePixels.dataType?.kind === "u8array"
-        )
-    ) {
-        context.fail(
-            argumentAt(call, 1),
-            "createTexture2DFromPixels pixels must run at generation through a bakeable module producer or evaluate to a native Uint8Array.",
-        );
-    }
+    const pixels = pixelsData(context, call, "createTexture2DFromPixels");
+    const bakedPixels = pixels.baked;
     const width = context.compileNumber(argumentAt(call, 2), "double");
     const height = context.compileNumber(argumentAt(call, 3), "double");
     // The pin's sampler and format overrides. Each travels as "named, and this
     // value", because the factory resolves `?? default` where
     // upstream resolves it. `srgb` travels as the raw-pixel texture's
     // format bit and is preserved by every material/backend consumer.
-    const sampler = pixelsSamplerOptions(context, call.arguments[4]);
+    const sampler = pixelsSamplerOptions(
+        context,
+        call.arguments[4],
+        "createTexture2DFromPixels",
+    );
     const staticSize = [
         staticNumberValue(context, argumentAt(call, 2)),
         staticNumberValue(context, argumentAt(call, 3)),
@@ -1954,7 +1964,7 @@ function compileCreateTexture2DFromPixels(
         textureStorage: "pixels",
         cpp:
             `bbl::create_texture_2d_from_pixels(${engine.cpp}, ` +
-            `${bakedPixels ? `bbl::asset_path(${bakedPixels.cpp})` : runtimePixels!.cpp}, ${width}, ${height}` +
+            `${pixels.cpp}, ${width}, ${height}` +
             `${sampler.cpp})`,
         engineCpp: engine.engineCpp ?? engine.cpp,
         // A node-particle system's texture is assigned in scene
@@ -1976,6 +1986,38 @@ function compileCreateTexture2DFromPixels(
                   },
               }
             : {}),
+    };
+}
+
+/**
+ * `createTexture3DFromPixels` (pixels-texture.ts): the lowered factory checks
+ * the size and byte count and keeps the caller's RGBA8 volume, x fastest
+ * then y then z, with the sampler its options resolve.
+ */
+function compileCreateTexture3DFromPixels(
+    context: SpriteIntrinsicContext,
+    call: ts.CallExpression,
+): Value {
+    context.expectArgumentCount(call, 5, 6);
+    const engine = context.compileValue(argumentAt(call, 0));
+    context.expectKind(engine, "engine", argumentAt(call, 0));
+    const pixels = pixelsData(context, call, "createTexture3DFromPixels");
+    const extent = [2, 3, 4].map((index) =>
+        context.compileNumber(argumentAt(call, index), "double"),
+    );
+    const sampler = pixelsSamplerOptions(
+        context,
+        call.arguments[5],
+        "createTexture3DFromPixels",
+    );
+    context.reachFeature("texture:pixels-3d", call);
+    return {
+        kind: "texture",
+        textureStorage: "pixels",
+        cpp:
+            `bbl::create_texture_3d_from_pixels(${engine.cpp}, ` +
+            `${pixels.cpp}, ${extent.join(", ")}${sampler.cpp})`,
+        engineCpp: engine.engineCpp ?? engine.cpp,
     };
 }
 
@@ -2504,6 +2546,7 @@ const spriteIntrinsicHandlers = new EmissionMap<
     ["removeBillboardSprite", compileRemoveBillboardSprite],
     ["clearBillboardSprites", compileClearBillboardSprites],
     ["createTexture2DFromPixels", compileCreateTexture2DFromPixels],
+    ["createTexture3DFromPixels", compileCreateTexture3DFromPixels],
     ["updateTexture2DFromPixels", compileUpdateTexture2DFromPixels],
     [
         "createSprite2DCustomShader",

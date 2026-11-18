@@ -394,6 +394,8 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
     // model rather than produced by an intrinsic.
     GaussianSplattingMesh: "splat-mesh",
     Texture2D: "texture",
+    // `Texture2D & { depth }`, named by its alias.
+    Texture3D: "texture",
     TransformNode: "transform-node",
     Skeleton: "skeleton",
     Bone: "bone",

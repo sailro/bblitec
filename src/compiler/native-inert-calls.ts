@@ -23,7 +23,10 @@ import { arrayShape, unionMembers } from "./type-facts.js";
  * CPU texture and each backend counts its own bindings, so both lower to
  * nothing (`compileAcquireTexture`).
  */
-const inertPinnedExports = new Set(["acquireTexture", "releaseTexture"]);
+export const inertPinnedExports: ReadonlySet<string> = new Set([
+    "acquireTexture",
+    "releaseTexture",
+]);
 
 /** Methods that change only the local collection they are called on. */
 const localCollectionMethods = new Set([

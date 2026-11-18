@@ -67,29 +67,75 @@ const spelledInBbl = (
 export const addressModeCppByPin = spelledInBbl(addressModeByPin);
 export const textureFilterCppByPin = spelledInBbl(textureFilterByPin);
 
-export const pixelsTexture2DOptionFields: readonly string[] = [
-    "addressModeU",
-    "addressModeV",
-    "magFilter",
-    "minFilter",
-    "srgb",
-];
+/**
+ * The sampler options of each pixels factory (`pixels-texture.ts`), in the
+ * order its native options aggregate holds them: the option's pinned name
+ * and the table its literals map through.
+ */
+const pixelsTextureSamplerOptions = {
+    createTexture2DFromPixels: {
+        aggregate: "bbl::PixelsTextureOptions",
+        members: [
+            ["minFilter", textureFilterByPin],
+            ["magFilter", textureFilterByPin],
+            ["addressModeU", addressModeByPin],
+            ["addressModeV", addressModeByPin],
+        ],
+    },
+    createTexture3DFromPixels: {
+        aggregate: "bbl::PixelsTexture3DOptions",
+        members: [
+            ["filter", textureFilterByPin],
+            ["addressMode", addressModeByPin],
+        ],
+    },
+} as const satisfies Readonly<
+    Record<
+        string,
+        {
+            aggregate: string;
+            members: readonly (readonly [
+                string,
+                Readonly<Record<string, string>>,
+            ])[];
+        }
+    >
+>;
+
+/** A factory `pixelsTextureOptionsCpp` maps the options of. */
+export type PixelsTextureFactory = keyof typeof pixelsTextureSamplerOptions;
+
+/** The options a pixels factory's call may name: its sampler options and `srgb`. */
+export function pixelsTextureOptionFields(
+    factory: PixelsTextureFactory,
+): readonly string[] {
+    return [
+        ...pixelsTextureSamplerOptions[factory].members.map(([name]) => name),
+        "srgb",
+    ];
+}
+
+export const pixelsTexture2DOptionFields: readonly string[] =
+    pixelsTextureOptionFields("createTexture2DFromPixels");
 
 /**
- * The `PixelsTextureOptions` a `createTexture2DFromPixels` call named, as
- * the native aggregate.
+ * The options a pixels factory call named (`PixelsTextureOptions` of a
+ * `createTexture2DFromPixels`, `PixelsTexture3DOptions` of a
+ * `createTexture3DFromPixels`), as the native aggregate.
  *
- * Two places write it — the call site, and the generated node-particle atlas
- * builder that rebuilds the same call against its own engine parameter — so
- * the mapping from the pin's own literals to this runtime's enumerators
- * lives here once. A literal with no row fails naming it, rather than
- * silently picking a neighbour.
+ * Two places write the 2D one -- the call site, and the generated
+ * node-particle atlas builder that rebuilds the same call against its own
+ * engine parameter -- so the mapping from the pin's own literals to this
+ * runtime's enumerators lives here once. A literal with no row fails naming
+ * it, rather than silently picking a neighbour.
  */
 export function pixelsTextureOptionsCpp(
     named: Readonly<Record<string, string>>,
     fail: (message: string) => never,
+    factory: PixelsTextureFactory = "createTexture2DFromPixels",
 ): string {
     if (Object.keys(named).length === 0) return "";
+    const { aggregate, members } = pixelsTextureSamplerOptions[factory];
     const field = (
         name: string,
         table: Readonly<Record<string, string>>,
@@ -99,7 +145,7 @@ export function pixelsTextureOptionsCpp(
         const mapped = table[literal];
         if (!mapped) {
             fail(
-                `createTexture2DFromPixels ${name} '${literal}' is not one ` +
+                `${factory} ${name} '${literal}' is not one ` +
                     `of the pinned literals: ${Object.keys(table).join(", ")}.`,
             );
         }
@@ -107,16 +153,11 @@ export function pixelsTextureOptionsCpp(
     };
     const srgb = named.srgb ?? "false";
     if (srgb !== "true" && srgb !== "false") {
-        fail(
-            `createTexture2DFromPixels srgb '${srgb}' is not a boolean literal.`,
-        );
+        fail(`${factory} srgb '${srgb}' is not a boolean literal.`);
     }
-    return (
-        `bbl::PixelsTextureOptions{${field("minFilter", textureFilterByPin)}, ` +
-        `${field("magFilter", textureFilterByPin)}, ` +
-        `${field("addressModeU", addressModeByPin)}, ` +
-        `${field("addressModeV", addressModeByPin)}, ${srgb}}`
-    );
+    return `${aggregate}{${members
+        .map(([name, table]) => `${field(name, table)}, `)
+        .join("")}${srgb}}`;
 }
 
 const mipmapModeByPin: Readonly<Record<string, string>> = {

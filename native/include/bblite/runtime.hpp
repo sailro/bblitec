@@ -1215,6 +1215,8 @@ struct TextureSamplerState {
     TextureAddressMode address_v = TextureAddressMode::repeat;
     float max_anisotropy = 1.0f;
     float max_lod = 1000.0f;
+    /** WebGPU's `addressModeW` default; a 3D texture's sampler names its own. */
+    TextureAddressMode address_w = TextureAddressMode::clamp;
     bool operator==(const TextureSamplerState&) const = default;
 };
 
@@ -2597,10 +2599,13 @@ struct PixelsTexture {
     // `isStandardUvInverted` fold.
     TextureUvTransform uv_transform{};
     bool uv_invert_y = false;
+    /** `Texture3D.depth` (`createTexture3DFromPixels`): present exactly when the texture is
+     *  `dimension: "3d"`, its texels x fastest, then y, then z. */
+    std::optional<std::uint32_t> depth;
 };
 
-/** The texture record a `PixelsTexture` binds as: its texels, sampler, transform and encoding. */
-inline TextureData pixels_texture_data(const PixelsTexture& texture) {
+/** The texels, sampler, transform and encoding a `PixelsTexture` uploads, of either dimension. */
+inline TextureData pixels_texture_image(const PixelsTexture& texture) {
     TextureData data;
     data.bytes = texture.rgba.bytes();
     data.pixels = texture.rgba.state();
@@ -2612,6 +2617,25 @@ inline TextureData pixels_texture_data(const PixelsTexture& texture) {
     data.uv_invert_y = texture.uv_invert_y;
     data.srgb = texture.srgb;
     return data;
+}
+
+/** Where a 2D texture is read, a `Texture3D` refuses: only a 3d view samples one. */
+inline void require_planar_pixels_texture(const PixelsTexture& texture) {
+    if (texture.depth)
+        throw std::runtime_error("A Texture3D binds only to a texture binding with a 3d view.");
+}
+
+/** `textures` where 2D textures are read, each checked by `require_planar_pixels_texture`. */
+inline std::vector<PixelsTexture> planar_pixels_textures(std::vector<PixelsTexture> textures) {
+    for (const PixelsTexture& texture : textures)
+        require_planar_pixels_texture(texture);
+    return textures;
+}
+
+/** The texture record a 2D `PixelsTexture` binds as. */
+inline TextureData pixels_texture_data(const PixelsTexture& texture) {
+    require_planar_pixels_texture(texture);
+    return pixels_texture_image(texture);
 }
 
 inline bool operator==(const FileTexture& left, const FileTexture& right) {
@@ -3341,6 +3365,8 @@ struct EffectTextureSlot {
     /** The descriptor's binding number, which `setEffectTexture` also matches. */
     std::uint32_t binding = 0;
     bool depth_texture = false;
+    /** A declared `viewDimension: "3d"` binding, which only a `Texture3D` fills. */
+    bool volume_texture = false;
     SolidTexture texture{};
     /** Shared CPU texels retain their identity and live upload versions. */
     std::optional<PixelsTexture> pixels_texture;
@@ -5919,14 +5945,13 @@ inline GpuDeviceIdentity gpu_device_identity(Engine& engine) {
 }
 /**
  * A `GPUSamplerDescriptor` as a texture binds it: `webgpu_sampler`'s
- * resolution, which the state holds but for a W address mode and a LOD
- * floor, both refused.
+ * resolution, which the state holds but for a LOD floor, refused.
  */
 inline TextureSamplerState texture_sampler_state(const GpuSamplerDescriptor& descriptor) {
     using Address = pal::WebGpuSampler::Address;
     const pal::WebGpuSampler sampler = pal::webgpu_sampler(descriptor);
-    if (sampler.address_w != Address::clamp_to_edge || sampler.lod_min_clamp != 0.0f)
-        pal::webgpu_refuse("a texture's sampler state has no W address mode or LOD floor.");
+    if (sampler.lod_min_clamp != 0.0f)
+        pal::webgpu_refuse("a texture's sampler state has no LOD floor.");
     const auto filter = [](bool linear) {
         return linear ? TextureFilter::linear : TextureFilter::nearest;
     };
@@ -5941,7 +5966,8 @@ inline TextureSamplerState texture_sampler_state(const GpuSamplerDescriptor& des
             address(sampler.address_u),
             address(sampler.address_v),
             static_cast<float>(sampler.max_anisotropy),
-            sampler.lod_max_clamp};
+            sampler.lod_max_clamp,
+            address(sampler.address_w)};
 }
 /** `device.createSampler(descriptor)`: a sampler object of its own each call. */
 inline GpuSampler create_device_sampler(const GpuDeviceIdentity& device,
@@ -9460,6 +9486,22 @@ void update_texture_2d_from_pixels(Engine& engine, const StoredTexture& tex,
                                    std::optional<double> height);
 PixelsTexture create_texture_2d_from_pixels(Engine& engine, const js::U8Array& pixels, double width,
                                             double height, PixelsTextureOptions options = {});
+
+/** `PixelsTexture3DOptions` a call named; the generated factory resolves the pin's defaults. */
+struct PixelsTexture3DOptions {
+    TextureFilter filter{};
+    bool has_filter = false;
+    TextureAddressMode address_mode{};
+    bool has_address_mode = false;
+    bool srgb = false;
+};
+
+PixelsTexture create_texture_3d_from_pixels(Engine& engine, const std::string& path, double width,
+                                            double height, double depth,
+                                            PixelsTexture3DOptions options = {});
+PixelsTexture create_texture_3d_from_pixels(Engine& engine, const js::U8Array& pixels, double width,
+                                            double height, double depth,
+                                            PixelsTexture3DOptions options = {});
 
 double add_sprite_2d_index(Engine& engine, Sprite2DLayerHandle layer, Sprite2DProps props);
 void update_sprite_2d_index(Engine& engine, Sprite2DLayerHandle layer, double index,

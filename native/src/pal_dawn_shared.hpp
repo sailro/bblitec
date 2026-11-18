@@ -218,6 +218,32 @@ inline WGPUTexture upload_dawn_rgba_texture(WGPUDevice device, WGPUQueue queue,
 }
 
 /**
+ * Upload RGBA8 texels as a sampled 3D texture (`dimension: "3d"`) of one level, in one write
+ * of `width` x `height` x `depth` tightly packed texels: x fastest, then y, then z.
+ */
+inline WGPUTexture upload_dawn_rgba_volume(WGPUDevice device, WGPUQueue queue,
+                                           const std::uint8_t* rgba, std::size_t bytes,
+                                           std::uint32_t width, std::uint32_t height,
+                                           std::uint32_t depth, bool srgb) {
+    WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
+    descriptor.dimension = WGPUTextureDimension_3D;
+    descriptor.format = srgb ? WGPUTextureFormat_RGBA8UnormSrgb : WGPUTextureFormat_RGBA8Unorm;
+    descriptor.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+    descriptor.size = WGPUExtent3D{width, height, depth};
+    DawnTexture texture{wgpuDeviceCreateTexture(device, &descriptor)};
+    if (!texture)
+        dawn_error("wgpuDeviceCreateTexture rgba volume");
+    WGPUTexelCopyTextureInfo destination = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+    destination.texture = texture;
+    WGPUTexelCopyBufferLayout layout{};
+    layout.bytesPerRow = width * 4u;
+    layout.rowsPerImage = height;
+    const WGPUExtent3D size{width, height, depth};
+    DawnGpuDevice{queue}.write_texture(&destination, rgba, bytes, &layout, &size);
+    return texture.release();
+}
+
+/**
  * Serves a custom shader's extra texture pair by the names the pin's
  * composer declares it under -- `<name>Tex` and `<name>Samp` -- from the
  * uploads kept in the descriptor's own order. False for any other name.
@@ -1486,10 +1512,11 @@ inline WGPUSampler create_texture_sampler(WGPUDevice device, const TextureSample
     descriptor.mipmapFilter = dawn_mipmap_filter_mode(sampler.mipmap_mode);
     descriptor.addressModeU = dawn_address_mode(sampler.address_u);
     descriptor.addressModeV = dawn_address_mode(sampler.address_v);
-    // Mirror the pinned descriptor exactly: W stays at the WebGPU
-    // clamp default, and only the noMip path overrides the LOD clamp
-    // (gltf-sampler-desc.ts leaves lodMaxClamp at the default 32
-    // otherwise).
+    // Mirror the pinned descriptor exactly: W is the WebGPU clamp
+    // default unless a 3D texture's sampler names it, and only the noMip
+    // path overrides the LOD clamp (gltf-sampler-desc.ts leaves
+    // lodMaxClamp at the default 32 otherwise).
+    descriptor.addressModeW = dawn_address_mode(sampler.address_w);
     if (sampler.max_lod < 32.0f) {
         descriptor.lodMaxClamp = sampler.max_lod;
     }

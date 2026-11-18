@@ -1094,6 +1094,7 @@ SpriteAtlasHandle grid_atlas_from_pixels(
     const PixelsTexture& texture,
     double cell_w,
     double cell_h) {
+    require_planar_pixels_texture(texture);
     SpriteAtlasRecord atlas;
     atlas.rgba = share_texels(texture.rgba.snapshot());
     atlas.width = texture.width;

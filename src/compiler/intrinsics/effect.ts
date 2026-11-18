@@ -241,8 +241,21 @@ function compileBindings(
                 manifest.textureSampleType = type;
             }
             const dimension = context.objectProperty(entry, "viewDimension");
-            if (dimension && context.compileStaticString(dimension) !== "2d") {
-                context.fail(dimension, "Effect textures require a 2d view.");
+            const view = dimension && context.compileStaticString(dimension);
+            if (dimension && view !== "2d" && view !== "3d") {
+                context.fail(
+                    dimension,
+                    "Effect textures take a 2d or a 3d view.",
+                );
+            }
+            if (dimension && view === "3d") {
+                if (manifest.textureSampleType === "depth") {
+                    context.fail(
+                        dimension,
+                        "A depth effect texture takes a 2d view.",
+                    );
+                }
+                manifest.viewDimension = "3d";
             }
         }
         bindings.push(manifest);
@@ -517,7 +530,7 @@ export function compileEffectIntrinsic(
                 ) {
                     context.fail(
                         argumentAt(call, 2),
-                        "Reached effect textures come from createSolidTexture2D, createTexture2DFromPixels or a render target.",
+                        "Reached effect textures come from createSolidTexture2D, createTexture2DFromPixels, createTexture3DFromPixels or a render target.",
                     );
                 }
             }

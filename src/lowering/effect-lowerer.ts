@@ -401,6 +401,7 @@ EffectWrapperHandle create_effect_wrapper(
         slot.name = std::string(binding.name);
         slot.binding = binding.binding;
         slot.depth_texture = binding.depth_texture;
+        slot.volume_texture = binding.volume_texture;
         wrapper.textures.push_back(std::move(slot));
     }
     engine.effect_wrappers.push_back(std::move(wrapper));
@@ -440,6 +441,13 @@ void set_effect_uniforms(
 }
 
 ${this.lowerTextureSlotLookup()}
+// The layout's view dimension: \`"3d"\` exactly for a Texture3D, whose view is
+// \`dimension: "3d"\`.
+static void require_effect_view_dimension(const EffectTextureSlot& slot, bool volume) {
+    if (slot.volume_texture != volume)
+        throw std::runtime_error("Effect texture view dimension does not match its binding layout.");
+}
+
 // setEffectTexture: the slot findTextureSlot matches, by name or binding.
 void set_effect_texture(
     Engine& engine,
@@ -450,6 +458,7 @@ void set_effect_texture(
         find_effect_texture_slot(${recordAt("engine.effect_wrappers", "effect")}, key);
     if (slot.depth_texture)
         throw std::runtime_error("Effect depth bindings require a depth texture.");
+    require_effect_view_dimension(slot, false);
     slot.texture = texture;
     slot.pixels_texture.reset();
     slot.render_texture.reset();
@@ -465,6 +474,7 @@ void set_effect_texture(
         find_effect_texture_slot(${recordAt("engine.effect_wrappers", "effect")}, key);
     if (slot.depth_texture)
         throw std::runtime_error("Effect depth bindings require a depth texture.");
+    require_effect_view_dimension(slot, texture.depth.has_value());
     slot.pixels_texture = std::move(texture);
     slot.render_texture.reset();
     slot.set = true;
@@ -497,6 +507,7 @@ void set_effect_texture(
         throw std::runtime_error("setEffectTexture requires a render-target texture.");
     if (texture.depth_only != slot.depth_texture)
         throw std::runtime_error("Effect texture sample type does not match its binding layout.");
+    require_effect_view_dimension(slot, false);
     slot.render_texture = texture;
     slot.pixels_texture.reset();
     slot.set = true;

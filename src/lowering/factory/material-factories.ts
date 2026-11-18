@@ -15,6 +15,7 @@ import { recordAt } from "../../compiler/record-access.js";
 import { pbrMaterialRecordSeedCpp } from "../pinned-material-defaults.js";
 import { lowerNodeInputScalarSetter } from "../node-input-uniform-lowerer.js";
 import { lowerPixelsTextureWrites } from "../pixels-texture-writes.js";
+import { lowerPixelsTexture3DFactory } from "../pixels-texture-volume.js";
 import { lowerShaderStorageNameBinding } from "../shader-storage-bindings.js";
 import { lowerShaderTextureNameBinding } from "../shader-texture-bindings.js";
 import {
@@ -1007,11 +1008,13 @@ void set_alpha_to_coverage(
      * caller may override and whose defaults are read off the pin's own
      * `?? "…"` rather than restated. A call naming none of them emits the
      * same text it always did, because the defaults ride the signature.
-     * `writes` adds the lowered `updateTexture2DFromPixels`.
+     * `writes` adds the lowered `updateTexture2DFromPixels`, `volumes` the
+     * lowered `createTexture3DFromPixels`.
      */
     public lowerPixelsTextureFactory({
         writes = false,
-    }: { writes?: boolean } = {}): LoweredSource {
+        volumes = false,
+    }: { writes?: boolean; volumes?: boolean } = {}): LoweredSource {
         const module = "src/texture/pixels-texture.ts";
         const { declaration } = this.context.functionDeclaration(
             module,
@@ -1078,6 +1081,10 @@ void set_alpha_to_coverage(
             "width * height * 4",
             "createTexture2DFromPixels expected byte count",
         );
+        const volumeFactory = volumes
+            ? `
+${lowerPixelsTexture3DFactory(this.context)}`
+            : "";
         return {
             modulePath: module,
             symbolName: "createTexture2DFromPixels",
@@ -1177,7 +1184,7 @@ ${
 ${lowerPixelsTextureWrites(this.context)}
 `
         : ""
-}
+}${volumeFactory}
 } // namespace bbl
 `,
         };

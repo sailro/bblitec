@@ -1897,6 +1897,7 @@ ${lowerThinInstanceSync(context)}
         emitReached("upstream/src/texture_pixels.cpp", () =>
             factories.lowerPixelsTextureFactory({
                 writes: features.includes("texture:pixels-writes"),
+                volumes: features.includes("texture:pixels-3d"),
             }),
         );
         emitReached("upstream/src/material_shader.cpp", () =>
