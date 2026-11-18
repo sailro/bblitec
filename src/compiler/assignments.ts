@@ -3064,7 +3064,6 @@ import {
 import { recordAt } from "./record-access.js";
 import { isPinnedType, typeImpliedFacts } from "./data-types.js";
 import { isShaderMaterialType } from "./shader-derivations.js";
-import { creationInSegment } from "./creation-segments.js";
 export { isTrsVectorName } from "../scene-node-transform-descriptor.js";
 
 interface TargetPropertyAssignment {
@@ -4143,24 +4142,9 @@ function emitShadowCasterMaterialAssignment(
     const { expression, target } = state;
     if (target.kind !== "material") return false;
     requireSimpleAssignment(context, expression, "material shadow caster");
-    // Registration composes the caster views, so the write must precede it;
-    // a loop that builds a runtime number of materials before then pairs
-    // each with its caster by the same program variants.
-    // A material written in the step that created it has no caster view
-    // yet: views are made on its first shadow draw, after this write.
-    const owner = ts.isPropertyAccessExpression(expression.left)
-        ? expression.left.expression
-        : undefined;
-    if (
-        (context.hasRegisteredScene() ||
-            context.engineLifecycle.engineHasStarted() ||
-            context.isRuntimeCallback()) &&
-        !(owner && creationInSegment(context, owner, expression))
-    )
-        context.fail(
-            expression,
-            "Shadow caster material field writes require unconditional setup before scene registration.",
-        );
+    // As `setShadowCasterMaterial`: each frame's caster refresh follows the
+    // override chain (`refresh_shadow_task_meshes`), so a later write takes
+    // effect at the next frame, as the pin's caster set re-evaluates it.
     const caster = context.compileValue(expression.right);
     context.emit({
         kind: "expression",

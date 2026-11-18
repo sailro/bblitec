@@ -415,9 +415,9 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
   participate in mesh-layout discovery and retain their own texture bindings, including runtime replacements.
   `needAlphaBlending` and `depthWrite` read the shader factory's flags; other material families yield `undefined`.
   Alpha-to-coverage on Standard, PBR and shader materials; NodeMaterial refuses. Storage uploads preserve typed-array, DataView and ArrayBufferView byte ranges.
-  `_shadowCasterMaterial` reads preserve the optional caster handle; writes bind an alternate shader caster during
-  unconditional setup before scene registration. PCF/CSM creates cached shader no-color views and follows caster
-  override chains; shader ESM views are unsupported.
+  `_shadowCasterMaterial` reads preserve the optional caster handle; writes bind an alternate shader caster as
+  `setShadowCasterMaterial` does, and the next frame's caster refresh follows them. PCF/CSM creates cached shader
+  no-color views and follows caster override chains; shader ESM views are unsupported.
 - External video textures come from a closed zero-parameter producer before engine start.
 - Node materials: closed NME graphs; scalar inputs writable live; vector writes and topology changes refuse. Geometry MRTs
   need static packed FLOAT attributes.
