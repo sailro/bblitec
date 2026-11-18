@@ -7,7 +7,7 @@ import {
     SCREEN_SPACE_TEMPORAL_MODULE,
     nativeSettingName,
     screenSpaceFacts,
-    screenSpaceReadsLightDirection,
+    screenSpaceDeclaresOption,
     type ComposedScreenSpaceTask,
     type ScreenSpaceKindFacts,
     type ScreenSpaceTextureRef,
@@ -37,6 +37,31 @@ import {
 } from "./pinned-function-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
 import { sameSource, isOneOfSources } from "../compiler/syntax.js";
+
+const TASK_CAMERA_ALIASES = ["camera", "params.camera", "task.camera"] as const;
+
+/** AO starts record and execute with the same camera refresh and viewport check. */
+function afterViewportCheck(
+    context: LoweringContext,
+    body: ts.Block,
+    hasCheck: boolean,
+): readonly ts.Statement[] {
+    if (!hasCheck) {
+        if (context.hasCall(body, "assertFullscreenViewport"))
+            context.contractError(
+                body,
+                "Unexpected screen-space viewport check.",
+            );
+        return body.statements;
+    }
+    context.assertStatementShapes(
+        body,
+        body.statements.slice(0, 2),
+        "activeCamera = task.camera; assertFullscreenViewport();",
+        "Live task viewport check",
+    );
+    return body.statements.slice(2);
+}
 
 const TEMPORAL_MODULE = SCREEN_SPACE_TEMPORAL_MODULE;
 const TEMPORAL_OWNER = "createScreenSpaceTemporalOwner";
@@ -245,7 +270,10 @@ export class ScreenSpaceLowerer {
                 ...facts,
                 intrinsic,
                 labels,
-                readsLightDirection: screenSpaceReadsLightDirection(intrinsic),
+                readsLightDirection: screenSpaceDeclaresOption(
+                    intrinsic,
+                    "lightDirection",
+                ),
             });
         }
         this.effectCache = effects;
@@ -1125,30 +1153,14 @@ ${arms}
                         "temporal targets.",
                 );
             }
-            const { declaration: execute } = this.taskMethod(
-                effect.intrinsic,
-                "execute",
-            );
-            const asserts = (body: ts.Block): boolean => {
-                const first = body.statements[0];
-                return (
-                    first !== undefined &&
-                    ts.isExpressionStatement(first) &&
-                    sameSource(first.expression, "assertFullscreenViewport()")
-                );
-            };
-            const declared = this.viewportDeclaration(effect) !== undefined;
-            if (
-                asserts(record.body) !== declared ||
-                asserts(execute.body) !== declared
-            ) {
-                this.context.contractError(
-                    record,
-                    declared
-                        ? "Expected record() and execute() to assert the " +
-                              "fullscreen viewport first."
-                        : "record() or execute() asserts a viewport the " +
-                              "factory does not declare.",
+            const hasViewportCheck =
+                this.viewportDeclaration(effect) !== undefined;
+            afterViewportCheck(this.context, record.body, hasViewportCheck);
+            if (hasViewportCheck) {
+                this.context.assertExpressionShape(
+                    this.context.variableInitializer(record, "scaled"),
+                    "computeScreenSpaceScaledSize(srcSize.width, srcSize.height, CLAMP(task.resolutionScale, 0.25, 1))",
+                    "AO record resolution",
                 );
             }
         }
@@ -1230,28 +1242,16 @@ ${arms}
         if (!found || !name) return undefined;
         const { declaration } = found;
         const { declaration: factory } = this.factoryOf(effect.intrinsic);
-        const camera = this.context.findNodes(
-            factory,
-            (node): node is ts.VariableDeclaration =>
-                ts.isVariableDeclaration(node) &&
-                ts.isIdentifier(node.name) &&
-                node.name.text === "camera",
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(factory, "activeCamera"),
+            "config.camera",
+            "Initial AO viewport camera",
         );
-        if (
-            camera.length !== 1 ||
-            !camera[0]!.initializer ||
-            !sameSource(camera[0]!.initializer, "config.camera")
-        ) {
-            this.context.contractError(
-                factory,
-                "Expected the factory to keep config.camera as camera.",
-            );
-        }
         const code = pinnedErrorCode(this.context, declaration, 1);
         this.context.assertStatementShapes(
             declaration,
             declaration.body?.statements ?? [],
-            `const viewport = camera.viewport;
+            `const viewport = activeCamera.viewport;
 if (viewport && (viewport.x !== 0 || viewport.y !== 0 || viewport.width !== 1 || viewport.height !== 1)) {
     ThrowLiteError(${code}, name);
 }`,
@@ -1291,7 +1291,7 @@ void ${name}(
             this.viewportCheckName(effect),
             file,
         );
-        const lines = walker.lowerExecute(execute.body.statements);
+        const lines = walker.lowerExecute(execute.body);
         return `${this.viewportCheck(effect) ?? ""}
 // ${this.context.provenance(effect.module, effect.intrinsic, "execute")}
 ScreenSpaceFrameDecision ${effect.frameFunction}(
@@ -1787,8 +1787,6 @@ class FrameWalker {
         const bindings = new Map<string, PinnedBinding>([
             ["enabled", flag("task.enabled")],
             ["task.enabled", flag("task.enabled")],
-            ["camera", scalar("camera")],
-            ["params.camera", scalar("camera")],
             ["params.temporalSamples", scalar("task.temporal_samples")],
             [
                 "depthSource._width",
@@ -1826,6 +1824,8 @@ class FrameWalker {
             ],
             ["draws", scalar("0.0")],
         ]);
+        for (const alias of TASK_CAMERA_ALIASES)
+            bindings.set(alias, scalar("camera"));
         for (const { spellings, binding } of STATE_MEMBERS) {
             for (const spelling of spellings) bindings.set(spelling, binding);
         }
@@ -1852,8 +1852,15 @@ class FrameWalker {
         return bindings;
     }
 
-    public lowerExecute(statements: readonly ts.Statement[]): string[] {
-        const lines: string[] = [];
+    public lowerExecute(body: ts.Block): string[] {
+        const statements = afterViewportCheck(
+            this.context,
+            body,
+            this.viewportCheck !== undefined,
+        );
+        const lines = this.viewportCheck
+            ? [`    ${this.viewportCheck}(camera, task.name);`]
+            : [];
         for (const statement of statements) {
             lines.push(...this.lowerStatement(statement, "    "));
         }
@@ -1932,10 +1939,10 @@ class FrameWalker {
             ) {
                 if (
                     initializer.arguments.length !== 1 ||
-                    !isOneOfSources(initializer.arguments[0], [
-                        "camera",
-                        "params.camera",
-                    ])
+                    !isOneOfSources(
+                        initializer.arguments[0],
+                        TASK_CAMERA_ALIASES,
+                    )
                 ) {
                     this.context.contractError(
                         initializer,
@@ -1996,12 +2003,6 @@ class FrameWalker {
             const expression = this.context.unwrapExpression(
                 statement.expression,
             );
-            if (
-                this.viewportCheck !== undefined &&
-                sameSource(expression, "assertFullscreenViewport()")
-            ) {
-                return [`${indent}${this.viewportCheck}(camera, task.name);`];
-            }
             const device = this.recogniseDeviceCall(
                 expression,
                 this.blocks.slice(0, -1),

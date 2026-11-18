@@ -25,6 +25,21 @@ const create = (sourceTask = "sourceTask") => `createTaaPostProcessTask({
     sourceTexture: source, sourceRenderTask: ${sourceTask},
     targetTexture: engine.scRT, factor: 0.125, samples: 8 }, engine, scene)`;
 
+test("post-process tasks refuse a resolve target until the native pass owns it", () => {
+    compileSource(`${prefix}
+        const pass = createBlackAndWhitePostProcessTask({
+            sourceTexture: source, resolveTexture: null
+        }, engine, scene);`);
+    assert.throws(
+        () =>
+            compileSource(`${prefix}
+        const pass = createBlackAndWhitePostProcessTask({
+            sourceTexture: source, resolveTexture: engine.scRT
+        }, engine, scene);`),
+        /option 'resolveTexture'/,
+    );
+});
+
 test("TAA descriptors preserve task aliases and refuse missing or non-render sources", () => {
     const result = compileSource(`${prefix}
         const alias = sourceTask;

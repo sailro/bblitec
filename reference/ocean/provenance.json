@@ -3,12 +3,12 @@
   "scene": "ocean",
   "pin": {
     "package": "@babylonjs/lite",
-    "version": "1.39.0",
-    "sourceVersion": "2dddc888f6695e433ab29ae5918bee221375d86f"
+    "version": "1.40.0",
+    "sourceVersion": "f7e737ec7bc9740f2487b1994ffba82639934a0a"
   },
   "reference": {
     "source": "reference/ocean/babylon-lite-golden.png",
-    "sha256": "6669eefcaee453bbabe617fda3a2207cb819bc0e6785aadac673fef81c58ba6d"
+    "sha256": "59a72ee1a63d744ab062582cf72f47356996f878c50edbafc27108189d8e42b7"
   },
   "entry": "corpus/babylon-lite/lab/lite/src/demos/ocean.ts",
   "hostPage": "corpus/babylon-lite/lab/lite/demo-ocean.html",
@@ -20,19 +20,19 @@
     "referenceFrame": 30
   },
   "readiness": {
-    "fixedAnimationFrame": "79",
-    "fixedCaptureFrame": "30",
-    "fixedAnimationCallbacks": "1",
     "loadingSize": "Estimated demo assets: 6.1 MB",
     "progress": "100",
-    "engine": "Babylon Lite v1.39.0",
+    "engine": "Babylon Lite v1.40.0",
     "loadingDetail": "Preparing scene…",
     "animationFrozen": "true",
     "seekWarmupFrames": "6",
     "seekWarmupMode": "compute-only",
-    "fixedEngineStarting": "true",
     "oceanStage": "complete",
-    "ready": "true"
+    "ready": "true",
+    "fixedAnimationFrame": "70",
+    "fixedCaptureFrame": "30",
+    "fixedAnimationCallbacks": "1",
+    "fixedEngineStarting": "true"
   },
   "moduleSha256": "b518d19afb681d86f032d34d5fbef22fd668af1a58b202101b4b2a9a0c162184",
   "sourceFiles": [
@@ -126,7 +126,7 @@
     }
   ],
   "browser": {
-    "version": "157.0.8103.51",
+    "version": "157.0.8103.79",
     "arguments": [
       "--force-color-profile=srgb",
       "--enable-unsafe-webgpu",
@@ -161,8 +161,8 @@
         "texture-compression-bc-sliced-3d",
         "timestamp-query",
         "texture-formats-tier2",
-        "shader-f16",
         "clip-distances",
+        "shader-f16",
         "primitive-index",
         "texture-component-swizzle",
         "subgroups"
@@ -178,5 +178,5 @@
     }
   ],
   "canvasSha256": "31f18e7d4e424fea5249fd99d221b3e3054dc053f536cedce5092e1c943a4582",
-  "capturedAt": "2026-11-13T13:44:01.000Z"
+  "capturedAt": "2026-11-18T06:44:32.087Z"
 }

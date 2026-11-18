@@ -103,19 +103,17 @@ struct WorldMatrixProvider {
 };
 
 #if BBLITE_HAS_TEXT
-/**
- * `addDeferredSceneRenderables` for text (`add_deferred_scene_renderables`):
- * the pin's builder runs when the scene builds, its text renderables join
- * the scene's and its disposer the scene's disposables.
- */
-template <class Build> void add_deferred_text_renderables(Scene& scene, Build build) {
-    add_deferred_scene_renderables(scene, [build = std::move(build)](SceneState& state) {
-        const auto built = build();
-        for (const auto& renderable : built.renderables)
-            state.text_renderables.push_back(renderable);
-        if (built.dispose)
-            state.disposables.push_back(built.dispose);
-    });
+/** Text contributes a lowered attachment and its detach/release callback to the scene. */
+template <class Attach>
+void add_scene_text_renderable(Scene& scene, TextRenderable member, Attach attach) {
+    add_scene_renderable(scene, scene.state->text_members, std::move(member),
+                         [attach = std::move(attach)](SceneState& state) {
+                             auto built = attach();
+                             state.text_renderables.push_back(std::move(built.renderable));
+                             if (built.detach)
+                                 state.disposables.push_back(js::make_closure(
+                                     std::move(built.detach), [](auto& detach) { detach()(); }));
+                         });
 }
 #endif
 

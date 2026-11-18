@@ -397,7 +397,7 @@ export function compileTextIntrinsic(
             dataType: { kind: "handle", handle: "text-renderable" },
         };
     }
-    if (name === "addTextRenderable") {
+    if (name === "addTextRenderableToScene") {
         context.expectArgumentCount(call, 2, 2);
         const originalScene = context.compileValue(argumentAt(call, 0));
         context.expectKind(originalScene, "scene", argumentAt(call, 0));
@@ -419,7 +419,7 @@ export function compileTextIntrinsic(
         context.reachFeature("renderer:scene", call);
         return {
             kind: "void",
-            cpp: `bbl::add_text_renderable(${scene.cpp}, ${renderable.cpp})`,
+            cpp: `bbl::add_text_renderable_to_scene(${scene.cpp}, ${renderable.cpp})`,
         };
     }
     const dispose = {

@@ -52,6 +52,14 @@ const memberCache = new EmissionMap<
     ReadonlyMap<string, DeclaredMember>
 >();
 
+/** Membership uses the same own and inherited members as type classification. */
+export function pinnedOptionDeclares(
+    factory: PinnedFactory,
+    key: string,
+): boolean {
+    return configMembers(factory).has(key);
+}
+
 /** The declared option names of a factory's config, own and inherited. */
 export function pinnedOptionNames(factory: PinnedFactory): readonly string[] {
     return [...configMembers(factory).keys()];

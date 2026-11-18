@@ -71,10 +71,10 @@ test("emits the render gate on the pin's own version rule", () => {
     // The disable flag short-circuits at the top — the pin evaluates it
     // first in its own && chain, so this is its order, not a new one —
     // then the first-frame sentinel leads the test, then the three shared
-    // terms: casters, caster-list identity, light.
+    // terms: casters, packet changes, light.
     assert.match(
         header,
-        /inline bool shadow_refresh_due\([\s\S]{0,600}if \(generator\.force_refresh_every_frame\) return true;[\s\S]{0,1000}gate\.rendered &&\s*caster_version == gate\.last_caster_version &&\s*generator\.caster_list_version == gate\.last_caster_list_version &&\s*light\.position\.x == gate\.last_light_position\.x &&[\s\S]{0,300}light\.direction\.z == gate\.last_light_direction\.z &&\s*light_matrix == gate\.last_light_matrix &&\s*light\.angle == gate\.last_light_angle &&\s*light\.parameter_version == gate\.last_light_parameter_version &&\s*camera_unchanged\)/,
+        /inline bool shadow_refresh_due\([\s\S]{0,600}if \(generator\.force_refresh_every_frame\) return true;[\s\S]{0,1000}gate\.rendered &&\s*caster_version == gate\.last_caster_version &&\s*generator\.caster_packet_version == gate\.last_caster_packet_version &&\s*light\.position\.x == gate\.last_light_position\.x &&[\s\S]{0,300}light\.direction\.z == gate\.last_light_direction\.z &&\s*light_matrix == gate\.last_light_matrix &&\s*light\.angle == gate\.last_light_angle &&\s*light\.parameter_version == gate\.last_light_parameter_version &&\s*camera_unchanged\)/,
     );
     // A fresh gate cannot skip: the pin's -1 sentinels.
     assert.match(
@@ -214,10 +214,7 @@ test("carries the cascade stabilization and the world-space bias into the CSM re
     );
 });
 
-test("bumps the caster-list identity on every re-registration", () => {
-    // The pin rebuilds its task state when handed a new caster array, and
-    // the fresh state's -1 sentinels force the next render; the counter is
-    // that identity change for the gate.
+test("keeps caster-array identity separate from PCF packet invalidation", () => {
     const source = shadowFactorySource(new LoweringContext(), [
         "shadow:pcf",
     ]).source;
@@ -227,13 +224,99 @@ test("bumps the caster-list identity on every re-registration", () => {
     );
 });
 
+test("PCF reconciles changed caster packets; ESM rebuilds only on list supply", (t) => {
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) return t.skip("A native fixture compiler is required.");
+    const source = shadowFactorySource(new LoweringContext(), [
+        "shadow:pcf",
+        "shadow:esm",
+        "shadow:task",
+    ]).source;
+    runGeneratedProgram(
+        tools,
+        "pcf-caster-reconcile",
+        `
+#include <bblite/runtime.hpp>
+#include <cassert>
+#include <unordered_set>
+namespace bbl {
+unsigned queued = 0;
+void add_render_task_mesh(Engine& engine, TaskHandle task, MeshHandle mesh, MaterialHandle view, bool) {
+    ++queued;
+    handle_at(engine.frame_tasks, task).render_meshes.push_back({mesh, view});
+}
+MaterialHandle create_standard_no_color_material_view(Engine& e, MaterialHandle m) {
+    auto view = handle_at(e.materials, m);
+    e.materials.push_back(std::move(view));
+    return MaterialHandle{static_cast<std::uint32_t>(e.materials.size() - 1)};
+}
+MaterialHandle create_pbr_no_color_material_view(Engine&, MaterialHandle) { std::abort(); }
+MaterialHandle create_standard_esm_shadow_material_view(Engine&, MaterialHandle, ShadowGeneratorHandle) { std::abort(); }
+MaterialHandle create_pbr_esm_shadow_material_view(Engine&, MaterialHandle, ShadowGeneratorHandle) { std::abort(); }
+${cppFunction(source, "MaterialHandle shadow_caster_view(")}
+${cppFunction(source, "void refresh_shadow_task_meshes(")}
+${cppFunction(source, "void set_shadow_task_caster_meshes(")}
+}
+int main() {
+    using namespace bbl;
+    Engine e;
+    e.meshes.resize(2); e.materials.resize(3); e.frame_tasks.resize(1); e.shadow_generators.resize(1);
+    auto& g = e.shadow_generators[0];
+    auto& entries = e.frame_tasks[0].render_meshes;
+    g.caster_tasks = {{0}};
+    e.materials[0].shadow_caster_material = {1};
+    e.materials[1].shadow_caster_material = {2};
+    e.materials[2].standard_material = true;
+    e.meshes[0].visible = e.meshes[1].visible = true;
+    e.meshes[0].material = {0}; e.meshes[1].material = {1};
+    const auto refresh = [&] { refresh_shadow_task_meshes(e, {0}); };
+    g.caster_meshes = {{0}, {1}, {0}}; refresh();
+    assert(queued == 2 && entries.size() == 2 && entries[0].material == entries[1].material);
+    const auto first = entries[0].material;
+    const auto version = g.caster_packet_version;
+    g.caster_meshes = {{1}, {0}}; refresh();
+    assert(queued == 2 && entries[0].mesh.value == 0 && g.caster_packet_version == version);
+    ++e.meshes[0].renderable_generation; refresh_shadow_task_meshes(e, {0}, false);
+    assert(queued == 3 && entries[0].mesh.value == 1 && entries[1].material == first);
+    ++e.materials[2].build_generation; refresh();
+    assert(queued == 5 && entries[0].material == entries[1].material && e.materials.size() == 4);
+    e.materials[2].composed_pbr_row = 7; refresh_shadow_task_meshes(e, {0}, false);
+    assert(queued == 7 && entries[0].material == entries[1].material);
+    e.materials[2].composed_pbr_row = invalid_handle; refresh_shadow_task_meshes(e, {0}, false);
+    assert(queued == 7);
+    e.frame_tasks[0].record_state = FrameTaskRecordState::recorded;
+    const auto epoch = e.draw_list_epoch;
+    e.meshes[1].material = {}; refresh();
+    assert(entries.size() == 1 && entries[0].mesh.value == 0 && queued == 7 && e.draw_list_epoch > epoch);
+    g.caster_meshes.clear(); refresh();
+    assert(entries.empty() && g.caster_snapshots.empty() && !g.caster_material_views.at(2).active);
+    g.caster_meshes = {{0}}; refresh();
+    assert(queued == 8 && e.materials.size() == 4 && g.caster_material_views.at(2).active);
+    // ESM keys its rebuild on array identity, not packet changes or equal elements.
+    e.shadow_generators.resize(2); e.frame_tasks.resize(2);
+    auto& esm = e.shadow_generators[1]; esm.filter = ShadowFilter::esm_directional; esm.caster_tasks = {{1}};
+    const auto supply = [&] { set_shadow_task_caster_meshes(e, {1}, {{0}, {0}}); };
+    supply();
+    assert(queued == 10 && e.frame_tasks[1].render_meshes.size() == 2);
+    const auto* leases = esm.caster_names.data();
+    ++e.meshes[0].renderable_generation;
+    refresh_shadow_task_meshes(e, {1}, false);
+    assert(queued == 10);
+    supply();
+    assert(queued == 12 && esm.caster_list_version == 2 && esm.caster_names.data() == leases);
+    assert(e.frame_tasks[1].render_meshes.size() == 2);
+}
+`,
+    );
+});
+
 test("a caster array names every mesh it lists, so a removed caster keeps its record", () => {
     const source = shadowFactorySource(new LoweringContext(), [
         "shadow:pcf",
     ]).source;
     assert.match(
         source,
-        /std::vector<MeshName> caster_names = name_meshes\(engine, caster_meshes\);[\s\S]{0,200}record\.caster_names = std::move\(caster_names\);/,
+        /record\.caster_names = name_meshes\(engine, caster_meshes\);\s*record\.caster_meshes = std::move\(caster_meshes\);/,
     );
     // Every reader then finds the record the array names.
     assert.doesNotMatch(source, /current_mesh_record/);

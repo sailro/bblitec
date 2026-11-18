@@ -25,7 +25,7 @@
  */
 import { pinnedEffectModule } from "./post-process-effects.js";
 import { snakeCase } from "./cpp-literals.js";
-import { pinnedOptionNames } from "./compiler/intrinsics/pinned-options.js";
+import { pinnedOptionDeclares } from "./compiler/intrinsics/pinned-options.js";
 import type { PostProcessOptionValue } from "./compiler/types.js";
 import type { ComposedPostProcess } from "./pinned-post-process.js";
 import { variantBindings } from "./pinned-pbr-variant-cpp.js";
@@ -124,16 +124,15 @@ export function screenSpaceFacts(intrinsic: string): ScreenSpaceKindFacts {
     return facts;
 }
 
-/**
- * Whether the entry point's pinned config declares a `lightDirection`: the
- * contact producer keeps one by reference and normalizes it every frame,
- * and no other effect reads one.
- */
-export function screenSpaceReadsLightDirection(intrinsic: string): boolean {
-    return pinnedOptionNames({
-        module: screenSpaceFacts(intrinsic).module,
-        factory: intrinsic,
-    }).includes("lightDirection");
+/** Does this effect's pinned config declare this setting or input? */
+export function screenSpaceDeclaresOption(
+    intrinsic: string,
+    key: string,
+): boolean {
+    return pinnedOptionDeclares(
+        { module: screenSpaceFacts(intrinsic).module, factory: intrinsic },
+        key,
+    );
 }
 
 /**
@@ -146,6 +145,7 @@ export function screenSpaceReadsLightDirection(intrinsic: string): boolean {
  */
 export const SCREEN_SPACE_SCALAR_SETTINGS: readonly string[] = [
     "intensity",
+    "base",
     "stepCount",
     "thickness",
     "bias",
@@ -192,7 +192,6 @@ const NON_SETTING_PROPERTIES = new Set([
     "record",
     "execute",
     "dispose",
-    ...Object.values(SCREEN_SPACE_KINDS).map((facts) => facts.stableTexture),
 ]);
 
 interface ScreenSpaceCompositionRequest {
@@ -775,11 +774,29 @@ export async function composeScreenSpaceTask(
             y: 1,
             z: 0,
         }),
-        ...(screenSpaceReadsLightDirection(request.intrinsic)
+        ...(screenSpaceDeclaresOption(request.intrinsic, "lightDirection")
             ? { lightDirection: { x: 0.3, y: -1, z: 0.18 } }
             : {}),
     };
     const task = factory(config, engine, undefined) as PinnedScreenSpaceTask;
+    const clamp = (factoryModule as Record<string, unknown>)[facts.clamp];
+    if (typeof clamp !== "function") {
+        throw new Error(
+            `Pinned module ${module} no longer exports ${facts.clamp}.`,
+        );
+    }
+    const clamped = (clamp as (config: unknown) => Record<string, unknown>)(
+        config,
+    );
+    if (
+        typeof clamped.resolutionScale !== "number" ||
+        typeof clamped.temporalSamples !== "number"
+    ) {
+        throw new Error(
+            `Pinned ${facts.clamp} no longer clamps resolutionScale and ` +
+                "temporalSamples.",
+        );
+    }
     // The settings the pin publishes on the task are its clamped ones: a
     // number in the scalar table, or the tint triple. Everything else on
     // the object is one of the known non-settings; a property outside both
@@ -787,7 +804,22 @@ export async function composeScreenSpaceTask(
     // dropped.
     const settings: Record<string, number | readonly number[]> = {};
     for (const [key, value] of Object.entries(task)) {
-        if (key.startsWith("_") || NON_SETTING_PROPERTIES.has(key)) continue;
+        // The admitted AO task uses its creation camera and does not
+        // resolve its composite. The target sizing below takes its scale.
+        if (
+            facts.enumerator === "ambient_occlusion" &&
+            ((key === "camera" && value === config.camera) ||
+                (key === "resolveTexture" && value === null) ||
+                (key === "resolutionScale" &&
+                    value === clamped.resolutionScale))
+        )
+            continue;
+        if (
+            key === facts.stableTexture ||
+            key.startsWith("_") ||
+            NON_SETTING_PROPERTIES.has(key)
+        )
+            continue;
         if (
             typeof value === "number" &&
             SCREEN_SPACE_SCALAR_SETTINGS.includes(key)
@@ -806,24 +838,6 @@ export async function composeScreenSpaceTask(
                     "native task record does not carry.",
             );
         }
-    }
-    const clamp = (factoryModule as Record<string, unknown>)[facts.clamp];
-    if (typeof clamp !== "function") {
-        throw new Error(
-            `Pinned module ${module} no longer exports ${facts.clamp}.`,
-        );
-    }
-    const clamped = (clamp as (config: unknown) => Record<string, unknown>)(
-        config,
-    );
-    if (
-        typeof clamped.resolutionScale !== "number" ||
-        typeof clamped.temporalSamples !== "number"
-    ) {
-        throw new Error(
-            `Pinned ${facts.clamp} no longer clamps resolutionScale and ` +
-                "temporalSamples.",
-        );
     }
     task.record();
     const before = recorder.renderPasses.length;

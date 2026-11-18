@@ -41,6 +41,9 @@ test("source sky lifecycle preserves publication, revision cancellation, resourc
             lowerProceduralSkyUpdate(context).source,
             lowerComputeTextureMipmaps(context).source,
             pinnedErrorsCpp({
+                brdf_decode: pinnedError(
+                    "BRDF LUT '${a0}' is not an image (${a1} ${a2}).",
+                ),
                 sky_disposed: pinnedError(
                     "Procedural sky environment has been disposed.",
                 ),

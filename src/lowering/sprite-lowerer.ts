@@ -1,4 +1,5 @@
 import { renderingContextKind } from "./rendering-context-kind.js";
+import { assertSceneRenderableAdd } from "./scene-deferred.js";
 import ts from "typescript";
 import { PinnedShaderBuilders } from "./pinned-shader-builders.js";
 import type { ShaderTextBinding } from "./pinned-shader-builders.js";
@@ -69,7 +70,7 @@ interface SpriteCustomProgram {
  * Lowers Babylon Lite's Sprite2D path.
  *
  * A `depth: "none"` layer belongs to a `SpriteRenderer`; a depth-enabled layer
- * becomes a scene renderable through `addDepthHostedSpriteLayer`, widening its
+ * becomes a scene renderable through `addDepthHostedSpriteLayerToScene`, widening its
  * instance row from 13 to 14 floats for per-instance z. Custom fragments,
  * UV scroll and alpha-to-coverage remain explicit opt-ins, as they are in the
  * pin. Coverage gamma is still unreached and therefore not emitted.
@@ -275,14 +276,17 @@ export class SpriteLowerer {
         // builds, as the pin's own registration does.
         const { declaration: add } = this.context.functionDeclaration(
             sceneModule,
-            "addDepthHostedSpriteLayer",
+            "addDepthHostedSpriteLayerToScene",
         );
-        if (!this.context.hasCall(add, "addDeferredSceneRenderables")) {
-            this.context.contractError(
-                add,
-                "Expected a depth-hosted sprite layer to register as a deferred scene renderable.",
-            );
-        }
+        assertSceneRenderableAdd(this.context);
+        this.context.assertExpressionShape(
+            this.context.callExpression(add, "_addSceneRenderable"),
+            `_addSceneRenderable(scene, "depthSprite", layer, (engine) => {
+                const built = buildSpriteRenderable(engine, layer);
+                return { _renderable: built.renderable, _detach: () => built.dispose };
+            })`,
+            "depth-hosted sprite registration",
+        );
         const { declaration: build } = this.context.functionDeclaration(
             renderableModule,
             "buildSpriteRenderable",
@@ -1095,7 +1099,7 @@ ${body}
         const provenance = this.context.provenance(
             layerModule,
             "createSprite2DLayer, addSprite2DIndex, updateSprite2DIndex, clearSprite2DLayer",
-            `${atlasModule}#createGridSpriteAtlas, ${blendModule}#spriteBlendAlpha/spriteBlendOpaque, ${rendererModule}#createSpriteRenderer, ${sceneModule}#addDepthHostedSpriteLayer, ${renderableModule}#buildSpriteRenderable${
+            `${atlasModule}#createGridSpriteAtlas, ${blendModule}#spriteBlendAlpha/spriteBlendOpaque, ${rendererModule}#createSpriteRenderer, ${sceneModule}#addDepthHostedSpriteLayerToScene, ${renderableModule}#buildSpriteRenderable${
                 ySort
                     ? `, ${ySortModule}#enableSprite2DYSort, ${ySortHandleModule}#setSprite2DYSortHandleBias`
                     : ""
@@ -1508,10 +1512,9 @@ Sprite2DLayerHandle create_sprite_2d_layer(
             engine.sprite_layers.size() - 1u)};
 }
 
-// sprite-scene.ts#addDepthHostedSpriteLayer: a depth-enabled layer is a
+// sprite-scene.ts#addDepthHostedSpriteLayerToScene: a depth-enabled layer is a
 // scene renderable, not a separately registered SpriteRenderer context,
-// published through addDeferredSceneRenderables: it draws from the scene's
-// next build (\`register_scene\`).
+// published on the scene's next build (\`register_scene\`).
 void add_depth_hosted_sprite_layer(
     Scene& scene,
     Sprite2DLayerHandle layer_handle) {
@@ -1521,7 +1524,7 @@ void add_depth_hosted_sprite_layer(
         throw std::runtime_error(
             "Depth-hosted sprites require depth != none.");
     }
-    add_deferred_scene_renderables(scene, [layer_handle](SceneState& state) {
+    add_scene_renderable(scene, scene.state->depth_sprite_members, layer_handle.value, [layer_handle](SceneState& state) {
         state.depth_hosted_sprite_layers.push_back(layer_handle);
     });
 }

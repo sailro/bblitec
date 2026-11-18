@@ -36,7 +36,7 @@ SpriteLayerPipelinePlan sprite_layer_pipeline_plan(const Sprite2DLayerRecord& la
 
 /**
  * The scene's depth-hosted layer pass follows the layers the scene draws.
- * `addDepthHostedSpriteLayer` publishes a layer through the scene's deferred
+ * `addDepthHostedSpriteLayerToScene` publishes a layer through the scene's deferred
  * builders, so a build only appends: the layers it appended join the pass
  * (`append(first)`) beside the ones it drew, which keep their clocks, uploads
  * and pipelines. Any other change -- disposal emptying the list -- replaces the

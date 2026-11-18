@@ -81,7 +81,7 @@ test("upstream emission publishes only reached sprite programs and their pinned 
     const origins = [
         {
             modulePath: "src/sprite/sprite-scene.ts",
-            symbolName: "addDepthHostedSpriteLayer",
+            symbolName: "addDepthHostedSpriteLayerToScene",
         },
         {
             modulePath: "src/sprite/sprite-renderable.ts",

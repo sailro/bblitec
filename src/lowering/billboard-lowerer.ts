@@ -24,6 +24,7 @@ import { recordAt } from "../compiler/record-access.js";
 import { billboardOrderHelpers } from "./billboard-order-lowerer.js";
 import { lowerBillboardInstances } from "./pinned-billboard-instances.js";
 import { sameSource } from "../compiler/syntax.js";
+import { assertSceneRenderableAdd } from "./scene-deferred.js";
 
 const systemModule = "src/sprite/billboard-sprite.ts";
 const sceneModule = "src/sprite/billboard-scene.ts";
@@ -38,7 +39,7 @@ const particleMultiplyModule = "src/particle/particle-billboard-renderable.ts";
 
 /**
  * Which basis the vertex stage builds. The pin's composer emits one of two
- * functions from `system._orientation` and leaves the rest of the stage
+ * functions from `system.orientation` and leaves the rest of the stage
  * identical, so this is the whole difference between the two families of
  * billboard.
  */
@@ -251,9 +252,9 @@ export class BillboardLowerer {
                             type: "bool",
                         },
                     ],
-                    ["system._axis[0]", scalar("system.axis.x")],
-                    ["system._axis[1]", scalar("system.axis.y")],
-                    ["system._axis[2]", scalar("system.axis.z")],
+                    ["system.axis[0]", scalar("system.axis.x")],
+                    ["system.axis[1]", scalar("system.axis.y")],
+                    ["system.axis[2]", scalar("system.axis.z")],
                     ["system.alphaCutoff", scalar("system.alpha_cutoff")],
                 ]),
             },
@@ -484,35 +485,25 @@ inline double billboard_sort_compare(
     }
 
     /**
-     * `addFacingBillboardSystem` registers the system's pick source at once
+     * `addBillboardSystemToScene` registers the system's pick source at once
      * and its renderable through the scene's deferred builders, which the
      * scene runs when it builds (`add_billboard_system`).
      */
     private assertSceneRegistration(): void {
         const { declaration } = this.context.functionDeclaration(
             sceneModule,
-            "addFacingBillboardSystem",
+            "addBillboardSystemToScene",
         );
+        assertSceneRenderableAdd(this.context);
         this.context.assertExpressionShape(
-            this.context.callExpression(declaration, "addBillboardSystem"),
-            "addBillboardSystem(scene, system)",
-            "addFacingBillboardSystem",
+            this.context.callExpression(declaration, "_addSceneRenderable"),
+            `_addSceneRenderable(scene, "billboard", system, async (engine) => {
+                const { buildBillboardRenderable } = await import("./billboard-renderable.js");
+                const built = system._sceneBuilder ? system._sceneBuilder(engine, buildBillboardRenderable) : buildBillboardRenderable(engine, system);
+                return { _renderable: built.renderable, _detach: () => built.dispose };
+            }, () => registerPickSource(scene, system, () => import("../picking/billboard-pick-pipeline.js")))`,
+            "billboard scene registration",
         );
-        const registration = this.context.functionDeclaration(
-            sceneModule,
-            "addBillboardSystem",
-        ).declaration;
-        for (const [call, meaning] of [
-            ["registerPickSource", "a pick source"],
-            ["addDeferredSceneRenderables", "a deferred scene renderable"],
-        ] as const) {
-            if (!this.context.hasCall(registration, call)) {
-                this.context.contractError(
-                    registration,
-                    `Expected a billboard system to register as ${meaning}.`,
-                );
-            }
-        }
     }
 
     /**
@@ -781,12 +772,12 @@ ${body}
         const provenance = this.context.provenance(
             systemModule,
             "createFacingBillboardSystem, addBillboardSpriteIndex",
-            `${sceneModule}#addFacingBillboardSystem, ${blendModule}#billboardBlendAlpha, ${pipelineModule}#buildBillboardSystemUbo, ${atlasModule}#resolveSpriteFrame`,
+            `${sceneModule}#addBillboardSystemToScene, ${blendModule}#billboardBlendAlpha, ${pipelineModule}#buildBillboardSystemUbo, ${atlasModule}#resolveSpriteFrame`,
         );
         return {
             modulePath: systemModule,
             symbolName:
-                "createFacingBillboardSystem,addBillboardSpriteIndex,addFacingBillboardSystem",
+                "createFacingBillboardSystem,addBillboardSpriteIndex,addBillboardSystemToScene",
             header: `#pragma once
 
 // ${this.context.provenance(pipelineModule, "billboard vertex layout")}
@@ -1262,11 +1253,7 @@ void set_billboard_alpha_to_coverage(
     record.alpha_to_coverage = enabled;
 }
 
-// billboard-scene.ts addBillboardSystem: the pick source registers at once,
-// and the renderable through addDeferredSceneRenderables, whose builder the
-// scene runs when it builds (\`register_scene\`). A system added to a scene
-// already registered therefore draws from the scene's next registration,
-// and one added twice draws twice.
+// A new member becomes pickable immediately and drawable at the next build.
 void add_billboard_system(
     Scene& scene,
     BillboardSystemHandle system) {
@@ -1276,10 +1263,9 @@ void add_billboard_system(
     if (system.value >= scene.engine->billboard_systems.size()) {
         throw std::runtime_error("Invalid billboard system handle.");
     }
-    add_deferred_scene_renderables(scene, [system](SceneState& state) {
+    if (add_scene_renderable(scene, scene.state->billboard_members, system.value, [system](SceneState& state) {
         state.billboard_renderables.push_back(system);
-    });
-    scene.billboard_systems.push_back(system);
+    })) scene.billboard_systems.push_back(system);
 }
 
 } // namespace bbl

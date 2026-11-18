@@ -1026,7 +1026,10 @@ function emitScreenSpaceSettingAssignment(
         });
         return true;
     }
-    if (!SCREEN_SPACE_SCALAR_SETTINGS.includes(setting)) {
+    if (
+        !SCREEN_SPACE_SCALAR_SETTINGS.includes(setting) ||
+        !screenSpaceDeclaresOption(owner.screenSpaceTask.intrinsic, setting)
+    ) {
         context.fail(
             left,
             `Screen-space task '${owner.screenSpaceTask.intrinsic}' has no ` +
@@ -3029,6 +3032,7 @@ import { postProcessEffect } from "../post-process-effects.js";
 import {
     SCREEN_SPACE_SCALAR_SETTINGS,
     nativeSettingName,
+    screenSpaceDeclaresOption,
 } from "../pinned-screen-space.js";
 import { toneMappingExportNames } from "../pinned-tone-mapping.js";
 import {

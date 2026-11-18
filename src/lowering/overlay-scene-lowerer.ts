@@ -459,6 +459,36 @@ export function _installOverlaySceneRegistration(registered: (scene: SceneContex
     );
     context.assertFunctionContract(
         "src/scene/swapchain-overlay.ts",
+        "getActiveSwapchainResolver",
+        `
+function getActiveSwapchainResolver(scene: SceneContext, surface: SurfaceContext): Task | undefined {
+    const tasks = scene._frameGraph._tasks;
+    for (let i = tasks.length - 1; i >= 0; i--) {
+        const task = tasks[i]!;
+        const output = task._getOutputInfo?.();
+        if (task.executionEnabled !== false && output?.resolveTexture === surface.scRT && (output.colorTexture._descriptor.samples ?? 1) > 1) {
+            return task;
+        }
+    }
+}
+`,
+        "swapchain-overlay.getActiveSwapchainResolver native contract",
+    );
+    const automatic = context.functionDeclaration(
+        "src/frame-graph/render-task-base.ts",
+        "_createAutomaticRenderTask",
+    ).declaration;
+    context.assertExpressionShape(
+        context.propertyInitializer(
+            context.objectInitializer(automatic, "task"),
+            "_getOutputInfo",
+        ),
+        "() => (task.enabled === false ? undefined : { colorTexture: config.rt, resolveTexture: config.rst })",
+        "Render task output",
+    );
+
+    context.assertFunctionContract(
+        "src/scene/swapchain-overlay.ts",
         "configureSwapchainOverlayScene",
         `
 export function configureSwapchainOverlayScene(overlay: SceneContext): void {
@@ -482,8 +512,8 @@ export function configureSwapchainOverlayScene(overlay: SceneContext): void {
                 while (root._overlayBase) {
                     root = root._overlayBase;
                 }
-                const rootTask = getDefaultSwapchainTask(root, surface);
-                const view = rootTask?.enabled !== false && rootTask?.executionEnabled !== false && rootTask?._config.rst === surface.scRT && rootTask._colorAttachment.view;
+                const rootTask = getActiveSwapchainResolver(root, surface);
+                const view = rootTask?._getOutputInfo?.()?.colorTexture._colorView;
                 if (!view) {
                     const enabled = current.enabled;
                     current.enabled = false;

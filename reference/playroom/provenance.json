@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "pin": {
     "package": "@babylonjs/lite",
-    "version": "1.39.0",
-    "sourceVersion": "2dddc888f6695e433ab29ae5918bee221375d86f"
+    "version": "1.40.0",
+    "sourceVersion": "f7e737ec7bc9740f2487b1994ffba82639934a0a"
   },
   "reference": {
     "source": "reference/playroom/babylon-lite-golden.png",
@@ -20,7 +20,7 @@
     "referenceFrame": 180,
     "seededRandom": true
   },
-  "moduleSha256": "ab0a6ea30d37131fb59e114e75ea36674d0dbdb675e3fe5aa812ca8d8561b3c4",
+  "moduleSha256": "028342b2b2db781ec19740ad5cabdfd3b6c1bf7673de3f0423d18bdf7574fe59",
   "sourceFiles": [
     {
       "path": "corpus/babylon-lite/lab/lite/demo-playroom.html",
@@ -48,7 +48,7 @@
     },
     {
       "path": "corpus/babylon-lite/lab/lite/src/demos/playroom/effects.ts",
-      "sha256": "294c3004e9140ab61f9da34893898ace6a71bd23a893b44d04a4375e6f7ab7aa"
+      "sha256": "2b23f5f6ce355ec8e484030713ec36cf465f10144902c7261cefbdd11699b026"
     },
     {
       "path": "corpus/babylon-lite/lab/lite/src/demos/playroom/game.ts",
@@ -432,13 +432,10 @@
     }
   ],
   "readiness": {
-    "fixedAnimationFrame": "206",
-    "fixedCaptureFrame": "180",
-    "fixedAnimationCallbacks": "1",
     "uiOrientation": "landscape",
     "loadingSize": "Estimated demo assets: 26 MB",
     "progress": "100",
-    "engine": "Babylon Lite v1.39.0",
+    "engine": "Babylon Lite v1.40.0",
     "loadingDetail": "Preparing scene…",
     "gamePhase": "ready",
     "throwCount": "1",
@@ -446,13 +443,16 @@
     "bodyCount": "150",
     "constraintCount": "9",
     "sourceUiRevision": "d22ce23ef308e28d1f8b6598b4c72ea944205925",
-    "fixedEngineStarting": "true",
     "initMs": "0",
     "assetCount": "80",
-    "ready": "true"
+    "ready": "true",
+    "fixedAnimationFrame": "202",
+    "fixedCaptureFrame": "180",
+    "fixedAnimationCallbacks": "1",
+    "fixedEngineStarting": "true"
   },
   "browser": {
-    "version": "157.0.8103.51",
+    "version": "157.0.8103.79",
     "arguments": [
       "--force-color-profile=srgb",
       "--enable-unsafe-webgpu",
@@ -474,8 +474,8 @@
         "chromium-experimental-multi-draw-indirect",
         "texture-compression-bc",
         "dual-source-blending",
-        "chromium-experimental-sampling-resource-table",
         "core-features-and-limits",
+        "chromium-experimental-sampling-resource-table",
         "chromium-experimental-timestamp-query-inside-passes",
         "float32-filterable",
         "indirect-first-instance",
@@ -486,15 +486,15 @@
         "depth-clip-control",
         "texture-compression-bc-sliced-3d",
         "timestamp-query",
+        "clip-distances",
         "texture-formats-tier2",
         "shader-f16",
-        "clip-distances",
         "primitive-index",
         "texture-component-swizzle",
         "subgroups"
       ]
     }
   },
-  "capturedAt": "2026-11-13T13:44:01.000Z",
+  "capturedAt": "2026-11-18T06:46:02.674Z",
   "canvasSha256": "48408eee75ba8fd01a3537d4e7ce0560899559a8703cfe57e84689f72a69fdd0"
 }

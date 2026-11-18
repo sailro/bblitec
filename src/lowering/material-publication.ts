@@ -109,9 +109,7 @@ export function lowerMaterialPublication(
                 ];
             }
             if (ts.isExpressionStatement(node)) {
-                // The caster generation keys only the shadow tasks' cached
-                // per-caster packets; native shadow passes draw their
-                // casters from the records and cache none.
+                // capture_material_output already published the new per-mesh identity.
                 if (
                     context.expressionMatchesShape(
                         node.expression,
@@ -140,7 +138,7 @@ export function lowerMaterialPublication(
                         ],
                         [
                             "src/shadow/pcf-shadow-task-hooks.ts",
-                            "ensurePcfShadowTaskState",
+                            "reconcilePcfCasters",
                         ],
                     ]);
                     return [];
@@ -489,6 +487,7 @@ SourceMaterialOutput capture_material_output(Scene& scene, MeshHandle mesh) {
         record.source_group_builder == 3 ? source_shader_material_draw_matches : nullptr;
     const auto output = std::make_shared<SourceMaterialDraw>(SourceMaterialDraw{mesh, material, guard});
     output->identity = ++scene.engine->source_output_identity;
+    ++${recordAt("scene.engine->meshes", "mesh")}.renderable_generation;
 ${thinBindings ? "    output->thin_binding = create_thin_material_binding(*scene.engine, mesh, material);" : ""}
     return output;
 }

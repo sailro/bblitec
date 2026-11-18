@@ -2227,7 +2227,7 @@ function compileAddDepthHostedSpriteLayer(
     return { kind: "void", cpp: "" };
 }
 
-function compileAddFacingBillboardSystem(
+function compileAddBillboardSystemToScene(
     context: SpriteIntrinsicContext,
     call: ts.CallExpression,
 ): Value | undefined {
@@ -2542,9 +2542,8 @@ const spriteIntrinsicHandlers = new EmissionMap<
             ),
     ],
     ["setAlphaToCoverage", compileSetAlphaToCoverage],
-    ["addDepthHostedSpriteLayer", compileAddDepthHostedSpriteLayer],
-    ["addFacingBillboardSystem", compileAddFacingBillboardSystem],
-    ["addAxisLockedBillboardSystem", compileAddFacingBillboardSystem],
+    ["addDepthHostedSpriteLayerToScene", compileAddDepthHostedSpriteLayer],
+    ["addBillboardSystemToScene", compileAddBillboardSystemToScene],
     ["setSprite2DUvOffset", compileSetSprite2DUvOffset],
     ["createSpriteRenderer", compileCreateSpriteRenderer],
     ["registerSpriteRenderer", compileRegisterSpriteRenderer],

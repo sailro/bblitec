@@ -246,7 +246,10 @@ int main() {
                         try {
                             std::rethrow_exception(error);
                         } catch (const std::exception& value) {
-                            rejected = std::string(value.what()).find(path) != std::string::npos;
+                            rejected =
+                                path == "corrupt"
+                                    ? value.what() == pinned_errors::brdf_decode
+                                    : std::string(value.what()).find(path) != std::string::npos;
                         }
                         loop.close();
                     });

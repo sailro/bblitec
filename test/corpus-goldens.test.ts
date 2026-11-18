@@ -182,6 +182,9 @@ test("Ocean reference preserves the pinned frozen pose and reached source graph"
             undefined,
             undefined,
             scene.parity.referenceFrame,
+            undefined,
+            undefined,
+            sceneReferencePage(scene).documentMarkers,
         ),
     );
     assert.deepEqual(
@@ -241,6 +244,9 @@ test("Playroom reference retains its unchanged host, source graph and capture po
             undefined,
             undefined,
             scene.parity.referenceFrame,
+            undefined,
+            undefined,
+            sceneReferencePage(scene).documentMarkers,
         ),
     );
     assert.deepEqual(

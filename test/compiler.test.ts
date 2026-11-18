@@ -19002,7 +19002,7 @@ test("refuses depth-hosted layers in standalone SpriteRenderers", () => {
     const sourcePath = "corpus/babylon-lite/lab/lite/src/lite/scene53.ts";
     const source = readFileSync(resolve(sourcePath), "utf8");
     const withRendererImports = source.replace(
-        "    addDepthHostedSpriteLayer,",
+        "    addDepthHostedSpriteLayerToScene,",
         "    addSpriteRendererLayer,\n    createSpriteRenderer,",
     );
 
@@ -19010,7 +19010,7 @@ test("refuses depth-hosted layers in standalone SpriteRenderers", () => {
         () =>
             compileSource(
                 withRendererImports.replace(
-                    "    addDepthHostedSpriteLayer(scene, sprites);",
+                    "    addDepthHostedSpriteLayerToScene(scene, sprites);",
                     "    createSpriteRenderer(engine, { layers: [sprites] });",
                 ),
                 { fileName: sourcePath },
@@ -19021,7 +19021,7 @@ test("refuses depth-hosted layers in standalone SpriteRenderers", () => {
         () =>
             compileSource(
                 withRendererImports.replace(
-                    "    addDepthHostedSpriteLayer(scene, sprites);",
+                    "    addDepthHostedSpriteLayerToScene(scene, sprites);",
                     "    const renderer = createSpriteRenderer(engine, { layers: [] });\n" +
                         "    addSpriteRendererLayer(renderer, sprites);",
                 ),

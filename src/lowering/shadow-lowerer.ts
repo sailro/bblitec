@@ -1094,22 +1094,18 @@ function assertShadowRenderGateContracts(context: LoweringContext): void {
         "!sg._config._forceRefreshEveryFrame && " +
         "casterVersion === state._lastCasterVersion && " +
         "lightVersion === state._lastLightVersion && ";
-    for (const [module, renderer, ensure, stateLocal, identity] of [
+    for (const [module, renderer, ensure, stateLocal] of [
         [
             esmModule,
             "renderEsmShadowMap",
             "ensureEsmShadowTaskState",
             "taskState",
-            "existing._casterMeshes === casterMeshes",
         ],
         [
             hooksModule,
             "renderPcfShadowMap",
             "ensurePcfShadowTaskState",
             "state",
-            // PCF seeds its change flag with the identity test; its whole
-            // rebuild rule is asserted below.
-            "existing._casterMeshes !== casterMeshes",
         ],
     ] as const) {
         const { file, declaration } = context.functionDeclaration(
@@ -1154,55 +1150,43 @@ function assertShadowRenderGateContracts(context: LoweringContext): void {
             module,
             ensure,
         );
-        // The identity test that makes `caster_list_version` the right
-        // mirror: the pin rebuilds this state — fresh -1 sentinels, so a
-        // forced next render — when `ensure*` is handed a new caster ARRAY,
-        // not new contents.
-        context.expectShapeCount(
-            ensureDeclaration,
-            identity,
-            `${ensure} caster-array identity`,
-        );
-        // PCF also rebuilds when a caster's view material, its own
-        // renderable or its terminal's render features change, except a
-        // caster held while its view cannot be built: it waits on the pin's
-        // asynchronous factory imports and group builds, which native
-        // registration settles before the first frame.
-        if (module === hooksModule) {
-            const reuse = ensureDeclaration.body!.statements.find(
-                (statement): statement is ts.IfStatement =>
-                    ts.isIfStatement(statement) &&
-                    context.expressionMatchesShape(
-                        statement.expression,
-                        "existing",
-                    ),
+        if (module === esmModule) {
+            context.expectShapeCount(
+                ensureDeclaration,
+                "existing._casterMeshes === casterMeshes",
+                "ESM caster-array identity",
             );
-            if (!reuse || !ts.isBlock(reuse.thenStatement))
-                context.contractError(
-                    ensureDeclaration,
-                    `Expected ${ensure} to reuse an unchanged state.`,
+        } else {
+            context.expectShapeCount(
+                ensureDeclaration,
+                "rt._depthTexture === sg._depthTexture && rt._width === sg._config._mapSize",
+                "PCF target reuse",
+            );
+            context.expectShapeCount(
+                ensureDeclaration,
+                "reconcilePcfCasters(scene, sg, existing, casterMeshes)",
+                "PCF retained task population",
+            );
+            const { declaration: reconcile } = context.functionDeclaration(
+                hooksModule,
+                "reconcilePcfCasters",
+            );
+            for (const shape of [
+                "terminal && (!snapshot || snapshot._generation !== terminal._csmGen || (!!terminal._renderFeatures && snapshot._features !== terminal._renderFeatures))",
+                "!material || (changed && holdShadowCaster(scene, sg, material))",
+                "materials.set(terminal, snapshot)",
+                "materialChanged || !previous || previous._material !== material || previous._terminal !== terminal || previous._renderableGen !== mesh._renderableGen",
+                "_dropTaskMeshes(task, drop)",
+                "drop || queued",
+                "state._lastCasterVersion = -1",
+                "createNoColorView(terminal)",
+                "task._pendingMeshes!.push({ mesh, material: snapshot._view ?? material })",
+            ])
+                context.expectShapeCount(
+                    reconcile,
+                    shape,
+                    "PCF caster reconciliation",
                 );
-            context.assertStatementShapes(
-                reuse.thenStatement,
-                reuse.thenStatement.statements.slice(0, 3),
-                `let changed = existing._casterMeshes !== casterMeshes;
-                for (let i = 0; !changed && i < casterMeshes.length; i++) {
-                    const mesh = casterMeshes[i]!;
-                    const material = mesh.material;
-                    const terminal = material ? resolveShadowCasterMaterial(material) : null;
-                    const features = terminal?._renderFeatures;
-                    if (
-                        existing._casterMaterials[i] !== terminal ||
-                        existing._casterMatGens[i] !== (terminal?._csmGen ?? 0) ||
-                        existing._casterMeshGens[i] !== mesh._renderableGen ||
-                        (!!features && existing._casterMatFeatures[i] !== features)
-                    ) {
-                        changed = !(material && existing._held?.has(mesh) && holdShadowCaster(scene, sg, material));
-                    }
-                }
-                if (!changed) { return existing; }`,
-                `${ensure} rebuild rule`,
-            );
         }
         const taskState = context.unwrapExpression(
             context.variableInitializer(ensureDeclaration, stateLocal),
@@ -2018,7 +2002,7 @@ inline std::uint64_t shadow_caster_version_sum(
  */
 struct ShadowRefreshGate {
     std::uint64_t last_caster_version = 0;
-    std::uint64_t last_caster_list_version = 0;
+    std::uint64_t last_caster_packet_version = 0;
     Vec3 last_light_position{};
     Vec3 last_light_direction{};
     std::array<float, 16> last_light_matrix{};
@@ -2060,9 +2044,7 @@ struct CsmCameraKey {
  * it holds; the map textures persist, so the receiver keeps sampling last
  * render's — bit-identical — content. The signals are the pin's own:
  *
- * - the casters' version sum, plus the caster LIST's identity — the pin
- *   rebuilds its task state (and so re-renders) when \`ensure*\` is handed
- *   a new caster array, which is what \`caster_list_version\` counts;
+ * - the casters' version sum, plus a changed PCF/CSM packet or a new ESM caster list;
  * - light transform, direction and angle values, plus explicit parameter
  *   invalidations. The transform is recomposed on consumption; an explicit
  *   light callback invalidates even when its current values are unchanged.
@@ -2104,7 +2086,7 @@ inline bool shadow_refresh_due(
     if (
         gate.rendered &&
         caster_version == gate.last_caster_version &&
-        generator.caster_list_version == gate.last_caster_list_version &&
+        generator.caster_packet_version == gate.last_caster_packet_version &&
         light.position.x == gate.last_light_position.x &&
         light.position.y == gate.last_light_position.y &&
         light.position.z == gate.last_light_position.z &&
@@ -2119,7 +2101,7 @@ inline bool shadow_refresh_due(
     }
     gate.rendered = true;
     gate.last_caster_version = caster_version;
-    gate.last_caster_list_version = generator.caster_list_version;
+    gate.last_caster_packet_version = generator.caster_packet_version;
     gate.last_light_position = light.position;
     gate.last_light_direction = light.direction;
     gate.last_light_matrix = light_matrix;
@@ -2327,17 +2309,32 @@ export function shadowFactorySource(
     const shaderCasters = features.includes("material:shader");
     if (shadowTasks) {
         context.assertFunctionBodyShape(
+            context.functionDeclaration(
+                hooksModule,
+                "resolveShadowCasterMaterial",
+            ).declaration,
+            `{ let terminal = material; while (terminal._shadowCasterMaterial) {
+                terminal = terminal._shadowCasterMaterial;
+            } return terminal; }`,
+            "PCF terminal caster material",
+        );
+        context.assertFunctionBodyShape(
             context.functionDeclaration(hooksModule, "getNoColorView")
                 .declaration,
             `{
     const cached = cache.get(material);
     if (cached) { return cached; }
     const override = material._shadowCasterMaterial;
-    if (override) {
-        const overrideView = getNoColorView(override, cache);
-        cache.set(material, overrideView);
-        return overrideView;
-    }
+    const view = override ? getNoColorView(override, cache) : createNoColorView(material);
+    cache.set(material, view);
+    return view;
+}`,
+            "CSM shadow caster view cache",
+        );
+        context.assertFunctionBodyShape(
+            context.functionDeclaration(hooksModule, "createNoColorView")
+                .declaration,
+            `{
     const family = material._buildGroup._materialFamily;
     let view: MaterialView;
     if (family === "standard") {
@@ -2349,7 +2346,6 @@ export function shadowFactorySource(
     } else if (family === "shader") {
         view = createShaderNoColorMaterialView(material as Parameters<typeof createShaderNoColorMaterialView>[0]);
     }
-    cache.set(material, view!);
     return view!;
 }`,
             "PCF shadow material view dispatch",
@@ -2534,6 +2530,7 @@ ${csmCache ? "#include <bblite/upstream/csm_static_cache.hpp>\n" : ""}\
 
 #include <algorithm>
 #include <stdexcept>
+#include <unordered_set>
 #include <utility>
 
 namespace bbl {
@@ -2633,13 +2630,6 @@ MaterialHandle shadow_caster_view(
     MaterialHandle material) {
     ShadowGeneratorRecord& generator =
         ${recordAt("engine.shadow_generators", "handle")};
-    for (std::size_t index = 0;
-         index < generator.caster_material_sources.size();
-         ++index) {
-        if (generator.caster_material_sources[index].value == material.value) {
-            return generator.caster_material_views[index];
-        }
-    }
 ${
     esmShadows
         ? `    const bool esm =
@@ -2647,95 +2637,127 @@ ${
 `
         : ""
 }\
+    // PCF caches the terminal, not each receive-material override.
+    while (${recordAt("engine.materials", "material")}.shadow_caster_material.value != invalid_handle) {
+        material = ${recordAt("engine.materials", "material")}.shadow_caster_material;
+${esmShadows ? "        if (esm) return material;\n" : ""}\
+    }
     const MaterialRecord& source = ${recordAt("engine.materials", "material")};
-    const MaterialHandle view =
-        source.shadow_caster_material.value != invalid_handle
-            ? ${
-                esmShadows
-                    ? "(esm ? source.shadow_caster_material : shadow_caster_view(engine, handle, source.shadow_caster_material))"
-                    : "shadow_caster_view(engine, handle, source.shadow_caster_material)"
-            }
-            : ${
-                nodeCasters
-                    ? `source.node_material
+    const auto generation = source.build_generation;
+    const auto features = source.composed_pbr_row;
+    const auto cached = generator.caster_material_views.find(material.value);
+    if (cached != generator.caster_material_views.end() && cached->second.active && cached->second.generation == generation &&
+        (features == invalid_handle || cached->second.features == features))
+        return cached->second.view;
+    MaterialHandle view =
+        ${
+            nodeCasters
+                ? `source.node_material
             ? ${casterView("node")}
             : `
-                    : ""
-            }${
-                shaderCasters
-                    ? `source.shader_material
+                : ""
+        }${
+            shaderCasters
+                ? `source.shader_material
             ? ${casterView("shader")}
             : `
-                    : ""
-            }source.standard_material
+                : ""
+        }source.standard_material
             ? ${casterView("standard")}
             : ${casterView("pbr")};
-    generator.caster_material_sources.push_back(material);
-    generator.caster_material_views.push_back(view);
+    // Family factories append one record. A generator-private slot has no public
+    // identity: rebuild it in place and version its draw row instead of leaking a
+    // material handle every time a caster leaves and rejoins.
+    if (cached != generator.caster_material_views.end()) {
+        if (view.value != engine.materials.size() - 1 || view == cached->second.view)
+            throw std::logic_error("Expected a newly allocated shadow material view.");
+        auto& slot = ${recordAt("engine.materials", "cached->second.view")};
+        engine.materials.back().build_generation = slot.build_generation + 1;
+        slot = std::move(engine.materials.back());
+        engine.materials.pop_back();
+        view = cached->second.view;
+    }
+    generator.caster_material_views[material.value] = {view, generation, features, true};
     return view;
 }
-${csmCache ? "\n} // namespace\n" : ""}
-void refresh_shadow_task_meshes(
-    Engine& engine,
-    ShadowGeneratorHandle handle) {
-    ShadowGeneratorRecord& generator =
-        ${recordAt("engine.shadow_generators", "handle")};
-    if (generator.caster_tasks.empty()) return;
-    // A cascaded generator owns one caster pass per cascade layer, and the
-    // pin adds every caster to each of them (\`ensureCsmShadowTaskState\`
-    // loops the caster set inside its per-cascade task build). One
-    // generator's tasks therefore carry one mesh list, filled here once
-    // per task.
+} // namespace
+
+void refresh_shadow_task_meshes(Engine& engine, ShadowGeneratorHandle handle, bool membership_dirty) {
+    ShadowGeneratorRecord& generator = ${recordAt("engine.shadow_generators", "handle")};
+    ${esmShadows ? "const bool rebuild_all = generator.filter == ShadowFilter::esm_directional;" : "constexpr bool rebuild_all = false;"}
+    if (generator.caster_tasks.empty() || (rebuild_all && !membership_dirty)) return;
+    // A task entry owns its shader packet and thin binding. Keep the entry,
+    // and its relative order, whenever its caster snapshot still matches.
+    const auto snapshot = [&](MeshHandle mesh) -> std::optional<ShadowCasterSnapshot> {
+        const MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
+        if (record.retired || !record.visible || record.material.value == invalid_handle) return std::nullopt;
+        const MaterialHandle view = shadow_caster_view(engine, handle, record.material);
+        return ShadowCasterSnapshot{record.material, view, record.renderable_generation,
+                                    ${recordAt("engine.materials", "view")}.build_generation};
+    };
+    if (!membership_dirty && std::none_of(generator.caster_meshes.begin(), generator.caster_meshes.end(), [&](MeshHandle mesh) {
+        const auto current = snapshot(mesh);
+        const auto old = generator.caster_snapshots.find(mesh.value);
+        return current ? old == generator.caster_snapshots.end() || old->second != *current
+                       : old != generator.caster_snapshots.end();
+    })) return;
+    decltype(generator.caster_snapshots) next;
+    for (const MeshHandle mesh : generator.caster_meshes)
+        if (const auto current = snapshot(mesh)) next.emplace(mesh.value, *current);
+    const bool changed = next != generator.caster_snapshots;
+    std::unordered_set<std::uint32_t> kept;
     for (const TaskHandle task_handle : generator.caster_tasks) {
         FrameTaskRecord& task = ${recordAt("engine.frame_tasks", "task_handle")};
-        task.render_meshes.clear();
-        for (const MeshHandle mesh : generator.caster_meshes) {
-            const MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
-            // A removed caster's task entries went with its removal
-            // (\`_removeMeshFromRenderTask\`); the array still names it.
-            if (record.retired) continue;
-            // Invisible anchors participate in the light-volume fit but
-            // the pin's normal renderable traversal does not draw them.
-            if (!record.visible) continue;${
+        const auto admitted = [&](const MeshHandle mesh) {
+            return next.contains(mesh.value)${
                 csmCache
-                    ? `
-            // A cached generator draws each caster in one layer: the
-            // static pass while the refit gate holds it static, the
-            // dynamic pass otherwise (\`isDynamic\`).
-            if (generator.csm_cache &&
-                upstream::csm_refit_is_dynamic(engine, *generator.csm_cache, mesh) ==
-                    task.render.shadow_cache_static)
-                continue;`
+                    ? ` && (!generator.csm_cache ||
+                upstream::csm_refit_is_dynamic(engine, *generator.csm_cache, mesh) != task.render.shadow_cache_static)`
                     : ""
-            }
-            const MaterialHandle material = record.material;
-            if (material.value >= engine.materials.size()) {
-                throw std::runtime_error(
-                    std::string("Visible shadow caster '") + record.name +
-                    "' (mesh " + std::to_string(mesh.value) +
-                    ") carries invalid material " +
-                    std::to_string(material.value) + ".");
-            }
-            add_render_task_mesh(
-                engine,
-                task_handle,
-                mesh,
-                shadow_caster_view(engine, handle, material));
+            };
+        };
+        kept.clear();
+        const auto dropped = std::erase_if(task.render_meshes, [&](const RenderTaskMesh& entry) {
+            const auto previous = generator.caster_snapshots.find(entry.mesh.value);
+            if (rebuild_all || !admitted(entry.mesh) || previous == generator.caster_snapshots.end() ||
+                previous->second != next.at(entry.mesh.value)) return true;
+            kept.insert(entry.mesh.value);
+            return false;
+        });
+        if (dropped && task.record_state == FrameTaskRecordState::recorded) ++engine.draw_list_epoch;
+        for (const MeshHandle mesh : generator.caster_meshes) {
+            if (admitted(mesh) && (rebuild_all || kept.insert(mesh.value).second))
+                add_render_task_mesh(engine, task_handle, mesh, next.at(mesh.value).view);
+        }
+    }
+    generator.caster_snapshots = std::move(next);
+    if (changed) {
+        ++generator.caster_packet_version;
+        // Drop unused terminal snapshots and their payloads. Only the private
+        // slot number and its revision survive until that terminal returns.
+        std::unordered_set<std::uint32_t> used;
+        for (const auto& [id, caster] : generator.caster_snapshots) used.insert(caster.view.value);
+        for (auto& [terminal, material] : generator.caster_material_views) {
+            if (!material.active || used.contains(material.view.value)) continue;
+            material.active = false;
+            auto& slot = ${recordAt("engine.materials", "material.view")};
+            const auto revision = slot.build_generation;
+            slot = MaterialRecord{};
+            slot.build_generation = revision;
+        }${
+            csmCache
+                ? `
+        if (generator.csm_cache) generator.csm_cache->cached_content_version = -1;`
+                : ""
         }
     }
 }
-${csmCache ? "" : "\n} // namespace\n"}`
-        : csmCache
-          ? `
-void refresh_shadow_task_meshes(Engine& engine, ShadowGeneratorHandle handle) {
-    // Cache preparation installs hooks but creates no passes. Only the
-    // reached scene scheduler can populate this generator's task list.
-    if (!${recordAt("engine.shadow_generators", "handle")}.caster_tasks.empty()) {
-        throw std::logic_error("Shadow tasks require reached shadow scheduling.");
-    }
+`
+        : `
+void refresh_shadow_task_meshes(Engine&, ShadowGeneratorHandle, bool) {
+    // No scheduler reached: there are no caster packets to reconcile.
 }
 `
-          : ""
 }
 ${morphBounds ? deformableBoundsRegistration("src/shadow/enable-morph-target-shadows.ts#enableMorphTargetShadows", "enable_morph_target_shadows", "morph_shadow_bounds") : ""}${skeletonBounds ? deformableBoundsRegistration("src/shadow/enable-skeleton-shadows.ts#enableSkeletonShadows", "enable_skeleton_shadows", "skeleton_shadow_bounds") : ""}
 void set_shadow_task_caster_meshes(
@@ -2745,19 +2767,15 @@ void set_shadow_task_caster_meshes(
     if (generator.value >= engine.shadow_generators.size()) {
         throw std::runtime_error("Invalid shadow generator handle.");
     }
-    // The fit keeps reading a caster the program removes from its scene,
-    // so the array names every mesh it lists (\`name_mesh\`); a handle whose
-    // slot a later mesh already took refuses here.
-    std::vector<MeshName> caster_names = name_meshes(engine, caster_meshes);
     ShadowGeneratorRecord& record = ${recordAt("engine.shadow_generators", "generator")};
-    record.caster_meshes = std::move(caster_meshes);
-    record.caster_names = std::move(caster_names);
-    // The pin's ensure hooks rebuild the task state when handed a new
-    // caster array, and the fresh state's -1 sentinels force the next
-    // render; this counter is what the render gate compares in their
-    // place, so a re-registered list re-renders even when its version sum
-    // happens to match the old list's.
+    // The existing leases already name an identical sequence of handles (including generations).
+    if (record.caster_meshes != caster_meshes) {
+        record.caster_names = name_meshes(engine, caster_meshes);
+        record.caster_meshes = std::move(caster_meshes);
+    }
+    // ESM and the cached CSM refit gate read the supplied array's identity.
     ++record.caster_list_version;
+${esmShadows ? "    if (record.filter == ShadowFilter::esm_directional) ++record.caster_packet_version;\n" : ""}\
 ${shadowTasks ? "    refresh_shadow_task_meshes(engine, generator);\n" : ""}\
 }
 ${csmCache ? lowerCsmStaticCacheEnable(context) : ""}
@@ -2892,7 +2910,10 @@ void build_shadow_task(Scene& scene, ShadowGeneratorHandle handle) {
     // Every cascade renders into a layer of this one target, and it is the
     // target -- not any one pass -- that the receiver's texture lookup
     // resolves through.
-    ${recordAt("engine.shadow_generators", "handle")}.map_target = rt;
+    auto& built = ${recordAt("engine.shadow_generators", "handle")};
+    built.map_target = rt;
+    // A replacement target needs its first clear even with the same or empty caster set.
+    ++built.caster_packet_version;
     refresh_shadow_task_meshes(engine, handle);
 }
 

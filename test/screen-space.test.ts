@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import {
     ScreenSpaceLowerer,
@@ -29,6 +30,7 @@ const GI_OPTIONS = {
     temporalSamples: 64,
 };
 const AO_OPTIONS = {
+    base: 0.125,
     resolutionScale: 0.5,
     intensity: 0.8,
     radius: 0.55,
@@ -199,6 +201,7 @@ test("ambient occlusion composes a producer, two blur passes over one pipeline a
     assert.equal(ao.composite?.sampling, "linear");
     // The clamped settings the task publishes and keeps in params.
     assert.deepEqual(ao.settings, {
+        base: 0.125,
         intensity: 0.8,
         radius: 0.55,
         bias: 0.05,
@@ -211,6 +214,30 @@ test("ambient occlusion composes a producer, two blur passes over one pipeline a
         resetVersion: 0,
     });
     assert.deepEqual(ao.clamped, { resolutionScale: 0.5, temporalSamples: 64 });
+});
+
+test("only the ambient-occlusion task publishes a writable composition base", () => {
+    const program = (factory: string) => `
+        import {createEngine,createSceneContext,createFreeCamera,createRenderTarget,${factory}} from "@babylonjs/lite";
+        const engine = await createEngine({});
+        const scene = createSceneContext(engine);
+        const camera = createFreeCamera([0,0,-1], [0,0,0]);
+        const source = createRenderTarget({format:engine.format, dFormat:"depth24plus-stencil8",samples:1,size:engine});
+        const task = ${factory}({sourceTexture:source,camera},engine,scene);
+        task.base = 0.25;`;
+    assert.match(
+        compileSource(
+            program("createScreenSpaceAmbientOcclusionPostProcessTask"),
+        ).cpp,
+        /\.screen_space\.base = 0\.25;/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                program("createScreenSpaceGlobalIlluminationPostProcessTask"),
+            ),
+        /no settable scalar 'base'/,
+    );
 });
 
 test("a composition of 'none' builds no composite and publishes the stable target", async () => {
@@ -359,6 +386,8 @@ test("the lowerer translates the temporal state machine and every uniform block 
     assert.ok(writers.get(4)!.includes("task.params[1] != 0.0"));
     assert.ok(source.includes("write(4u, task.tint[2]);"));
     assert.ok(source.includes("write(3u, task.color_bleed_max);"));
+    assert.ok(source.includes("write(2u, task.base);"));
+    assert.ok(source.includes("options.base = 0.125;"));
     assert.ok(source.includes("pass.uniforms_dirty = true;"));
     // Each task's factory bakes what the pin clamped and names its plan.
     assert.ok(source.includes("options.step_count = 12.0;"));

@@ -29,8 +29,8 @@ import { assertAsyncSceneBuilder } from "../src/lowering/scene-deferred.js";
 test("deferred adapters require the actual async wrapper boundary", () => {
     const context = new LoweringContext();
     const source = context.functionDeclaration(
-        "src/scene/scene-core.ts",
-        "addDeferredSceneRenderables",
+        "src/scene/scene-renderable-collection.ts",
+        "_addSceneRenderable",
     ).declaration;
     assertAsyncSceneBuilder(context, source);
     const changed = ts.createSourceFile(
@@ -490,7 +490,11 @@ test("deferred scene registration observes snapshot order, identity guards, fail
             data: object,
             options?: object,
         ): Renderable;
-        addTextRenderable(this: void, scene: PinScene, r: Renderable): void;
+        addTextRenderableToScene(
+            this: void,
+            scene: PinScene,
+            r: Renderable,
+        ): void;
     }>("text/text-renderable.js");
     const surface = { engine: {}, _renderingContexts: [] as PinScene[] };
     const scene = pin.createSceneContext(surface, { defaultRenderTask: false });
@@ -587,14 +591,23 @@ test("deferred scene registration observes snapshot order, identity guards, fail
         { _instanceCount: 1 },
         { order: -5 },
     );
-    text.addTextRenderable(scene, r);
-    text.addTextRenderable(scene, r);
-    text.addTextRenderable(scene, other);
+    // A synchronous throw aborts the drained batch. Unbuilt text remains a member.
+    rejectedScene._deferredBuilders.push(() => {
+        throw new Error("before text");
+    });
+    text.addTextRenderableToScene(rejectedScene, r);
+    await assert.rejects(pin.registerScene(rejectedScene), /before text/);
+    text.addTextRenderableToScene(rejectedScene, r);
+    assert.equal(rejectedScene._deferredBuilders.length, 0);
+    assert.equal(rejectedScene._renderables.length, 0);
+    text.addTextRenderableToScene(scene, r);
+    text.addTextRenderableToScene(scene, r);
+    text.addTextRenderableToScene(scene, other);
     await pin.registerScene(scene);
     assert.equal(scene._renderables.length, 0);
     unregisterRenderingContext(surface, scene);
     await pin.registerScene(scene);
-    assert.deepEqual(scene._renderables, [other, r, r]);
+    assert.deepEqual(scene._renderables, [other, r]);
     let destroyed = "";
     r._gpu = {
         _textU: { destroy: () => (destroyed += "u") },
@@ -701,10 +714,21 @@ int main(){
     auto r=create_text_renderable(data);
     TextRenderableOptions options; options.order=-5;
     auto other=create_text_renderable(data,options);
-    add_text_renderable(scene,r); add_text_renderable(alias,r); add_text_renderable(scene,other);
+    rejected.deferred_builders.push_back([]{throw std::runtime_error("before text");});
+    auto unbuilt=create_text_renderable(data);
+    std::weak_ptr<TextRenderableState> retained=unbuilt;
+    add_text_renderable_to_scene(rejected,unbuilt);
+    try {register_scene(rejected);return 19;} catch(const std::runtime_error&) {}
+    unbuilt.reset(); js::collect_cycles();
+    if(retained.expired()) return 20;
+    add_text_renderable_to_scene(rejected,retained.lock());
+    if(!rejected.deferred_builders.empty() || !rejected.state->text_renderables.empty()) return 21;
+    dispose_scene(rejected);js::collect_cycles();
+    if(!retained.expired()) return 22;
+    add_text_renderable_to_scene(scene,r); add_text_renderable_to_scene(alias,r); add_text_renderable_to_scene(scene,other);
     register_scene(scene); if(!scene.state->text_renderables.empty()) return 7;
     unregister_scene(scene);register_scene(scene);
-    if(scene.state->text_renderables!=std::vector<TextRenderable>{other,r,r}) return 8;
+    if(scene.state->text_renderables!=std::vector<TextRenderable>{other,r}) return 8;
     std::string destroyed;
     r->gpu=std::make_shared<TextRenderableGpu>();
     r->gpu->text_u=marked(destroyed,'u');
@@ -712,9 +736,9 @@ int main(){
     r->gpu->style_buf=marked(destroyed,'s');
     dispose_scene(scene);dispose_scene(alias);
     if(destroyed!="uis" || !scene.state->text_renderables.empty() || !engine.scenes().empty()) return 9;
-    try { add_text_renderable(scene,r); return 11; } catch(const std::runtime_error&) {}
+    try { add_text_renderable_to_scene(scene,r); return 11; } catch(const std::runtime_error&) {}
     std::weak_ptr<SceneState> weak;
-    { Scene abandoned;weak=abandoned.state;add_text_renderable(abandoned,r); }
+    { Scene abandoned;weak=abandoned.state;add_text_renderable_to_scene(abandoned,r); }
     js::collect_cycles();
     if(!weak.expired()) return 10;
     return 0;
@@ -820,7 +844,7 @@ int main(){
         return r;
     };
     const auto first=text(0), later=text(-5);
-    add_text_renderable(scene,first);
+    add_text_renderable_to_scene(scene,first);
     register_scene(scene);
     pal::TextScenePass pass;
     pass.bind(scene,std::make_shared<TextSurface>(),TextTargetSignature{});
@@ -830,7 +854,7 @@ int main(){
     for(int frame=0;frame<3;++frame) pass.follow(scene);
     if(binds!=1 || pass.bindings!=bound) return 2;
     // Text added to the registered scene waits for its next registration.
-    add_text_renderable(scene,later);
+    add_text_renderable_to_scene(scene,later);
     register_scene(scene); pass.follow(scene);
     if(binds!=1 || pass.bindings!=bound) return 3;
     unregister_scene(scene); register_scene(scene);

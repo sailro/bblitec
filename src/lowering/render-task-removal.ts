@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { type LoweringContext, unwrapExpression } from "./context.js";
+import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 
@@ -8,32 +8,12 @@ const baseModule = "src/frame-graph/render-task-base.ts";
 const refreshModule = "src/frame-graph/render-task-mesh-refresh.ts";
 const transactionModule = "src/frame-graph/render-task-transaction.ts";
 
-/** The refreshed task's `_removeMesh` closure: tracked removal, then a dirty generation. */
+/** The refreshed task's `_removeMeshes` closure: tracked removal, then a dirty generation. */
 function refreshedRemovalCpp(context: LoweringContext, indent: string): string {
     const { declaration } = context.functionDeclaration(
         refreshModule,
         "enableRenderTaskMeshRefresh",
     );
-    const install = declaration.body?.statements.find(
-        (statement) =>
-            ts.isExpressionStatement(statement) &&
-            ts.isBinaryExpression(statement.expression) &&
-            context.expressionMatchesShape(
-                statement.expression.left,
-                "task._removeMesh",
-            ),
-    );
-    const closure =
-        install && ts.isExpressionStatement(install)
-            ? unwrapExpression(
-                  (install.expression as ts.BinaryExpression).right,
-              )
-            : undefined;
-    if (!closure || !ts.isArrowFunction(closure) || !ts.isBlock(closure.body))
-        return context.contractError(
-            declaration,
-            "Expected the refreshed task's mesh removal closure.",
-        );
     // The base removal this closure forwards to: no render task installs one
     // before the refresh does, so `removeMesh` is always absent here.
     context.assertExpressionShape(
@@ -46,17 +26,40 @@ function refreshedRemovalCpp(context: LoweringContext, indent: string): string {
         refreshModule,
         "enableRenderTaskMeshRefresh",
     );
-    context.assertStatementShapes(
-        closure.body,
-        closure.body.statements,
-        `
+    context.assertWrittenOnlyBy(
+        "_removeMeshes",
+        refreshModule,
+        "enableRenderTaskMeshRefresh",
+    );
+    // Scene removal calls the singleton hook first. Both operations remove
+    // tracked membership and mark it dirty, so native code need only do it once.
+    context.expectShapeCount(
+        declaration,
+        `task._removeMesh = (mesh): void => {
         removeMesh?.(mesh);
         const index = tracked.indexOf(mesh as Mesh);
         if (index >= 0) {
             tracked.splice(index, 1);
         }
         dirty = true;
-    `,
+    }`,
+        "Refreshed task singleton removal",
+    );
+    context.expectShapeCount(
+        declaration,
+        `task._removeMeshes = (meshes, members): void => {
+        for (const mesh of meshes) {
+            removeMesh?.(mesh);
+        }
+        let kept = 0;
+        for (const mesh of tracked) {
+            if (!members.has(mesh)) {
+                tracked[kept++] = mesh;
+            }
+        }
+        tracked.length = kept;
+        dirty = true;
+    }`,
         "Refreshed task mesh removal",
     );
     // Tracked meshes are the `follows_material` entries of `render_meshes`:
@@ -107,9 +110,29 @@ export function renderTaskRemovalHeader(context: LoweringContext): string {
         "task._pendingMeshes.length > 0",
         "Explicit population publication",
     );
-    const { file, declaration: base } = context.functionDeclaration(
+    const single = context.functionDeclaration(
         baseModule,
         "_removeMeshFromRenderTask",
+    ).declaration;
+    context.assertStatementShapes(
+        single.body!,
+        single.body!.statements,
+        "_removeMeshesFromRenderTask(task, [mesh]);",
+        "Scene removal singleton",
+    );
+    const { file, declaration: base } = context.functionDeclaration(
+        baseModule,
+        "_removeMeshesFromRenderTask",
+    );
+    context.assertParameterNames(
+        base,
+        ["task", "meshes", "members="],
+        "Task removal set",
+    );
+    context.assertExpressionShape(
+        base.parameters[2]!.initializer!,
+        "new Set(meshes)",
+        "Task removal membership",
     );
     const automatic = context.functionDeclaration(
         baseModule,
@@ -121,7 +144,9 @@ export function renderTaskRemovalHeader(context: LoweringContext): string {
             (node) =>
                 (ts.isPropertyAssignment(node) ||
                     ts.isMethodDeclaration(node)) &&
-                context.propertyName(node.name) === "_removeMesh",
+                ["_removeMesh", "_removeMeshes"].includes(
+                    context.propertyName(node.name) ?? "",
+                ),
         )
     )
         context.contractError(
@@ -129,7 +154,16 @@ export function renderTaskRemovalHeader(context: LoweringContext): string {
             "Render tasks now install a base mesh removal.",
         );
     const statements = base.body!.statements;
-    const [guard, hook, flag, renderables, bindings, published] = statements;
+    const [
+        guard,
+        hook,
+        flag,
+        kept,
+        renderables,
+        truncate,
+        bindings,
+        published,
+    ] = statements;
     context.assertStatementShapes(
         base.body!,
         [guard!, hook!, flag!],
@@ -137,32 +171,44 @@ export function renderTaskRemovalHeader(context: LoweringContext): string {
         if (!task._renderables) {
             return;
         }
-        task._removeMesh?.(mesh);
+        if (task._removeMeshes) {
+            task._removeMeshes(meshes, members);
+        } else {
+            for (const mesh of meshes) {
+                task._removeMesh?.(mesh);
+            }
+        }
         let removed = false;
     `,
         "Task renderable removal guard",
     );
     context.assertStatementShapes(
         base.body!,
-        [renderables!, bindings!],
+        [kept!, renderables!, truncate!, bindings!],
         `
-        for (let i = task._renderables.length - 1; i >= 0; i--) {
-            if (task._renderables[i]!.mesh === mesh) {
-                task._retireRenderable?.(task.engine, task._renderables[i]!);
-                task._renderables.splice(i, 1);
+        let kept = 0;
+        for (const renderable of task._renderables) {
+            if (renderable.mesh && members.has(renderable.mesh)) {
+                task._retireRenderable?.(task.engine, renderable);
                 removed = true;
+            } else {
+                task._renderables[kept++] = renderable;
             }
         }
+        task._renderables.length = kept;
         for (const arr of [task._opaqueBindings, task._directBindings, task._transparentBindings]) {
-            for (let i = arr.length - 1; i >= 0; i--) {
-                if (arr[i]!.renderable.mesh === mesh) {
+            kept = 0;
+            for (const binding of arr) {
+                if (binding.renderable.mesh && members.has(binding.renderable.mesh)) {
                     if (drawBindingLifecycle) {
-                        drawBindingLifecycle._retire([[arr[i]!]]);
+                        drawBindingLifecycle._retire([[binding]]);
                     }
-                    arr.splice(i, 1);
                     removed = true;
+                } else {
+                    arr[kept++] = binding;
                 }
             }
+            arr.length = kept;
         }
     `,
         "Task renderable and binding removal",
@@ -172,7 +218,7 @@ export function renderTaskRemovalHeader(context: LoweringContext): string {
         !ts.isIfStatement(published) ||
         !ts.isBlock(published.thenStatement) ||
         published.elseStatement ||
-        statements.length !== 6
+        statements.length !== 8
     )
         return context.contractError(
             base,
@@ -220,7 +266,8 @@ export function renderTaskRemovalHeader(context: LoweringContext): string {
             // instancing collector, which no native target signature installs,
             // and the binding lifecycle `enablePbrSsao` installs retires
             // texture leases, which a backend's mesh draw states do not hold.
-            if (node === bindings) return [];
+            if (node === kept || node === truncate || node === bindings)
+                return [];
             if (ts.isVariableStatement(node) && node.parent !== base.body)
                 return [];
             if (
@@ -238,7 +285,7 @@ export function renderTaskRemovalHeader(context: LoweringContext): string {
         },
     });
     return `#pragma once
-// ${context.provenance(baseModule, "_removeMeshFromRenderTask", `${refreshModule}#enableRenderTaskMeshRefresh and ${transactionModule}#transactRenderTask`)}
+// ${context.provenance(baseModule, "_removeMeshesFromRenderTask", `${refreshModule}#enableRenderTaskMeshRefresh and ${transactionModule}#transactRenderTask`)}
 #include <bblite/runtime.hpp>
 #include <algorithm>
 
@@ -257,23 +304,36 @@ ${body}
  * `_removeMeshFromRenderTask` (`render_task_removal.hpp`).
  */
 export function lowerRenderTaskMeshRemoval(context: LoweringContext): string {
-    const remove = context.functionDeclaration(
+    const single = context.functionDeclaration(
         taskModule,
         "removeMeshFromTask",
+    ).declaration;
+    context.assertStatementShapes(
+        single.body!,
+        single.body!.statements,
+        "removeTaskMeshes(task, [mesh]);",
+        "Task removal singleton",
+    );
+    const remove = context.functionDeclaration(
+        taskModule,
+        "removeTaskMeshes",
     ).declaration;
     context.assertStatementShapes(
         remove.body!,
         remove.body!.statements,
         `
+        const members = new Set(meshes);
         const pending = task._pendingMeshes;
         if (pending) {
-            for (let index = pending.length - 1; index >= 0; index--) {
-                if (pending[index]!.mesh === mesh) {
-                    pending.splice(index, 1);
+            let kept = 0;
+            for (const request of pending) {
+                if (!members.has(request.mesh)) {
+                    pending[kept++] = request;
                 }
             }
+            pending.length = kept;
         }
-        _removeMeshFromRenderTask(task, mesh);
+        _removeMeshesFromRenderTask(task, meshes, members);
     `,
         "Render-task mesh removal",
     );
