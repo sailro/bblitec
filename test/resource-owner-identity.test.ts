@@ -144,3 +144,45 @@ test("resource identity callbacks require owned parameters and preserve absence 
     `),
     );
 });
+
+test("a spread of unowned handles into engine-owned storage pairs them with the entry's engine", () => {
+    // `visible` holds engine-owned meshes; the awaited group's plain mesh
+    // array names no engine, so its handles are the entry engine's, as a
+    // handle read out of storage is.
+    const { cpp } = compileSource(`
+        import { createBox, createEngine, createSceneContext, addToScene } from "@babylonjs/lite";
+        import type { EngineContext, Mesh, SceneContext } from "@babylonjs/lite";
+        interface Part { mesh: Mesh }
+        interface Batch { meshes: Mesh[] }
+        interface Group { id: string; masonry: Part; corbels: Batch }
+        function createBatch(engine: EngineContext, count: number): Batch {
+            const meshes: Mesh[] = [];
+            for (let i = 0; i < count; i++) meshes.push(createBox(engine, { size: 1 }));
+            return { meshes };
+        }
+        function makeGroup(engine: EngineContext, id: string): Group {
+            return { id, masonry: { mesh: createBox(engine, { size: 2 }) }, corbels: createBatch(engine, id.length + 1) };
+        }
+        async function loadGroup(engine: EngineContext, id: string): Promise<Group> {
+            await new Promise<void>((resolve) => setTimeout(resolve, 1));
+            return makeGroup(engine, id);
+        }
+        async function buildTower(engine: EngineContext, scene: SceneContext): Promise<Mesh[]> {
+            const body: Part = { mesh: createBox(engine, { size: 3 }) };
+            const visible: Mesh[] = [body.mesh];
+            const register = (group: Group): void => {
+                visible.push(group.masonry.mesh, ...group.corbels.meshes);
+            };
+            for (const id of ["a", "bb"]) register(await loadGroup(engine, id));
+            for (const mesh of visible) addToScene(scene, mesh);
+            return visible;
+        }
+        async function main(): Promise<void> {
+            const engine = await createEngine(document.createElement("canvas"));
+            const scene = createSceneContext(engine);
+            console.log((await buildTower(engine, scene)).length);
+        }
+        void main();
+    `);
+    assert.match(cpp, /bbl::js::array_from_iterable</);
+});

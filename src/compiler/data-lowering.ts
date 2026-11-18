@@ -4074,6 +4074,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             : type;
     }
 
+    /**
+     * The owner an entry program's unowned handles share where no element
+     * names one: raw DOM element storage belongs to the document realm, and
+     * other handles to the program's one default engine, as each element
+     * `leafValue` reconstructs does.
+     */
+    private unownedHandleOwner(element: DataType<"handle">): Value | undefined {
+        return element.handle === "ui-element" ||
+            (belongsToEntryEngine(element.handle) &&
+                this.context.defaultEngine() !== undefined)
+            ? this.leafValue(`${handleCppType(element.handle)}{}`, element)
+            : undefined;
+    }
+
     public knownValueFitsSink(
         value: Value,
         sink: DataType,
@@ -9866,15 +9880,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             (facts.runtimeElementTemplate
                 ? [facts.runtimeElementTemplate]
                 : undefined);
-        // Raw DOM element storage belongs to the document realm, and an entry
-        // program's unowned handles belong to its one default engine, just like
-        // each element reconstructed by leafValue.
         const defaultOwner =
-            element.handle === "ui-element" ||
-            (!members &&
-                belongsToEntryEngine(element.handle) &&
-                this.context.defaultEngine() !== undefined)
-                ? this.leafValue(`${handleCppType(element.handle)}{}`, element)
+            element.handle === "ui-element" || !members
+                ? this.unownedHandleOwner(element)
                 : undefined;
         if (
             !defaultOwner &&
@@ -22588,7 +22596,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ? iterated.range
                 : members?.length
                   ? commonResourceValue(members[0]!, members)
-                  : undefined;
+                  : this.unownedHandleOwner(sourceElement);
             if (!proof?.engineCpp)
                 return this.context.fail(
                     spread,
