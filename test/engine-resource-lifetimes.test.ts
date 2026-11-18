@@ -216,6 +216,17 @@ test("each disposal lowering is emitted only where its API is reached", () => {
         () =>
             renderTaskRemovalHeader(
                 doctoredContext(
+                    "src/frame-graph/render-task-mesh-refresh.ts",
+                    "if (!members.has(mesh)) {",
+                    "if (members.has(mesh)) {",
+                ),
+            ),
+        /Refreshed task mesh removal/,
+    );
+    assert.throws(
+        () =>
+            renderTaskRemovalHeader(
+                doctoredContext(
                     "src/frame-graph/render-task-transaction.ts",
                     "task._config.autoMirror = false;",
                     "task._config.autoMirror = true;",

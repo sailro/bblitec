@@ -35,6 +35,18 @@ export class EngineLowerer {
         if (!isAsyncFunction(create)) {
             throw new Error("Upstream createEngine is no longer async.");
         }
+        // The admitted createEngine overload acquires a fresh device through
+        // PAL. Supplying a separately owned DeviceContext is not admitted.
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(create, "deviceContext"),
+            "options?.device ?? (await createDevice(options))",
+            "Engine device acquisition",
+        );
+        this.context.expectShapeCount(
+            create,
+            "deviceContext._claimed = true",
+            "Engine device ownership",
+        );
         if (!this.context.hasCall(start, "requestAnimationFrame")) {
             throw new Error(
                 "Upstream startEngine no longer schedules requestAnimationFrame.",

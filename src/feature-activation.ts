@@ -199,7 +199,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     },
     "text:renderable": {
         provenance:
-            "src/text/text-renderable.ts#createTextRenderable + addTextRenderable",
+            "src/text/text-renderable.ts#createTextRenderable + addTextRenderableToScene",
         consumers: CMAKE,
     },
     "renderer:text": {
@@ -1101,7 +1101,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     },
     // The billboard contributor is the pin's own pay-for-use seam: a
     // module the picker dynamic-imports on the first pick, reached
-    // through the pick source `addFacingBillboardSystem` registered. Its
+    // through the pick source `addBillboardSystemToScene` registered. Its
     // shader is composed by that module's own builder, so the row names
     // both the pipeline module and the WGSL it deploys.
     "picking:billboard": {
@@ -1241,7 +1241,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     },
     "sprite:2d-depth-host": {
         provenance:
-            "src/sprite/sprite-scene.ts#addDepthHostedSpriteLayer + " +
+            "src/sprite/sprite-scene.ts#addDepthHostedSpriteLayerToScene + " +
             "src/sprite/sprite-renderable.ts#buildSpriteRenderable",
         consumers: CMAKE,
     },

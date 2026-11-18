@@ -2400,7 +2400,7 @@ test("records every pinned origin consolidated into sprite_2d.cpp", () => {
     assert.deepEqual(spriteCoreAdditionalProvenance, [
         {
             modulePath: "src/sprite/sprite-scene.ts",
-            symbolName: "addDepthHostedSpriteLayer",
+            symbolName: "addDepthHostedSpriteLayerToScene",
         },
         {
             modulePath: "src/sprite/sprite-renderable.ts",

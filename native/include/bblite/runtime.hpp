@@ -35,6 +35,7 @@
 #include <string_view>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -543,6 +544,7 @@ struct SpriteAtlasHandle {
 
 struct Sprite2DLayerHandle {
     std::uint32_t value = invalid_handle;
+    [[nodiscard]] bool operator==(const Sprite2DLayerHandle&) const = default;
 };
 
 /** The CPU answer returned by the pin's pure 2D sprite hit test. */
@@ -563,6 +565,7 @@ struct SpriteRenderTextureHandle {
 
 struct BillboardSystemHandle {
     std::uint32_t value = invalid_handle;
+    [[nodiscard]] bool operator==(const BillboardSystemHandle&) const = default;
 };
 
 /**
@@ -1605,6 +1608,7 @@ struct ScreenSpaceTaskOptions {
     double color_bleed_gain = 0.0;
     double color_bleed_max = 0.0;
     /** Live ambient-occlusion settings. */
+    double base = 0.0;
     double radius = 0.0;
     double power = 0.0;
     double slice_count = 0.0;
@@ -3093,6 +3097,8 @@ struct MeshRecord {
     Vec4d outer_rotation_quaternion{0, 0, 0, 1};
     bool outer_has_rotation_quaternion = false;
     std::uint64_t transform_version = 0;
+    /** Identity of the last native renderable built for this mesh. */
+    std::uint64_t renderable_generation = 0;
     bool has_rotation_quaternion = false;
     bool gpu_deformation = false;
     /**
@@ -7086,14 +7092,12 @@ struct SceneState {
     /** Shadow generators retired only after a replacement rebuild succeeds. */
     std::vector<ShadowGeneratorHandle> pending_shadow_retirements;
     std::vector<AnimationGroupHandle> animation_groups;
-    /** billboard-scene.ts `addBillboardSystem`: the pick sources it registers at once. */
+    /** Scene collection membership, allocated on first add. Handles are engine-local indices. */
+    std::unique_ptr<std::unordered_set<std::uint32_t>> billboard_members;
+    std::unique_ptr<std::unordered_set<std::uint32_t>> depth_sprite_members;
+    /** Pick sources in registration order; picking uses these indices before the scene builds. */
     std::vector<BillboardSystemHandle> billboard_systems;
-    /**
-     * The systems the scene draws: `addBillboardSystem` publishes a system's
-     * renderable through `addDeferredSceneRenderables`, so it joins this list
-     * only when the scene builds (`registerScene`), and a system added to a
-     * registered scene waits for its next registration.
-     */
+    /** Members published by the scene's deferred builders, in draw order. */
     std::vector<BillboardSystemHandle> billboard_renderables;
     // sprite-scene.ts: depth-enabled 2D layers are scene renderables and
     // therefore share this scene's colour, multisample and depth targets.
@@ -7101,7 +7105,9 @@ struct SceneState {
     // `loadSplat` registers the renderable on the scene it is handed, the
     // way `attachGaussianSplattingMesh` pushes into `_renderables`.
     std::vector<SplatMeshHandle> splat_meshes;
-    /** Retained text is populated only by the reached text attachment adapter. */
+    /** Owns text membership even if its queued builder never runs. */
+    std::unique_ptr<std::unordered_set<std::shared_ptr<TextRenderableState>>> text_members;
+    /** Built text attachments in draw order. */
     std::vector<std::shared_ptr<TextRenderableState>> text_renderables;
     /** Lowered renderables a scene pass draws through `gpu_renderable.hpp`'s protocol. */
     std::vector<std::shared_ptr<GpuExternalRenderable>> external_renderables;
@@ -7202,6 +7208,8 @@ struct SceneState {
         visitor(disposables);
         visitor(animation_seekers);
         visitor(deferred_builders);
+        if (text_members)
+            visitor(*text_members);
         visitor(text_renderables);
         visitor(external_renderables);
         visitor(library_members);
@@ -7401,6 +7409,25 @@ template <class Publish> void add_deferred_scene_renderables(Scene& scene, Publi
         SceneDeferredFailure::promise_rejection);
 }
 
+/** scene-renderable-collection.ts `_addSceneRenderable`: add-only membership is immediate;
+ * attachment runs once, at build time. The family owns the typed members on the scene. */
+template <class Member, class Publish>
+bool add_scene_renderable(Scene& scene, std::unique_ptr<std::unordered_set<Member>>& members,
+                          Member entity, Publish publish) {
+    if (!members)
+        members = std::make_unique<std::unordered_set<Member>>();
+    const auto [entry, added] = members->insert(std::move(entity));
+    if (!added)
+        return false;
+    try {
+        add_deferred_scene_renderables(scene, std::move(publish));
+    } catch (...) {
+        members->erase(entry);
+        throw;
+    }
+    return true;
+}
+
 [[nodiscard]] inline bool material_color_has_bound_group(const Engine& engine,
                                                          MaterialHandle material) {
     return std::any_of(
@@ -7568,11 +7595,19 @@ struct OverlayComposition {
     return static_cast<double>(height ? engine.options.height : engine.options.width);
 }
 
-/** A scene's swapchain task, and whether it resolves into the swapchain. */
-struct SwapchainTask {
-    TaskHandle task{};
-    bool resolves = false;
-};
+/** Only a render task can supply an admitted overlay attachment. */
+[[nodiscard]] inline const FrameTaskRecord* find_overlay_render_task(const Engine& engine,
+                                                                     TaskHandle handle) {
+    const auto* task = handle_find(engine.frame_tasks, handle);
+    return task && task->kind == FrameTaskKind::render ? task : nullptr;
+}
+
+/** The default scene pass presents through native copies, not a direct resolve. */
+[[nodiscard]] inline bool resolves_to_swapchain(const Engine& engine, const Scene& scene,
+                                                const RenderTaskOptions& render) {
+    return (render.scene_stages && !scene.transmission_enabled) ||
+           is_swapchain_target(engine, render.resolve_target);
+}
 
 /**
  * swapchain-overlay.ts `getDefaultSwapchainTask` over a scene's own tasks
@@ -7581,16 +7616,13 @@ struct SwapchainTask {
  * copies unless transmission retargets it to a linear target that resolves
  * nowhere.
  */
-[[nodiscard]] inline std::optional<SwapchainTask> default_swapchain_task(const Engine& engine,
-                                                                         const Scene& scene) {
+[[nodiscard]] inline std::optional<TaskHandle> default_swapchain_task(const Engine& engine,
+                                                                      const Scene& scene) {
     for (const TaskHandle handle : scene.tasks) {
-        const FrameTaskRecord* task = handle_find(engine.frame_tasks, handle);
-        if (!task || task->kind != FrameTaskKind::render)
-            continue;
-        const bool resolves = (task->render.scene_stages && !scene.transmission_enabled) ||
-                              is_swapchain_target(engine, task->render.resolve_target);
-        if (resolves || is_swapchain_target(engine, task->render.target))
-            return SwapchainTask{handle, resolves};
+        const auto* task = find_overlay_render_task(engine, handle);
+        if (task && (resolves_to_swapchain(engine, scene, task->render) ||
+                     is_swapchain_target(engine, task->render.target)))
+            return handle;
     }
     return std::nullopt;
 }
@@ -7601,7 +7633,7 @@ struct SwapchainTask {
  * overlay-scene-lowerer.ts asserts. For a root without a frame graph its
  * swapchain task is the renderer's own scene pass, which always runs and
  * resolves unless the root has no default render task or transmission
- * retargets it; else `default_swapchain_task`. Each overlay records after
+ * retargets it; else the last active multisample resolver. Each overlay records after
  * the root's whole frame, so at one sample it loads what the root's image
  * processing or last task wrote.
  */
@@ -7613,10 +7645,16 @@ struct SwapchainTask {
         return {root.state->default_render_task && !root.transmission_enabled
                     ? OverlayComposite::root_attachment
                     : OverlayComposite::skipped};
-    const std::optional<SwapchainTask> current = default_swapchain_task(engine, root);
-    if (current && current->resolves &&
-        frame_task_executes(handle_at(engine.frame_tasks, current->task)))
-        return {OverlayComposite::root_attachment, current->task};
+    // getActiveSwapchainResolver: admitted post-process outputs have no resolve texture.
+    for (auto at = root.tasks.rbegin(); at != root.tasks.rend(); ++at) {
+        const auto* task = find_overlay_render_task(engine, *at);
+        if (!task || !frame_task_executes(*task) ||
+            !resolves_to_swapchain(engine, root, task->render))
+            continue;
+        const auto* color = handle_find(engine.render_targets, task->render.target);
+        if (color && color->samples > 1)
+            return {OverlayComposite::root_attachment, *at};
+    }
     return {};
 }
 
@@ -7645,11 +7683,11 @@ inline constexpr const char* overlay_task_attachment_mismatch =
  * Whether `pass` is one of the copies through which `scene`'s swapchain task
  * resolves: an overlay's task resolves in its own pass, so they do not run.
  */
-[[nodiscard]] inline bool swapchain_task_copy(const Scene& scene, const SwapchainTask& current,
+[[nodiscard]] inline bool swapchain_task_copy(const Scene& scene, TaskHandle current,
                                               TaskHandle pass) {
     return std::ranges::any_of(scene.state->internal_passes,
                                [&](const SceneInternalPass& internal) {
-                                   return internal.after == current.task && internal.task == pass;
+                                   return internal.after == current && internal.task == pass;
                                });
 }
 
@@ -8928,6 +8966,8 @@ inline ShadowGeneratorHandle get_csm_receiver_texture(Engine& engine,
     handle_at(engine.shadow_generators, generator).csm_receiver_texture_read = true;
     return generator;
 }
+void refresh_shadow_task_meshes(Engine& engine, ShadowGeneratorHandle generator,
+                                bool membership_dirty = true);
 void set_shadow_task_caster_meshes(Engine& engine, ShadowGeneratorHandle generator,
                                    std::vector<MeshHandle> caster_meshes);
 void enable_morph_target_shadows(Engine& engine, ShadowGeneratorHandle generator);

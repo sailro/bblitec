@@ -3,10 +3,15 @@ import { createHash } from "node:crypto";
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+import { evaluatedEntryPath } from "./bake-cache.js";
 import { suiteBrowserModule } from "./capture-suite-reference.js";
 import { getScene, sceneReferencePage } from "./scene-registry.js";
 import { readBabylonLiteCorpus } from "./upstream-corpus.js";
-import { findRepositoryRoot, readUpstreamPin } from "./upstream-source.js";
+import {
+    findRepositoryRoot,
+    readUpstreamPin,
+    repositoryRelativePath,
+} from "./upstream-source.js";
 import { isMainModule, parseFlags } from "./tooling/flags.js";
 
 /**
@@ -192,26 +197,30 @@ function rewriteExactCorpusManifest(
         );
         const digest = sha256(composed);
         if (digest !== row.moduleSha256) {
-            // A moved source is composed as it was, under the pin strings
-            // as they are; reverting the strings must then reproduce the
-            // committed digest exactly as it must for an unedited scene.
-            const previousComposed = sourceMoved
-                ? suiteBrowserModule(
-                      scene.source,
-                      () =>
-                          previousSource(
-                              repositoryRoot,
-                              previousTree,
-                              scene.source,
-                          ),
-                      parity.referenceTimeSeconds,
-                      parity.referenceAnimationGroups,
-                      parity.referenceFrame,
-                      parity.independentEngines,
-                  )
-                : composed;
-            assertExplainedByPin(row, previousComposed, previous, current);
-            if (sourceMoved) movedSources.push(row.id);
+            const pinOnly = moduleMoveExplainedByPin(
+                composed,
+                row.moduleSha256,
+                previous,
+                current,
+            );
+            if (!pinOnly) {
+                // The captured program can move without the catalogued entry
+                // moving: a right-handed twin imports its left-handed sibling.
+                const entry = repositoryRelativePath(
+                    repositoryRoot,
+                    evaluatedEntryPath(resolve(repositoryRoot, scene.source)),
+                );
+                const previousComposed = suiteBrowserModule(
+                    scene.source,
+                    () => previousSource(repositoryRoot, previousTree, entry),
+                    parity.referenceTimeSeconds,
+                    parity.referenceAnimationGroups,
+                    parity.referenceFrame,
+                    parity.independentEngines,
+                );
+                assertExplainedByPin(row, previousComposed, previous, current);
+            }
+            if (!pinOnly || sourceMoved) movedSources.push(row.id);
             row.moduleSha256 = digest;
             movedModules.push(row.id);
         }
@@ -433,15 +442,11 @@ function previousSource(
     tree: string,
     path: string,
 ): string {
-    return execFileSync(
-        "git",
-        ["show", `${tree}:${path.replace(/\\/g, "/")}`],
-        {
-            cwd: repositoryRoot,
-            encoding: "utf8",
-            maxBuffer: 1 << 26,
-        },
-    );
+    return execFileSync("git", ["show", `${tree}:${path}`], {
+        cwd: repositoryRoot,
+        encoding: "utf8",
+        maxBuffer: 1 << 26,
+    });
 }
 
 async function main(): Promise<void> {

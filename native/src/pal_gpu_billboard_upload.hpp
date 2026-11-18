@@ -74,23 +74,16 @@ void ensure_billboard_instance_capacity(const BillboardSystemRecord& system, Pas
     pass.upload_stamp = {};
 }
 
-/**
- * For each member, the index of the existing pass it keeps (the first one of
- * its system not kept by an earlier member), or `passes.size()` when it has
- * none. A system added twice has two renderables upstream, so two passes.
- */
+/** Each collection member keeps its system's pass, or matches `passes.size()` if not built yet. */
 template <class Pass>
 std::vector<std::size_t> billboard_pass_matches(const std::vector<Pass>& passes,
                                                 const std::vector<BillboardSystemHandle>& members) {
     std::vector<std::size_t> matches;
     matches.reserve(members.size());
-    std::vector<bool> kept(passes.size(), false);
     for (const BillboardSystemHandle member : members) {
         std::size_t index = 0;
-        while (index < passes.size() && (kept[index] || passes[index].system.value != member.value))
+        while (index < passes.size() && passes[index].system != member)
             ++index;
-        if (index < passes.size())
-            kept[index] = true;
         matches.push_back(index);
     }
     return matches;
@@ -129,7 +122,7 @@ void adopt_billboard_passes(std::vector<Pass>& passes, const std::vector<std::si
 }
 
 /**
- * The passes follow the systems the scene draws. `addBillboardSystem`
+ * The passes follow the systems the scene draws. `addBillboardSystemToScene`
  * publishes a renderable when its scene builds, which advances the scene's
  * `renderable_version`, and the scene's render task rebinds whatever it holds
  * then (render-task-base.ts `_buildBindings`); so when that version moves,

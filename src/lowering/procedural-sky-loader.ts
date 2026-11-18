@@ -1,6 +1,5 @@
 import ts from "typescript";
 import { textureOwnershipCpp } from "./compute-texture-lowerer.js";
-import { stringLiteral } from "../cpp-literals.js";
 import {
     type LoweredSource,
     type LoweringContext,
@@ -673,6 +672,18 @@ function lowerBrdfImage(context: LoweringContext): string {
             ["response.blob", () => "pal::http_response_buffer(response)"],
         ]),
         expression(node, lowerer) {
+            // A whole packaged file has no response headers. If packaged fetches
+            // gain content-type, bind this read to the PAL's Headers.get instead.
+            if (
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind ===
+                    ts.SyntaxKind.QuestionQuestionToken &&
+                context.expressionMatchesShape(
+                    node.left,
+                    "response.headers.get('content-type')",
+                )
+            )
+                return lowerer.expression(node.right);
             if (ts.isAwaitExpression(node))
                 return `(co_await ${lowerer.expression(node.expression)})`;
             if (
@@ -727,49 +738,6 @@ function lowerBrdfImage(context: LoweringContext): string {
                 return [
                     `${indent}co_return ${lowerer.expression(node.expression!)};`,
                 ];
-            if (ts.isThrowStatement(node)) {
-                const error = unwrapExpression(node.expression);
-                if (
-                    !ts.isNewExpression(error) ||
-                    !context.expressionMatchesShape(error.expression, "Error")
-                )
-                    return context.contractError(
-                        node,
-                        "Sky image diagnostic changed.",
-                    );
-                const message = error.arguments?.[0];
-                if (!message || !ts.isTemplateExpression(message))
-                    return context.contractError(
-                        node,
-                        "Expected sky URL diagnostic template.",
-                    );
-                const pieces = [
-                    `std::string{${stringLiteral(message.head.text)}}`,
-                ];
-                for (const span of message.templateSpans) {
-                    const value = context.matchingExpressionShape(
-                        span.expression,
-                        ["url", "response.status"],
-                    );
-                    if (value === "url") pieces.push("url");
-                    else if (value === "response.status")
-                        pieces.push("js::number_to_string(response->status)");
-                    else {
-                        context.assertExpressionShape(
-                            span.expression,
-                            "response.headers.get('content-type') ?? ''",
-                            "Packaged response has no content-type header",
-                        );
-                        pieces.push("std::string{}");
-                    }
-                    pieces.push(
-                        `std::string{${stringLiteral(span.literal.text)}}`,
-                    );
-                }
-                return [
-                    `${indent}throw std::runtime_error(${pieces.join("+")});`,
-                ];
-            }
             return undefined;
         },
     });

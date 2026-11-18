@@ -430,8 +430,25 @@ export class NodeParticleLowerer {
         }
         this.context.assertExpressionShape(
             guard.expression,
-            "!billboard.blendMode._particlePasses",
+            "billboard.blendMode._particlePasses",
             "particle blend registrar fork",
+        );
+        this.context.assertStatementShapes(
+            guard,
+            ts.isBlock(guard.thenStatement)
+                ? guard.thenStatement.statements
+                : [guard.thenStatement],
+            `attachParticleMultiplyShader(billboard);
+             billboard._sceneBuilder = (engine, buildBase) => buildParticleBlendBillboardRenderable(engine, billboard, buildBase);`,
+            "particle blend scene attachment",
+        );
+        this.context.assertExpressionShape(
+            this.context.callExpression(
+                declaration,
+                "addBillboardSystemToScene",
+            ),
+            "addBillboardSystemToScene(scene, billboard)",
+            "particle billboard collection membership",
         );
     }
 
@@ -473,7 +490,7 @@ export class NodeParticleLowerer {
             "registerNodeParticleSet autoStart",
         );
         // The registrar the pin picks per system: the enabler's, when one is
-        // installed, and `addFacingBillboardSystem` otherwise. Both reach the
+        // installed, and `addBillboardSystemToScene` otherwise. Both reach the
         // same generated add; which blend the system carries is what differs,
         // and that is decided where the system is built.
         const registrar = this.context.findNodes(
@@ -488,7 +505,7 @@ export class NodeParticleLowerer {
         }
         this.context.assertExpressionShape(
             registrar.expression,
-            "system._registerBillboard ?? addFacingBillboardSystem",
+            "system._registerBillboard ?? addBillboardSystemToScene",
             "registerNodeParticleSet registrar",
         );
     }
@@ -1763,7 +1780,7 @@ void write_node_particle_column(int set, int system, const char* column, double 
         );
         this.context.assertExpressionShape(
             (attach as ts.ExpressionStatement).expression,
-            "(system._registerBillboard ?? addFacingBillboardSystem)(scene, billboard)",
+            "(system._registerBillboard ?? addBillboardSystemToScene)(scene, billboard)",
             "particle scene attachment",
         );
         const autoStart = start as ts.IfStatement;

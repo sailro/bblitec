@@ -8,7 +8,7 @@
 // text draws in that graph's scene pass.
 
 import {
-    addTextRenderable,
+    addTextRenderableToScene,
     attachControl,
     createArcRotateCamera,
     createDefaultTextData,
@@ -37,7 +37,7 @@ async function run(): Promise<void> {
     const scale = 0.01;
     text.position.set(-data.width * scale * 0.5, data.height * scale * 0.5, 0);
     text.scaling.set(scale, scale, scale);
-    addTextRenderable(scene, text);
+    addTextRenderableToScene(scene, text);
 
     await registerScene(scene);
     await startEngine(engine);

@@ -14,7 +14,7 @@ import ts from "typescript";
 import { handleCppType } from "../data-types.js";
 import {
     screenSpaceFacts,
-    screenSpaceReadsLightDirection,
+    screenSpaceDeclaresOption,
 } from "../../pinned-screen-space.js";
 import { doubleLiteral } from "../../cpp-literals.js";
 import { compileStaticNumber } from "../option-helpers.js";
@@ -108,7 +108,7 @@ function compileLightDirection(
     intrinsic: string,
 ): string {
     const expression = context.objectProperty(object, "lightDirection");
-    if (!screenSpaceReadsLightDirection(intrinsic)) {
+    if (!screenSpaceDeclaresOption(intrinsic, "lightDirection")) {
         if (expression) {
             context.fail(expression, `${intrinsic} reads no lightDirection.`);
         }

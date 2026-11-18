@@ -619,14 +619,9 @@ void check_pipeline_cache() {
            touched.version == 2);
 }
 
-// The passes follow the systems the scene draws (`billboard_renderables`,
-// which `addBillboardSystem`'s deferred builder fills when the scene builds,
-// advancing its `renderable_version`) on both backends: setup builds the
-// members it finds, a system a registration publishes between setup and the
-// first frame -- while Dawn's setup job is still running -- or after it gets a
-// pass that draws before the next frame, a frame with no build since follows
-// nothing, a kept member keeps its pass, a system added twice gets two, and a
-// scene's disposal releases them.
+// Both backends follow the unique systems the scene has published. A system
+// added during setup or after its first frame gets a pass on the next build.
+// Existing systems keep their passes; scene disposal releases them.
 void check_billboard_membership() {
     using namespace bbl;
     using namespace bbl::pal;
@@ -698,10 +693,10 @@ void check_billboard_membership() {
     frame_sdl();
     assert((systems(sdl) == std::vector<std::uint32_t>{0, 1}) && sdl[0].instances == kept);
     assert(capture::billboard_coverage.back() && draws(record_sdl, sdl));
-    publish({2, 1});
+    publish({2});
     frame_sdl();
-    assert((systems(sdl) == std::vector<std::uint32_t>{0, 1, 2, 1}) && sdl[0].instances == kept);
-    assert((capture::billboard_builds == std::vector<std::uint32_t>{0, 1, 2, 1}));
+    assert((systems(sdl) == std::vector<std::uint32_t>{0, 1, 2}) && sdl[0].instances == kept);
+    assert((capture::billboard_builds == std::vector<std::uint32_t>{0, 1, 2}));
     assert(draws(record_sdl, sdl) && sdl_version == version);
     // The realm's records serve the build in place.
     assert(capture::billboard_texels[0] == engine.sprite_atlases[0].rgba.get());
@@ -760,7 +755,7 @@ void check_billboard_membership() {
 }
 
 // The depth-hosted layer pass follows the layers the scene draws on both
-// backends (`addDepthHostedSpriteLayer` publishes through the deferred
+// backends (`addDepthHostedSpriteLayerToScene` publishes through the deferred
 // builders, advancing `renderable_version`): a build that publishes more
 // layers appends them beside the drawn ones, which keep their clocks, and
 // they share an earlier compatible layer's pipeline; disposal releases it.

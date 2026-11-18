@@ -62,10 +62,11 @@ export async function runDeviceLostRecovery(engine: EngineContext, state: Device
         throw new Error(\`WebGPU device recovery missing required features: \${missingFeatures.join(", ")}\`);
     }
     const storageRecovery = engine._storageBuffers?.size ? await loadCpuStorageRecovery() : undefined;
-    engine._device = await runRecoveryStep("requesting a replacement device", () => adapter.requestDevice({
+    const device = await runRecoveryStep("requesting a replacement device", () => adapter.requestDevice({
         requiredFeatures: state._requiredFeatures,
-        requiredLimits: { ...engine._options?.requiredLimits, ...storageRecovery?.getCpuStorageRecoveryLimits(engine) },
+        requiredLimits: { ...engine.device._options?.requiredLimits, ...storageRecovery?.getCpuStorageRecoveryLimits(engine) },
     }));
+    engine._device = engine.device._device = device;
     engine._attachGpuEvents?.(engine);
     await runRecoveryStep("rebuilding engine storage buffers", async () => {
         const recovery = storageRecovery ?? (engine._storageBuffers?.size ? await loadCpuStorageRecovery() : undefined);

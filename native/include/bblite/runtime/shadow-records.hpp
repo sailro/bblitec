@@ -99,6 +99,22 @@ struct CsmStaticCacheState {
     std::vector<std::uint32_t> copy_layers;
 };
 
+struct ShadowMaterialSnapshot {
+    MaterialHandle view;
+    std::uint64_t generation;
+    std::uint32_t features;
+    bool active;
+};
+
+/** The inputs of a retained no-color caster packet. */
+struct ShadowCasterSnapshot {
+    MaterialHandle material;
+    MaterialHandle view;
+    std::uint64_t renderable_generation;
+    std::uint64_t view_generation;
+    bool operator==(const ShadowCasterSnapshot&) const = default;
+};
+
 /**
  * One `ShadowGenerator`, as the three pinned factories build it.
  *
@@ -135,13 +151,7 @@ struct ShadowGeneratorRecord {
      * so the array names each (`name_mesh`) and none gives up its slot.
      */
     std::vector<MeshName> caster_names;
-    /**
-     * Bumped by every `set_shadow_task_caster_meshes`. The pin rebuilds a
-     * generator's task state when the caster ARRAY it is handed is a new
-     * one (`existing._casterMeshes === casterMeshes` in the ensure hooks),
-     * and a fresh state's `_last*Version` sentinels force the next render;
-     * this counter is that identity change, read by the render gate.
-     */
+    /** Caster-array identity for the cache refit gate and initial task registration. */
     std::uint64_t caster_list_version = 0;
     // enableMorphTargetShadows: bound each caster by its morph-expanded
     // AABB rather than its unmorphed geometry box. Off unless the scene
@@ -168,8 +178,9 @@ struct ShadowGeneratorRecord {
      */
     std::vector<TaskHandle> caster_tasks;
     /** Source/view pairs retained while a dynamic caster list is filtered. */
-    std::vector<MaterialHandle> caster_material_sources;
-    std::vector<MaterialHandle> caster_material_views;
+    std::unordered_map<std::uint32_t, ShadowMaterialSnapshot> caster_material_views;
+    std::unordered_map<std::uint32_t, ShadowCasterSnapshot> caster_snapshots;
+    std::uint64_t caster_packet_version = 0;
     /** ESM only: one of the two lanes its receiver block packs. */
     double depth_scale = 0.0;
     /** ESM and CSM: the soft fade at the edge of the fitted volume. */

@@ -416,6 +416,8 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
 
 - Sprite2D, billboards, atlases, Y-sort. Mixed transparent draws tied in depth/order or without a camera refuse.
   Capacities ≤ 4,294,967,295; buffers 32-bit sized.
+- `addBillboardSystemToScene`, `addDepthHostedSpriteLayerToScene` and `addTextRenderableToScene` add a member
+  once per scene; it draws after the next scene build. Collection removal, snapshots and subscriptions are unsupported.
 - Picking: `createPickingRay` needs no GPU picker; detailed picks skip thin instances, billboards and splats.
   A `pickAsync` filter is the scene's predicate per mesh; `discard` and `ignore` refuse. VAT meshes pick through their
   baked pose; a detailed VAT pick refuses. A stored or awaited result's `pickedMesh` becomes a Mesh of the entry's

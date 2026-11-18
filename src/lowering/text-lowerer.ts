@@ -1,5 +1,5 @@
 import type { LoweringContext } from "./context.js";
-import { assertDeferredSceneRenderables } from "./scene-deferred.js";
+import { assertSceneRenderableAdd } from "./scene-deferred.js";
 import { lowerTextFunctions } from "./text-records.js";
 
 /**
@@ -30,7 +30,26 @@ ${definitions}
 
     /** `upstream_text_renderable.hpp`: the scene renderable. */
     public renderableHeader(): string {
-        assertDeferredSceneRenderables(this.context);
+        assertSceneRenderableAdd(this.context);
+        const { declaration } = this.context.functionDeclaration(
+            "src/text/text-renderable.ts",
+            "addTextRenderableToScene",
+        );
+        // The port drops only the family literal; attach is lowered below.
+        const add = this.context.callExpression(
+            declaration,
+            "_addSceneRenderable",
+        );
+        if (add.arguments.length !== 4)
+            this.context.contractError(
+                add,
+                "Expected a text collection add without a pick source.",
+            );
+        this.context.assertExpressionShape(
+            add.arguments[1]!,
+            '"text"',
+            "text collection",
+        );
         const { declarations, definitions, includes } = lowerTextFunctions(
             this.context,
             "renderable",

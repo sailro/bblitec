@@ -13,7 +13,7 @@
 
 import {
     addBillboardSpriteIndex,
-    addFacingBillboardSystem,
+    addBillboardSystemToScene,
     addToScene,
     createArcRotateCamera,
     createBillboardCustomShader,
@@ -196,7 +196,7 @@ return vec4<f32>(pal.rgb, texel.a);`,
         frame: 0,
         color: [1, 1, 1, 1],
     });
-    addFacingBillboardSystem(scene, billboards);
+    addBillboardSystemToScene(scene, billboards);
 
     const rowBase = solid(8, 1, ROW_BASE);
     const cursor = solid(1, 1, MAGENTA);

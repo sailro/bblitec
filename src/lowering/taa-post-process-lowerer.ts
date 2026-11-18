@@ -264,7 +264,7 @@ ${body}
         this.context.assertExpressionShape(
             this.context.variableInitializer(parsed, "body"),
             `() => {
-            applyColorAttachmentState(task._colorAttachment, task.outputTexture, task.clear);
+            applyColorAttachmentState(task._colorAttachment, task.outputTexture, task.resolveTexture, task.clear);
             const pass = engine._currentEncoder!.beginRenderPass(task._renderPassDescriptor);
             applyViewport(pass, task.viewport, task.outputTexture);
             pass.setPipeline(task._pipeline!);

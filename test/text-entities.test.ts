@@ -41,7 +41,7 @@ writeFileSync(
 const source = (
     body: string,
 ) => `import { createEngine,loadFont,createDefaultTextData,createTextRenderable,
-    disposeTextRenderable,disposeDefaultTextData,addTextRenderable,createSceneContext,setAlphaToCoverage,getAlphaToCoverage,
+    disposeTextRenderable,disposeDefaultTextData,addTextRenderableToScene,createSceneContext,setAlphaToCoverage,getAlphaToCoverage,
     createFreeCamera,attachFreeControl,onBeforeRender,registerScene,disposeScene,unregisterScene,rebuildSceneRenderables,
     createTextLayer,createTextRenderer,registerTextRenderer,updateTextData,createStandardMaterial,
     type TextLayer,type TextRenderable,type DefaultTextData } from "@babylonjs/lite";
@@ -257,19 +257,19 @@ test("text pipeline-affecting writes and internal data operations keep explicit 
         [`${setup} r._data=data;`, /read-only|replacement/],
         [`${setup} data.width=4;`, /read-only|replacement/],
         [
-            `${setup} const scene=createSceneContext(engine);addTextRenderable(scene,r);const alias=r;setAlphaToCoverage(alias,true);`,
+            `${setup} const scene=createSceneContext(engine);addTextRenderableToScene(scene,r);const alias=r;setAlphaToCoverage(alias,true);`,
             /before text attachment/,
         ],
         [
-            `${setup} const scene=createSceneContext(engine);addTextRenderable(scene,r);r.ignoreDepth=true;`,
+            `${setup} const scene=createSceneContext(engine);addTextRenderableToScene(scene,r);r.ignoreDepth=true;`,
             /before text attachment/,
         ],
         [
-            `${setup} const scene=createSceneContext(engine);addTextRenderable(scene,r);r.order=4;`,
+            `${setup} const scene=createSceneContext(engine);addTextRenderableToScene(scene,r);r.order=4;`,
             /before text attachment/,
         ],
         [
-            `${setup} const scene=createSceneContext(engine);addTextRenderable(scene,r);disposeTextRenderable(r);`,
+            `${setup} const scene=createSceneContext(engine);addTextRenderableToScene(scene,r);disposeTextRenderable(r);`,
             /before text attachment/,
         ],
         [
@@ -277,7 +277,7 @@ test("text pipeline-affecting writes and internal data operations keep explicit 
             /before text attachment/,
         ],
         [
-            `${setup} const scene=createSceneContext(engine);onBeforeRender(scene,()=>addTextRenderable(scene,r));`,
+            `${setup} const scene=createSceneContext(engine);onBeforeRender(scene,()=>addTextRenderableToScene(scene,r));`,
             /definite initialization/,
         ],
         [
@@ -313,11 +313,11 @@ test("text pipeline-affecting writes and internal data operations keep explicit 
             /binding topology/,
         ],
         [
-            `${setup} const scene=createSceneContext(engine,{defaultRenderTask:false});addTextRenderable(scene,r);await registerScene(scene);`,
+            `${setup} const scene=createSceneContext(engine,{defaultRenderTask:false});addTextRenderableToScene(scene,r);await registerScene(scene);`,
             /default scene render task/,
         ],
         [
-            `const scene=createSceneContext(engine,{defaultRenderTask:false});${setup}addTextRenderable(scene,r);await registerScene(scene);`,
+            `const scene=createSceneContext(engine,{defaultRenderTask:false});${setup}addTextRenderableToScene(scene,r);await registerScene(scene);`,
             /default scene render task/,
         ],
         [
@@ -355,7 +355,7 @@ test("text projection leaves draw admission to attached scene records", () => {
         source(`${setup} createStandardMaterial();
         const scene=createSceneContext(engine);
         scene.camera=createFreeCamera({x:0,y:0,z:-10},{x:0,y:0,z:0});
-        addTextRenderable(scene,r);await registerScene(scene);`),
+        addTextRenderableToScene(scene,r);await registerScene(scene);`),
     );
     const output = resolve(directory, "unattached");
     execFileSync(

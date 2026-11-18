@@ -3119,7 +3119,7 @@ public:
                     }
                     // An overlay's own swapchain task composites in its pass
                     // instead of resolving through its copies.
-                    const std::optional<SwapchainTask> overlay_task =
+                    const std::optional<TaskHandle> overlay_task =
                         graph_scene.state->overlay_base
                             ? default_swapchain_task(engine, graph_scene)
                             : std::nullopt;
@@ -3130,7 +3130,7 @@ public:
                             continue;
                         if (overlay_task &&
                             (swapchain_task_copy(graph_scene, *overlay_task, handle) ||
-                             (handle == overlay_task->task &&
+                             (handle == *overlay_task &&
                               frame_overlays.mode == OverlayComposite::skipped)))
                             continue;
                         const pal::ScopedTargetUser task_target_user(target_user,
@@ -3452,7 +3452,7 @@ public:
                                         ? surface_view
                                         : handle_at(state.render_targets, resolve).color_view;
                             }
-                            if (overlay_task && handle == overlay_task->task) {
+                            if (overlay_task && handle == *overlay_task) {
                                 const OverlayAttachment attachment = overlay_attachment();
                                 if (attachment.format != target.color_format ||
                                     attachment.samples !=

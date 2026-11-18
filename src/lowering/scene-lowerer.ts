@@ -807,29 +807,20 @@ export class SceneLowerer {
             "_removeMeshFromRenderTask(task, mesh)",
             "scene render-task built-entry removal",
         );
-        const { declaration: taskRemoval } = this.context.functionDeclaration(
-            "src/frame-graph/render-task-base.ts",
-            "_removeMeshFromRenderTask",
-        );
-        this.context.expectShapeCount(
-            taskRemoval,
-            "task._lastVersion = -1",
-            "removed-generation version reset",
-        );
-        for (const root of [meshRemoval, taskRemoval]) {
-            if (
-                this.context.hasNode(
-                    root,
-                    (node) =>
-                        ts.isPropertyAccessExpression(node) &&
-                        node.name.text === "_pendingMeshes",
-                )
+        // The shared renderTaskRemovalHeader checks the delegated removal
+        // and its removed-generation publication for both callers.
+        if (
+            this.context.hasNode(
+                meshRemoval,
+                (node) =>
+                    ts.isPropertyAccessExpression(node) &&
+                    node.name.text === "_pendingMeshes",
             )
-                this.context.contractError(
-                    root,
-                    "Scene mesh removal now drops queued task requests.",
-                );
-        }
+        )
+            this.context.contractError(
+                meshRemoval,
+                "Scene mesh removal now drops queued task requests.",
+            );
         // A manager created with this engine owns animation time for the
         // groups attached to it, and a scene it drives has no other way to
         // reach them: the measured seek walks the scene's seekers, so a
@@ -3049,14 +3040,16 @@ void dispose_scene(Scene& scene) {
 #endif
     scene.animation_groups.clear();
 #if BBLITE_HAS_SPRITES
+    scene.state->billboard_members.reset();
     scene.billboard_systems.clear();
     scene.state->billboard_renderables.clear();
+    scene.state->depth_sprite_members.reset();
     scene.depth_hosted_sprite_layers.clear();
 #endif
     // The published lists the renderers follow are empty now.
     ++scene.state->renderable_version;
     scene.splat_meshes.clear();
-${options.text ? "    scene.state->text_renderables.clear();\n" : ""}\
+${options.text ? "    scene.state->text_members.reset();\n    scene.state->text_renderables.clear();\n" : ""}\
     scene.before_render.clear();
     scene.animation_seekers.clear();
     scene.deferred_builders.clear();

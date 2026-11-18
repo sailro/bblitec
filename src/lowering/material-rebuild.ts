@@ -99,6 +99,7 @@ js::Nullable<js::Promise<js::PromiseVoid>> rebuild_material(Engine& engine, Scen
         if (!matches(drawn)) continue;
         MaterialRecord& target = ${record("drawn")};
         ++target.build_generation;
+        ++handle_at(engine.meshes, mesh).renderable_generation;
         changed = true;
         pbr = pbr || material_family_name(target) == "pbr";
     }

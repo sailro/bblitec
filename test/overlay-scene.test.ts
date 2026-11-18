@@ -245,6 +245,9 @@ int main() {
     // The compiler's scene pass (0) with its resolve (1) and present (2)
     // copies after it, and a later task (3) writing the swapchain.
     for (int task = 0; task < 4; ++task) engine.frame_tasks.emplace_back();
+    engine.render_targets.emplace_back();
+    engine.render_targets[0].samples = 4;
+    engine.frame_tasks[0].render.target = bbl::RenderTargetHandle{0};
     engine.frame_tasks[0].render.scene_stages = true;
     engine.frame_tasks[1].kind = bbl::FrameTaskKind::copy;
     engine.frame_tasks[2].kind = bbl::FrameTaskKind::copy;
@@ -259,6 +262,7 @@ int main() {
     assert(bbl::overlay_composition(engine, root, false).mode == OverlayComposite::swapchain);
     // A record the scene pass does not render skips the layers at MSAA.
     engine.frame_tasks[0].render_enabled = false;
+    assert(bbl::default_swapchain_task(engine, root)->value == 0);
     assert(bbl::overlay_composition(engine, root, true).mode == OverlayComposite::skipped);
     assert(bbl::overlay_composition(engine, root, false).mode == OverlayComposite::swapchain);
     engine.frame_tasks[0].render_enabled = true;
@@ -281,8 +285,18 @@ int main() {
     assert(bbl::overlay_composition(other, post, true).mode == OverlayComposite::skipped);
     other.frame_tasks[0].render.target = bbl::RenderTargetHandle{1};
     other.frame_tasks[0].render.resolve_target = bbl::RenderTargetHandle{0};
+    assert(bbl::overlay_composition(other, post, true).mode == OverlayComposite::skipped);
+    other.render_targets[1].samples = 4;
     const auto resolving = bbl::overlay_composition(other, post, true);
     assert(resolving.mode == OverlayComposite::root_attachment && resolving.task.value == 0);
+    // The root selects the last active resolver, independently of the overlay's first swapchain task.
+    other.frame_tasks.emplace_back();
+    other.frame_tasks[2].render = other.frame_tasks[0].render;
+    post.tasks.push_back(TaskHandle{2});
+    assert(bbl::default_swapchain_task(other, post)->value == 0);
+    assert(bbl::overlay_composition(other, post, true).task.value == 2);
+    other.frame_tasks[2].execution_enabled = false;
+    assert(bbl::overlay_composition(other, post, true).task.value == 0);
     // A root whose render tasks never reach the swapchain -- a post-process
     // writes it -- has no swapchain task: skipped at MSAA, loaded at one sample.
     other.frame_tasks[0].render.resolve_target = bbl::RenderTargetHandle{};

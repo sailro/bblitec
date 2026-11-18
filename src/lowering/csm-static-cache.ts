@@ -248,6 +248,8 @@ function assertCsmStaticCacheContracts(context: LoweringContext): void {
         "ensureCsmShadowCacheState",
     ).declaration;
     for (const shape of [
+        "_dropTaskMeshes(staticTask, dropped)",
+        "existing._cachedContentVersion = -1",
         "createCsmRefitGate<Mesh>({ refitAngle: cache._refitAngle, refitMaxIntervalMs: cache._refitMaxIntervalMs })",
         "createCsmStaticRefitScheduler(cascadeCount, cache._staticCascadesPerFrame ?? 0)",
         "cache._cascadeCoveragePadding ? createCoverageState(cache._cascadeCoveragePadding) : null",
@@ -433,11 +435,6 @@ ${library.includes.map((header) => `#include <${header}>`).join("\n")}
 #include <vector>
 
 ${library.source}
-namespace bbl {
-/** The generated shadow surface's caster refresh, through which a cached frame refills its passes. */
-void refresh_shadow_task_meshes(Engine& engine, ShadowGeneratorHandle generator);
-} // namespace bbl
-
 namespace bbl::upstream {
 
 /**

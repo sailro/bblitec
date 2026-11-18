@@ -289,6 +289,11 @@ test("recovery refuses pinned defaults, lifecycle, ownership and PAL contract dr
             "settleTextureOwnership?.();",
             "otherOwnership?.();",
         ],
+        [
+            "device-lost-recovery-run",
+            "engine._device = engine.device._device = device;",
+            "engine._device = device;",
+        ],
         ["device-lost-recovery-run", "if (wasRunning)", "if (!wasRunning)"],
         [
             "device-lost-recovery-run",

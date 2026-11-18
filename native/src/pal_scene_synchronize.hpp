@@ -36,6 +36,9 @@
 #include "pal_gpu_surface.hpp"
 #include "pal_gpu_vertex.hpp"
 #include "pal_gpu_materials.hpp"
+#if BBLITE_SHADOW_RECEIVERS
+#include "pal_gpu_shadows.hpp"
+#endif
 #include "pal_texture_upload_cache.hpp"
 #include "pal_gpu_pipeline.hpp"
 #include "pal_pass_camera.hpp"
@@ -573,6 +576,16 @@ SceneSyncOutcome synchronize_scene(SceneSyncState<Mesh>& sync, Backend& backend)
     backend.update_sprites(renderable_delta_ms);
     const auto release = [&](Mesh& mesh) { backend.release_mesh(mesh); };
     const auto upload = [&](const upstream::RenderItem& item) { return backend.upload_mesh(item); };
+#if BBLITE_SHADOW_RECEIVERS
+    // A rebuilt renderable or a material swap can change a caster without resupplying its list.
+    // Reconcile before the new draw lists capture its view and packet.
+    for (const auto& owner : sync.scenes) {
+        for_each_shadow_generator(*owner, engine,
+                                  [&](ShadowGeneratorHandle handle, LightHandle, std::size_t) {
+                                      refresh_shadow_task_meshes(engine, handle, false);
+                                  });
+    }
+#endif
     const bool draw_lists_moved = engine.draw_list_epoch != sync.synced_draw_list_epoch;
     outcome.topology_updated = refresh_overlay_render_plans(
         engine, sync.scenes, sync.overlay_plans, sync.overlay_meshes,

@@ -12,6 +12,7 @@ import { EmissionSet } from "../emission-transaction.js";
 import ts from "typescript";
 import { handleCppType } from "../data-types.js";
 import {
+    pinnedOptionDeclares,
     pinnedOptionKind,
     pinnedOptionNames,
     type PinnedFactory,
@@ -342,6 +343,16 @@ export function compileDescriptorOptions(
         const key = named.key;
         const value = named.value;
         if (handled.has(key)) continue;
+        if (key === "resolveTexture" && pinnedOptionDeclares(factory, key)) {
+            // Native fullscreen passes have no resolve attachment. An absent
+            // resolve is the pin's ordinary single-output pass.
+            if (optionalRenderTarget(context, object, key, true).value)
+                context.fail(
+                    value,
+                    `${factory.factory} option 'resolveTexture' requires a native post-process resolve attachment.`,
+                );
+            continue;
+        }
         const kind = pinnedOptionKind(factory, key);
         if (!kind) {
             context.fail(

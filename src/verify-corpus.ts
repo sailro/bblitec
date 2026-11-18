@@ -27,7 +27,11 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { downloadCached, readCachedDownload } from "./asset-download-cache.js";
+import {
+    downloadCached,
+    readCachedDownload,
+    readParsedDownload,
+} from "./asset-download-cache.js";
 import { isRecord } from "./json-fields.js";
 import { runConcurrently } from "./run-concurrently.js";
 import { zipMembers, type ArchiveMember } from "./zip-archive.js";
@@ -363,7 +367,7 @@ interface RowVerdict {
     detail: string;
 }
 
-async function verifyChecks(
+export async function verifyChecks(
     checks: readonly CorpusCheck[],
     offline: boolean,
 ): Promise<RowVerdict[]> {
@@ -497,22 +501,18 @@ async function verifyChecks(
         { index: Map<string, string> } | { failure: string }
     >();
     for (const url of new Set(archiveRows.map((row) => row.check.url))) {
-        const fetched = await classifiedFetch(url, offline);
-        if (fetched.state === "uncached") {
-            archives.set(url, { failure: uncachedDetail(url) });
-            continue;
-        }
-        if (fetched.state !== "fetched") {
-            // A 404 on an archive origin is a fetch failure like any
-            // other -- the URL is a pinned release, not the upstream
-            // tree -- so both non-served states report their message.
-            archives.set(url, { failure: fetched.message });
-            continue;
-        }
         try {
-            archives.set(url, {
-                index: indexArchiveContents(fetched.bytes, url),
-            });
+            const index = await readParsedDownload(
+                url,
+                offline,
+                indexArchiveContents,
+            );
+            archives.set(
+                url,
+                index === undefined
+                    ? { failure: uncachedDetail(url) }
+                    : { index },
+            );
         } catch (error) {
             archives.set(url, {
                 failure: error instanceof Error ? error.message : String(error),

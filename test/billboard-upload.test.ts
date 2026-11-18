@@ -195,7 +195,7 @@ test(
     "billboard systems draw from their scene's next build, refuse after disposal, and only observable alpha-to-coverage changes refuse",
     { skip: !tools },
     () => {
-        // addBillboardSystem registers the pick source at once and the
+        // addBillboardSystemToScene registers the pick source at once and the
         // renderable through the scene's deferred builders, which run when
         // the scene builds (registerScene). The pin reads alpha-to-coverage
         // when a scene binds the renderable, for a cutout system on a
@@ -267,6 +267,7 @@ test(
             ${lowerMeshMaterialSetter(context)}
             ${lifecycle}
             ${definitions}
+            ${cppFunction(new SpriteLowerer(context).lowerCore().source, "void add_depth_hosted_sprite_layer(")}
         }
         int main() {
             bbl::Engine engine;
@@ -281,6 +282,11 @@ test(
             const auto drawn = create(cutout), late = create(cutout), blended = create(transparent);
             bbl::Scene scene;
             scene.engine = &engine;
+            const bbl::Sprite2DLayerHandle layer{0};
+            engine.sprite_layers.emplace_back().depth_mode = bbl::Sprite2DDepthMode::test;
+            bbl::add_depth_hosted_sprite_layer(scene, layer);
+            bbl::add_depth_hosted_sprite_layer(scene, layer);
+            assert(scene.depth_hosted_sprite_layers.empty());
             const auto& pick_sources = scene.billboard_systems;
             const auto& renderables = scene.state->billboard_renderables;
             const auto& version = scene.state->renderable_version;
@@ -306,18 +312,23 @@ test(
                 return true;
             };
             bbl::add_billboard_system(scene, drawn);
+            bbl::add_billboard_system(scene, drawn);
             // The pick source registers at once; the renderable waits for the build.
             assert(same(pick_sources, {drawn.value}) && renderables.empty() && version == 0);
             // Before registration the write is the one every binding reads.
             assert(set(drawn, true));
             bbl::register_scene(scene);
             assert(same(renderables, {drawn.value}) && version == 1);
+            assert(scene.depth_hosted_sprite_layers == std::vector<bbl::Sprite2DLayerHandle>{layer});
+            bbl::add_depth_hosted_sprite_layer(scene, layer);
+            assert(scene.deferred_builders.empty());
             // A system added to the registered scene is pickable at once and
             // draws from its next registration, which moves the version the
             // renderers follow; until then its setting is still the one that
             // binding reads.
             bbl::add_billboard_system(scene, late);
             bbl::add_billboard_system(scene, blended);
+            bbl::add_billboard_system(scene, drawn);
             bbl::register_scene(scene);
             assert(same(pick_sources, {drawn.value, late.value, blended.value}));
             assert(same(renderables, {drawn.value}) && version == 1);

@@ -91,7 +91,9 @@ export async function downloadCachedResource(
     }
     let pending = inFlight.get(url);
     if (!pending) {
-        pending = fetchAndStore(url, path).finally(() => inFlight.delete(url));
+        pending = fetchAndStore(url, path, (resource) => resource).finally(() =>
+            inFlight.delete(url),
+        );
         inFlight.set(url, pending);
     }
     const { bytes, contentType } = await pending;
@@ -99,20 +101,44 @@ export async function downloadCachedResource(
     return { bytes: bytes.slice(), ...(contentType ? { contentType } : {}) };
 }
 
-async function fetchAndStore(
+/** Parse a pinned download before publishing it. An online read replaces an
+ * unreadable legacy entry only after the origin serves a parseable response. */
+export async function readParsedDownload<T>(
+    url: string,
+    offline: boolean,
+    parse: (bytes: Uint8Array, url: string) => T,
+): Promise<T | undefined> {
+    const bytes = readCachedDownload(url);
+    if (bytes !== undefined) {
+        try {
+            return parse(bytes, url);
+        } catch (error) {
+            if (offline) throw error;
+        }
+    }
+    if (offline) return undefined;
+    return fetchAndStore(url, entryPath(url), (resource) =>
+        parse(resource.bytes, url),
+    );
+}
+
+async function fetchAndStore<T>(
     url: string,
     path: string,
-): Promise<DownloadedResource> {
+    parse: (resource: DownloadedResource) => T,
+): Promise<T> {
     const response = await fetch(url);
     if (!response.ok) {
         throw new Error(`Failed to download ${url}: HTTP ${response.status}.`);
     }
     const bytes = new Uint8Array(await response.arrayBuffer());
     const contentType = response.headers.get("content-type")?.split(";", 1)[0];
+    const result = parse({ bytes, ...(contentType ? { contentType } : {}) });
     try {
         mkdirSync(dirname(path), { recursive: true });
         storeAtomically(path, bytes);
         if (contentType) storeAtomically(`${path}.type`, contentType);
+        else rmSync(`${path}.type`, { force: true });
     } catch (error) {
         // The downloaded bytes in hand are the result; a failed store-back
         // (a full disk, a permission) costs only the next build's refetch
@@ -123,7 +149,7 @@ async function fetchAndStore(
             }`,
         );
     }
-    return { bytes, ...(contentType ? { contentType } : {}) };
+    return result;
 }
 
 /**

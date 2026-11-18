@@ -21,8 +21,8 @@
  *  - the weight variant's resolver installs the native composed pipeline;
  *  - the GPU path's WebGPU objects, engine surface and pipeline cache are
  *    `text-gpu-schema.ts`'s;
- *  - the scene is the native runtime's: `addDeferredSceneRenderables` is its
- *    deferred-builder queue;
+ *  - the scene owns text membership and runs each new member's attachment
+ *    when its deferred builders drain;
  *  - types from type-only modules the source maps do not carry (`Vec3`,
  *    `IWorldMatrixProvider`, `DrawBinding`, `Renderable`'s members) are
  *    typed here.
@@ -51,6 +51,7 @@ import {
     textGpuValues,
 } from "./text-gpu-schema.js";
 import { unwrapExpression } from "../compiler/syntax.js";
+import { sceneRenderableCollection } from "./scene-deferred.js";
 
 const TEXT_DATA = "src/text/text-data.ts";
 const DEFAULT_TEXT_DATA = "src/text/default-text-data.ts";
@@ -82,7 +83,6 @@ const ALPHA_TO_COVERAGE = "src/render/alpha-to-coverage.ts";
 
 const OBSERVABLE_VEC3 = "src/math/observable-vec3.ts";
 const OBSERVABLE_QUAT = "src/math/observable-quat.ts";
-const SCENE_CORE = "src/scene/scene-core.ts";
 
 const number: RecordShape = { kind: "number" };
 const flag: RecordShape = { kind: "boolean" };
@@ -274,19 +274,14 @@ const records: readonly RecordSpec[] = [
         ]),
     },
     {
-        pinned: ["DeferredSceneRenderables"],
-        cpp: "DeferredSceneRenderables",
+        pinned: ["SceneRenderableAttachment"],
+        cpp: "TextSceneAttachment",
         reference: false,
         // `Renderable` is type-only; the ones text builds are text renderables.
         members: new Map([
             [
-                "renderables",
-                {
-                    shape: {
-                        kind: "array",
-                        element: { kind: "record", name: "TextRenderable" },
-                    },
-                },
+                "_renderable",
+                { shape: { kind: "record", name: "TextRenderable" } },
             ],
         ]),
     },
@@ -526,24 +521,22 @@ const adapters = new Map<string, CallAdapter>([
         { cpp: () => "bbl::text_weight_installed = true" },
     ],
     [
-        // The scene is the native runtime's: its deferred-builder queue
-        // runs the pin's builder after construction, publishes the text
-        // renderables it built and adopts its disposer
-        // (`assertDeferredSceneRenderables` holds the queue to the pin).
-        `${SCENE_CORE}#addDeferredSceneRenderables`,
+        // The add-only text port owns the scene collection. The pin supplies
+        // the member, the attachment and its GPU detach/release closures.
+        `${sceneRenderableCollection}#_addSceneRenderable`,
         {
             cpp: (argument) =>
-                `bbl::add_deferred_text_renderables(${argument(0)}, ${argument(1)})`,
-            // The native queue calls the builder without the engine and
-            // scene the pin passes; a builder that declares them refuses.
+                `bbl::add_scene_text_renderable(${argument(0)}, ${argument(2)}, ${argument(3)})`,
             parameters: [
                 undefined,
+                undefined,
+                { kind: "record", name: "TextRenderable" },
                 {
                     kind: "function",
                     parameters: [],
                     result: {
                         kind: "record",
-                        name: "DeferredSceneRenderables",
+                        name: "SceneRenderableAttachment",
                     },
                 },
             ],
@@ -567,7 +560,7 @@ const EXPORTED: ReadonlySet<string> = new Set(
         [LAYOUT, "layoutText"],
         [TEXT_RENDERABLE, "disposeTextRenderable"],
         [TEXT_RENDERABLE, "createTextRenderable"],
-        [TEXT_RENDERABLE, "addTextRenderable"],
+        [TEXT_RENDERABLE, "addTextRenderableToScene"],
         // The compiler spells a text renderable's transform writes as the
         // pin's own accessors and setters.
         [OBSERVABLE_VEC3, "ObservableVec3.x"],
@@ -667,7 +660,7 @@ export const TEXT_RECORDS = [
     "WorldMatrixAccessors",
     "TextQuaternion",
     "TextRenderableOptions",
-    "DeferredSceneRenderables",
+    "SceneRenderableAttachment",
     "SharedAtlasGpu",
     "SharedAtlasGpuResult",
     "TextStyleGpu",
@@ -768,7 +761,7 @@ const TEXT_HEADER_ROOTS: Readonly<
     ],
     renderable: [
         { module: TEXT_RENDERABLE, name: "createTextRenderable" },
-        { module: TEXT_RENDERABLE, name: "addTextRenderable" },
+        { module: TEXT_RENDERABLE, name: "addTextRenderableToScene" },
         ...transformRoots(OBSERVABLE_VEC3, "ObservableVec3", ["x", "y", "z"]),
         ...transformRoots(OBSERVABLE_QUAT, "ObservableQuat", [
             "x",
