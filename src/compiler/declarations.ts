@@ -61,10 +61,7 @@ import { nativeReturnTsType } from "./native-return-type.js";
 import { isNativeOwnerRecord } from "./native-owner-carrier.js";
 import { NativeRecordStorageRequired } from "./native-record-storage.js";
 import { recordPropertyKeys } from "./object-statics.js";
-import {
-    rebuiltObjectObservation,
-    recordFieldIsWritten,
-} from "./record-observations.js";
+import { rebuiltObjectObservation } from "./record-observations.js";
 import { ownKeyOrder } from "./record-key-orders.js";
 import {
     nullability,
@@ -4690,13 +4687,7 @@ export class DeclarationLowerer {
             ...(annotated.kind === "struct" &&
             initializerSnapshot?.kind === "record" &&
             ts.isIdentifier(name) &&
-            (!mutablePlainObject ||
-                this.ownKeysUnwritten(
-                    annotated.name,
-                    initializerSnapshot,
-                    name,
-                    initializer,
-                )) &&
+            !mutablePlainObject &&
             ownKeysKnown(this.context, initializerSnapshot, name)
                 ? { recordOwnKeys: recordPropertyKeys(initializerSnapshot) }
                 : annotated.kind === "enummap" &&
@@ -5230,35 +5221,6 @@ export class DeclarationLowerer {
             identifier,
         );
         return type?.kind === "handle";
-    }
-
-    /**
-     * Whether a stored record object keeps the own keys its creation gave
-     * it: nothing rebinds its name, and no write in the program can give it
-     * a key `record` lacks, or take one it has from it
-     * (`recordFieldIsWritten`, from `origin`).
-     */
-    private ownKeysUnwritten(
-        structName: string,
-        record: Value,
-        name: ts.Identifier,
-        origin: ts.Node,
-    ): boolean {
-        if (this.context.sharedClosures.identifierIsRebound(name)) return false;
-        const keys = recordPropertyKeys(record);
-        const type = this.context.checker.getTypeAtLocation(name);
-        return this.context.dataTypes
-            .structFields(structName, name, "accessors")
-            .every(
-                (field) =>
-                    !recordFieldIsWritten(
-                        this.context,
-                        type,
-                        field.sourceName,
-                        keys.includes(field.sourceName),
-                        origin,
-                    ),
-            );
     }
 
     /**
