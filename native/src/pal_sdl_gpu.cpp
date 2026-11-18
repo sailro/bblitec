@@ -183,6 +183,15 @@ void release(GpuState& state) {
         program.pipeline = nullptr;
     }
 #endif
+#if BBLITE_PICK_DISCARD
+    for (auto& programs : state.pick_discard_programs) {
+        for (auto& program : programs) {
+            if (program.pipeline)
+                SDL_ReleaseGPUGraphicsPipeline(state.device, program.pipeline);
+            program.pipeline = nullptr;
+        }
+    }
+#endif
 #if BBLITE_HAS_SPLATS
     if (state.pick_cloud_pipeline) {
         SDL_ReleaseGPUGraphicsPipeline(state.device, state.pick_cloud_pipeline);

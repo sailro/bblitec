@@ -1,6 +1,9 @@
 import {
     deformPickingHeader,
     type DeformPickingShader,
+    pickDiscardHeader,
+    pickDiscardStem,
+    type PickDiscardShader,
     vatPickingHeader,
     type VatPickingShader,
 } from "./pinned-picking-shaders.js";
@@ -485,6 +488,8 @@ export interface UpstreamEmitOptions {
         deform?: readonly DeformPickingShader[];
         /** VAT projection arms: regular, then thin over a texture or storage. */
         vat?: readonly VatPickingShader[];
+        /** Each reached `discard` rule's modules, in the order the PALs select them. */
+        discard?: readonly PickDiscardShader[];
         cloud?: string;
         billboard?: { facing: string; axisLocked?: string };
     };
@@ -2243,6 +2248,8 @@ ${lowerThinInstanceSync(context)}
 #define BBLITE_DEFORM_PICKING_MORPH ${options.pickingShaders?.deform?.some((variant) => variant.morph) ? 1 : 0}
 // A baked mesh picks through its VAT pose where a GPU pick reaches one.
 #define BBLITE_VAT_PICKING ${options.pickingShaders?.vat?.length ? 1 : 0}
+// A pick reaching a \`discard\` rule draws through the rule's composed modules.
+#define BBLITE_PICK_DISCARD ${options.pickingShaders?.discard?.length ? 1 : 0}
 #define BBLITE_GPU_INSTANCING ${options.gpuInstancing ? 1 : 0}
 #define BBLITE_GPU_INSTANCE_COLORS ${options.gpuInstanceColors ? 1 : 0}
 // Baked vertex animation. Reached at bakeVat, which is the pin's own
@@ -3990,6 +3997,44 @@ ${shadow.blurFragmentWgsl}`,
                         )}\n${variant.module}`,
                         family: "picking",
                     });
+                }
+            }
+            // Each `discard` rule is a whole module per pipeline it
+            // reaches, selected natively by the rule's key.
+            const discardVariants = options.pickingShaders?.discard ?? [];
+            if (discardVariants.length > 0) {
+                this.tree.write(
+                    "upstream/include/bblite/upstream/picking_discard.hpp",
+                    pickDiscardHeader(discardVariants),
+                );
+            }
+            for (const [index, variant] of discardVariants.entries()) {
+                for (const pipeline of [
+                    "regular",
+                    "thin",
+                    "detailed",
+                ] as const) {
+                    const wgsl = variant[pipeline];
+                    if (wgsl === undefined) continue;
+                    for (const stage of ["vert", "frag"] as const) {
+                        composedShaders.push({
+                            output: `upstream/shaders/${pickDiscardStem(index, pipeline)}.${stage}.native.wgsl`,
+                            data: `// ${context.provenance(
+                                pipeline === "thin"
+                                    ? "src/picking/picking-advanced-shader.ts"
+                                    : pipeline === "detailed"
+                                      ? "src/picking/picking-detailed-pipeline.ts"
+                                      : "src/picking/picking-shader.ts",
+                                pipeline === "thin"
+                                    ? "pickingShaderVariantSource"
+                                    : pipeline === "detailed"
+                                      ? "shader"
+                                      : "pickingShaderSource",
+                            )}
+${wgsl}`,
+                            family: "picking",
+                        });
+                    }
                 }
             }
             // The pin's `makeBillboardPickWgsl` forks only in `basis()`,

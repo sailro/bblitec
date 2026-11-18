@@ -10,6 +10,7 @@ import { LoweringContext } from "../src/lowering/context.js";
 import { PickingLowerer } from "../src/lowering/picking-lowerer.js";
 import { pinnedNormalizeVec3Header } from "../src/lowering/pinned-normalize-vec3.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
+import { composePickDiscardShaders } from "../src/pinned-picking-shaders.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
@@ -375,7 +376,7 @@ test("a pick's filter option is the scene's predicate, asked per mesh after the 
     `);
     assert.match(result.cpp, /bbl::gpu_pick\([^\n]*bbl::Engine::PickFilter\(/);
     for (const [option, message] of [
-        ["{ discard: rule }", /pickAsync's `discard` rule is not lowered/],
+        ["{ discard: rule }", /pickAsync `discard` rule folds at generation/],
         [
             "{ filter(m: Mesh) { return m === mesh; } }",
             /pickAsync options are lowered from plain/,
@@ -514,5 +515,172 @@ test("a pick's ignore option reaches the native pick as its entries, through the
 `,
         ),
         /picking-ignore-check: ok/,
+    );
+});
+
+test("a pick's discard rule reaches the native pick with each storage entry's data, asked per mesh in declaration order", (t) => {
+    const result = compileSource(`
+        import {createEngine,createSceneContext,createGpuPicker,pickAsync,type Mesh,type PickDiscardRule,type PickingInfo} from "@babylonjs/lite";
+        const HIDE = "fn shouldDiscardPick(input: PickDiscardInput) -> bool { return hidden[0] > 0.5; }";
+        const shared = { name: "hidden", type: "array<f32>" };
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            const picker = createGpuPicker(scene);
+            const first = (await pickAsync(picker, 1, 0)).pickedMesh as Mesh;
+            const order: string[] = [];
+            const lanes = new Float32Array([1, 2, 3]);
+            const rule: PickDiscardRule = {
+                key: "hide-first",
+                wgsl: HIDE,
+                storage: [
+                    { ...shared, data: (mesh: Mesh) => { order.push("hidden"); return mesh === first ? lanes : null; } },
+                    { name: "tail", type: "array<f32>", vertex: true, data: () => { order.push("tail"); return lanes.subarray(1); } },
+                ],
+            };
+            const other: PickDiscardRule = { key: "none", wgsl: HIDE.replace("hidden[0] > 0.5", "false") };
+            const pick = (alternate: boolean) => pickAsync(picker, 1, 0, {
+                filter: () => { order.push("filter"); return true; },
+                discard: alternate ? other : rule,
+            });
+            const hidden = await pick(false);
+            const plain = await pick(true);
+            const describe = (picked: Mesh, point: PickingInfo["pickedPoint"]): string =>
+                (picked === first ? "first" : "second") + (point ? ":" + point[0] + ":" + point[1] + ":" + point[2] : "");
+            const report = [describe(hidden.pickedMesh as Mesh, hidden.pickedPoint), describe(plain.pickedMesh as Mesh, plain.pickedPoint)];
+            if (report.join() !== "second:3:20:1102,first:0:0:40" ||
+                order.join() !== "filter,filter,hidden,tail,hidden,filter,filter")
+                throw new Error(report.join() + " " + order.join());
+        }
+        void main();
+    `);
+    // Each arm of the conditional, in source order.
+    assert.deepEqual(result.manifest.pickDiscardRules, [
+        {
+            key: "none",
+            wgsl: "fn shouldDiscardPick(input: PickDiscardInput) -> bool { return false; }",
+            storage: [],
+        },
+        {
+            key: "hide-first",
+            wgsl: "fn shouldDiscardPick(input: PickDiscardInput) -> bool { return hidden[0] > 0.5; }",
+            storage: [
+                { name: "hidden", type: "array<f32>", vertex: false },
+                { name: "tail", type: "array<f32>", vertex: true },
+            ],
+        },
+    ]);
+    for (const [rule, message] of [
+        [
+            `{ key: "k", wgsl: String(Date.now()) }`,
+            /rule's `wgsl` is generation-known text/,
+        ],
+        [
+            `{ key: "k", wgsl: "", storage: [{ name: "a", type: "u32", vertex: Date.now() > 0, data: () => null }] }`,
+            /`vertex` is a generation-known boolean/,
+        ],
+    ] as const)
+        assert.throws(
+            () =>
+                compileSource(`
+                import {createEngine,createSceneContext,createGpuPicker,pickAsync} from "@babylonjs/lite";
+                async function main() {
+                    const engine = await createEngine({});
+                    await pickAsync(createGpuPicker(createSceneContext(engine)), 0, 0, { discard: ${rule} });
+                }
+                void main();
+            `),
+            message,
+        );
+    if (!tools) return t.skip("Native fixture compiler unavailable.");
+    // The stub draws the two meshes the way the pin's draw loop asks a rule
+    // once the filter built the candidates: per candidate, each entry in order until one returns null; a mesh all
+    // of whose entries answered is discarded when its first lane exceeds one
+    // half. It reports the entries asked, their bytes, and the key's length
+    // beside the second entry's first lane and its stage.
+    assert.match(
+        runPickHookCheck(
+            "picking-discard-check",
+            result.cpp,
+            `
+    engine.pick_hook = [](GpuPickerHandle, double, double, const Engine::PickOptions* options) {
+        PickingInfo info;
+        double asked = 0, bytes = 0, tail = 0;
+        std::vector<std::uint32_t> candidates;
+        for (std::uint32_t index = 0; index < 2; ++index) {
+            if (!options || !options->filter || options->filter(MeshHandle{index}))
+                candidates.push_back(index);
+        }
+        for (const std::uint32_t index : candidates) {
+            bool admitted = options && options->discard && !options->discard->storage.empty();
+            std::vector<std::vector<std::uint8_t>> entries;
+            for (std::size_t entry = 0; admitted && entry < options->discard->storage.size(); ++entry) {
+                ++asked;
+                auto data = options->discard->storage[entry].data(MeshHandle{index});
+                if (!data)
+                    admitted = false;
+                else {
+                    bytes += static_cast<double>(data->size());
+                    entries.push_back(*data);
+                }
+            }
+            float lane = 0.0f;
+            if (admitted) {
+                float second = 0.0f;
+                std::memcpy(&lane, entries[0].data(), sizeof(lane));
+                std::memcpy(&second, entries[1].data(), sizeof(second));
+                tail = second + (options->discard->storage[1].vertex ? 1000.0 : 0.0);
+            }
+            if ((admitted && lane > 0.5f) || info.hit)
+                continue;
+            info.hit = true;
+            info.picked_kind = PickedNodeKind::mesh;
+            info.picked_index = index;
+        }
+        info.picked_point = std::array<double, 3>{asked, bytes,
+            options && options->discard ? static_cast<double>(options->discard->key.size()) * 10.0 + tail : -1.0};
+        return info;
+    };
+`,
+        ),
+        /picking-discard-check: ok/,
+    );
+});
+
+test("a discard rule's modules splice its WGSL and storage into each pick pipeline the pin builds", async () => {
+    const wgsl =
+        "fn shouldDiscardPick(input: PickDiscardInput) -> bool { return hide[0] > 0.5; }";
+    const [variant] = await composePickDiscardShaders(
+        [
+            {
+                key: "k",
+                wgsl,
+                storage: [{ name: "hide", type: "array<f32>", vertex: false }],
+            },
+        ],
+        { thin: true, detailed: true },
+    );
+    const binding = "@group(2)@binding(0)var<storage,read> hide:array<f32>;";
+    for (const module of [
+        variant!.regular,
+        variant!.thin!,
+        variant!.detailed!,
+    ]) {
+        assert.ok(module.includes(wgsl) && module.includes(binding));
+        assert.ok(!module.includes("{return false;}"));
+    }
+    assert.match(variant!.thin!, /var<storage,read>instances:array<mat4x4f>/);
+    assert.match(variant!.detailed!, /^\s*enable primitive_index;/);
+    const [none] = await composePickDiscardShaders(
+        [{ key: "n", wgsl, storage: [] }],
+        {
+            thin: false,
+            detailed: false,
+        },
+    );
+    assert.ok(
+        none!.thin === undefined &&
+            none!.detailed === undefined &&
+            !none!.regular.includes("@group(2)"),
     );
 });

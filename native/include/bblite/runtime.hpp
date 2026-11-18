@@ -5551,13 +5551,37 @@ struct Engine {
         std::optional<std::array<double, 2>> thin_instance_range;
     };
     /**
+     * One storage entry of the `discard` rule: its WGSL binding, whether
+     * the vertex stage reads it, and its `data`, whose bytes the pick
+     * uploads for a mesh; null draws that mesh through the default pipeline.
+     */
+    struct PickDiscardStorage {
+        std::string name;
+        std::string type;
+        bool vertex = false;
+        std::function<std::optional<std::vector<std::uint8_t>>(MeshHandle)> data;
+    };
+    /**
+     * The `discard` rule: its key, which names the rule generation composed,
+     * the members that composition spliced, and its storage entries in
+     * declaration order.
+     */
+    struct PickDiscard {
+        std::string key;
+        std::string wgsl;
+        std::optional<std::string> world_adjust_wgsl;
+        std::optional<std::string> vertex_data;
+        std::vector<PickDiscardStorage> storage;
+    };
+    /**
      * The `pickAsync` options a native pick honours: an empty `filter` is
-     * none, and `ignore` lists the entries in the option's order (one
-     * entry is a list of one).
+     * none, `ignore` lists the entries in the option's order (one entry is
+     * a list of one), and an empty `discard` is no rule.
      */
     struct PickOptions {
         PickFilter filter;
         std::vector<PickIgnore> ignore;
+        std::optional<PickDiscard> discard;
     };
     /** Null is a pick with no options. */
     std::function<PickingInfo(GpuPickerHandle, double, double, const PickOptions*)> pick_hook;
@@ -6726,7 +6750,8 @@ inline MaterialHandle mark_shader_material_transmissive(Engine& engine, Material
 inline std::uint32_t shader_material_variant(const Engine& engine, MaterialHandle material) {
     const MaterialRecord& record = handle_at(engine.materials, material);
     if (!record.shader_material)
-        throw std::runtime_error("A shader variant split reached a material that is not a ShaderMaterial.");
+        throw std::runtime_error(
+            "A shader variant split reached a material that is not a ShaderMaterial.");
     return record.shader_variant;
 }
 

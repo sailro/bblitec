@@ -16,6 +16,8 @@ import { PickingLowerer } from "../src/lowering/picking-lowerer.js";
 import { CompressedTextureLowerer } from "../src/lowering/compressed-texture-lowerer.js";
 import { writeKtx1 } from "../src/basis-transcode.js";
 import { packageKtx1 } from "../src/compressed-texture-package.js";
+import { pickDiscardHeader } from "../src/pinned-picking-shaders.js";
+import type { PickDiscardRuleManifest } from "../src/compiler/types.js";
 
 const nativeTools = optionalNativeFixtureTools(false);
 
@@ -532,8 +534,16 @@ test(
  * `main` with `engine`, `scene`, `plan` and `collect(detailed, geometry,
  * options)` in scope.
  */
-function runPickCollector(name: string, body: string): void {
+function runPickCollector(name: string, body: string, discard?: string): void {
     const source = sharedGpuSource();
+    const include = resolve("artifacts/audit-correctness", name, "include");
+    if (discard !== undefined) {
+        mkdirSync(join(include, "bblite/upstream"), { recursive: true });
+        writeFileSync(
+            join(include, "bblite/upstream/picking_discard.hpp"),
+            discard,
+        );
+    }
     const renderer = readFileSync("src/lowering/renderer-lowerer.ts", "utf8");
     const activeCount = "inline std::size_t thin_instance_active_count(";
     runCpp(
@@ -542,9 +552,11 @@ function runPickCollector(name: string, body: string): void {
         #define BBLITE_GPU_INSTANCING 1
         #define BBLITE_DEFORM_PICKING 0
         #define BBLITE_VAT_PICKING 0
+        #define BBLITE_PICK_DISCARD ${discard === undefined ? 0 : 1}
         #include <bblite/js_data.hpp>
         #include <bblite/runtime.hpp>
         #include <cassert>
+        ${discard === undefined ? "" : "#include <bblite/upstream/picking_discard.hpp>"}
         namespace bbl::upstream {
             struct Item { MeshHandle mesh; };
             struct RenderPlan { std::vector<Item> items; const auto& scene_items() const { return items; } };
@@ -558,6 +570,15 @@ function runPickCollector(name: string, body: string): void {
             ${cppFunction(source, "inline std::array<std::uint32_t, 2> pick_ignored_range(")}
             template<class HasGeometry>
             ${cppFunction(source, "inline std::vector<PickMeshCandidate> collect_pick_mesh_candidates(")}
+            ${cppFunction(source, "struct PickDiscardDraw {")};
+            ${
+                discard === undefined
+                    ? ""
+                    : `inline constexpr std::size_t pick_discard_pipelines = 3;
+            ${cppFunction(source, "inline const char* pick_discard_stem(")}`
+            }
+            ${cppFunction(source, "inline std::size_t pick_discard_buffer_size(")}
+            ${cppFunction(source, "std::vector<PickDiscardDraw> prepare_pick_discard(")}
         }
         int main() {
             bbl::Engine engine;
@@ -577,7 +598,11 @@ function runPickCollector(name: string, body: string): void {
             ${body}
         }
     `,
-        ["/DBBLITE_HAS_PICKING=1"],
+        [
+            "/DBBLITE_HAS_PICKING=1",
+            "/DBBLITE_HAS_PBR_RENDERER=1",
+            ...(discard === undefined ? [] : [`/I${include}`]),
+        ],
     );
 }
 
@@ -592,7 +617,7 @@ test(
             plan.items.push_back({{1}});
             assert(collect(false, true).at(1).instance_count == 2);
             assert(collect(true, false).empty());
-            const bbl::Engine::PickOptions filter{[](bbl::MeshHandle handle) { return handle.value == 0; }, {}};
+            const bbl::Engine::PickOptions filter{[](bbl::MeshHandle handle) { return handle.value == 0; }, {}, {}};
             assert(collect(true, true, &filter).size() == 1);
             thin.pickable = false; assert(collect(true, true).size() == 1); thin.pickable = true;
             thin.thin_instances->count = 0; assert(collect(true, true).size() == 1); thin.thin_instances->count = 2;
@@ -616,7 +641,7 @@ test(
             `
             plan.items.push_back({{1}});
             int asked = 0;
-            bbl::Engine::PickOptions options{[&asked](bbl::MeshHandle) { ++asked; return true; }, {}};
+            bbl::Engine::PickOptions options{[&asked](bbl::MeshHandle) { ++asked; return true; }, {}, {}};
             // A mesh-only entry drops the mesh and its id, unasked.
             options.ignore = {{bbl::MeshHandle{0}, {}, {}}};
             auto picked = collect(false, true, &options);
@@ -638,6 +663,77 @@ test(
             assert(picked.size() == 2 && picked[0].uniforms.excluded_thin_instance_count == 0 &&
                    picked[1].uniforms.excluded_thin_instance_count == 0);
         `,
+        );
+    },
+);
+
+test(
+    "a pick discard rule draws the candidates its storage admits through the rule its key names",
+    { skip: !nativeTools },
+    () => {
+        const rule = (
+            key: string,
+            storage: PickDiscardRuleManifest["storage"],
+        ): PickDiscardRuleManifest => ({ key, wgsl: `wgsl ${key}`, storage });
+        runPickCollector(
+            "pick-discard-draws",
+            `
+            plan.items.push_back({{1}});
+            const auto candidates = collect(false, true);
+            int tail = 0;
+            bbl::Engine::PickOptions options;
+            options.discard = bbl::Engine::PickDiscard{"hide", "wgsl hide", {}, {}, {
+                {"first", "array<f32>", false, [](bbl::MeshHandle mesh) -> std::optional<std::vector<std::uint8_t>> {
+                    if (mesh.value != 0) return std::nullopt;
+                    return std::vector<std::uint8_t>(5, 1);
+                }},
+                {"second", "u32", true, [&tail](bbl::MeshHandle) -> std::optional<std::vector<std::uint8_t>> {
+                    ++tail;
+                    return std::vector<std::uint8_t>{};
+                }},
+            }};
+            // The first null entry draws the mesh through the default
+            // pipeline, unasked of the rest.
+            auto draws = bbl::pal::prepare_pick_discard(plan, candidates, &options, false);
+            assert(draws.size() == 2 && draws[0].variant == 0 && draws[0].pipeline == 0 && draws[0].storage.size() == 2 &&
+                   draws[0].storage[0].size() == 5 && draws[1].variant == -1 && draws[1].storage.empty() && tail == 1);
+            assert(bbl::pal::pick_discard_buffer_size(0) == 4 && bbl::pal::pick_discard_buffer_size(5) == 8);
+            const auto refuses = [&](bool detailed, const char* message) {
+                try { bbl::pal::prepare_pick_discard(plan, candidates, &options, detailed); }
+                catch (const std::runtime_error& error) {
+                    assert(std::string(error.what()).find(message) != std::string::npos); return;
+                }
+                assert(false);
+            };
+            refuses(true, "not composed for this candidate's pipeline");
+            options.discard->storage[1].vertex = false;
+            refuses(false, "is not the rule generation composed");
+            options.discard->storage[1].vertex = true;
+            options.discard->storage.pop_back();
+            refuses(false, "is not the rule generation composed");
+            options.discard->wgsl = "other";
+            refuses(false, "is not the rule generation composed");
+            // A rule without storage draws every candidate through it.
+            options.discard = bbl::Engine::PickDiscard{"all", "wgsl all", {}, {}, {}};
+            refuses(false, "not composed for this candidate's pipeline");
+            draws = bbl::pal::prepare_pick_discard(plan, {candidates[0]}, &options, false);
+            assert(draws.size() == 1 && draws[0].variant == 1 && draws[0].pipeline == 0);
+            options.discard->key = "absent";
+            refuses(false, "was not composed at generation");
+            options.discard.reset();
+            assert(bbl::pal::prepare_pick_discard(plan, candidates, &options, false).empty());
+        `,
+            pickDiscardHeader([
+                {
+                    rule: rule("hide", [
+                        { name: "first", type: "array<f32>", vertex: false },
+                        { name: "second", type: "u32", vertex: true },
+                    ]),
+                    regular: "",
+                    thin: "",
+                },
+                { rule: rule("all", []), regular: "" },
+            ]),
         );
     },
 );

@@ -253,6 +253,8 @@ export interface CompileManifest {
     toneMapping?: string;
     /** The sprite-family custom fragment shaders scene code built. */
     spriteCustomShaders: SpriteCustomShaderManifest[];
+    /** Every `pickAsync` discard rule a site folds to, in reach order. */
+    pickDiscardRules: PickDiscardRuleManifest[];
     /** Every `createEffectWrapper` the scene built, in reach order. */
     effects: EffectManifest[];
     /** Whether a standalone SpriteRenderer needs the pure-2D vertex stage. */
@@ -522,6 +524,18 @@ export interface EffectManifest {
     bindings: EffectBindingManifest[];
     /** The descriptor's blend over the target; absent, the pass writes its output. */
     blend?: CompiledBlendState;
+}
+
+/**
+ * A `PickDiscardRule`'s generation-known members: what the pin's shader
+ * builders splice and its pipeline cache keys on (`ruleKey`).
+ */
+export interface PickDiscardRuleManifest {
+    key: string;
+    wgsl: string;
+    worldAdjustWgsl?: string;
+    vertexData?: string;
+    storage: { name: string; type: string; vertex: boolean }[];
 }
 
 export interface SpriteCustomShaderManifest {

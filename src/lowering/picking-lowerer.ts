@@ -656,7 +656,7 @@ PickingInfo gpu_pick(
     double x,
     double y,
     const Engine::PickFilter& filter) {
-    const Engine::PickOptions options{filter, {}};
+    const Engine::PickOptions options{filter, {}, {}};
     return gpu_pick_through_hook(engine, picker, x, y, &options);
 }
 

@@ -1,7 +1,13 @@
 import { EmissionSet } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
-import { argumentAt } from "../syntax.js";
+import {
+    argumentAt,
+    conditionalExpression,
+    selectionArms,
+    variableKind,
+} from "../syntax.js";
+import { staticBooleanOf } from "../values/model.js";
 import { dataTypesEqual, handleCppType, type DataType } from "../data-types.js";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
@@ -9,8 +15,17 @@ import {
     resolveConditionalOptions,
     validateObjectProperties,
 } from "../option-helpers.js";
-import { optionalPresentCpp, optionalValueCpp } from "../types.js";
-import { isNullishLiteral, typeMayHoldNullish } from "../symbols.js";
+import {
+    optionalPresentCpp,
+    optionalValueCpp,
+    type PickDiscardRuleManifest,
+} from "../types.js";
+import { CompileError } from "../compile-error.js";
+import {
+    isNullishLiteral,
+    resolvedSymbol,
+    typeMayHoldNullish,
+} from "../symbols.js";
 import {
     compileNullableHitRecord,
     numberField,
@@ -46,6 +61,9 @@ export interface PickingIntrinsicContext
             | "expectObjectLiteral"
             | "evaluationOrder"
             | "captureEmittedLines"
+            | "evaluator"
+            | "compileStaticString"
+            | "probeEmission"
         > {}
 
 /**
@@ -64,10 +82,11 @@ export interface PickingIntrinsicContext
  * that never disposes still frees them with the renderer.
  *
  * `pickAsync`'s `filter` and `ignore` options are read by the shared
- * candidate collector while it builds the list (`pickOptions`). `discard`
- * selects another pinned pipeline (`picking-advanced-pipeline.js`) and
- * refuses, and `enableDetailedPicking` adds a third attachment plus the
- * barycentric readback that `detailed-picking.js` owns.
+ * candidate collector while it builds the list (`pickOptions`); a `discard`
+ * rule draws the meshes its storage admits through the pinned shaders
+ * generation composes from it (`pickDiscard`). `enableDetailedPicking`
+ * adds a third attachment plus the barycentric readback that
+ * `detailed-picking.js` owns.
  */
 export function compilePickingIntrinsic(
     context: PickingIntrinsicContext,
@@ -330,12 +349,11 @@ export function compilePickingIntrinsic(
  * `pickAsync`'s options literal as the native pick's `Engine::PickOptions`,
  * through its conditional spreads: `filter` is the predicate the shared
  * candidate collector asks per mesh, under which no pick source draws, as
- * `pickAsyncImpl` does, and `ignore` its entries (`pickIgnoreEntries`).
- * The pin's `debugLabel` only names a `console.trace` of the pick; a label
- * with effects is evaluated for them. `discard` selects the pin's advanced
- * pipeline and refuses. Members compile in source order, those ahead of a
- * spread before its condition. Undefined for options naming neither
- * `filter` nor `ignore`.
+ * `pickAsyncImpl` does, `ignore` its entries (`pickIgnoreEntries`) and
+ * `discard` its rule (`pickDiscard`). The pin's `debugLabel` only names a
+ * `console.trace` of the pick; a label with effects is evaluated for them.
+ * Members compile in source order, those ahead of a spread before its
+ * condition. Undefined for options naming none of the three.
  */
 function pickOptions(
     context: PickingIntrinsicContext,
@@ -354,10 +372,7 @@ function pickOptions(
             case "ignore":
                 return pickIgnoreEntries(context, expression, member);
             case "discard":
-                return context.fail(
-                    member,
-                    "pickAsync's `discard` rule is not lowered: its WGSL predicate and per-mesh storage select a pinned picking pipeline variant (`picking-advanced-pipeline.js`) composed from the rule.",
-                );
+                return pickDiscard(context, expression, member);
             default:
                 if (
                     context.evaluationOrder.writesStorage(member) ||
@@ -414,18 +429,23 @@ function pickOptions(
             ))
                 read[name] = once(member, () => compileMember(name, member));
             named ||=
-                read["filter"] !== undefined || read["ignore"] !== undefined;
+                read["filter"] !== undefined ||
+                read["ignore"] !== undefined ||
+                read["discard"] !== undefined;
             return {
                 filter: read["filter"] ?? "bbl::Engine::PickFilter{}",
                 ignore:
                     read["ignore"] ?? "std::vector<bbl::Engine::PickIgnore>{}",
+                discard:
+                    read["discard"] ??
+                    "std::optional<bbl::Engine::PickDiscard>{}",
             };
         },
         [],
         compiled,
     );
     return named
-        ? `bbl::Engine::PickOptions{${resolved["filter"]}, ${resolved["ignore"]}}`
+        ? `bbl::Engine::PickOptions{${resolved["filter"]}, ${resolved["ignore"]}, ${resolved["discard"]}}`
         : undefined;
 }
 
@@ -538,5 +558,329 @@ function pickIgnoreEntries(
         `if (ignored.index() == ${list}) { for (const auto& each : std::get<${list}>(ignored)) entry(each); } ` +
         `else entry(std::get<${1 - list}>(ignored)); ` +
         `return entries; }()`
+    );
+}
+
+/**
+ * `discard` as the native rule (`Engine::PickDiscard`): the members the
+ * pin's pipeline cache keys on (`ruleKey`) and each storage entry's `data`,
+ * asked per mesh in declaration order (`createPickDiscardBindGroup`). Each
+ * rule the value can hold is recorded for generation, which composes its
+ * shaders (`foldPickDiscardRules`); the native pick draws through the
+ * composed rule its key names.
+ */
+function pickDiscard(
+    context: PickingIntrinsicContext,
+    options: ts.Expression,
+    discard: ts.Expression,
+): string {
+    // The pin reads `options?.discard ?? null`: a nullish rule discards nothing.
+    if (isNullishLiteral(context.checker, discard))
+        return "std::optional<bbl::Engine::PickDiscard>{}";
+    const refuse = (): never =>
+        context.fail(
+            discard,
+            "pickAsync's `discard` is lowered as the pin's `PickDiscardRule`.",
+        );
+    const declared = context.checker.getContextualType(options);
+    const member =
+        declared &&
+        context.checker.getPropertyOfType(
+            context.checker.getNonNullableType(declared),
+            "discard",
+        );
+    if (!member) return refuse();
+    const type = context.dataTypes.fromTsType(
+        context.checker.getNonNullableType(
+            context.checker.getTypeOfSymbol(member),
+        ),
+        discard,
+    );
+    if (type?.kind !== "struct") return refuse();
+    for (const rule of foldPickDiscardRules(context, discard))
+        context.sceneManifest.recordPickDiscardRule(rule, discard);
+    // A member's storage and the tests that it holds a value, through each
+    // optional and tagged slot it is stored in.
+    const read = (struct: string, owner: string, name: string) => {
+        const field = context.dataTypes
+            .structFields(struct, discard)
+            .find((candidate) => candidate.sourceName === name);
+        if (!field) return refuse();
+        return held(
+            `${owner}${context.dataTypes.memberAccess(struct)}${field.name}`,
+            field.type,
+        );
+    };
+    const held = (cpp: string, slot: DataType) => {
+        const present: string[] = [];
+        let type = slot;
+        for (;;) {
+            if (type.kind === "tagged") {
+                present.push(`${cpp}.defined()`);
+                cpp = `${cpp}.value()`;
+                type = type.inner;
+            } else if (type.kind === "optional") {
+                present.push(optionalPresentCpp(cpp));
+                cpp = optionalValueCpp(cpp);
+                type = type.inner;
+            } else
+                return { present: present.join(" && ") || "true", cpp, type };
+        }
+    };
+    const text = (owner: string, struct: string, name: string) => {
+        const member = read(struct, owner, name);
+        return member.type.kind === "string" ? member : refuse();
+    };
+    const key = text("rule", type.name, "key");
+    const wgsl = text("rule", type.name, "wgsl");
+    const worldAdjust = text("rule", type.name, "worldAdjustWgsl");
+    const vertexData = read(type.name, "rule", "vertexData");
+    const storage = read(type.name, "rule", "storage");
+    if (
+        vertexData.type.kind !== "enum" ||
+        storage.type.kind !== "vector" ||
+        storage.type.element.kind !== "struct"
+    )
+        return refuse();
+    const entry = storage.type.element.name;
+    const name = text("entry", entry, "name");
+    const binding = text("entry", entry, "type");
+    const vertex = read(entry, "entry", "vertex");
+    const data = read(entry, "entry", "data");
+    if (
+        vertex.type.kind !== "boolean" ||
+        data.type.kind !== "function" ||
+        !data.type.result
+    )
+        return refuse();
+    const view = held("result", data.type.result);
+    if (view.type.kind !== "bufferview") return refuse();
+    // An undefined rule is none (`pickAsyncImpl`: `options?.discard ?? null`).
+    const absent = typeMayHoldNullish(context.checker, discard, "undefined");
+    const value = context.dataLowerer.compileForSink(
+        discard,
+        absent ? { kind: "optional", inner: type } : type,
+    );
+    return (
+        `[&] { std::optional<bbl::Engine::PickDiscard> discard; ` +
+        (absent
+            ? `const auto& held = ${value}; if (!${optionalPresentCpp("held")}) return discard; const auto& rule = ${optionalValueCpp("held")}; `
+            : `const auto& rule = ${value}; `) +
+        `auto& native = discard.emplace(); native.key = ${key.cpp}; native.wgsl = ${wgsl.cpp}; ` +
+        `if (${worldAdjust.present}) native.world_adjust_wgsl = ${worldAdjust.cpp}; ` +
+        `if (${vertexData.present}) native.vertex_data = ${context.dataTypes.enumToStringCpp(vertexData.type, vertexData.cpp, discard)}; ` +
+        `if (${storage.present}) for (const auto& entry : ${storage.cpp}) native.storage.push_back({${name.cpp}, ${binding.cpp}, ${vertex.present} && ${vertex.cpp}, ` +
+        `[data = ${data.cpp}](bbl::MeshHandle mesh) -> std::optional<std::vector<std::uint8_t>> { ` +
+        `const auto result = data(mesh); if (!(${view.present})) return std::nullopt; ` +
+        `const auto bytes = bbl::storage_buffer_bytes(${view.cpp}); ` +
+        `return std::vector<std::uint8_t>(bytes.begin(), bytes.end()); }}); ` +
+        `return discard; }()`
+    );
+}
+
+/**
+ * The generation-known members of every rule `expression` can hold: each
+ * arm of a conditional, an object literal through the constants and calls
+ * that resolve to it (`resolveStaticLiteral`), its spreads in order. The
+ * key and the WGSL the pin splices fold to their text; each storage
+ * entry's `data` is the run-time half and is not read here.
+ */
+function foldPickDiscardRules(
+    context: PickingIntrinsicContext,
+    expression: ts.Expression,
+): PickDiscardRuleManifest[] {
+    const node = context.unwrap(expression);
+    if (isNullishLiteral(context.checker, node)) return [];
+    const selection = conditionalExpression(node);
+    if (selection)
+        return selectionArms(selection).flatMap((arm) =>
+            foldPickDiscardRules(context, arm),
+        );
+    const members = staticObjectMembers(context, node);
+    const optional = (name: string): ts.Expression | undefined => {
+        const member = members.get(name);
+        return member && !isNullishLiteral(context.checker, member)
+            ? member
+            : undefined;
+    };
+    const text = (name: string): string | undefined => {
+        const member = optional(name);
+        return member && staticRuleText(context, member, name);
+    };
+    const key = text("key");
+    const wgsl = text("wgsl");
+    if (key === undefined || wgsl === undefined)
+        return context.fail(
+            node,
+            "A pickAsync `discard` rule names its `key` and `wgsl`.",
+        );
+    const worldAdjustWgsl = text("worldAdjustWgsl");
+    const vertexData = text("vertexData");
+    if (worldAdjustWgsl !== undefined || vertexData !== undefined)
+        return context.fail(
+            node,
+            "A pickAsync `discard` rule's `worldAdjustWgsl` and `vertexData` are not lowered: they select the advanced picking pipeline for every candidate (`needsAdvancedPipeline`).",
+        );
+    const list = optional("storage");
+    return [
+        {
+            key,
+            wgsl,
+            ...(worldAdjustWgsl !== undefined ? { worldAdjustWgsl } : {}),
+            ...(vertexData !== undefined ? { vertexData } : {}),
+            storage: (list ? staticArrayElements(context, list) : []).map(
+                (element) => {
+                    const entry = staticObjectMembers(context, element);
+                    const name = entry.get("name");
+                    const type = entry.get("type");
+                    const vertex = entry.get("vertex");
+                    if (!name || !type)
+                        return context.fail(
+                            element,
+                            "A pickAsync `discard` storage entry names its `name` and `type`.",
+                        );
+                    const stage =
+                        vertex && !isNullishLiteral(context.checker, vertex)
+                            ? context.probeEmission(
+                                  () =>
+                                      staticBooleanOf(
+                                          context.compileValue(vertex),
+                                      ),
+                                  () => false,
+                              )
+                            : false;
+                    if (stage === undefined)
+                        return context.fail(
+                            vertex!,
+                            "A pickAsync `discard` storage entry's `vertex` is a generation-known boolean: it selects the bind group layout the composed pipeline declares.",
+                        );
+                    return {
+                        name: staticRuleText(context, name, "name"),
+                        type: staticRuleText(context, type, "type"),
+                        vertex: stage,
+                    };
+                },
+            ),
+        },
+    ];
+}
+
+/** A rule member the composed WGSL splices, as its generation-known text. */
+function staticRuleText(
+    context: PickingIntrinsicContext,
+    member: ts.Expression,
+    name: string,
+): string {
+    try {
+        return context.probeEmission(
+            () => context.compileStaticString(member),
+            () => false,
+        );
+    } catch (error) {
+        if (!(error instanceof CompileError)) throw error;
+        return context.fail(
+            member,
+            `A pickAsync \`discard\` rule's \`${name}\` is generation-known text: the composed pick shaders splice it. ${error.message}`,
+        );
+    }
+}
+
+/**
+ * An object literal's members through the constants and calls that resolve
+ * to it, its spreads read in order so a later member replaces an earlier
+ * one. A method is a member whose value this fold does not read.
+ */
+function staticObjectMembers(
+    context: PickingIntrinsicContext,
+    expression: ts.Expression,
+): Map<string, ts.Expression | undefined> {
+    const literal = ruleLiteral(context, expression);
+    if (!ts.isObjectLiteralExpression(literal))
+        return context.fail(
+            expression,
+            "A pickAsync `discard` rule folds at generation to an object literal: its WGSL and storage layout select the composed pick shaders.",
+        );
+    const members = new Map<string, ts.Expression | undefined>();
+    for (const property of literal.properties) {
+        if (ts.isSpreadAssignment(property)) {
+            for (const [name, value] of staticObjectMembers(
+                context,
+                property.expression,
+            ))
+                members.set(name, value);
+            continue;
+        }
+        const name = property.name && context.propertyName(property.name);
+        if (!name)
+            return context.fail(
+                property,
+                "A pickAsync `discard` rule's members have generation-known names.",
+            );
+        members.set(
+            name,
+            ts.isPropertyAssignment(property)
+                ? property.initializer
+                : ts.isShorthandPropertyAssignment(property)
+                  ? property.name
+                  : undefined,
+        );
+    }
+    return members;
+}
+
+/**
+ * The literal a rule member resolves to (`resolveStaticLiteral`), through
+ * the module and imported constants that hold it where nothing writes
+ * through them.
+ */
+function ruleLiteral(
+    context: PickingIntrinsicContext,
+    expression: ts.Expression,
+): ts.Expression {
+    let resolved = context.evaluator.resolveStaticLiteral(expression);
+    for (const seen = new Set<ts.Symbol>(); ts.isIdentifier(resolved);) {
+        const symbol = resolvedSymbol(context.checker, resolved);
+        const declaration =
+            symbol?.declarations?.length === 1
+                ? symbol.declarations[0]
+                : undefined;
+        if (
+            !symbol ||
+            seen.has(symbol) ||
+            !declaration ||
+            !ts.isVariableDeclaration(declaration) ||
+            !declaration.initializer ||
+            variableKind(declaration) !== "const" ||
+            context.evaluator.isWrittenThrough(declaration)
+        )
+            break;
+        seen.add(symbol);
+        resolved = context.evaluator.resolveStaticLiteral(
+            declaration.initializer,
+        );
+    }
+    return resolved;
+}
+
+/** An array literal's elements through the constants that resolve to it, spreads inlined. */
+function staticArrayElements(
+    context: PickingIntrinsicContext,
+    expression: ts.Expression,
+): ts.Expression[] {
+    const literal = ruleLiteral(context, expression);
+    if (!ts.isArrayLiteralExpression(literal))
+        return context.fail(
+            expression,
+            "A pickAsync `discard` rule's `storage` folds at generation to an array literal: each entry is a binding of the composed pick shaders.",
+        );
+    return literal.elements.flatMap((element) =>
+        ts.isSpreadElement(element)
+            ? staticArrayElements(context, element.expression)
+            : ts.isOmittedExpression(element)
+              ? context.fail(
+                    element,
+                    "A pickAsync `discard` rule's `storage` has no holes.",
+                )
+              : [element],
     );
 }

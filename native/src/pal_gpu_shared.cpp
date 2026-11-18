@@ -2023,6 +2023,93 @@ int pick_vat_projection(const MeshRecord& mesh, bool thin) {
 #endif
 
 #if BBLITE_HAS_PBR_RENDERER && BBLITE_HAS_PICKING
+std::vector<PickDiscardDraw>
+prepare_pick_discard([[maybe_unused]] const upstream::RenderPlan& render_plan,
+                     [[maybe_unused]] const std::vector<PickMeshCandidate>& candidates,
+                     const Engine::PickOptions* options, [[maybe_unused]] bool detailed) {
+    std::vector<PickDiscardDraw> draws;
+    if (!options || !options->discard)
+        return draws;
+    const Engine::PickDiscard& rule = *options->discard;
+#if BBLITE_PICK_DISCARD
+    // `getPickingPipelineSet` keys the rule's pipelines on these members.
+    const auto found = std::find_if(
+        upstream::pick_discard_variants.begin(), upstream::pick_discard_variants.end(),
+        [&](const upstream::PickDiscardVariant& variant) { return rule.key == variant.key; });
+    if (found == upstream::pick_discard_variants.end())
+        throw std::runtime_error("pickAsync's discard rule '" + rule.key +
+                                 "' was not composed at generation.");
+    const upstream::PickDiscardVariant& variant = *found;
+    // The rule as composed: what the modules splice, framed as generation
+    // framed it (`pickDiscardContentKey`), and the members the layout reads.
+    std::vector<std::uint8_t> content;
+    const auto frame = [&content](std::string_view text) {
+        content.insert(content.end(), text.begin(), text.end());
+        content.push_back(0);
+    };
+    frame(rule.wgsl);
+    frame(rule.world_adjust_wgsl.value_or(""));
+    for (const Engine::PickDiscardStorage& entry : rule.storage) {
+        frame(entry.name);
+        frame(entry.type);
+    }
+    const std::string_view stages = variant.stages;
+    bool same = content_key(content) == variant.content &&
+                rule.vertex_data.has_value() == (variant.vertex_data != nullptr) &&
+                (!rule.vertex_data || *rule.vertex_data == variant.vertex_data) &&
+                rule.world_adjust_wgsl.has_value() == variant.world_adjust &&
+                rule.storage.size() == variant.storage_count;
+    for (std::size_t entry = 0; same && entry < rule.storage.size(); ++entry)
+        same = rule.storage[entry].vertex == (stages[entry] == 'v');
+    if (!same)
+        throw std::runtime_error("pickAsync's discard rule '" + rule.key +
+                                 "' is not the rule generation composed under that key.");
+    const int index = static_cast<int>(found - upstream::pick_discard_variants.begin());
+    draws.resize(candidates.size());
+    for (std::size_t slot = 0; slot < candidates.size(); ++slot) {
+        PickDiscardDraw& draw = draws[slot];
+        bool admitted = true;
+        for (const Engine::PickDiscardStorage& entry : rule.storage) {
+            std::optional<std::vector<std::uint8_t>> bytes =
+                entry.data(render_plan.items[candidates[slot].item_index].mesh);
+            if (!bytes) {
+                admitted = false;
+                break;
+            }
+            draw.storage.push_back(std::move(*bytes));
+        }
+        if (!admitted) {
+            draw.storage.clear();
+            continue;
+        }
+        [[maybe_unused]] const PickMeshCandidate& candidate = candidates[slot];
+#if BBLITE_DEFORM_PICKING
+        if (candidate.deform >= 0)
+            throw std::runtime_error(
+                "A pick discard rule over a deforming candidate is not composed.");
+#endif
+#if BBLITE_VAT_PICKING
+        if (candidate.vat >= 0)
+            throw std::runtime_error("A pick discard rule over a VAT candidate is not composed.");
+#endif
+        draw.pipeline =
+#if BBLITE_GPU_INSTANCING
+            candidate.thin ? 1u :
+#endif
+            detailed ? 2u
+                     : 0u;
+        if (!pick_discard_stem(variant, draw.pipeline))
+            throw std::runtime_error("pickAsync's discard rule '" + rule.key +
+                                     "' was not composed for this candidate's pipeline.");
+        draw.variant = index;
+    }
+#else
+    throw std::runtime_error("pickAsync's discard rule '" + rule.key +
+                             "' was not composed at generation.");
+#endif
+    return draws;
+}
+
 std::optional<std::size_t> picker_scene_index(const Engine& engine, GpuPickerHandle picker,
                                               const std::vector<std::shared_ptr<Scene>>& scenes) {
     if (picker.value >= engine.gpu_pickers.size())

@@ -2453,6 +2453,23 @@ function capabilityRows(
             ["render_capabilities.hpp", "variant table", "deployed shaders"],
         ),
         checkedRow(
+            "BBLITE_PICK_DISCARD",
+            "capability",
+            (emit.pickingShaders?.discard?.length ?? 0) > 0,
+            [
+                [
+                    (emit.pickingShaders?.discard?.length ?? 0) > 0,
+                    "a GPU pick reaches at least one discard rule",
+                ],
+            ],
+            "no pickAsync names a discard rule",
+            "src/picking/picking-pipeline.ts: getPickingPipelineSet keys a " +
+                "rule's pipelines on its key and composes them from its WGSL " +
+                "and storage layout; a mesh whose storage entry returns null " +
+                "draws through the default pipeline.",
+            ["render_capabilities.hpp", "variant table", "deployed shaders"],
+        ),
+        checkedRow(
             "BBLITE_VAT",
             "capability",
             has("mesh:vat"),

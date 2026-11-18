@@ -1183,6 +1183,18 @@ struct GpuState : SdlGpuDevice {
     };
     std::array<PickVatProgram, upstream::pick_vat_variants.size()> pick_vat_programs{};
 #endif
+#if BBLITE_PICK_DISCARD
+    /** A composed `discard` rule's module per pipeline (regular, thin,
+     *  detailed), both stages read by name. */
+    struct PickDiscardProgram {
+        SDL_GPUGraphicsPipeline* pipeline = nullptr;
+        PinnedStageSlots vertex_slots{};
+        PinnedStageSlots fragment_slots{};
+    };
+    std::array<std::array<PickDiscardProgram, pick_discard_pipelines>,
+               upstream::pick_discard_variants.size()>
+        pick_discard_programs{};
+#endif
 #if BBLITE_HAS_SPLATS
     SDL_GPUGraphicsPipeline* pick_cloud_pipeline = nullptr;
     int pick_cloud_scene_slot = -1;

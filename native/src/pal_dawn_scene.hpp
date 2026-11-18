@@ -1057,6 +1057,22 @@ struct DawnState : DawnDevice {
     };
     std::array<PickVatProgram, upstream::pick_vat_variants.size()> pick_vat_programs{};
 #endif
+#if BBLITE_PICK_DISCARD
+    /** A composed `discard` rule's module per pipeline (regular, thin,
+     *  detailed), its two stages and its reflected storage group 2. */
+    struct PickDiscardProgram {
+        WGPURenderPipeline pipeline = nullptr;
+        WGPUBindGroupLayout layout = nullptr;
+        std::string vertex;
+        std::string fragment;
+        [[nodiscard]] std::array<DawnLayoutStage, 2> stages() const {
+            return {{ {vertex, WGPUShaderStage_Vertex}, { fragment, WGPUShaderStage_Fragment } }};
+        }
+    };
+    std::array<std::array<PickDiscardProgram, pick_discard_pipelines>,
+               upstream::pick_discard_variants.size()>
+        pick_discard_programs{};
+#endif
     WGPUBindGroupLayout pick_scene_layout = nullptr;
     WGPUBindGroupLayout pick_mesh_layout = nullptr;
     WGPUBuffer pick_scene_buffer = nullptr;
@@ -1842,6 +1858,16 @@ struct DawnState : DawnDevice {
                 wgpuBindGroupLayoutRelease(program.empty_layout);
             if (program.layout)
                 wgpuBindGroupLayoutRelease(program.layout);
+        }
+#endif
+#if BBLITE_PICK_DISCARD
+        for (auto& programs : pick_discard_programs) {
+            for (auto& program : programs) {
+                if (program.pipeline)
+                    wgpuRenderPipelineRelease(program.pipeline);
+                if (program.layout)
+                    wgpuBindGroupLayoutRelease(program.layout);
+            }
         }
 #endif
         if (pick_scene_layout)

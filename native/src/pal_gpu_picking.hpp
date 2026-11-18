@@ -27,6 +27,9 @@
 #if BBLITE_VAT_PICKING
 #include <bblite/upstream/picking_vat_projection.hpp>
 #endif
+#if BBLITE_PICK_DISCARD
+#include <bblite/upstream/picking_discard.hpp>
+#endif
 #if BBLITE_HAS_PBR_RENDERER
 #include <bblite/upstream/renderer_plan.hpp>
 #include <bblite/upstream/pinned_world_transform.hpp>
@@ -477,6 +480,48 @@ collect_pick_mesh_candidates(const Engine& engine, [[maybe_unused]] const Scene&
         next_id += id_count;
     }
     return candidates;
+}
+
+/**
+ * One candidate's `discard` draw: the composed rule it draws through, -1
+ * for the default pipeline, which of the rule's pipelines it draws through
+ * (`pick_discard_stem`), and its storage entries' bytes in binding order.
+ */
+struct PickDiscardDraw {
+    int variant = -1;
+    std::size_t pipeline = 0;
+    std::vector<std::vector<std::uint8_t>> storage;
+};
+
+#if BBLITE_PICK_DISCARD
+/** A composed rule's pipelines: regular, thin-instance, detailed. */
+inline constexpr std::size_t pick_discard_pipelines = 3;
+
+/** The deployed stem of a rule's module for one of its pipelines; null where not composed. */
+inline const char* pick_discard_stem(const upstream::PickDiscardVariant& variant,
+                                     std::size_t pipeline) {
+    const std::array<const char*, pick_discard_pipelines> stems{variant.regular, variant.thin,
+                                                                variant.detailed};
+    return stems.at(pipeline);
+}
+#endif
+
+/**
+ * Each candidate's `discard` draw, asked in draw order as the pin's draw
+ * loop asks it (`createPickDiscardBindGroup`): a rule without storage draws
+ * every candidate through its pipelines, and the first entry whose `data`
+ * returns null sends that mesh to the default pipeline unasked of the rest.
+ * Empty without a rule; throws for a rule generation did not compose, or a
+ * candidate whose pipeline the rule was not composed for.
+ */
+std::vector<PickDiscardDraw> prepare_pick_discard(const upstream::RenderPlan& render_plan,
+                                                  const std::vector<PickMeshCandidate>& candidates,
+                                                  const Engine::PickOptions* options,
+                                                  bool detailed);
+
+/** `createMappedBuffer`'s size for a storage entry: at least 4 bytes, 4-aligned. */
+inline std::size_t pick_discard_buffer_size(std::size_t bytes) {
+    return (std::max<std::size_t>(bytes, 4) + 3) & ~std::size_t{3};
 }
 
 #if BBLITE_HAS_DETAILED_PICKING
