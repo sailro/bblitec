@@ -1845,7 +1845,8 @@ function isDataMember(member: ObjectMember): member is DataMember {
  * The member that decides `key`: the last one writing it, `"unknown"` when
  * a later spread or run-time key may write it too, undefined when nothing
  * does. `spreadMayWrite` narrows which spreads can (the checker knows a
- * spread whose type has no such key); by default every one may.
+ * spread whose type has no such key); by default every one may but a
+ * spread of literals none of which writes it (`spreadOfLiteralsMayWrite`).
  */
 export function lastWriter(
     members: readonly ObjectMember[],
@@ -1853,7 +1854,7 @@ export function lastWriter(
     spreadMayWrite: (
         spread: ts.SpreadAssignment,
         key: string,
-    ) => boolean = () => true,
+    ) => boolean = spreadOfLiteralsMayWrite,
 ): ObjectMember | "unknown" | undefined {
     let writer: ObjectMember | "unknown" | undefined;
     for (const member of members) {
@@ -1864,6 +1865,26 @@ export function lastWriter(
         else if (member.key === undefined) writer = "unknown";
     }
     return writer;
+}
+
+/**
+ * Whether a spread may write `key`: unless every object its operand yields
+ * is a literal ({@link spreadLiterals}) with no member that may write it,
+ * or an operand adding nothing (`...(c ? { a } : {})` never writes `b`).
+ */
+function spreadOfLiteralsMayWrite(
+    spread: ts.SpreadAssignment,
+    key: string,
+): boolean {
+    const arms = spreadLiterals(spread.expression, nullOperand);
+    return (
+        !arms ||
+        arms.some(
+            (arm) =>
+                arm !== undefined &&
+                lastWriter(objectLiteralMembers(arm), key) !== undefined,
+        )
+    );
 }
 
 /**
