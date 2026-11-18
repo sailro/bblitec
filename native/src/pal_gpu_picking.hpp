@@ -85,6 +85,8 @@ struct PickRange {
     std::uint32_t count = 1;
     /** A mesh candidate's handle generation (`MeshHandle::generation`). */
     std::uint32_t generation = 0;
+    /** A thin-instanced mesh's range: one id per instance (`range.thin`). */
+    bool thin = false;
     /** The pin's `worldAdjusted`: drawn through a rule whose `worldAdjustWgsl` moved it. */
     bool world_adjusted = false;
 };
@@ -480,8 +482,13 @@ collect_pick_mesh_candidates(const Engine& engine, [[maybe_unused]] const Scene&
             candidate.thin ? candidate.instance_count :
 #endif
                            1u;
-        ranges.push_back(
-            {next_id, PickedNodeKind::mesh, handle.value, id_count, handle.generation});
+        ranges.push_back({next_id, PickedNodeKind::mesh, handle.value, id_count, handle.generation,
+#if BBLITE_GPU_INSTANCING
+                          candidate.thin
+#else
+                          false
+#endif
+        });
         next_id += id_count;
     }
     return candidates;

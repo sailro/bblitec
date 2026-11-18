@@ -19143,7 +19143,7 @@ test("retains Scene 118's nullable billboard pick record and all hit fields", ()
     assert.match(result.cpp, /bbl::pick_billboard_sprite\(v_engine, v_scene, /);
     assert.match(
         result.cpp,
-        /bbl::BillboardSystemHandle\{info\.picked_index\}, static_cast<double>\(info\.picked_range_offset\), bbl::picked_point\(info\), bbl::picked_distance\(v_scene, info\)/,
+        /bbl::BillboardSystemHandle\{info\.picked_index\}, static_cast<double>\(info\.picked_range_offset\), bbl::picked_point\(info\), info\.distance\}/,
     );
     // `getCameraPosition` goes through the pin's own two-line body,
     // lowered beside the matrix it reads -- one composition, not one per

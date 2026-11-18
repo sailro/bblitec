@@ -1624,9 +1624,17 @@ export const propertyRules: readonly PropertyRule[] = [
         dataType: { kind: "boolean" },
         field: "hit",
     },
-    ...(["bu", "bv"] as const).map((field): PropertyRead => ({
+    ...(
+        [
+            ["bu", "bu"],
+            ["bv", "bv"],
+            ["faceId", "face_id"],
+            ["thinInstanceIndex", "thin_instance_index"],
+            ["distance", "distance"],
+        ] as const
+    ).map(([property, field]): PropertyRead => ({
         owner: "picking-info",
-        property: field,
+        property,
         value: "data",
         dataType: { kind: "number" },
         field,

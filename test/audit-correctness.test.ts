@@ -1884,3 +1884,37 @@ test(
         );
     },
 );
+
+test(
+    "a pick resolves a thin-instanced range's hit to its instance and any other hit to none",
+    { skip: !nativeTools },
+    () => {
+        const source = sharedGpuSource();
+        runCpp(
+            "pick-range-resolve",
+            `
+        #include <bblite/runtime.hpp>
+        #include <cassert>
+        namespace bbl::pal {
+            ${cppFunction(source, "struct PickRange {")};
+            ${cppFunction(source, "const PickRange* pick_range(const std::vector<PickRange>& ranges, std::uint32_t pick_id) {")}
+            ${cppFunction(source, "PickingInfo resolve_pick_result(const std::vector<PickRange>& ranges, std::uint32_t pick_id) {")}
+        }
+        int main() {
+            using bbl::PickedNodeKind;
+            const std::vector<bbl::pal::PickRange> ranges{
+                {1, PickedNodeKind::mesh, 4, 1, 0},
+                {2, PickedNodeKind::mesh, 5, 3, 0, true},
+                {5, PickedNodeKind::billboard_sprite, 0, 2},
+            };
+            assert(bbl::pal::resolve_pick_result(ranges, 1).thin_instance_index == -1.0);
+            const auto thin = bbl::pal::resolve_pick_result(ranges, 4);
+            assert(thin.picked_index == 5 && thin.thin_instance_index == 2.0);
+            assert(bbl::pal::resolve_pick_result(ranges, 6).thin_instance_index == -1.0);
+            assert(!bbl::pal::resolve_pick_result(ranges, 0).hit && !bbl::pal::pick_range(ranges, 0));
+        }
+    `,
+            ["/DBBLITE_HAS_PICKING=1"],
+        );
+    },
+);

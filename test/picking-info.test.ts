@@ -272,6 +272,10 @@ function runPickingCheck(name: string, cpp: string, check: string): string {
         pinnedNormalizeVec3Header(context),
     );
     writeFileSync(
+        join(headers, "camera_math.hpp"),
+        `#pragma once\n#include <bblite/runtime.hpp>\nnamespace bbl::upstream { inline Vec3d camera_position(const CameraRecord&) { return {}; } }\n`,
+    );
+    writeFileSync(
         join(headers, "renderer_plan.hpp"),
         `#pragma once\n#include <bblite/runtime.hpp>\nnamespace bbl::upstream { std::array<float,16> mesh_world_matrix(const Engine&,const MeshRecord&); }\n`,
     );
@@ -830,5 +834,42 @@ test("a discard rule's world adjustment and vertex data fold into its manifest r
     assert.throws(
         () => compileSource(program("uv2")),
         /`vertexData: "uv2"` is not lowered/,
+    );
+});
+
+test("a pick's thinInstanceIndex, faceId and distance read the resolved record", (t) => {
+    const result = compileSource(`
+        import {createEngine,createSceneContext,createGpuPicker,pickAsync} from "@babylonjs/lite";
+        interface Slice { hit: boolean; distance: number; thinInstanceIndex?: number; faceId?: number }
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            const picker = createGpuPicker(scene);
+            const info = (await pickAsync(picker, 1, 0)) as unknown as Slice;
+            const report = [info.thinInstanceIndex ?? -2, info.faceId ?? -2, info.distance].join();
+            if (!info.hit || report !== "3,7,2.5") throw new Error(report);
+        }
+        void main();
+    `);
+    assert.match(result.cpp, /\.thin_instance_index\b/);
+    if (!tools) return t.skip("Native fixture compiler unavailable.");
+    assert.match(
+        runPickHookCheck(
+            "picking-record-check",
+            result.cpp,
+            `
+    engine.pick_hook = [](GpuPickerHandle, double, double, const Engine::PickOptions*) {
+        PickingInfo info;
+        info.hit = true;
+        info.picked_kind = PickedNodeKind::mesh;
+        info.picked_index = 0;
+        info.thin_instance_index = 3;
+        info.face_id = 7;
+        info.distance = 2.5;
+        return info;
+    };
+`,
+        ),
+        /picking-record-check: ok/,
     );
 });

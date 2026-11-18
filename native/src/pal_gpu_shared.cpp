@@ -1861,6 +1861,8 @@ PickingInfo resolve_pick_result(const std::vector<PickRange>& ranges, std::uint3
     info.picked_index = range->index;
     info.state->picked_generation = range->generation;
     info.picked_range_offset = pick_id - range->id;
+    if (range->thin)
+        info.thin_instance_index = static_cast<double>(info.picked_range_offset);
     return info;
 }
 #endif
@@ -2234,6 +2236,7 @@ PickingInfo resolve_gpu_pick([[maybe_unused]] const Engine& engine, const PickRe
                              pointer.sample_y, pointer.w, pointer.h);
     }
 #endif
+    info.distance = picked_distance(*request.camera, info);
     return info;
 }
 #endif

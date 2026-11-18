@@ -9652,8 +9652,11 @@ void dispose_picker(Engine& engine, GpuPickerHandle picker);
  * wrapper makes and disposes itself. Emitted only where a scene reached it.
  */
 PickingInfo pick_billboard_sprite(Engine& engine, Scene& scene, double x, double y);
-/** `PickingInfo.distance`: camera position to the reconstructed point. */
-[[nodiscard]] double picked_distance(const Scene& scene, const PickingInfo& info);
+/**
+ * `PickingInfo.distance`: the pick origin -- a detailed pick's ray origin,
+ * else the camera position -- to the reconstructed point.
+ */
+[[nodiscard]] double picked_distance(const CameraRecord& camera, const PickingInfo& info);
 /**
  * Run and clear everything `setTimeout` queued. Called by the frame
  * conductor after the frame's own callbacks, which is where the browser

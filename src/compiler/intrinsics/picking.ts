@@ -261,7 +261,7 @@ export function compilePickingIntrinsic(
                                 type.inner.arity === 3,
                         },
                         distance: {
-                            cpp: `bbl::picked_distance(${scene.cpp}, info)`,
+                            cpp: "info.distance",
                             accepts: numberField,
                         },
                     },

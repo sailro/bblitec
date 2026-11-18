@@ -440,8 +440,8 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
   and pick, null drawing that mesh unruled; the pick refuses a rule other than the one its key composed. A
   `worldAdjustWgsl`, `vertexData` or vertex-visible storage draws every candidate through the advanced pipeline;
   `vertexData: "uv2"` and a rule over a deforming or VAT mesh refuse. VAT meshes pick through their baked pose; a
-  detailed VAT pick refuses. A stored or awaited result's
-  `pickedMesh` becomes a Mesh of the entry's engine after a run-time check that it picked there.
+  detailed VAT pick refuses. A result's `thinInstanceIndex`, `faceId` and `distance` are the resolved hit's; a stored
+  or awaited result's `pickedMesh` becomes a Mesh of the entry's engine after a run-time check that it picked there.
 - KHR_interactivity blocks: SceneReadyEvent, OnSelect, Sequence, Get/SetVariable, Get/SetProperty, arithmetic, Abs,
   Floor, LessThan, Clamp, Combine/ExtractVector2. Others refuse.
 - Gizmos: display, bounding boxes, rotation editing; no bounding-box/scale drags.
