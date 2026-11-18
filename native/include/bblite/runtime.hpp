@@ -3460,6 +3460,20 @@ struct ShaderViewSlots {
     std::vector<std::uint32_t> storage_buffers;
 };
 
+enum class ShaderDeclarationList : std::uint8_t;
+
+/**
+ * A slot object the program read out of a ShaderMaterial's `_textureSlots`
+ * or `_storageBufferSlots`: the identity of the record holding it and the
+ * material slot it is, which a view installing it aliases.
+ */
+struct ShaderSlotRead {
+    std::weak_ptr<const void> identity;
+    MaterialHandle material;
+    ShaderDeclarationList list;
+    std::uint32_t slot = invalid_handle;
+};
+
 struct MaterialRecord {
     std::uint64_t ubo_version = 0;
     std::shared_ptr<LocalCubemapRecord> local_environment;
@@ -5443,6 +5457,8 @@ struct Engine {
      */
     std::uint64_t source_output_identity = 0;
     std::vector<MaterialRecord> materials;
+    /** The ShaderMaterial slot objects the program read and still holds (`register_shader_slot_read`). */
+    std::vector<ShaderSlotRead> shader_slot_reads;
     /** Source materials `enableMaterialTracking` installed observable colors on. */
     std::vector<MaterialHandle> tracked_materials;
     /** Meshes a world-matrix provider parents (`MeshRecord::provider_world`). */

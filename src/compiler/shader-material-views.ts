@@ -6,7 +6,9 @@
 // so a material whose shader variant generation knows reads each as the
 // plain data the pin builds from that variant's options. Its slot maps
 // (`_uniformValues`, `_textureSlots`, `_storageBufferSlots`) hold the
-// values and resources bound at run time, which generation does not.
+// values and resources bound at run time: a read copies the slot objects,
+// which keep their identity, and a view given maps of its own slots by
+// `Object.defineProperties` installs them (`install_shader_view_slots`).
 //
 // `createMaterialView(source, { features: 0 })` is an object inheriting the
 // source. A program property an `Object.defineProperty` or
@@ -46,7 +48,10 @@ import {
     type ShaderDerivationContext,
 } from "./shader-derivations.js";
 import type { CompiledShaderMaterialOptions } from "./shader-material.js";
-import { shaderUniformValueLayout } from "../shader-material-programs.js";
+import {
+    shaderUniformValueLayout,
+    typeComponents,
+} from "../shader-material-programs.js";
 import { bindingReferences } from "./binding-references.js";
 import { isLibraryStatic } from "./symbols.js";
 import {
@@ -55,6 +60,8 @@ import {
     unwrapExpression,
     variableKind,
 } from "./syntax.js";
+import type { DataStructField } from "./data-types.js";
+import type { DataType } from "./data-types/model.js";
 import type { CompiledShaderProgram, Value } from "./types.js";
 import {
     shaderVariantFacts,
@@ -95,7 +102,10 @@ export type ShaderMaterialViewContext = Omit<
 > &
     Pick<
         LoweringServices,
+        | "allocateTemporaryCppName"
         | "compileShaderSource"
+        | "dataLowerer"
+        | "dataTypes"
         | "emit"
         | "expectArgumentCount"
         | "reachFeature"
@@ -117,12 +127,188 @@ interface ViewDefinition {
     readonly value: ts.Expression | undefined;
 }
 
-/** What each slot map holds at run time. */
-const SLOT_MAPS: Readonly<Record<string, string>> = {
-    _uniformValues: "the uniform values `setShaderUniform` writes",
-    _textureSlots: "the textures `setShaderTexture` binds",
-    _storageBufferSlots: "the storage buffers `setShaderStorageBuffer` binds",
+/** A slot map: the declarations its entries follow, and what each entry holds. */
+interface SlotMap {
+    readonly declarations:
+        "uniformDecls" | "samplerDecls" | "storageBufferDecls";
+    /** The native `ShaderDeclarationList`. */
+    readonly list: "uniforms" | "samplers" | "storage_buffers";
+    /** The entry member holding the slot's value or resource, and its data type. */
+    readonly held: "value" | "current";
+    readonly heldType: DataType;
+}
+
+const SLOT_MAPS: Readonly<Record<string, SlotMap>> = {
+    _uniformValues: {
+        declarations: "uniformDecls",
+        list: "uniforms",
+        held: "value",
+        heldType: { kind: "f32array" },
+    },
+    _textureSlots: {
+        declarations: "samplerDecls",
+        list: "samplers",
+        held: "current",
+        heldType: {
+            kind: "optional",
+            inner: { kind: "handle", handle: "texture" },
+        },
+    },
+    _storageBufferSlots: {
+        declarations: "storageBufferDecls",
+        list: "storage_buffers",
+        held: "current",
+        heldType: {
+            kind: "optional",
+            inner: { kind: "handle", handle: "storage-buffer" },
+        },
+    },
 };
+
+/** A slot map's entry record as the program types it. */
+interface SlotEntryType {
+    readonly map: DataType;
+    readonly entry: DataType & { kind: "struct" };
+    readonly fields: readonly DataStructField[];
+}
+
+/**
+ * The program's type of a slot map: a `Map` from names to records shared
+ * by identity, holding `decl` and the member the slot holds (`SlotMap`) as
+ * the pin's slot objects do.
+ */
+function slotEntryType(
+    context: Pick<ShaderMaterialViewContext, "dataTypes" | "fail">,
+    map: DataType | undefined,
+    slots: SlotMap,
+    node: ts.Node,
+): SlotEntryType {
+    const refuse = (): never =>
+        context.fail(
+            node,
+            `A ShaderMaterial's slot map is a Map from names to records of 'decl' and '${slots.held}' (${context.dataTypes.cppType(slots.heldType)}), as the pin's slot objects are.`,
+        );
+    if (
+        map?.kind !== "map" ||
+        map.weak ||
+        map.dictionary ||
+        map.key.kind !== "string" ||
+        map.value.kind !== "struct" ||
+        !context.dataTypes.isReferenceStruct(map.value.name)
+    )
+        return refuse();
+    const fields = context.dataTypes.structFields(map.value.name, node);
+    if (
+        !fields.every(
+            (field) =>
+                field.sourceName === "decl" ||
+                (field.sourceName === slots.held &&
+                    context.dataTypes.cppType(field.type) ===
+                        context.dataTypes.cppType(slots.heldType)),
+        )
+    )
+        return refuse();
+    return { map, entry: map.value, fields };
+}
+
+/**
+ * Whether a read of a slot map only reads its entries: `get`, `has`,
+ * `size`, an iteration or a `new Map` copy. A read copies the material's
+ * slots, so a write to it, or a map held to compare, would not be the
+ * material's.
+ */
+function readsSlotEntries(expression: ts.Expression): boolean {
+    const node = outermostWrapper(expression);
+    const parent = node.parent;
+    if (ts.isPropertyAccessExpression(parent) && parent.expression === node) {
+        const name = parent.name.text;
+        if (name === "size") return true;
+        return (
+            ["get", "has", "keys", "values", "entries", "forEach"].includes(
+                name,
+            ) &&
+            ts.isCallExpression(parent.parent) &&
+            parent.parent.expression === parent
+        );
+    }
+    if (ts.isForOfStatement(parent)) return parent.expression === node;
+    return (
+        ts.isNewExpression(parent) &&
+        ts.isIdentifier(parent.expression) &&
+        parent.expression.text === "Map" &&
+        parent.arguments?.length === 1 &&
+        parent.arguments[0] === node
+    );
+}
+
+/**
+ * `<material>._uniformValues`, `._textureSlots` or `._storageBufferSlots`:
+ * a Map holding one new slot record per declaration of the material's
+ * variant (`declarations`, as `readShaderMaterialFact` reads them), each
+ * holding what the material's slot holds. A texture or storage slot
+ * record's identity is registered as that slot
+ * (`register_shader_slot_read`).
+ */
+function readSlotMap(
+    context: Pick<
+        ShaderMaterialViewContext,
+        | "allocateTemporaryCppName"
+        | "cppString"
+        | "dataLowerer"
+        | "dataTypes"
+        | "emit"
+        | "fail"
+        | "reachFeature"
+    >,
+    expression: ts.PropertyAccessExpression,
+    slots: SlotMap,
+    data: unknown,
+    declarations: Value,
+    material: { readonly engine: string; readonly cpp: string },
+): Value {
+    const type = slotEntryType(
+        context,
+        context.dataLowerer.dataTypeAt(expression),
+        slots,
+        expression,
+    );
+    const items = Array.isArray(data) ? data : [];
+    const decl = type.fields.find((field) => field.sourceName === "decl");
+    const held = type.fields.find((field) => field.sourceName === slots.held);
+    context.reachFeature("material:shader-slot-maps", expression);
+    const map = context.allocateTemporaryCppName("shader_slots");
+    context.emit(`${context.dataTypes.cppType(type.map)} ${map}{};`);
+    const list = `bbl::ShaderDeclarationList::${slots.list}`;
+    items.forEach((item: unknown, index) => {
+        const name = String(Reflect.get(Object(item), "name"));
+        const declCpp = decl
+            ? context.dataLowerer.compileKnownValueForSink(
+                  declarations.tupleElements![index]!,
+                  decl.type,
+                  expression,
+              )
+            : undefined;
+        const heldCpp =
+            slots.list === "uniforms"
+                ? `bbl::shader_slot_uniform_value(${material.engine}, ${material.cpp}, ${context.cppString(name)}, ${context.cppString(String(Reflect.get(Object(item), "type")))}, ${typeComponents(String(Reflect.get(Object(item), "type")))}u)`
+                : `bbl::${slots.list === "samplers" ? "shader_slot_texture" : "shader_slot_storage_buffer"}(${material.engine}, ${material.cpp}, ${index}u)`;
+        const entry = context.allocateTemporaryCppName("shader_slot");
+        const parts = type.fields.map((field) =>
+            context.dataTypes.structFieldInitializerCpp(
+                field,
+                field === decl ? declCpp! : field === held ? heldCpp : "{}",
+            ),
+        );
+        const register =
+            slots.list === "uniforms"
+                ? ""
+                : ` bbl::register_shader_slot_read(${material.engine}, ${material.cpp}, ${list}, ${index}u, ${entry}.weak_identity());`;
+        context.emit(
+            `{ auto ${entry} = ${context.dataLowerer.structAggregate(type.entry, parts)};${register} static_cast<void>(${map}.set(${context.cppString(name)}, std::move(${entry}))); }`,
+        );
+    });
+    return context.dataLowerer.leafValue(map, type.map);
+}
 
 /** The text a refusal names an expression by. */
 function spelled(node: ts.Node): string {
@@ -237,25 +423,31 @@ function creationLaneLeaf(
 /**
  * `<material>.<field>` for a field generation reads as the plain data the
  * pin's `createShaderMaterial` builds (`shaderMaterialField`) or a slot
- * map: the plain data the material's variant was built with, or a
- * refusal. Undefined for any other read.
+ * map: the plain data the material's variant was built with, the slots of
+ * its declarations (`readSlotMap`), or a refusal. Undefined for any other
+ * read.
  */
 export function readShaderMaterialFact(
     context: Pick<
         ShaderMaterialViewContext,
+        | "allocateTemporaryCppName"
         | "bindings"
         | "checker"
         | "cppString"
+        | "dataLowerer"
+        | "dataTypes"
+        | "emit"
         | "fail"
+        | "reachFeature"
         | "requireEngine"
         | "sceneManifest"
     >,
     owner: Value,
     expression: ts.PropertyAccessExpression,
 ): Value | undefined {
-    const field = expression.name.text;
-    if (!shaderMaterialField(field)?.built && !Object.hasOwn(SLOT_MAPS, field))
-        return undefined;
+    const name = expression.name.text;
+    const slots = Object.hasOwn(SLOT_MAPS, name) ? SLOT_MAPS[name] : undefined;
+    if (!shaderMaterialField(name)?.built && !slots) return undefined;
     const material =
         owner.kind === "material" ||
         (owner.dataType?.kind === "handle" &&
@@ -267,20 +459,19 @@ export function readShaderMaterialFact(
         )
     )
         return undefined;
-    if (Object.hasOwn(SLOT_MAPS, field))
+    if (slots && !readsSlotEntries(expression))
         context.fail(
             expression,
-            `'${spelled(expression)}' reads a ShaderMaterial's '${field}', which holds ${SLOT_MAPS[field]!} at run time; generation reads the material's declarations ('uniformDecls', 'samplerDecls', 'storageBufferDecls'), not its slots.`,
+            `'${spelled(expression)}' reads a ShaderMaterial's '${name}' other than by 'get', 'has', 'size', an iteration or a 'new Map' copy; the read copies the material's slots, so a write to it or a map held from it is not the material's.`,
         );
     const variants = shaderVariantsOf(owner);
     if (!variants)
         context.fail(
             expression,
-            `'${spelled(expression)}' reads a ShaderMaterial's '${field}', which its shader variant decides; this material's variant is decided at run time.`,
+            `'${spelled(expression)}' reads a ShaderMaterial's '${name}', which its shader variant decides; this material's variant is decided at run time.`,
         );
+    const field = slots?.declarations ?? name;
     const data = variantsField(context, variants, field, expression);
-    if (!holdsRuntimeLeaf(data))
-        return jsonToValue(context, recipeFactPolicy, data, expression);
     // The leaves read the material once, where the field is read.
     let reader: { readonly engine: string; readonly cpp: string } | undefined;
     const readMaterial = (): {
@@ -300,26 +491,31 @@ export function readShaderMaterialFact(
         }
         return reader;
     };
-    return jsonToValue(
-        context,
-        recipeFactPolicy,
-        data,
-        expression,
-        (leaf, path) =>
-            leaf instanceof UnreadableLeaf
-                ? unreadableValue(leaf.refusal)
-                : leaf instanceof RuntimeLeaf
-                  ? creationLaneLeaf(
-                        context,
-                        variants,
-                        data,
-                        leaf,
-                        path,
-                        readMaterial,
-                        expression,
-                    )
-                  : undefined,
-    );
+    const value = !holdsRuntimeLeaf(data)
+        ? jsonToValue(context, recipeFactPolicy, data, expression)
+        : jsonToValue(
+              context,
+              recipeFactPolicy,
+              data,
+              expression,
+              (leaf, path) =>
+                  leaf instanceof UnreadableLeaf
+                      ? unreadableValue(leaf.refusal)
+                      : leaf instanceof RuntimeLeaf
+                        ? creationLaneLeaf(
+                              context,
+                              variants,
+                              data,
+                              leaf,
+                              path,
+                              readMaterial,
+                              expression,
+                          )
+                        : undefined,
+          );
+    return slots
+        ? readSlotMap(context, expression, slots, data, value, readMaterial())
+        : value;
 }
 
 /**
@@ -465,21 +661,19 @@ interface ViewRedefinition {
     readonly descriptor: ts.ObjectLiteralExpression;
 }
 
-/** Each definition as a redefinition of a property the view's program is built from. */
+/**
+ * Each definition as a redefinition of a property the view's program is
+ * built from, or of a slot map (`SLOT_MAPS`).
+ */
 function viewRedefinitions(
     context: Pick<ShaderMaterialViewContext, "fail">,
     definitions: readonly ViewDefinition[],
 ): ViewRedefinition[] {
     return definitions.map(({ key, site, node, descriptor, value }) => {
-        if (Object.hasOwn(SLOT_MAPS, key))
+        if (!viewFields().includes(key) && !Object.hasOwn(SLOT_MAPS, key))
             context.fail(
                 site,
-                `A ShaderMaterial view keeps its source's slots; redefining '${key}' would give it slots of its own for ${SLOT_MAPS[key]!}, which generation does not represent.`,
-            );
-        if (!viewFields().includes(key))
-            context.fail(
-                site,
-                `A ShaderMaterial view redefines only the properties its program is built from (${viewFields().join(", ")}); '${key}' is not one.`,
+                `A ShaderMaterial view redefines only the properties its program is built from (${viewFields().join(", ")}) and its slot maps (${Object.keys(SLOT_MAPS).join(", ")}); '${key}' is not one.`,
             );
         if (!value)
             context.fail(
@@ -729,21 +923,62 @@ function viewOptions(
     return options;
 }
 
-/** The resource declarations a view shares with its source. */
-function slotLayout(program: CompiledShaderProgram): string {
+/**
+ * The resource declarations a view shares with its source: those of each
+ * list but the ones its slot maps `installed` give it.
+ */
+function slotLayout(
+    program: CompiledShaderProgram,
+    installed: ReadonlySet<SlotMap["list"]>,
+): string {
     return JSON.stringify([
-        program.uniforms,
-        program.samplerDeclarations,
+        installed.has("uniforms") ? [] : program.uniforms,
+        installed.has("samplers") ? [] : program.samplerDeclarations,
         program.externalTextures ?? [],
-        program.storageBuffers,
+        installed.has("storage_buffers") ? [] : program.storageBuffers,
     ]);
+}
+
+/**
+ * A slot map a definition gives a view, compiled where the statement runs:
+ * the C++ of the map and the member each entry holds (`SlotMap`).
+ */
+function slotMapInstall(
+    context: ShaderMaterialViewContext,
+    slots: SlotMap,
+    expression: ts.Expression,
+): { readonly slots: SlotMap; readonly cpp: string; readonly held: string } {
+    const value = context.compileValue(expression);
+    const type = slotEntryType(
+        context,
+        valueDataType(value) ?? context.dataLowerer.dataTypeAt(expression),
+        slots,
+        expression,
+    );
+    const held = type.fields.find((field) => field.sourceName === slots.held);
+    if (!held)
+        context.fail(
+            expression,
+            `A slot map a ShaderMaterial view is given holds records whose '${slots.held}' is what each slot binds.`,
+        );
+    return {
+        slots,
+        cpp: context.dataLowerer.compileKnownValueForSink(
+            value,
+            type.map,
+            expression,
+        ),
+        held: held.name,
+    };
 }
 
 /**
  * `Object.defineProperty(view, key, { value })` or
  * `Object.defineProperties(view, { key: { value }, ... })` on a
  * ShaderMaterial view (`shaderMaterialViewTarget`): the program each of
- * its variants derives, chosen at run time from the view's own.
+ * its variants derives, chosen at run time from the view's own, then the
+ * slot maps it is given, which become its slots
+ * (`install_shader_view_slots`).
  */
 export function compileShaderMaterialViewDefinitions(
     context: ShaderMaterialViewContext & Pick<LoweringServices, "program">,
@@ -751,6 +986,60 @@ export function compileShaderMaterialViewDefinitions(
     target: ts.Identifier,
     defined: readonly ViewDefinition[],
 ): Value {
+    const redefinitions = viewRedefinitions(context, defined);
+    const definitions = redefinitions.filter(
+        ({ key }) => !Object.hasOwn(SLOT_MAPS, key),
+    );
+    // The maps are the run time's, read once where the statement runs.
+    const installs = redefinitions.flatMap(({ key, value }) =>
+        Object.hasOwn(SLOT_MAPS, key)
+            ? [slotMapInstall(context, SLOT_MAPS[key]!, value)]
+            : [],
+    );
+    const installed = new Set(installs.map(({ slots }) => slots.list));
+    if (definitions.length > 0)
+        deriveViewPrograms(context, call, target, definitions, installed);
+    const view = context.bindings.lookupOptional(target)!;
+    const engine = context.requireEngine(view, call);
+    if (installed.has("uniforms"))
+        for (const name of view.shaderMaterialView!.programs.keys())
+            if (
+                context.sceneManifest.reachedShaderPrograms.find(
+                    (program) => program.name === name,
+                )?.liftedUniforms
+            )
+                context.fail(
+                    call,
+                    `A ShaderMaterial view given its own '_uniformValues' draws shader variant '${name}', which lifts source numbers into uniforms the pin's map does not hold.`,
+                );
+    if (installs.length > 0) {
+        context.reachFeature("material:shader-view", call);
+        context.reachFeature("material:shader-slot-maps", call);
+    }
+    for (const { slots, cpp, held } of installs) {
+        const entries = context.allocateTemporaryCppName("shader_slot_entries");
+        const entry = context.allocateTemporaryCppName("shader_slot_entry");
+        context.emit({
+            kind: "expression",
+            code: `{ std::vector<bbl::ShaderViewSlotEntry> ${entries}; for (const auto& ${entry} : ${cpp}) ${entries}.push_back(bbl::ShaderViewSlotEntry{${entry}.first, ${entry}.second.weak_identity(), ${entry}.second->${held}}); bbl::install_shader_view_slots(${engine}, ${view.cpp}, bbl::ShaderDeclarationList::${slots.list}, ${entries}); }`,
+        });
+    }
+    return { kind: "void", cpp: "" };
+}
+
+/**
+ * The programs a view's redefinitions derive, one per variant it may draw:
+ * its binding's facts updated and `derive_shader_material_view` emitted.
+ * The lists slot maps of the same definition give the view (`installed`)
+ * may declare other slots than its source.
+ */
+function deriveViewPrograms(
+    context: ShaderMaterialViewContext & Pick<LoweringServices, "program">,
+    call: ts.CallExpression,
+    target: ts.Identifier,
+    definitions: readonly ViewRedefinition[],
+    installed: ReadonlySet<SlotMap["list"]>,
+): void {
     const view = context.bindings.lookupOptional(target)!;
     const facts = view.shaderMaterialView!;
     const reach = definitionReach(context, call, target);
@@ -763,7 +1052,6 @@ export function compileShaderMaterialViewDefinitions(
     const after = statementsBeside(declared, "after")!;
     // The programs the view may draw where the statement runs.
     const current = programsThrough(facts, after, facts.declared, statement);
-    const definitions = viewRedefinitions(context, defined);
     // A source of no variant created yet derives none; a later creation
     // compiles it again (`refuseWithoutCreations`).
     if (current.size === 0)
@@ -844,7 +1132,7 @@ export function compileShaderMaterialViewDefinitions(
         let compiled!: CompiledShaderMaterialOptions;
         for (const creation of creations) {
             const options = viewOptions(context, creation, redefined, call);
-            const program: RecordFacts = new Map(
+            const programFacts: RecordFacts = new Map(
                 [...options].map(([key, fact]) => [
                     key,
                     viewProgramFact(key, fact),
@@ -854,8 +1142,11 @@ export function compileShaderMaterialViewDefinitions(
                 context,
                 programs,
                 current,
-                { name: target, value: factsRecord(context, program, call) },
-                context.memberLiteral(target, [...program.keys()]),
+                {
+                    name: target,
+                    value: factsRecord(context, programFacts, call),
+                },
+                context.memberLiteral(target, [...programFacts.keys()]),
                 {
                     node: call,
                     runtime:
@@ -871,12 +1162,16 @@ export function compileShaderMaterialViewDefinitions(
         if (
             slotLayout(
                 context.sceneManifest.reachedShaderPrograms[compiled.id]!,
+                installed,
             ) !==
-            slotLayout(context.sceneManifest.reachedShaderPrograms[current]!)
+            slotLayout(
+                context.sceneManifest.reachedShaderPrograms[current]!,
+                installed,
+            )
         )
             context.fail(
                 call,
-                `A ShaderMaterial view keeps its source's slots; its redefinitions (${definitions.map(({ key }) => key).join(", ")}) declare other uniforms, samplers or storage buffers than shader variant '${program}', which slots of the view's own would hold.`,
+                `A ShaderMaterial view keeps its source's slots; its redefinitions (${definitions.map(({ key }) => key).join(", ")}) declare other uniforms, samplers or storage buffers than shader variant '${program}', which slots of the view's own would hold: the same definition gives the view the slot maps holding them.`,
             );
         if (
             transmissive !== undefined &&
@@ -925,5 +1220,4 @@ export function compileShaderMaterialViewDefinitions(
         programs: reachable,
     };
     context.bindings.rebindCompileTimeValue(target, updated);
-    return { kind: "void", cpp: "" };
 }

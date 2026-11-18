@@ -54,6 +54,34 @@ struct ShaderUniformInput {
     double load(std::size_t index) const { return read(index); }
 };
 
+/**
+ * One entry of a slot map a ShaderMaterial view installs: its key, the
+ * identity of the slot object, and what that object holds (`current` of a
+ * texture or storage slot, `value` of a uniform slot).
+ */
+struct ShaderViewSlotEntry {
+    std::string name;
+    std::weak_ptr<const void> identity;
+    std::variant<js::Nullable<StoredTexture>, js::Nullable<StorageBufferHandle>, js::F32Array> held;
+};
+
+/** `current` of a ShaderMaterial's `_textureSlots` entry for declared sampler `slot`. */
+js::Nullable<StoredTexture> shader_slot_texture(Engine& engine, MaterialHandle material,
+                                                std::uint32_t slot);
+/** `current` of a ShaderMaterial's `_storageBufferSlots` entry for declared storage buffer `slot`. */
+js::Nullable<StorageBufferHandle> shader_slot_storage_buffer(Engine& engine, MaterialHandle material,
+                                                             std::uint32_t slot);
+/** `value` of a ShaderMaterial's `_uniformValues` entry for uniform `name` of `count` lanes. */
+js::F32Array shader_slot_uniform_value(Engine& engine, MaterialHandle material,
+                                       const std::string& name, const std::string& type,
+                                       std::uint32_t count);
+/** Records that the slot object of `identity` is the material's declared `slot` of `list`. */
+void register_shader_slot_read(Engine& engine, MaterialHandle material, ShaderDeclarationList list,
+                               std::uint32_t slot, std::weak_ptr<const void> identity);
+/** `Object.defineProperties(view, { <slot map>: { value } })`: the view's slots become the map's. */
+void install_shader_view_slots(Engine& engine, MaterialHandle view, ShaderDeclarationList list,
+                               const std::vector<ShaderViewSlotEntry>& entries);
+
 ShaderUniformRead get_shader_uniform(Engine& engine, MaterialHandle material,
                                      const std::string& name);
 void set_shader_uniform_input(Engine& engine, MaterialHandle material, const std::string& name,

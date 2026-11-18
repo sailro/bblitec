@@ -1912,6 +1912,7 @@ ${lowerThinInstanceSync(context)}
                     "material:shader-uniform-creation-lanes",
                 ),
                 views: this.reaches("upstream/src/material_views.cpp"),
+                slotMaps: features.includes("material:shader-slot-maps"),
             }),
         );
         emitReached("upstream/src/material_shader_external.cpp", () =>

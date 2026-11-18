@@ -3575,6 +3575,7 @@ export type Feature =
     | "material:shader-uniform-ranges"
     | "material:shader-declaration-lists"
     | "material:shader-uniform-creation-lanes"
+    | "material:shader-slot-maps"
     | "material:shader-storage"
     | "material:shader-external-texture"
     | "material:standard"

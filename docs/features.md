@@ -383,7 +383,9 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
   reads the numbers the material's creation was given. A shared array the program may write passes on with its
   declarations (bound, spread, returned, given to a program function, defined on a view); its `typeof`, truthiness and
   presence fold, and any other read refuses there, a `createShaderMaterial` given it included.
-  Reads of `_uniformValues`, `_textureSlots` and `_storageBufferSlots` refuse.
+  `_uniformValues`, `_textureSlots` and `_storageBufferSlots` of a generation-known variant are read through `get`,
+  `has`, `size`, iteration or a `new Map` copy, as Maps from names to records of `decl` and `value` (`Float32Array`)
+  or `current` (`Texture2D | null`, `StorageBuffer | null`); other reads and other record shapes refuse.
   A local function call that refuses with a ShaderMaterial argument of run-time variant compiles once per variant
   the program's `createShaderMaterial` calls create, later ones included, and takes at run time the arm its
   argument's variant selects through a generated table; a variant outside the table throws. Compiled before any
@@ -399,9 +401,11 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
   its sources, `attributes`, declaration lists and pipeline state; the view draws a program compiled per source variant and
   branch, selected at run time. A source of run-time variant may be any variant the program creates, as such a call's
   argument may. A view's program takes no uniform defaults; a run-time default a redefinition gives refuses where the
-  view's field reads it. Redefinitions declaring other uniforms,
-  samplers or storage buffers, slot maps or other fields, other run-time values, or a source of a variant the program
-  never creates refuse.
+  view's field reads it. A definition giving the view such maps makes them its slots: a record read from its source
+  aliases that slot, any other is the view's own, and a declared uniform the map lacks packs as zero. Redefinitions
+  declaring other uniforms, samplers or storage buffers than the source without the maps holding them, other fields,
+  other run-time values, or a source of a variant the program never creates refuse; so do a given map lacking a
+  declared sampler or storage buffer and a record read from another material, at run time.
   Depth-only render tasks use each
   material's pipeline, including custom vertex transforms and `depthOnlyFragment` discards.
   `releaseMaterialViewGpu` drops a shader view's own packed custom uniforms; a later draw repacks them.

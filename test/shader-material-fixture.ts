@@ -19,10 +19,14 @@ export function compileShaderMaterialFixture(source: string) {
     const creationLanes = compiled.manifest.features.includes(
         "material:shader-uniform-creation-lanes",
     );
+    const slotMaps = compiled.manifest.features.includes(
+        "material:shader-slot-maps",
+    );
     const factory = new FactoryLowerer(context).lowerShaderMaterialFactory({
         declarationLists,
         creationLanes,
         views: true,
+        slotMaps,
     }).source;
     const plan = new RendererLowerer(context).lowerRenderPlan({
         shaderPrograms: compiled.manifest.customShaderPrograms,

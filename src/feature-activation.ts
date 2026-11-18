@@ -843,6 +843,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "(uniformDecls copies each declaration's defaultValue)",
         consumers: CMAKE,
     },
+    "material:shader-slot-maps": {
+        provenance:
+            "src/material/shader/shader-material.ts createShaderMaterial " +
+            "(_uniformValues, _textureSlots, _storageBufferSlots)",
+        consumers: CMAKE,
+    },
     "material:shader-storage": {
         provenance:
             "src/material/shader/storage-buffer.ts + " +

@@ -77,7 +77,7 @@ test("a ShaderMaterial of a known variant reads the declarations and sources the
     assert.deepEqual(copy.storageBuffers, ground.storageBuffers);
 });
 
-test("a ShaderMaterial's fields refuse where the run time decides them, and its slot maps refuse", () => {
+test("a ShaderMaterial's fields and slot maps refuse where the run time decides them", () => {
     const source = (body: string): string => `${prelude}
     import type { Mesh } from "@babylonjs/lite";
     type Slots = ShaderMaterial & { _textureSlots: Map<string, unknown> };
@@ -102,7 +102,7 @@ test("a ShaderMaterial's fields refuse where the run time decides them, and its 
     );
     assert.throws(
         () => compileSource(source("(material as Slots)._textureSlots.size")),
-        /reads a ShaderMaterial's '_textureSlots', which holds the textures `setShaderTexture` binds at run time/,
+        /'\(material as Slots\)\._textureSlots' reads a ShaderMaterial's '_textureSlots', which its shader variant decides; this material's variant is decided at run time\./,
     );
 });
 
@@ -327,8 +327,8 @@ test("a view refuses redefinitions generation cannot derive a program from", () 
             /A ShaderMaterial view keeps its source's slots; its redefinitions \(uniformDecls\) declare other uniforms, samplers or storage buffers than shader variant 'ground'/,
         ],
         [
-            `Object.defineProperty(view, "_textureSlots", { value: new Map() });`,
-            /A ShaderMaterial view keeps its source's slots; redefining '_textureSlots' would give it slots of its own for the textures `setShaderTexture` binds/,
+            `Object.defineProperty(view, "_textureSlots", { value: new Map<string, number>() });`,
+            /A ShaderMaterial's slot map is a Map from names to records of 'decl' and 'current'/,
         ],
         [
             `Object.defineProperties(view, { _shaderCustomUbo: { value: null, writable: true } });`,
@@ -1093,6 +1093,241 @@ int main(){
 `,
         {
             expectedOutput: `0.25,0.5,0.75, 0 1 1,2,3,4, | ${pinnedError('ShaderMaterial: uniform "${a0}" was not declared.', { module: "src/material/shader/shader-material.ts", name: "getShaderUniform" })} | 1,0,0, 7 9 1 1 0 1 0 0 1 0 0 | enableShaderUniformRangeUpdates over a ShaderMaterial view is unsupported.`,
+            flags: ["/DBBLITE_GPU_INSTANCING=0"],
+        },
+    );
+});
+
+/**
+ * A view given its own slot maps, as a post-process view widens its
+ * source: its source's slots copied by name into new Maps, a fallback
+ * texture slot and a uniform slot of its own, and `new Map` of the
+ * source's uniform values, defined with the declarations they hold.
+ */
+const slotMapsSource = `${prelude}
+    import { createStorageBuffer, createTexture2DFromPixels, setShaderStorageBuffer, setShaderTexture, setShaderUniform } from "@babylonjs/lite";
+    import type { ShaderSamplerDecl, ShaderUniformDecl, StorageBuffer, Texture2D } from "@babylonjs/lite";
+    interface UniformSlot { decl: ShaderUniformDecl; value: Float32Array }
+    interface TextureSlot { decl: ShaderSamplerDecl; current: Texture2D | null }
+    interface StorageSlot { decl: { name: string; type: string }; current: StorageBuffer | null }
+    type Internals = ShaderMaterial & { _textureSlots: Map<string, TextureSlot>; _storageBufferSlots: Map<string, StorageSlot>; _uniformValues: Map<string, UniformSlot> };
+    const CARVE: ShaderSamplerDecl = { name: "carve", sampleType: "float" };
+    const EXTRA: ShaderUniformDecl = { name: "uExtra", type: "vec4<f32>", defaultValue: [0, 0, 0, 0] };
+    const SAMPLED = \`@fragment fn mainFragment(@location(0) vWorldPos: vec3<f32>) -> @location(0) vec4<f32> { return vec4<f32>(shaderUniforms.uTint, 1.0) + textureSample(albedo, albedoSampler, vWorldPos.xy) + points[0]; }\`;
+    const WIDER = \`@fragment fn mainFragment(@location(0) vWorldPos: vec3<f32>) -> @location(0) vec4<f32> { return vec4<f32>(shaderUniforms.uTint, 1.0) + shaderUniforms.uExtra + textureSample(albedo, albedoSampler, vWorldPos.xy) + textureSample(carve, carveSampler, vWorldPos.xy) + points[0]; }\`;
+    function widerView(source: ShaderMaterial, fallback: Texture2D): ShaderMaterial {
+        const src = source as Internals;
+        const view = createMaterialView(source, { features: 0 }) as ShaderMaterial;
+        const storageBufferSlots = new Map<string, StorageSlot>();
+        for (const decl of source.storageBufferDecls) {
+            const slot = src._storageBufferSlots.get(decl.name);
+            if (slot) storageBufferSlots.set(decl.name, slot);
+        }
+        const textureSlots = new Map<string, TextureSlot>();
+        for (const decl of source.samplerDecls) {
+            const slot = src._textureSlots.get(decl.name);
+            if (slot) textureSlots.set(decl.name, slot);
+        }
+        if (!textureSlots.has("carve")) textureSlots.set("carve", { decl: CARVE, current: fallback });
+        const uniformValues = new Map<string, UniformSlot>(src._uniformValues);
+        if (!uniformValues.has("uExtra")) uniformValues.set("uExtra", { decl: EXTRA, value: Float32Array.from([1, 2, 3, 4]) });
+        Object.defineProperties(view, {
+            fragmentSource: { value: wgsl\`\${WIDER}\`, enumerable: true, configurable: true },
+            samplerDecls: { value: [...source.samplerDecls, { name: "carve", sampleType: "float" }], enumerable: true, configurable: true },
+            uniformDecls: { value: [...source.uniformDecls, { name: "uExtra", type: "vec4<f32>" }], enumerable: true, configurable: true },
+            storageBufferDecls: { value: source.storageBufferDecls, enumerable: true, configurable: true },
+            _textureSlots: { value: textureSlots, enumerable: true, configurable: true },
+            _storageBufferSlots: { value: storageBufferSlots, enumerable: true, configurable: true },
+            _uniformValues: { value: uniformValues, enumerable: true, configurable: true },
+        });
+        return view;
+    }
+    async function main(): Promise<void> {
+        const engine = await createEngine({});
+        const base = createShaderMaterial({ name: "base", vertexSource: wgsl\`\${VERT}\`, fragmentSource: wgsl\`\${SAMPLED}\`, attributes: ["position"], uniforms: ["worldViewProjection", "world", { name: "uTint", type: "vec3<f32>", defaultValue: [1, 0.5, 0.25] }], samplers: ["albedo"], storageBuffers: [{ name: "points", type: "array<vec4<f32>>" }] });
+        const view = widerView(base, createTexture2DFromPixels(engine, new Uint8Array([255, 0, 0, 255]), 1, 1));
+        // The view's copied slots follow what the source binds later.
+        setShaderTexture(base, "albedo", createTexture2DFromPixels(engine, new Uint8Array([0, 255, 0, 255]), 1, 1));
+        setShaderUniform(base, "uTint", [0, 1, 0]);
+        setShaderStorageBuffer(base, "points", createStorageBuffer(engine, new Float32Array([0, 0, 0, 0])));
+        draw(engine, view);
+    }
+    void main();
+`;
+
+test("a view given slot maps by its definition installs them: slots read from its source alias that source's, the others are its own", () => {
+    const compiled = compileSource(slotMapsSource);
+    const view = program(compiled, "base-1");
+    assert.deepEqual(view.samplers, ["albedo", "carve"]);
+    assert.ok(view.uniforms.some((uniform) => uniform.startsWith("uExtra:")));
+    assert.ok(compiled.manifest.features.includes("material:shader-slot-maps"));
+    // Each read is a new record per declaration, registered as its slot.
+    assert.match(
+        compiled.cpp,
+        /bbl::register_shader_slot_read\(\w+, \w+, bbl::ShaderDeclarationList::samplers, 0u, \w+\.weak_identity\(\)\);/,
+    );
+    assert.match(
+        compiled.cpp,
+        /bbl::register_shader_slot_read\(\w+, \w+, bbl::ShaderDeclarationList::storage_buffers, 0u, \w+\.weak_identity\(\)\);/,
+    );
+    assert.match(
+        compiled.cpp,
+        /bbl::shader_slot_uniform_value\(\w+, \w+, "uTint", "vec3<f32>", 3u\)/,
+    );
+    // The maps install over the derived program's slots, in source order.
+    assert.match(
+        compiled.cpp,
+        /bbl::derive_shader_material_view\((\w+), (\w+), \d+u, false\);\s*\{[^\n]*bbl::install_shader_view_slots\(\1, \2, bbl::ShaderDeclarationList::samplers, \w+\); \}\s*\{[^\n]*bbl::install_shader_view_slots\(\1, \2, bbl::ShaderDeclarationList::storage_buffers, \w+\); \}\s*\{[^\n]*->value\}\); bbl::install_shader_view_slots\(\1, \2, bbl::ShaderDeclarationList::uniforms, \w+\); \}/,
+    );
+});
+
+test("slot maps refuse where a read is held or written, and where their records are not the pin's slot objects", () => {
+    const refuses = (from: string, to: string, refusal: RegExp): void => {
+        assert.ok(slotMapsSource.includes(from), from);
+        assert.throws(
+            () => compileSource(slotMapsSource.replace(from, to)),
+            refusal,
+        );
+    };
+    refuses(
+        "const src = source as Internals;",
+        "const src = source as Internals; const held = src._textureSlots; console.log(held.size);",
+        /'src\._textureSlots' reads a ShaderMaterial's '_textureSlots' other than by 'get', 'has', 'size', an iteration or a 'new Map' copy/,
+    );
+    refuses(
+        "const src = source as Internals;",
+        'const src = source as Internals; src._textureSlots.set("carve", { decl: CARVE, current: fallback });',
+        /reads a ShaderMaterial's '_textureSlots' other than by 'get'/,
+    );
+    refuses(
+        "interface TextureSlot { decl: ShaderSamplerDecl; current: Texture2D | null }",
+        "interface TextureSlot { decl: ShaderSamplerDecl; current: Texture2D | null; label: string }",
+        /A ShaderMaterial's slot map is a Map from names to records of 'decl' and 'current'/,
+    );
+    // Without its maps, a view declaring other slots keeps refusing.
+    refuses(
+        "_textureSlots: { value: textureSlots, enumerable: true, configurable: true },",
+        "",
+        /A ShaderMaterial view keeps its source's slots; its redefinitions \(fragmentSource, samplerDecls, uniformDecls, storageBufferDecls\) declare other uniforms, samplers or storage buffers than shader variant 'base'/,
+    );
+});
+
+test("installed slot maps natively alias the source's slots their records were read from, hold the others as the view's own, and pack the uniforms they hold", (t) => {
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native compiler required.");
+        return;
+    }
+    const { compiled, cpp } = compileShaderMaterialFixture(slotMapsSource);
+    const context = new LoweringContext();
+    const factory = new FactoryLowerer(context).lowerShaderMaterialFactory({
+        views: true,
+        slotMaps: true,
+    }).source;
+    const views = new FactoryLowerer(context).lowerNoColorMaterialViews(
+        false,
+        false,
+        false,
+        false,
+        true,
+    ).source;
+    const id = (name: string): number =>
+        compiled.manifest.customShaderPrograms.findIndex(
+            (candidate) => candidate.name === name,
+        );
+    runGeneratedProgram(
+        native,
+        "shader-material-views/slot-maps",
+        `
+${cpp}
+#include <array>
+#include <cstdio>
+namespace bbl {
+namespace {
+${cppFunction(views, "MaterialHandle create_no_color_material_view(")}
+}
+${cppFunction(views, "MaterialHandle create_shader_material_view(")}
+${cppFunction(views, "void derive_shader_material_view(")}
+${["void set_shader_texture(", "void set_shader_render_texture(", "void set_shader_storage_buffer(", "void set_shader_pixels_texture( Engine& engine, MaterialHandle material, std::uint32_t slot, const StoredTexture& texture)"].map((signature) => cppFunction(factory, signature)).join("\n")}
+void set_shader_pixels_texture(Engine&, MaterialHandle, std::uint32_t, const PixelsTexture&) { throw std::runtime_error("no pixels"); }
+}
+int main(){
+    using bbl::ShaderDeclarationList;
+    bbl::Engine engine;
+    engine.storage_buffers.resize(3);
+    const auto source = bbl::create_shader_material(engine, ${id("base")}u);
+    const auto other = bbl::create_shader_material(engine, ${id("base")}u);
+    const auto view = bbl::create_shader_material_view(engine, source);
+    bbl::derive_shader_material_view(engine, view, ${id("base-1")}u, false);
+    // The records a program reads out of the maps, as generation builds them.
+    struct TextureSlot { bbl::js::Nullable<bbl::StoredTexture> current; };
+    struct StorageSlot { bbl::js::Nullable<bbl::StorageBufferHandle> current; };
+    const auto texture_read = [&](bbl::MaterialHandle material) {
+        auto slot = bbl::js::make_ref<TextureSlot>(TextureSlot{bbl::shader_slot_texture(engine, material, 0u)});
+        bbl::register_shader_slot_read(engine, material, ShaderDeclarationList::samplers, 0u, slot.weak_identity());
+        return slot;
+    };
+    const auto entry = [](const char* name, const auto& slot) {
+        return bbl::ShaderViewSlotEntry{name, slot.weak_identity(), slot->current};
+    };
+    const auto where = [&](ShaderDeclarationList list, std::uint32_t slot) {
+        const auto owner = bbl::shader_slot_owner(engine, bbl::handle_at(engine.materials, view), list, slot);
+        std::printf("%s%u ", &owner.material == &bbl::handle_at(engine.materials, source) ? "source" : "own", owner.slot);
+    };
+    const auto albedo = texture_read(source);
+    bbl::FileTexture fallback; fallback.identity = 9;
+    const auto carve = bbl::js::make_ref<TextureSlot>(TextureSlot{bbl::StoredTexture{fallback}});
+    auto points = bbl::js::make_ref<StorageSlot>(StorageSlot{bbl::shader_slot_storage_buffer(engine, source, 0u)});
+    bbl::register_shader_slot_read(engine, source, ShaderDeclarationList::storage_buffers, 0u, points.weak_identity());
+    bbl::install_shader_view_slots(engine, view, ShaderDeclarationList::samplers, {entry("albedo", albedo), entry("carve", carve)});
+    bbl::install_shader_view_slots(engine, view, ShaderDeclarationList::storage_buffers, {entry("points", points)});
+    where(ShaderDeclarationList::samplers, 0); where(ShaderDeclarationList::samplers, 1); where(ShaderDeclarationList::storage_buffers, 0);
+    // What the source binds later is what the view's copied slots hold.
+    bbl::FileTexture green; green.identity = 7; green.data.bytes = bbl::SharedTextureBytes::Storage{1};
+    bbl::set_shader_texture(engine, source, 0u, green);
+    bbl::set_shader_storage_buffer(engine, source, 0u, bbl::StorageBufferHandle{2});
+    const auto held = bbl::shader_slot_texture(engine, view, 1u);
+    std::printf("%llu %llu %d %u ", static_cast<unsigned long long>(std::get<bbl::FileTexture>(bbl::shader_slot_texture(engine, view, 0u).value()).identity),
+        static_cast<unsigned long long>(bbl::handle_at(engine.materials, view).shader_textures.at(1).identity), held.has_value() ? 1 : 0,
+        bbl::shader_slot_storage_buffer(engine, view, 0u).value().value);
+    // A record read through the view is its source's slot.
+    const auto again = texture_read(view);
+    bbl::install_shader_view_slots(engine, view, ShaderDeclarationList::samplers, {entry("albedo", again), entry("carve", carve)});
+    where(ShaderDeclarationList::samplers, 0);
+    const auto refused = [&](std::vector<bbl::ShaderViewSlotEntry> entries) {
+        try { bbl::install_shader_view_slots(engine, view, ShaderDeclarationList::samplers, entries); } catch (const std::runtime_error& error) { std::printf("| %s ", error.what()); }
+    };
+    refused({entry("albedo", texture_read(other)), entry("carve", carve)});
+    refused({entry("albedo", albedo)});
+    // Uniforms: a record read from the source shares its array.
+    const auto offset = [](const char* name) {
+        for (const auto& slot : bbl::upstream::shader_variant_info(${id("base-1")}u).uniform_slots)
+            if (std::string_view(slot.name) == name) return slot.offset;
+        throw std::runtime_error("no uniform");
+    };
+    const auto packed = [&] {
+        const auto& values = bbl::shader_uniform_render_values(bbl::handle_at(engine.materials, view));
+        for (const auto& [name, lanes] : {std::pair{"uTint", 3u}, std::pair{"uExtra", 4u}})
+            for (std::uint32_t lane = 0; lane < lanes; ++lane) std::printf("%g,", static_cast<double>(values.at(offset(name) + lane)));
+        std::printf(" ");
+    };
+    const auto tint = bbl::shader_slot_uniform_value(engine, source, "uTint", "vec3<f32>", 3u);
+    const auto world = bbl::shader_slot_uniform_value(engine, source, "world", "mat4x4<f32>", 16u);
+    const auto extra = bbl::normalize_shader_uniform_value("uExtra", "vec4<f32>", 4u, {1.0f, 2.0f, 3.0f, 4.0f});
+    bbl::install_shader_view_slots(engine, view, ShaderDeclarationList::uniforms, {{"world", {}, world}, {"uTint", {}, tint}, {"uExtra", {}, extra}});
+    std::printf("%zu ", world.size());
+    packed();
+    bbl::set_shader_uniform(engine, source, "uTint", std::array<double, 3>{0.0, 1.0, 0.0});
+    packed();
+    // A declared uniform the map lacks packs as zero.
+    bbl::install_shader_view_slots(engine, view, ShaderDeclarationList::uniforms, {{"uTint", {}, tint}});
+    packed();
+    try { bbl::install_shader_view_slots(engine, view, ShaderDeclarationList::uniforms, {{"uExtra", {}, tint}}); } catch (const std::runtime_error& error) { std::printf("| %s", error.what()); }
+}
+`,
+        {
+            expectedOutput:
+                "source0 own1 source0 7 9 0 2 source0 | A ShaderMaterial view's slot map holds, for 'albedo', a slot of a material other than its source. | A ShaderMaterial view's slot map holds no slot for 'carve', which its variant declares. 16 1,0.5,0.25,1,2,3,4, 0,1,0,1,2,3,4, 0,1,0,0,0,0,0, | A ShaderMaterial view declares uniform 'uExtra' as vec4<f32>; the slot its map holds does not.",
             flags: ["/DBBLITE_GPU_INSTANCING=0"],
         },
     );
