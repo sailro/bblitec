@@ -91,10 +91,8 @@ function tupleMembers(name: string, cpp: string): [string, PinnedBinding][] {
  * picked mesh -- and run the pinned solve over what the third attachment
  * carried.
  *
- * `surfaceNormalsValid` is upstream's `!hitRange.worldAdjusted`, and no
- * reached scene passes a `worldAdjustWgsl` rule (`pickAsync` refuses its
- * options object at generation), so the pass never adjusts a world and
- * the CPU normals are always valid.
+ * `surfaceNormalsValid` is upstream's `!hitRange.worldAdjusted`, which the
+ * readback carries for the winning range.
  */
 const DETAILED_CONTINUATION = `    if (info.detail && info.picked_kind == PickedNodeKind::mesh) {
         const PickDetailReadback& detail = *info.detail;
@@ -107,7 +105,7 @@ const DETAILED_CONTINUATION = `    if (info.detail && info.picked_kind == Picked
             mesh_cpu_positions(engine, mesh),
             mesh_cpu_normals(engine, mesh),
             detail.world,
-            true);
+            !detail.world_adjusted);
     }
 `;
 

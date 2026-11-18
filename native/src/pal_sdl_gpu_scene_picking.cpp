@@ -248,11 +248,24 @@ void ensure_pick_pipelines(GpuState& state) {
                             program.fragment_slots);
             SDL_GPUGraphicsPipelineCreateInfo discard_info =
 #if BBLITE_HAS_DETAILED_PICKING
-                pipeline == 2 ? detailed_info :
+                pick_discard_is_detailed(pipeline) ? detailed_info :
 #endif
-                              info;
+                                                   info;
             discard_info.vertex_shader = discard_vertex.get();
             discard_info.fragment_shader = discard_fragment.get();
+            // The rule's `vertexData` lane of the same interleaved stream.
+            std::array<SDL_GPUVertexAttribute, 2> discard_attributes{};
+            if (const auto data = pick_discard_vertex_data(variant, pipeline)) {
+                discard_attributes[0] = position;
+                discard_attributes[1] = {data->location, 0,
+                                         data->components == 2 ? SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2
+                                         : data->components == 3
+                                             ? SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3
+                                             : SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4,
+                                         data->offset};
+                discard_info.vertex_input_state.vertex_attributes = discard_attributes.data();
+                discard_info.vertex_input_state.num_vertex_attributes = 2;
+            }
             program.pipeline =
                 create_sdl_gpu_graphics_pipeline(state.device, discard_vertex, &discard_info);
             if (!program.pipeline)
@@ -440,7 +453,7 @@ void record_discard_pick_draw(GpuState& state, SDL_GPUCommandBuffer* command,
     const auto& variant = upstream::pick_discard_variants[variant_index];
     const auto& program = state.pick_discard_programs[variant_index][draw.pipeline];
     const char* what = "discard pick";
-    const std::string mesh_block = draw.pipeline == 1 ? "tiMesh" : "mesh";
+    const std::string mesh_block = draw.pipeline == pick_discard_thin ? "tiMesh" : "mesh";
     const auto blocks = [&](const std::string& name, std::size_t) -> PinnedStageBlock {
         if (name == "scene")
             return {&scene_uniforms, sizeof(scene_uniforms)};
@@ -582,7 +595,7 @@ PickingInfo pick_sdl_gpu_scene(GpuState& state, Engine& engine,
     // The rule's storage per admitted candidate, asked in draw order and
     // uploaded before the pick records (`createMappedBuffer`).
     [[maybe_unused]] const std::vector<PickDiscardDraw> discard_draws =
-        prepare_pick_discard(render_plan, candidates, options, detailed);
+        prepare_pick_discard(engine, render_plan, candidates, ranges, options, detailed);
 #if BBLITE_PICK_DISCARD
     std::vector<OwnedSdlBuffer> discard_storage;
     std::vector<std::vector<SDL_GPUBuffer*>> discard_buffers(discard_draws.size());

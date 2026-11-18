@@ -44,6 +44,11 @@ struct PickDetailReadback {
      * the pick and the read.
      */
     std::array<float, 16> world{};
+    /**
+     * The pin's `worldAdjusted` for the winning range: a discard rule's
+     * `worldAdjustWgsl` moved it, so its CPU normals no longer describe it.
+     */
+    bool world_adjusted = false;
 };
 
 /**

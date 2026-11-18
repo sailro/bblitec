@@ -3819,7 +3819,8 @@ WGPURenderPipeline create_dawn_pick_mesh_pipeline(
     WGPUDevice device, WGPUBindGroupLayout scene_layout, WGPUBindGroupLayout mesh_layout,
     const char* stem_vertex, const char* stem_fragment, std::uint32_t target_count,
     WGPUBindGroupLayout empty_layout = nullptr, WGPUBindGroupLayout deform_layout = nullptr,
-    [[maybe_unused]] bool skeleton = false);
+    [[maybe_unused]] bool skeleton = false,
+    std::optional<PickVertexDataAttribute> vertex_data = std::nullopt);
 
 #if BBLITE_DEFORM_PICKING
 /**

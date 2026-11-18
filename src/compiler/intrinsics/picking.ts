@@ -725,10 +725,13 @@ function pickDiscardRuleRow(
             node,
             "A pickAsync `discard` rule names its `key` and `wgsl`.",
         );
-    if (worldAdjustWgsl !== undefined || vertexData !== undefined)
+    // The pin draws a mesh without the attribute through the pipeline
+    // without it (`getPickVertexDataBinding`); a mesh records whether its
+    // source supplied each attribute but uv2.
+    if (vertexData === "uv2")
         return context.fail(
             node,
-            "A pickAsync `discard` rule's `worldAdjustWgsl` and `vertexData` are not lowered: they select the advanced picking pipeline for every candidate (`needsAdvancedPipeline`).",
+            'A pickAsync `discard` rule\'s `vertexData: "uv2"` is not lowered: a mesh does not record whether its source supplied uv2.',
         );
     return {
         key,

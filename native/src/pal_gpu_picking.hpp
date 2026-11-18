@@ -85,7 +85,12 @@ struct PickRange {
     std::uint32_t count = 1;
     /** A mesh candidate's handle generation (`MeshHandle::generation`). */
     std::uint32_t generation = 0;
+    /** The pin's `worldAdjusted`: drawn through a rule whose `worldAdjustWgsl` moved it. */
+    bool world_adjusted = false;
 };
+
+/** The range that drew `pick_id`, or null for the cleared id (`resolve_pick_result`). */
+const PickRange* pick_range(const std::vector<PickRange>& ranges, std::uint32_t pick_id);
 
 /**
  * The id the one-pixel target held, resolved against what was drawn.
@@ -493,16 +498,71 @@ struct PickDiscardDraw {
     std::vector<std::vector<std::uint8_t>> storage;
 };
 
+/**
+ * A composed rule's pipelines, in `pickDiscardPipelines` order: regular,
+ * thin-instance, detailed, and the regular and detailed ones for a mesh
+ * without the rule's `vertexData` attribute.
+ */
+enum PickDiscardPipeline : std::size_t {
+    pick_discard_regular,
+    pick_discard_thin,
+    pick_discard_detailed,
+    pick_discard_regular_bare,
+    pick_discard_detailed_bare,
+    pick_discard_pipelines,
+};
+
+/** Whether a rule pipeline draws the detailed pick's three attachments. */
+inline bool pick_discard_is_detailed(std::size_t pipeline) {
+    return pipeline == pick_discard_detailed || pipeline == pick_discard_detailed_bare;
+}
+
 #if BBLITE_PICK_DISCARD
-/** A composed rule's pipelines: regular, thin-instance, detailed. */
-inline constexpr std::size_t pick_discard_pipelines = 3;
+static_assert(std::tuple_size_v<decltype(upstream::PickDiscardVariant::stems)> ==
+                  pick_discard_pipelines,
+              "the generated discard table names another pipeline set");
 
 /** The deployed stem of a rule's module for one of its pipelines; null where not composed. */
 inline const char* pick_discard_stem(const upstream::PickDiscardVariant& variant,
                                      std::size_t pipeline) {
-    const std::array<const char*, pick_discard_pipelines> stems{variant.regular, variant.thin,
-                                                                variant.detailed};
-    return stems.at(pipeline);
+    return variant.stems.at(pipeline);
+}
+
+/**
+ * The interleaved vertex lane a rule's `vertexData` attribute reads
+ * (`getPickVertexDataBinding`): its byte offset in `GpuVertex`.
+ */
+std::uint32_t pick_vertex_data_offset(std::string_view attribute);
+
+/**
+ * Whether a mesh's source supplied a rule's `vertexData` attribute: the pin
+ * draws one that did not through the pipeline without it
+ * (`getPickVertexDataBinding` answers null).
+ */
+bool pick_vertex_data_present(const Engine& engine, const MeshRecord& mesh,
+                              std::string_view attribute);
+#endif
+
+/** A rule pipeline's `vertexData` vertex attribute: its location, components and lane offset. */
+struct PickVertexDataAttribute {
+    std::uint32_t location = 0;
+    std::uint32_t components = 0;
+    std::uint32_t offset = 0;
+};
+
+#if BBLITE_PICK_DISCARD
+/**
+ * The attribute a rule pipeline reads (`vertexDataLayout`): the regular and
+ * detailed pipelines of a rule with `vertexData`; none for the others.
+ */
+inline std::optional<PickVertexDataAttribute>
+pick_discard_vertex_data(const upstream::PickDiscardVariant& variant, std::size_t pipeline) {
+    if (variant.vertex_data_components == 0 ||
+        (pipeline != pick_discard_regular && pipeline != pick_discard_detailed))
+        return std::nullopt;
+    return PickVertexDataAttribute{variant.vertex_data_location,
+                                   static_cast<std::uint32_t>(variant.vertex_data_components),
+                                   pick_vertex_data_offset(variant.vertex_data)};
 }
 #endif
 
@@ -511,11 +571,14 @@ inline const char* pick_discard_stem(const upstream::PickDiscardVariant& variant
  * loop asks it (`createPickDiscardBindGroup`): a rule without storage draws
  * every candidate through its pipelines, and the first entry whose `data`
  * returns null sends that mesh to the default pipeline unasked of the rest.
- * Empty without a rule; throws for a rule generation did not compose, or a
- * candidate whose pipeline the rule was not composed for.
+ * A candidate the rule draws marks its range world-adjusted where the rule
+ * adjusts the world. Empty without a rule; throws for a rule generation did
+ * not compose, or a candidate whose pipeline the rule was not composed for.
  */
-std::vector<PickDiscardDraw> prepare_pick_discard(const upstream::RenderPlan& render_plan,
+std::vector<PickDiscardDraw> prepare_pick_discard(const Engine& engine,
+                                                  const upstream::RenderPlan& render_plan,
                                                   const std::vector<PickMeshCandidate>& candidates,
+                                                  std::vector<PickRange>& ranges,
                                                   const Engine::PickOptions* options,
                                                   bool detailed);
 

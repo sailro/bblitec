@@ -2,6 +2,7 @@ import {
     deformPickingHeader,
     type DeformPickingShader,
     pickDiscardHeader,
+    pickDiscardPipelines,
     pickDiscardStem,
     type PickDiscardShader,
     vatPickingHeader,
@@ -4009,28 +4010,28 @@ ${shadow.blurFragmentWgsl}`,
                 );
             }
             for (const [index, variant] of discardVariants.entries()) {
-                for (const pipeline of [
-                    "regular",
-                    "thin",
-                    "detailed",
-                ] as const) {
+                for (const pipeline of pickDiscardPipelines) {
                     const wgsl = variant[pipeline];
                     if (wgsl === undefined) continue;
+                    const [module, builder] =
+                        variant.advanced || pipeline === "thin"
+                            ? [
+                                  "src/picking/picking-advanced-shader.ts",
+                                  "pickingShaderVariantSource",
+                              ]
+                            : pipeline === "detailed"
+                              ? [
+                                    "src/picking/picking-detailed-pipeline.ts",
+                                    "shader",
+                                ]
+                              : [
+                                    "src/picking/picking-shader.ts",
+                                    "pickingShaderSource",
+                                ];
                     for (const stage of ["vert", "frag"] as const) {
                         composedShaders.push({
                             output: `upstream/shaders/${pickDiscardStem(index, pipeline)}.${stage}.native.wgsl`,
-                            data: `// ${context.provenance(
-                                pipeline === "thin"
-                                    ? "src/picking/picking-advanced-shader.ts"
-                                    : pipeline === "detailed"
-                                      ? "src/picking/picking-detailed-pipeline.ts"
-                                      : "src/picking/picking-shader.ts",
-                                pipeline === "thin"
-                                    ? "pickingShaderVariantSource"
-                                    : pipeline === "detailed"
-                                      ? "shader"
-                                      : "pickingShaderSource",
-                            )}
+                            data: `// ${context.provenance(module, builder)}
 ${wgsl}`,
                             family: "picking",
                         });

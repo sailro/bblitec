@@ -10,7 +10,10 @@ import { LoweringContext } from "../src/lowering/context.js";
 import { PickingLowerer } from "../src/lowering/picking-lowerer.js";
 import { pinnedNormalizeVec3Header } from "../src/lowering/pinned-normalize-vec3.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
-import { composePickDiscardShaders } from "../src/pinned-picking-shaders.js";
+import {
+    composePickDiscardShaders,
+    pickDiscardHeader,
+} from "../src/pinned-picking-shaders.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
@@ -738,5 +741,94 @@ test("a discard rule an application call composes folds from a model run of the 
     assert.throws(
         () => compileSource(program(`"part" + String(scene.meshes.length)`)),
         /discard rule 'compose\(\.\.\.\)' threw at generation: it reads 'meshes' of 'scene'/,
+    );
+});
+
+test("an advanced discard rule's modules are the advanced pipeline's, with and without its vertex data", async () => {
+    const wgsl =
+        "fn shouldDiscardPick(input: PickDiscardInput) -> bool { return input.vertexData.w > 0.5; }";
+    const worldAdjustWgsl =
+        "fn adjustPickWorld(input: PickWorldInput) -> vec3f { return input.worldPos + lift[0].xyz; }";
+    const [variant] = await composePickDiscardShaders(
+        [
+            {
+                key: "lift",
+                wgsl,
+                worldAdjustWgsl,
+                vertexData: "tangent",
+                storage: [
+                    { name: "lift", type: "array<vec4<f32>>", vertex: true },
+                ],
+            },
+        ],
+        { thin: true, detailed: true },
+    );
+    assert.ok(variant!.advanced);
+    assert.deepEqual(
+        [variant!.vertexDataComponents, variant!.vertexDataLocation],
+        [4, 5],
+    );
+    const modules = [
+        variant!.regular,
+        variant!.thin!,
+        variant!.detailed!,
+        variant!.regularBare!,
+        variant!.detailedBare!,
+    ];
+    for (const module of modules) {
+        assert.ok(module.includes(wgsl) && module.includes(worldAdjustWgsl));
+        assert.ok(module.includes("vertexData: vec4f,"));
+    }
+    // The attribute is a vertex input only where the mesh has it.
+    assert.deepEqual(
+        modules.map((module) =>
+            module.includes("@location(5)vertexData:vec4f"),
+        ),
+        [true, false, true, false, false],
+    );
+    assert.deepEqual(
+        modules.map((module) => /^\s*enable primitive_index;/.test(module)),
+        [false, false, true, false, true],
+    );
+    const header = pickDiscardHeader([variant!]);
+    assert.match(header, /\{"lift", "tangent", 4, 5, true, "v", 1, /);
+    assert.match(
+        header,
+        /\{"picking-discard-0", "picking-discard-0-thin", "picking-discard-0-detailed", "picking-discard-0-regular-bare", "picking-discard-0-detailed-bare"\}/,
+    );
+});
+
+test("a discard rule's world adjustment and vertex data fold into its manifest row", () => {
+    const program = (vertexData: string) => `
+        import {createEngine,createSceneContext,createGpuPicker,pickAsync} from "@babylonjs/lite";
+        async function main() {
+            const engine = await createEngine({});
+            await pickAsync(createGpuPicker(createSceneContext(engine)), 0, 0, {
+                discard: {
+                    key: "lift",
+                    wgsl: "fn shouldDiscardPick(input: PickDiscardInput) -> bool { return false; }",
+                    worldAdjustWgsl: "fn adjustPickWorld(input: PickWorldInput) -> vec3f { return input.worldPos; }",
+                    vertexData: "${vertexData}",
+                },
+            });
+        }
+        void main();
+    `;
+    assert.deepEqual(
+        compileSource(program("tangent")).manifest.pickDiscardRules,
+        [
+            {
+                key: "lift",
+                wgsl: "fn shouldDiscardPick(input: PickDiscardInput) -> bool { return false; }",
+                worldAdjustWgsl:
+                    "fn adjustPickWorld(input: PickWorldInput) -> vec3f { return input.worldPos; }",
+                vertexData: "tangent",
+                storage: [],
+            },
+        ],
+    );
+    assert.throws(
+        () => compileSource(program("uv2")),
+        /`vertexData: "uv2"` is not lowered/,
     );
 });

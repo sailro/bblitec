@@ -553,6 +553,7 @@ function runPickCollector(name: string, body: string, discard?: string): void {
         #define BBLITE_DEFORM_PICKING 0
         #define BBLITE_VAT_PICKING 0
         #define BBLITE_PICK_DISCARD ${discard === undefined ? 0 : 1}
+        #define BBLITE_GPU_DEFORMATION 0
         #include <bblite/js_data.hpp>
         #include <bblite/runtime.hpp>
         #include <cassert>
@@ -571,11 +572,24 @@ function runPickCollector(name: string, body: string, discard?: string): void {
             template<class HasGeometry>
             ${cppFunction(source, "inline std::vector<PickMeshCandidate> collect_pick_mesh_candidates(")}
             ${cppFunction(source, "struct PickDiscardDraw {")};
+            ${cppFunction(source, "enum PickDiscardPipeline : std::size_t {")};
             ${
                 discard === undefined
                     ? ""
-                    : `inline constexpr std::size_t pick_discard_pipelines = 3;
-            ${cppFunction(source, "inline const char* pick_discard_stem(")}`
+                    : [
+                          "inline const char* pick_discard_stem(",
+                          "struct GpuVertex {",
+                          "std::uint32_t pick_vertex_data_offset(std::string_view attribute) {",
+                          "bool pick_vertex_data_present(const Engine& engine, const MeshRecord& mesh, std::string_view attribute) {",
+                          "struct PickVertexDataAttribute {",
+                          "inline std::optional<PickVertexDataAttribute> pick_discard_vertex_data(",
+                      ]
+                          .map(
+                              (signature) =>
+                                  cppFunction(source, signature) +
+                                  (signature.startsWith("struct ") ? ";" : ""),
+                          )
+                          .join("\n")
             }
             ${cppFunction(source, "inline std::size_t pick_discard_buffer_size(")}
             ${cppFunction(source, "std::vector<PickDiscardDraw> prepare_pick_discard(")}
@@ -680,6 +694,7 @@ test(
             `
             plan.items.push_back({{1}});
             const auto candidates = collect(false, true);
+            std::vector<bbl::pal::PickRange> ranges(candidates.size());
             int tail = 0;
             bbl::Engine::PickOptions options;
             options.discard = bbl::Engine::PickDiscard{"hide", "wgsl hide", {}, {}, {
@@ -694,12 +709,12 @@ test(
             }};
             // The first null entry draws the mesh through the default
             // pipeline, unasked of the rest.
-            auto draws = bbl::pal::prepare_pick_discard(plan, candidates, &options, false);
+            auto draws = bbl::pal::prepare_pick_discard(engine, plan, candidates, ranges, &options, false);
             assert(draws.size() == 2 && draws[0].variant == 0 && draws[0].pipeline == 0 && draws[0].storage.size() == 2 &&
                    draws[0].storage[0].size() == 5 && draws[1].variant == -1 && draws[1].storage.empty() && tail == 1);
             assert(bbl::pal::pick_discard_buffer_size(0) == 4 && bbl::pal::pick_discard_buffer_size(5) == 8);
             const auto refuses = [&](bool detailed, const char* message) {
-                try { bbl::pal::prepare_pick_discard(plan, candidates, &options, detailed); }
+                try { bbl::pal::prepare_pick_discard(engine, plan, candidates, ranges, &options, detailed); }
                 catch (const std::runtime_error& error) {
                     assert(std::string(error.what()).find(message) != std::string::npos); return;
                 }
@@ -716,12 +731,28 @@ test(
             // A rule without storage draws every candidate through it.
             options.discard = bbl::Engine::PickDiscard{"all", "wgsl all", {}, {}, {}};
             refuses(false, "not composed for this candidate's pipeline");
-            draws = bbl::pal::prepare_pick_discard(plan, {candidates[0]}, &options, false);
-            assert(draws.size() == 1 && draws[0].variant == 1 && draws[0].pipeline == 0);
+            draws = bbl::pal::prepare_pick_discard(engine, plan, {candidates[0]}, ranges, &options, false);
+            assert(draws.size() == 1 && draws[0].variant == 1 && draws[0].pipeline == bbl::pal::pick_discard_regular &&
+                   !ranges[0].world_adjusted);
+            // A rule reading vertex data draws a mesh without the attribute
+            // through its pipeline without it, and marks a range it adjusts.
+            engine.geometries.emplace_back();
+            engine.meshes[0].geometry = 0;
+            options.discard = bbl::Engine::PickDiscard{"tangent", "wgsl tangent", std::string("adjust"), std::string("tangent"), {}};
+            draws = bbl::pal::prepare_pick_discard(engine, plan, {candidates[0]}, ranges, &options, false);
+            assert(draws[0].variant == 2 && draws[0].pipeline == bbl::pal::pick_discard_regular_bare && ranges[0].world_adjusted);
+            engine.geometries[0].has_tangents = true;
+            assert(bbl::pal::prepare_pick_discard(engine, plan, {candidates[0]}, ranges, &options, true)[0].pipeline ==
+                   bbl::pal::pick_discard_detailed);
+            const auto& tangent = bbl::upstream::pick_discard_variants[2];
+            const auto lane = bbl::pal::pick_discard_vertex_data(tangent, bbl::pal::pick_discard_detailed);
+            assert(lane && lane->location == 5 && lane->components == 4 && lane->offset == offsetof(bbl::pal::GpuVertex, tangent));
+            assert(!bbl::pal::pick_discard_vertex_data(tangent, bbl::pal::pick_discard_regular_bare));
+            assert(!bbl::pal::pick_discard_vertex_data(tangent, bbl::pal::pick_discard_thin));
             options.discard->key = "absent";
             refuses(false, "was not composed at generation");
             options.discard.reset();
-            assert(bbl::pal::prepare_pick_discard(plan, candidates, &options, false).empty());
+            assert(bbl::pal::prepare_pick_discard(engine, plan, candidates, ranges, &options, false).empty());
         `,
             pickDiscardHeader([
                 {
@@ -729,10 +760,33 @@ test(
                         { name: "first", type: "array<f32>", vertex: false },
                         { name: "second", type: "u32", vertex: true },
                     ]),
+                    advanced: false,
+                    vertexDataComponents: 0,
+                    vertexDataLocation: 0,
                     regular: "",
                     thin: "",
                 },
-                { rule: rule("all", []), regular: "" },
+                {
+                    rule: rule("all", []),
+                    advanced: false,
+                    vertexDataComponents: 0,
+                    vertexDataLocation: 0,
+                    regular: "",
+                },
+                {
+                    rule: {
+                        ...rule("tangent", []),
+                        worldAdjustWgsl: "adjust",
+                        vertexData: "tangent",
+                    },
+                    advanced: true,
+                    vertexDataComponents: 4,
+                    vertexDataLocation: 5,
+                    regular: "",
+                    detailed: "",
+                    regularBare: "",
+                    detailedBare: "",
+                },
             ]),
         );
     },
