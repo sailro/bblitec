@@ -46,6 +46,7 @@ import {
 } from "./symbols.js";
 import { doubleCpp } from "../cpp-literals.js";
 import { foldNumericBinary } from "../lowering/pinned-operators.js";
+import { numberFormatOf } from "./number-intrinsics.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { readsNativeStorage, snapshotReadCpp, type Value } from "./types.js";
 import { isRebound } from "./binding-rebinds.js";
@@ -1177,7 +1178,10 @@ export class EvaluationOrder {
                             if (
                                 !callees ||
                                 (callees === "library" &&
-                                    !this.moduleLocalLibraryCall(current) &&
+                                    !this.moduleLocalLibraryCall(
+                                        current,
+                                        mode,
+                                    ) &&
                                     !(
                                         mode === "completing" &&
                                         thrownLibraryError(
@@ -1237,6 +1241,7 @@ export class EvaluationOrder {
     /** Library container work stays local; its callbacks are visited by `walk`. */
     private moduleLocalLibraryCall(
         call: ts.CallExpression | ts.NewExpression,
+        mode: ModuleEffectMode,
     ): boolean {
         const declaration = calledDeclaration(this.checker, call);
         if (!declaration || declarationOrigin(declaration) !== "default-lib")
@@ -1248,6 +1253,9 @@ export class EvaluationOrder {
             );
             // These conversions can throw for a source-provided precision or
             // radix even though their answer otherwise depends only on it.
+            // Generation folds a number format only for digits in its range
+            // (`NUMBER_FORMAT_DIGITS`), so an evaluation in place of the run
+            // time's (`completing`) throws none.
             return !(
                 (call.arguments?.length ?? 0) > 0 &&
                 callee !== undefined &&
@@ -1256,7 +1264,8 @@ export class EvaluationOrder {
                     "toExponential",
                     "toPrecision",
                     "toString",
-                ].includes(callee.name)
+                ].includes(callee.name) &&
+                !(mode === "completing" && numberFormatOf(callee.name))
             );
         }
         const owner = declaration.parent;

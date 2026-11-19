@@ -619,6 +619,90 @@ test("a view's redefinition may reach a throw: generation evaluates it, and one 
     );
 });
 
+const formattedSource = (digits: number): string => `${prelude}
+    const RANGE = 2;
+    function scaled(fragment: string, scale: number): string {
+        return fragment.replace("* vWorldPos.y", \`* vWorldPos.y * \${scale.toFixed(${digits})} / \${RANGE.toFixed(1)}\`);
+    }
+    async function main(): Promise<void> {
+        const engine = await createEngine({});
+        const warm = createShaderMaterial({ name: "warm", vertexSource: wgsl\`\${VERT}\`, fragmentSource: wgsl\`\${surface("vec3<f32>(1.0, 0.5, 0.0)")}\`, attributes: ["position"], uniforms: ["worldViewProjection", "world"] });
+        const cold = createShaderMaterial({ name: "cold", vertexSource: wgsl\`\${VERT}\`, fragmentSource: wgsl\`\${surface("vec3<f32>(0.0, 0.5, 1.0)")}\`, attributes: ["position"], uniforms: ["worldViewProjection", "world"] });
+        const pick = (flag: boolean): ShaderMaterial => (flag ? warm : cold);
+        const source = pick(Math.random() > 0.5);
+        const view = createMaterialView(source, { features: 0 }) as ShaderMaterial;
+        Object.defineProperties(view, {
+            fragmentSource: { value: scaled(source.fragmentSource, 3), enumerable: true, configurable: true },
+        });
+        draw(engine, view);
+    }
+    void main();
+`;
+
+test("a view's redefinition may format numbers: generation formats them per source variant, and digits out of range refuse", () => {
+    const compiled = compileSource(formattedSource(2));
+    assert.match(
+        program(compiled, "warm-1").fragmentSource,
+        /vec3<f32>\(1\.0, 0\.5, 0\.0\) \* vWorldPos\.y \* 3\.00 \/ 2\.0/,
+    );
+    assert.match(
+        program(compiled, "cold-1").fragmentSource,
+        /vec3<f32>\(0\.0, 0\.5, 1\.0\) \* vWorldPos\.y \* 3\.00 \/ 2\.0/,
+    );
+    // JavaScript throws for these digits; generation folds none.
+    assert.throws(
+        () => compileSource(formattedSource(101)),
+        /A ShaderMaterial view's 'fragmentSource' compiles into its program at generation; this value is decided at run time\./,
+    );
+});
+
+test("a view whose redefinition formats numbers natively draws the variant derived from its source's", (t) => {
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native compiler required.");
+        return;
+    }
+    const { compiled, cpp } = compileShaderMaterialFixture(formattedSource(2));
+    const views = new FactoryLowerer(
+        new LoweringContext(),
+    ).lowerNoColorMaterialViews(false, false, false, false, true).source;
+    const programs = compiled.manifest.customShaderPrograms;
+    const id = (name: string): number =>
+        programs.findIndex((candidate) => candidate.name === name);
+    const site = compiled.cpp.match(
+        /bbl::derive_shader_material_view\(\w+, \w+, bblscene::derived_shader_variant_(\d+)\(/,
+    )?.[1];
+    assert.ok(site, "the view selects its program from its source's variant");
+    runGeneratedProgram(
+        native,
+        "shader-material-views/formatted",
+        `
+${cpp}
+#include <cstdio>
+namespace bbl {
+namespace {
+${cppFunction(views, "MaterialHandle create_no_color_material_view(")}
+}
+${cppFunction(views, "MaterialHandle create_shader_material_view(")}
+${cppFunction(views, "void derive_shader_material_view(")}
+${cppFunction(views, "std::uint32_t shader_material_view_variant(")}
+}
+namespace bblscene {
+${cppFunction(compiled.cpp, `inline std::uint32_t derived_shader_variant_${site}(`)}
+}
+int main(){
+    bbl::Engine engine;
+    for(const std::uint32_t source : {${id("warm")}u, ${id("cold")}u}){
+        const auto view = bbl::create_shader_material_view(engine, bbl::create_shader_material(engine, source));
+        bbl::derive_shader_material_view(engine, view, bblscene::derived_shader_variant_${site}(bbl::shader_material_view_variant(engine, view)), false);
+        std::printf("%s ", std::string(bbl::upstream::shader_variant_info(bbl::handle_at(engine.materials, view).shader_variant).name).c_str());
+    }
+}
+`,
+        { expectedOutput: "warm-1 cold-1 " },
+    );
+});
+
 test("a view's redefinition on one branch of a run-time test follows uses of the view on the other branch", () => {
     const compiled = compileSource(`${prelude}
     async function main(): Promise<void> {
