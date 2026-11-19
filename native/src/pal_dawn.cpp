@@ -3156,8 +3156,10 @@ public:
                         }
 #endif
 #if BBLITE_HAS_TAA
+                        // A copy writes no block, so it encodes in task order.
                         if (temporal && task.kind != FrameTaskKind::render &&
-                            task.kind != FrameTaskKind::post_process) {
+                            task.kind != FrameTaskKind::post_process &&
+                            task.kind != FrameTaskKind::copy) {
                             throw std::runtime_error(
                                 "Temporal submission requires an admitted frame-task execution adapter.");
                         }

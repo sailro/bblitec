@@ -839,11 +839,6 @@ export function compileEngineIntrinsic(
             return compileEnableGeometryVelocity(context, call);
 
         case "createCopyToTextureTask": {
-            context.admissions.noteTemporalRecordBoundary(
-                call,
-                "copy task preparation",
-                "always",
-            );
             context.expectArgumentCount(call, 3, 3);
             const engine = context.compileValue(argumentAt(call, 1));
             const scene = context.compileValue(argumentAt(call, 2));

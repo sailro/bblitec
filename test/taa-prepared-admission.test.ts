@@ -9,7 +9,7 @@ const labDeployment = { publicUrl: pinnedLabPublicUrl() };
 const prefix = `import {createEngine, createSceneContext, createRenderTarget, createRenderTask,
     createTaaPostProcessTask, createBlackAndWhitePostProcessTask, registerScene, createPbrMaterial,
     createGridMaterial, createStandardMaterial, createStandardNoColorMaterialView, loadSplat,
-    loadEnvironment, setEnvironmentRotation} from "@babylonjs/lite";
+    loadEnvironment, setEnvironmentRotation, createCopyToTextureTask, addTask} from "@babylonjs/lite";
     const engine=await createEngine({});
     const scene=createSceneContext(engine,{defaultRenderTask:false});
     const rt=createRenderTarget({format:engine.format,dFormat:"depth24plus-stencil8",samples:1,size:engine});
@@ -217,6 +217,21 @@ test("TAA pass signatures admit the target's own attachments and refuse colourle
                 ) + taa.replace("sourceTexture:rt", "sourceTexture:resolved"),
         ),
     );
+});
+
+test("TAA admits copy tasks in its frame graph, on either side of the TAA task and as its source", () => {
+    // A temporal accumulator's history update: its own target, owned by the copy.
+    const history = `const history=createRenderTarget({format:"rgba16float",samples:1,size:engine});`;
+    const copy = `addTask(scene,createCopyToTextureTask({name:"keep",sourceTexture:rt,targetTexture:history,ownsTargetTexture:true},engine,scene));`;
+    for (const body of [
+        history + copy + taa,
+        history + taa + copy,
+        history.replace('"rgba16float"', "engine.format") +
+            copy +
+            taa.replace("sourceTexture:rt", "sourceTexture:history"),
+    ]) {
+        assert.doesNotThrow(() => compileSource(prefix + body));
+    }
 });
 
 /** A normal pre-pass beside the TAA source, as an app's SSAO source builds it. */

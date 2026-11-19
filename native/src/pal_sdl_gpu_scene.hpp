@@ -120,6 +120,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_gpu.h>
 #include "pal_sdl_gpu_shared.hpp"
+#include "pal_sdl_gpu_commands.hpp"
 #include <bblite/pal_gpu_task_timing.hpp>
 #include "pal_sdl_gpu_timestamp.hpp"
 #if BBLITE_HAS_TAA
@@ -2348,6 +2349,56 @@ void record_post_process_pass(GpuState& state, Engine& engine, TaskHandle handle
     encode_post_process_pass(state, command, prepared, capture_texture);
 }
 #endif
+
+/**
+ * One copy task's pass, its textures resolved while the task runs: the texture
+ * copy a single-sample resolve degrades to, a draw-less resolve pass, or the
+ * blit draw with the present blit of a copy into a viewport of the swapchain.
+ * A temporal frame encodes it in task order with the passes it queues.
+ */
+struct PreparedSdlCopyPass {
+    struct TextureCopy {
+        SDL_GPUTextureLocation source{}, destination{};
+        Uint32 width = 0, height = 0;
+    };
+    std::optional<TextureCopy> texture_copy{};
+    SDL_GPUColorTargetInfo target{};
+    /** Null for the draw-less resolve pass. */
+    SDL_GPUGraphicsPipeline* pipeline = nullptr;
+    SDL_GPUTextureSamplerBinding source{};
+    std::optional<SDL_GPUViewport> viewport{};
+    std::optional<SDL_Rect> scissor{};
+    std::optional<SDL_GPUBlitInfo> present{};
+    /** What the frame's capture reads after the copy, when the copy changes it. */
+    SDL_GPUTexture* capture = nullptr;
+};
+
+inline void encode_sdl_copy_pass(SDL_GPUCommandBuffer* command, const PreparedSdlCopyPass& copy,
+                                 SDL_GPUTexture*& capture_texture) {
+    if (copy.texture_copy) {
+        SdlCopyPass pass{SDL_BeginGPUCopyPass(command)};
+        SDL_CopyGPUTextureToTexture(pass, &copy.texture_copy->source,
+                                    &copy.texture_copy->destination, copy.texture_copy->width,
+                                    copy.texture_copy->height, 1, false);
+        pass.end();
+        return;
+    }
+    SdlRenderPass pass{SDL_BeginGPURenderPass(command, &copy.target, 1, nullptr)};
+    if (copy.pipeline) {
+        SDL_BindGPUGraphicsPipeline(pass, copy.pipeline);
+        if (copy.viewport)
+            SDL_SetGPUViewport(pass, &*copy.viewport);
+        if (copy.scissor)
+            SDL_SetGPUScissor(pass, &*copy.scissor);
+        SDL_BindGPUFragmentSamplers(pass, 0, &copy.source, 1);
+        count_gpu_draw(SDL_DrawGPUPrimitives, pass, 3, 1, 0, 0);
+    }
+    pass.end();
+    if (copy.present)
+        SDL_BlitGPUTexture(command, &*copy.present);
+    if (copy.capture)
+        capture_texture = copy.capture;
+}
 
 #if BBLITE_HAS_SCREEN_SPACE
 /** Builds the entry `screen_space_program` below found missing. */
