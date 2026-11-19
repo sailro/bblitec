@@ -6543,9 +6543,13 @@ export class ExpressionLowerer {
             const spreadOperand =
                 spreadsItsValue(unwrapped) &&
                 (aggregate(trueArm) || aggregate(falseArm));
+            // Texture2D has one stored representation even when an arm
+            // returns a getter-backed facade. Convert it before leaving
+            // the arm's preparation scope, rather than moving its getters.
             const sunk =
                 conditionalType &&
-                conditionalType.kind !== "handle" &&
+                (conditionalType.kind !== "handle" ||
+                    conditionalType.handle === "texture") &&
                 !spreadOperand
                     ? this.context.probeEmission(() => {
                           try {

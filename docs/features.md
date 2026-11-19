@@ -597,7 +597,8 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
   and live region writes. Render targets bind in frame-graph effect tasks only, through the bound texture's `sampler`.
   A `Texture2D` record `{ get view() { return rt._colorView; }, sampler, _sampleType: "float" }` (optionally a
   `texture` getter over the same target) binds, stores and selects as that single-sample colour target through its
-  own sampler; stored, it reads back its `sampler`.
+  own sampler; stored, it reads back its `sampler`. Conditional texture arms prepare and convert only the selected
+  value, including getter-backed records returned by helpers.
 - Image processing: exposure, contrast, toneMapping, toneMappingEnabled.
 
 ## Text

@@ -5,6 +5,7 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { EffectLowerer } from "../src/lowering/effect-lowerer.js";
+import { RenderTargetLowerer } from "../src/lowering/render-target-lowerer.js";
 import { pinnedEffectVariantsHeader } from "../src/pinned-effect-cpp.js";
 import {
     cppFunction,
@@ -53,6 +54,26 @@ await startEngine(engine);
 
 const INLINE =
     '{ get view(): GPUTextureView { return internals._colorView!; }, sampler, _sampleType: "float" } as unknown as Texture2D';
+
+test("prepared conditional texture arms run only their selected preparation", (t) => {
+    const compiled = compileSource(
+        readFileSync("test/fixtures/conditional-texture-arms.ts", "utf8"),
+    );
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native compiler unavailable");
+        return;
+    }
+    runGeneratedProgram(
+        tools,
+        "render-target-color-view/conditional-arms",
+        `${new RenderTargetLowerer(new LoweringContext()).lower().source}
+namespace bbl {
+Engine create_engine(EngineOptions) { return {}; }
+}
+${compiled.cpp}`,
+    );
+});
 
 test("a Texture2D record over a render target's colour view binds that target through its own sampler", () => {
     // A literal in place: its `_sampleType` is known at generation.
