@@ -2721,6 +2721,27 @@ check(
 `,
 );
 
+// Assertions retype an array without changing its identity, including
+// assertions to an unrelated type through an unknown parameter.
+for (const [name, asserted] of [
+    ["array", "readonly number[]"],
+    ["unrelated-array", "readonly string[]"],
+    ["record", "{ tag: string }"],
+] as const) {
+    check(
+        `array-identity-through-an-open-assertion-to-${name}`,
+        `
+    const VALUES: readonly number[] = [1, 2];
+    function keep(values: readonly number[]): { values: readonly number[] } { return { values }; }
+    function same(a: unknown, b: unknown): boolean { return (a as ${asserted}) === (b as ${asserted}); }
+    const first = keep(VALUES);
+    const second = keep(VALUES);
+    const other = keep([1, 2]);
+    if (!same(first.values, second.values) || same(first.values, other.values)) throw new Error("array assertion identity");
+`,
+    );
+}
+
 // A recursive function's readonly array parameter is its caller's array
 // where the function compares it by identity.
 check(

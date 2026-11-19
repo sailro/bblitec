@@ -770,6 +770,29 @@ test("a ShaderMaterial view's program takes no defaults, so declarations it is g
 const viewOwnSlotsRefusal =
     /input\.ts:\d+:\d+: A ShaderMaterial view keeps its source's slots; its redefinitions \(fragmentSource, uniformDecls\) declare other uniforms, samplers or storage buffers than shader variant 'tinted', which slots of the view's own would hold: the same definition gives the view the slot maps holding them\./;
 
+test("a descriptor stores a view's declaration list in the target property's type, independently of unrelated identity uses", () => {
+    for (const definition of [
+        `Object.defineProperties(view, { fragmentSource: { value: wgsl\`\${NORMAL}\`, configurable: true }, uniformDecls: { value: decls, configurable: true } });`,
+        `Object.defineProperties(view, { "fragmentSource": { value: wgsl\`\${NORMAL}\`, configurable: true }, "uniformDecls": { "value": decls, configurable: true } });`,
+        `Object.defineProperty(view, "uniformDecls", { value: decls, configurable: true });`,
+    ]) {
+        const source = sharedDefaultSource(`
+        const a: readonly number[] = [1, 2];
+        const b: readonly number[] = [3, 4];
+        mesh.position.x = a === b ? 1 : 2;
+        const view = createMaterialView(tinted, { features: 0 }) as ShaderMaterial;
+        const decls = withDecl(withDecl(tinted.uniformDecls, CARVE), { name: "uWater", type: "f32" });
+        ${definition}
+        draw(engine, view);
+        `);
+        assert.throws(
+            () => compileSource(source),
+            /A ShaderMaterial view keeps its source's slots;.*which slots of the view's own would hold/,
+            definition,
+        );
+    }
+});
+
 test("a ShaderMaterial view's declarations a helper adds a module constant declaration to are known at generation", () => {
     // The helper's read-only parameter keeps the constant's fields and own
     // keys while the helper stores it in the list.

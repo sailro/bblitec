@@ -37,6 +37,7 @@ import {
     calledFunction,
     calledOrigin,
     namedMember,
+    libraryStaticMember,
 } from "./symbols.js";
 import {
     expressionMayRunCode,
@@ -52,6 +53,7 @@ import {
     positionalParameter,
     variableKind,
     propertyKey,
+    literalKey,
     valueConsumer,
     isGeneratorFunction,
 } from "./syntax.js";
@@ -1377,11 +1379,54 @@ function storedIdentity(
     const { checker } = context;
     if (engineTakesArgument(checker, use)) return undefined;
     const slot = checker.getNonNullableType(
-        checker.getContextualType(use) ?? checker.getTypeAtLocation(use),
+        descriptorValueSlot(checker, use) ??
+            checker.getContextualType(use) ??
+            checker.getTypeAtLocation(use),
     );
     return checker.isArrayLikeType(slot)
         ? arrayIdentityObservation(context, slot)
         : undefined;
+}
+
+/** A descriptor's `value` is stored in the defined property, not its `any`-typed descriptor slot. */
+function descriptorValueSlot(
+    checker: ts.TypeChecker,
+    use: ts.Expression,
+): ts.Type | undefined {
+    const value = valueConsumer(use);
+    if (value.kind !== "property" || propertyKey(value.name) !== "value")
+        return undefined;
+    const descriptor = valueConsumer(flowingUse(value.literal));
+    let handed = descriptor;
+    let key: string | undefined;
+    if (descriptor.kind === "property") {
+        key = propertyKey(descriptor.name);
+        handed = valueConsumer(flowingUse(descriptor.literal));
+    }
+    if (handed.kind !== "argument" || !ts.isCallExpression(handed.call))
+        return undefined;
+    const member = libraryStaticMember(checker, handed.call.expression);
+    if (member?.owner !== "Object") return undefined;
+    if (
+        member.name === "defineProperty" &&
+        handed.index === 2 &&
+        descriptor.kind === "argument"
+    ) {
+        const name = handed.call.arguments[1];
+        key = name && literalKey(name);
+    } else if (
+        member.name !== "defineProperties" ||
+        handed.index !== 1 ||
+        descriptor.kind !== "property"
+    )
+        return undefined;
+    const target = handed.call.arguments[0];
+    if (target === undefined || key === undefined) return undefined;
+    const property = checker.getPropertyOfType(
+        checker.getTypeAtLocation(target),
+        key,
+    );
+    return property && checker.getTypeOfSymbolAtLocation(property, target);
 }
 
 /** An equality, which compares object operands by identity. */
