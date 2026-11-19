@@ -799,6 +799,30 @@ test("a ShaderMaterial view's declarations a helper adds a module constant decla
     assert.throws(() => compileSource(source), viewOwnSlotsRefusal);
 });
 
+test("a ShaderMaterial view's declarations a helper adds a module constant declaration defaulting to a constant array to are known at generation", () => {
+    // Every reference to `CARVE_MAP` hands it on as a readonly array, so no
+    // write reaches it and `CARVE` keeps its lanes.
+    const withCarve = (after: string): string =>
+        sharedDefaultSource(`
+        const view = createMaterialView(tinted, { features: 0 }) as ShaderMaterial;
+        Object.defineProperties(view, { fragmentSource: { value: wgsl\`\${NORMAL}\`, configurable: true }, uniformDecls: { value: withDecl(tinted.uniformDecls, CARVE), configurable: true } });
+        draw(engine, view);
+        ${after}
+    `);
+    assert.throws(() => compileSource(withCarve("")), viewOwnSlotsRefusal);
+    // A write the program makes, or a mutable view it hands the array to,
+    // leaves its lanes to the run time.
+    for (const after of [
+        "CARVE_MAP[0] = 0;",
+        "const held: number[] = CARVE_MAP; mesh.position.x = held.length;",
+    ])
+        assert.throws(
+            () => compileSource(withCarve(after)),
+            /input\.ts:\d+:\d+: A ShaderMaterial view's 'uniformDecls' compiles into its program at generation; this value is decided at run time\./,
+            after,
+        );
+});
+
 const runtimeDefaultsSource = `${prelude}
     async function main(): Promise<void> {
         const engine = await createEngine({});

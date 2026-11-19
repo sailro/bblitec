@@ -62,6 +62,7 @@ import { isNativeOwnerRecord } from "./native-owner-carrier.js";
 import { NativeRecordStorageRequired } from "./native-record-storage.js";
 import { recordPropertyKeys } from "./object-statics.js";
 import {
+    constantArrayWriteObservation,
     rebuiltObjectObservation,
     recordFieldIsWritten,
 } from "./record-observations.js";
@@ -4730,7 +4731,16 @@ export class DeclarationLowerer {
                   ? { recordProperties: staticRecordProperties }
                   : {}),
             ...(staticElements && !sharedDataBinding && !selfReferentialBinding
-                ? { staticElements }
+                ? {
+                      staticElements,
+                      ...(staticElements === staticTupleElements &&
+                      constantArrayWriteObservation(
+                          this.context,
+                          declaration,
+                      ) === undefined
+                          ? { unwrittenConstantArray: true as const }
+                          : {}),
+                  }
                 : {}),
         };
         const represented =

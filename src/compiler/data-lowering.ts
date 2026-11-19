@@ -10410,9 +10410,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     /**
      * Whether no write in the program changes `array`, the array a union
      * field holds, whatever path reaches it: no write reaches arrays of the
-     * types the field's declarations hold, or the array is its record
-     * literal's own and they hold it only as readonly arrays
-     * (`readonlyArrayWriteObservation`).
+     * types the field's declarations hold, or the record's views are the
+     * array's only writers (`recordLiteralArray`) and they hold it only as
+     * readonly arrays (`readonlyArrayWriteObservation`).
      */
     private unwrittenSlotArrays(field: DataStructField, array: Value): boolean {
         const { checker } = this.context;
@@ -10434,7 +10434,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
     }
 
-    /** Link literal array fields to their stored owner before aliases can write them. */
+    /**
+     * Link literal array fields, and fields holding an array no write
+     * reaches (`unwrittenConstantArray`), to their stored owner before
+     * aliases can write them.
+     */
     public retainRecordArrayLiteralFacts(owner: Value, node: ts.Node): void {
         const type = owner.dataType;
         const properties = owner.recordProperties;
@@ -10451,7 +10455,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             const arm = held.kind === "union" ? soleArrayArmIndex(held) : -1;
             const memberType =
                 held.kind === "union" && arm >= 0 ? held.members[arm]! : held;
-            if (source?.kind !== "tuple" || memberType.kind !== "vector")
+            if (
+                (source?.kind !== "tuple" && !source?.unwrittenConstantArray) ||
+                memberType.kind !== "vector"
+            )
                 continue;
             const storedSlot = `${owner.cpp}${this.context.dataTypes.memberAccess(type.name)}${field.name}`;
             const slot = field.accessor ? `${storedSlot}.get()` : storedSlot;
@@ -10467,8 +10474,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ? literalMember(node, field.sourceName)
                 : undefined;
             if (
-                literal &&
-                ts.isArrayLiteralExpression(unwrapExpression(literal))
+                source.unwrittenConstantArray ||
+                (literal &&
+                    ts.isArrayLiteralExpression(unwrapExpression(literal)))
             )
                 writable(member).recordLiteralArray = true;
             this.retainArrayLiteralFacts(member, source, node);
@@ -12823,8 +12831,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
         if (!trackedArrayField) this.invalidateStoredArrayFacts(value);
         // A stored tuple aliases its source. Once that alias leaves the local
-        // binding graph, generation cannot retain a snapshot of its contents.
-        if (value.dataType?.kind === "tuple")
+        // binding graph, generation cannot retain a snapshot of its contents,
+        // unless no write in the program reaches it.
+        if (value.dataType?.kind === "tuple" && !value.unwrittenConstantArray)
             this.invalidateStaticElements(value);
         // A member read out of the node's value narrows by its own
         // expression; one no expression names keeps its stored type.

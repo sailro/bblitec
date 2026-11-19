@@ -22,7 +22,11 @@ import {
     determinedTypeArguments,
     mentionsTypeParameter,
 } from "./type-arguments.js";
-import { bindingReferences, soleBindingRead } from "./binding-references.js";
+import {
+    bindingReferences,
+    exportedUnderAnotherName,
+    soleBindingRead,
+} from "./binding-references.js";
 import { OPEN_HOLDER_FLAGS } from "./written-holders.js";
 import {
     declarationOrigin,
@@ -30,6 +34,8 @@ import {
     resolvedSymbol,
     nullishLiteral,
     calledDeclaration,
+    calledFunction,
+    calledOrigin,
     namedMember,
 } from "./symbols.js";
 import {
@@ -509,11 +515,12 @@ export function arrayWriteObservation(
 }
 
 /**
- * Why the elements of an array only ever referenced as `type`, a readonly
- * array (`readonly number[]`) -- a literal a record field of that type
- * holds alone -- could change, or undefined when nothing can: no reference
- * to it writes, so only an assertion retyping a value as, or as holding, a
- * mutable array that may hold its elements makes it writable.
+ * Why the elements of an array of `type`'s elements, only ever referenced
+ * as readonly arrays (`readonly number[]`) -- a literal a record field of
+ * that type holds alone, or one `constantArrayWriteObservation` follows --
+ * could change, or undefined when nothing can: no reference to it writes,
+ * so only an assertion retyping a value as, or as holding, a mutable array
+ * that may hold its elements makes it writable.
  */
 export function readonlyArrayWriteObservation(
     context: RecordObservationContext,
@@ -530,17 +537,25 @@ export function readonlyArrayWriteObservation(
 /** @unjournaled {@link readonlyArrayWriteObservation}'s answers by type: pure functions of the checked program. */
 const readonlyArrayWriteAnswers = new WeakMap<ts.Type, string | null>();
 
+/** Whether an element type may be one of an array of `type`'s elements. */
+function elementRelated(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): (other: ts.Type) => boolean {
+    const element = arrayElementType(checker, type);
+    return (other) =>
+        element === undefined ||
+        checker.isTypeAssignableTo(element, other) ||
+        checker.isTypeAssignableTo(other, element);
+}
+
 /** {@link readonlyArrayWriteObservation}, computed. */
 function assertedWritableArray(
     context: RecordObservationContext,
     type: ts.Type,
 ): string | undefined {
     const { checker } = context;
-    const element = arrayElementType(checker, type);
-    const related = (other: ts.Type): boolean =>
-        element === undefined ||
-        checker.isTypeAssignableTo(element, other) ||
-        checker.isTypeAssignableTo(other, element);
+    const related = elementRelated(checker, type);
     const assertion = programObservations(context.program).assertions.find(
         ({ asserted }) =>
             holdsMutableArray(checker, asserted, related, new Set()),
@@ -549,6 +564,141 @@ function assertedWritableArray(
         assertion &&
         `an assertion to '${checker.typeToString(assertion.asserted)}' may write such arrays`
     );
+}
+
+/**
+ * Why the elements of the array a `const` binding's array literal creates
+ * could change, or undefined when nothing can: every reference to the
+ * binding hands the array on where the program holds it only as a readonly
+ * array (`handedOnReadonly`), so the binding's own mutable type writes
+ * nothing and, as for a record field's own literal, only an assertion
+ * makes it writable (`readonlyArrayWriteObservation`).
+ */
+export function constantArrayWriteObservation(
+    context: RecordObservationContext,
+    declaration: ts.VariableDeclaration,
+): string | undefined {
+    let answer = constantArrayWriteAnswers.get(declaration);
+    if (answer === undefined) {
+        answer = constantArrayWrite(context, declaration) ?? null;
+        constantArrayWriteAnswers.set(declaration, answer);
+    }
+    return answer ?? undefined;
+}
+
+/** @unjournaled {@link constantArrayWriteObservation}'s answers by declaration: pure functions of the checked program. */
+const constantArrayWriteAnswers = new WeakMap<
+    ts.VariableDeclaration,
+    string | null
+>();
+
+/** {@link constantArrayWriteObservation}, computed. */
+function constantArrayWrite(
+    context: RecordObservationContext,
+    declaration: ts.VariableDeclaration,
+): string | undefined {
+    const { program, checker } = context;
+    const symbol = ts.isIdentifier(declaration.name)
+        ? declaredSymbol(checker, declaration.name)
+        : undefined;
+    if (
+        !symbol ||
+        variableKind(declaration) !== "const" ||
+        !declaration.initializer ||
+        !ts.isArrayLiteralExpression(unwrapExpression(declaration.initializer))
+    )
+        return "the binding is not a constant created by its array literal";
+    if (exportedUnderAnotherName(program, checker, symbol))
+        return "the binding leaves its module under another name";
+    const type = checker.getTypeAtLocation(declaration.name);
+    const related = elementRelated(checker, type);
+    const mutable = bindingReferences(program, checker, symbol).find(
+        (reference) => !handedOnReadonly(checker, reference, [], related),
+    );
+    if (mutable)
+        return `'${mutable.getText()}' hands the array on where it may be written`;
+    return readonlyArrayWriteObservation(context, type);
+}
+
+/**
+ * Whether `at` hands the value whose member `path` is the array on only
+ * where the program holds that member as a readonly array: through a
+ * selection or an object literal's property into a binding's declared type,
+ * an assignment target's type, or the parameter of an authored function or
+ * of the engine's API. A generic callee's parameter is read both as its
+ * body declares it and as the call instantiates it, which its result keeps.
+ */
+function handedOnReadonly(
+    checker: ts.TypeChecker,
+    at: ts.Expression,
+    path: readonly string[],
+    related: (element: ts.Type) => boolean,
+): boolean {
+    const holdsReadonly = (type: ts.Type): boolean => {
+        let member: ts.Type | undefined = type;
+        for (const key of path) {
+            const property: ts.Symbol | undefined = checker.getPropertyOfType(
+                checker.getNonNullableType(member),
+                key,
+            );
+            member = property && checker.getTypeOfSymbol(property);
+            if (!member) return false;
+        }
+        return !holdsMutableArray(checker, member, related, new Set());
+    };
+    const consumer = valueConsumer(outermostWrapper(at));
+    switch (consumer.kind) {
+        case "operand":
+            return handedOnReadonly(checker, consumer.selection, path, related);
+        case "property": {
+            const key = propertyKey(consumer.name);
+            return (
+                key !== undefined &&
+                handedOnReadonly(
+                    checker,
+                    consumer.literal,
+                    [key, ...path],
+                    related,
+                )
+            );
+        }
+        case "initializer":
+            return (
+                consumer.declaration.type !== undefined &&
+                holdsReadonly(
+                    checker.getTypeAtLocation(consumer.declaration.name),
+                )
+            );
+        case "assigned":
+            return holdsReadonly(
+                checker.getTypeAtLocation(consumer.assignment.left),
+            );
+        case "argument": {
+            const signature = checker.getResolvedSignature(consumer.call);
+            const authored = calledFunction(checker, consumer.call);
+            const declaration =
+                authored ??
+                (calledOrigin(checker, consumer.call) === "babylon"
+                    ? calledDeclaration(checker, consumer.call)
+                    : undefined);
+            const parameter =
+                declaration &&
+                positionalParameter(consumer.call, declaration, consumer.index);
+            const instantiated =
+                parameter &&
+                signature?.parameters[
+                    declaration.parameters.indexOf(parameter)
+                ];
+            return (
+                parameter !== undefined &&
+                instantiated !== undefined &&
+                holdsReadonly(checker.getTypeAtLocation(parameter.name)) &&
+                holdsReadonly(checker.getTypeOfSymbol(instantiated))
+            );
+        }
+        default:
+            return false;
+    }
 }
 
 /**

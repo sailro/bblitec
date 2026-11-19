@@ -2377,6 +2377,52 @@ check(
 `,
 );
 
+check(
+    "records-holding-a-constant-array-see-its-later-writes",
+    `
+    type Fixed = { readonly name: string; readonly lanes?: number | readonly number[] };
+    const KEPT: [number, number, number] = [1, 2, 3];
+    const DIRECT: [number, number, number] = [1, 2, 3];
+    const ALIASED: [number, number, number] = [1, 2, 3];
+    const HANDED: [number, number, number] = [1, 2, 3];
+    const kept: Fixed = { name: "kept", lanes: KEPT };
+    const direct: Fixed = { name: "direct", lanes: DIRECT };
+    const aliased: Fixed = { name: "aliased", lanes: ALIASED };
+    const handed: Fixed = { name: "handed", lanes: HANDED };
+    function describe(item: Fixed): string {
+        return \`\${item.name}=\${JSON.stringify(item.lanes)}\`;
+    }
+    function bump(lanes: number[]): void {
+        lanes[2] = lanes[2]! + 10;
+    }
+    const list: Fixed[] = [kept, direct, aliased, handed];
+    const readers = list.map((item) => () => describe(item));
+    DIRECT[0] = 7;
+    const alias: number[] = ALIASED;
+    alias[1] = 8;
+    bump(HANDED);
+    const seen = readers.map((read) => read()).join(" ");
+    if (seen !== "kept=[1,2,3] direct=[7,2,3] aliased=[1,8,3] handed=[1,2,13]") throw new Error(seen);
+    const lanes = kept.lanes as readonly number[];
+    if (lanes[0]! + lanes[1]! + lanes[2]! !== 6) throw new Error("kept lanes");
+    const read = direct.lanes as readonly number[];
+    if (read[0] !== 7) throw new Error("direct lanes");
+`,
+);
+
+check(
+    "a record holding a constant array sees a write through an assertion",
+    `
+    type Fixed = { readonly name: string; readonly lanes?: number | readonly number[] };
+    const LANES: [number, number, number] = [1, 2, 3];
+    const fixed: Fixed = { name: "fixed", lanes: LANES };
+    const list: Fixed[] = [fixed];
+    (list[0]!.lanes as number[])[1] = 9;
+    const lanes = fixed.lanes as readonly number[];
+    if (lanes[1] !== 9 || LANES[1] !== 9) throw new Error(String(lanes[1]));
+`,
+);
+
 test("an alias into a field container refuses after that container resizes", () => {
     assert.throws(
         () =>

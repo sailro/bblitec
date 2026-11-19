@@ -3334,10 +3334,18 @@ export interface ValueFields {
      */
     recordLiteral?: ts.ObjectLiteralExpression;
     /**
-     * The native array a record literal's own array literal created: no
-     * other reference held it when the record took it.
+     * The native array a record holds whose only writers are the record's
+     * views: its literal's own array literal, which no other reference held
+     * when the record took it, or an `unwrittenConstantArray`, which every
+     * other reference holds as a readonly array.
      */
     recordLiteralArray?: true;
+    /**
+     * The array a `const` binding's literal created, which no write in the
+     * program reaches (`constantArrayWriteObservation`): a holder storing
+     * it keeps its elements' facts.
+     */
+    unwrittenConstantArray?: true;
     /** Module namespace exports are live bindings and cannot be written through this record. */
     moduleNamespace?: true;
     /** Fields alias an already-retained native object; escaping must preserve those field references. */
