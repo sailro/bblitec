@@ -6142,11 +6142,10 @@ render_target_color_view_object(const Engine& engine, RenderTargetHandle target)
  * the record binds as the target's colour view (`render_target_color_view`);
  * a target whose builds or resizes replace its colour is refused.
  */
-inline RenderTextureRef render_target_color_snapshot(const Engine& engine,
-                                                     const js::Nullable<GpuTextureIdentity>& texture,
-                                                     const js::Nullable<GpuTextureView>& view,
-                                                     const GpuSampler& sampler,
-                                                     std::string_view sample_type = "float") {
+inline RenderTextureRef
+render_target_color_snapshot(const Engine& engine, const js::Nullable<GpuTextureIdentity>& texture,
+                             const js::Nullable<GpuTextureView>& view, const GpuSampler& sampler,
+                             std::string_view sample_type = "float") {
     if (!view || (texture && !(*texture == view->texture)))
         throw std::runtime_error("A Texture2D record of a render target's colour states that "
                                  "colour's view, and its texture when it states one.");

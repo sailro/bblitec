@@ -3253,18 +3253,17 @@ public:
                                                             0.0f,
                                                             1.0f};
                                         prepared.scissor =
-                                            SDL_Rect{rectangle->x, rectangle->y,
-                                                     rectangle->width, rectangle->height};
+                                            SDL_Rect{rectangle->x, rectangle->y, rectangle->width,
+                                                     rectangle->height};
                                     }
                                     upstream::sort_transparent_draws(
                                         handle_at(task_draw_lists, handle).transparent, engine,
                                         task_camera);
                                     draw_scene(graph_scene, graph_meshes, nullptr, {}, {},
-                                               task_matrix, task_camera, task_pass_matrices,
-                                               handle, handle_at(task_draw_lists, handle),
-                                               nullptr, nullptr, nullptr, nullptr, nullptr, false,
-                                               &prepared.draws, task.scene_uniforms,
-                                               shader_target);
+                                               task_matrix, task_camera, task_pass_matrices, handle,
+                                               handle_at(task_draw_lists, handle), nullptr, nullptr,
+                                               nullptr, nullptr, nullptr, false, &prepared.draws,
+                                               task.scene_uniforms, shader_target);
                                     temporal_passes.emplace_back(std::move(prepared));
                                 };
 #endif

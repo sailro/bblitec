@@ -153,7 +153,8 @@ function copyPlainData(json: unknown): unknown {
             );
         if (!Object.hasOwn(value, runtimeLeafKey)) return value;
         const marker: unknown = Reflect.get(value, runtimeLeafKey);
-        const [shape, shared]: unknown[] = Array.isArray(marker) ? marker : [];
+        const shape: unknown = Array.isArray(marker) ? marker[0] : undefined;
+        const shared: unknown = Array.isArray(marker) ? marker[1] : undefined;
         return new RuntimeLeaf(
             shape === "lanes",
             typeof shared === "string" ? shared : undefined,

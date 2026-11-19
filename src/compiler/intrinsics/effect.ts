@@ -242,7 +242,12 @@ function compileBindings(
             }
             const dimension = context.objectProperty(entry, "viewDimension");
             const view = dimension && context.compileStaticString(dimension);
-            if (dimension && view !== "2d" && view !== "2d-array" && view !== "3d") {
+            if (
+                dimension &&
+                view !== "2d" &&
+                view !== "2d-array" &&
+                view !== "3d"
+            ) {
                 context.fail(
                     dimension,
                     "Effect textures take a 2d, a 2d-array or a 3d view.",
@@ -272,7 +277,8 @@ function compileBindings(
         bindings.push(manifest);
         if (kind === "sampler") {
             const samplerType = context.objectProperty(entry, "samplerType");
-            const type = samplerType && context.compileStaticString(samplerType);
+            const type =
+                samplerType && context.compileStaticString(samplerType);
             if (samplerType && type !== "filtering" && type !== "comparison") {
                 context.fail(
                     samplerType,

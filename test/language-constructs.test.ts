@@ -5366,7 +5366,7 @@ check(
     let total = 0;
     for (const range of fresh) total += range.from;
     if (fresh.length !== 0 || total !== 0 || batch.begun !== 1 || batch.count !== 0) throw new Error("begun " + fresh.length + " " + batch.begun);
-`
+`,
 );
 // A missed element falls back to an empty literal its record type cannot
 // hold: both are stored as the narrower record the parameter declares.

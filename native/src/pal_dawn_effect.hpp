@@ -358,7 +358,8 @@ inline void bind_dawn_effect_per_draw_textures(WGPUDevice device, const Engine& 
                     upstream::EffectBindingKind::texture)
                     ++position;
             for (std::size_t index = 0; index < variant.binding_count; ++index) {
-                const auto& row = upstream::effect_variant_bindings.at(variant.first_binding + index);
+                const auto& row =
+                    upstream::effect_variant_bindings.at(variant.first_binding + index);
                 if (row.kind == upstream::EffectBindingKind::sampler && row.texture == position)
                     set(pass.group_entries[index].sampler, csm.sampler);
             }

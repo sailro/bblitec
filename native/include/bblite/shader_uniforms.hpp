@@ -69,8 +69,8 @@ struct ShaderViewSlotEntry {
 js::Nullable<StoredTexture> shader_slot_texture(Engine& engine, MaterialHandle material,
                                                 std::uint32_t slot);
 /** `current` of a ShaderMaterial's `_storageBufferSlots` entry for declared storage buffer `slot`. */
-js::Nullable<StorageBufferHandle> shader_slot_storage_buffer(Engine& engine, MaterialHandle material,
-                                                             std::uint32_t slot);
+js::Nullable<StorageBufferHandle>
+shader_slot_storage_buffer(Engine& engine, MaterialHandle material, std::uint32_t slot);
 /** `value` of a ShaderMaterial's `_uniformValues` entry for uniform `name` of `count` lanes. */
 js::F32Array shader_slot_uniform_value(Engine& engine, MaterialHandle material,
                                        const std::string& name, const std::string& type,

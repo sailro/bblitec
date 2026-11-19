@@ -347,8 +347,10 @@ test("a comparison sampler samples a CSM receiver texture through a 2d-array dep
 });
 
 test("effect comparison samplers and 2d-array textures refuse what a CSM receiver texture does not fill", () => {
-    const sampler = '{ binding: 0, kind: "sampler", samplerType: "comparison", textureBinding: 1 }';
-    const texture = '{ binding: 1, kind: "texture", textureSampleType: "depth", viewDimension: "2d-array" }';
+    const sampler =
+        '{ binding: 0, kind: "sampler", samplerType: "comparison", textureBinding: 1 }';
+    const texture =
+        '{ binding: 1, kind: "texture", textureSampleType: "depth", viewDimension: "2d-array" }';
     const refusals: readonly (readonly [string, string, RegExp])[] = [
         [
             texture,

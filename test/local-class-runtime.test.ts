@@ -560,7 +560,11 @@ test("stores a local class a stored class's field binds to different instances",
         /struct PartData \{\s*bool locked\{\};\s*bblscene::Renderer _renderer;\s*bbl::js::Tuple<3> _size;/,
     );
     if (!nativeTools) return t.skip("native compiler unavailable");
-    runGeneratedProgram(nativeTools, "stored-class-field-instances", result.cpp);
+    runGeneratedProgram(
+        nativeTools,
+        "stored-class-field-instances",
+        result.cpp,
+    );
 });
 
 test("stores a class hierarchy as one tagged struct and dispatches on the tag", () => {

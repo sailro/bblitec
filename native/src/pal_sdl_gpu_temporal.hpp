@@ -114,9 +114,9 @@ inline void encode_sdl_gpu_prepared_draw(SDL_GPUCommandBuffer* command, SDL_GPUR
 
 inline void encode_sdl_gpu_prepared_scene(SDL_GPUCommandBuffer* command,
                                           const PreparedSdlScenePass& scene) {
-    SdlRenderPass pass{
-        SDL_BeginGPURenderPass(command, scene.target ? &*scene.target : nullptr, scene.target ? 1u : 0u,
-                               scene.depth ? &*scene.depth : nullptr)};
+    SdlRenderPass pass{SDL_BeginGPURenderPass(command, scene.target ? &*scene.target : nullptr,
+                                              scene.target ? 1u : 0u,
+                                              scene.depth ? &*scene.depth : nullptr)};
     if (scene.viewport)
         SDL_SetGPUViewport(pass, &*scene.viewport);
     if (scene.scissor)

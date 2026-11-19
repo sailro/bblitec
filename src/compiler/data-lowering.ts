@@ -5552,9 +5552,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 // requires is missing) is stored, with the left, as the
                 // record type the result is stored as: the sink's, else the
                 // one the expression's context (a parameter) declares.
-                const contextual = this.context.checker.getContextualType(
-                    expression,
-                );
+                const contextual =
+                    this.context.checker.getContextualType(expression);
                 const result =
                     sink ??
                     (contextual &&
