@@ -33,7 +33,8 @@ export const OPEN_HOLDER_FLAGS =
     ts.TypeFlags.Substitution |
     ts.TypeFlags.NonPrimitive;
 
-function openHolder(type: ts.Type): boolean {
+/** Whether a type can hold every record: one of its members is open. */
+export function openHolder(type: ts.Type): boolean {
     return unionMembers(type).some(
         (member) =>
             (member.flags & OPEN_HOLDER_FLAGS) !== 0 ||
@@ -221,11 +222,11 @@ function throughParameter<T>(
  * of a function the program only calls directly holds what its calls pass,
  * and a type parameter of such a function is what its calls instantiate.
  */
-function heldTypes(
+export function heldTypes(
     program: ts.Program,
     checker: ts.TypeChecker,
     object: ts.Expression,
-    active: Set<ts.Node>,
+    active: Set<ts.Node> = new Set(),
 ): readonly ts.Type[] {
     const type = checker.getTypeAtLocation(object);
     if (!openHolder(type)) return [type];

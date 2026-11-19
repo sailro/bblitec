@@ -3558,6 +3558,56 @@ test("a record type stored as one class's instances refuses another record where
     );
 });
 
+// A weak map keyed through an `object` parameter keys what the calls of
+// its function pass; only a key that can hold the record type keeps a
+// class handing out `this` from being copied as it.
+const objectKeyedNotes = `
+    interface Gauge { readonly tight: boolean; span(a: number, b: number): number }
+    class Tally {
+        count = 0;
+        get tight(): boolean { return this.count > 0; }
+        span(a: number, b: number): number { return a * b + this.count; }
+        gauge(): Gauge { return this.count > 0 ? this : loose; }
+    }
+    const loose: Gauge = { tight: false, span: (a, b) => a + b };
+    interface World { readonly tallies: Tally[] }
+    const notes = new WeakMap<object, string[]>();
+    function note(owner: object, text: string): number {
+        let list = notes.get(owner);
+        if (!list) { list = []; notes.set(owner, list); }
+        list.push(text);
+        return list.length;
+    }
+    function annotate(world: World): number { return note(world, "seen"); }
+    const world: World = { tallies: [new Tally(), new Tally()] };
+`;
+
+check(
+    "a class handing out this stays one object where a broad key only takes other types",
+    `${objectKeyedNotes}
+    world.tallies[1]!.count = 2;
+    const gauges = world.tallies.map((tally) => tally.gauge());
+    world.tallies[1]!.count = 3;
+    if (gauges[0]!.tight || gauges[0]!.span(2, 3) !== 5 || !gauges[1]!.tight || gauges[1]!.span(2, 3) !== 9)
+        throw new Error("gauges");
+    `,
+);
+
+test("a broad key that can hold a record keeps it keyed by identity", () => {
+    for (const keyed of [
+        "function mark(): number { return note(world.tallies[0]!.gauge(), 'kept'); }",
+        "function mark(): void { const key: object = world; notes.set(key, []); }",
+        "const handed: unknown = notes;",
+    ])
+        assert.throws(
+            () =>
+                compileSource(
+                    `${objectKeyedNotes} const gauges: Gauge[] = world.tallies.map((tally) => tally.gauge()); ${keyed} export {};`,
+                ),
+            /'Gauge' is stored as the 'Tally' instances it holds; a record that is not one stored as it would be a copy of the one object JavaScript keeps/,
+        );
+});
+
 check(
     "fresh class instances are the only handle of their interface views",
     `
