@@ -57,7 +57,8 @@ Rules:
   A fold reaching the host, clock, `Math.random`
   or locale refuses; written constants require the
   initialization snapshot proof below.
-- Scalar facts survive readonly return fields; string, number and boolean facts survive locals with no reachable writes.
+- Scalar facts survive readonly return fields, and the fields of a returned array's records that no write in the program
+  replaces; string, number and boolean facts survive locals with no reachable writes.
   Local text retains known values across direct ordered assignments outside runtime control flow; readonly closures
   created after the last assignment can capture the final value. Loop writes and earlier captures remain runtime values.
   Nullable scalar helpers retain known branch results and their evaluated effects.

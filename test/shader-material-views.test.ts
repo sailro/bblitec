@@ -823,6 +823,41 @@ test("a ShaderMaterial view's declarations a helper adds a module constant decla
         );
 });
 
+test("a ShaderMaterial view's declarations a helper adds to a material's own readable declarations are known at generation", () => {
+    // The helper's search folds over the declarations, and its spread of
+    // them is a list generation holds, as `[a, b]` is.
+    const withView = (uniformDecls: string, source = "plain"): string =>
+        sharedDefaultSource(`
+        const plain = createShaderMaterial({ name: "plain", vertexSource: wgsl\`\${VERT.replace("1.0)).xyz", "2.0)).xyz")}\`, fragmentSource: wgsl\`\${surface("vec3<f32>(1.0)")}\`, attributes: ["position"], uniforms: ["worldViewProjection", "world"] });
+        draw(engine, plain);
+        const chosen = Math.random() > 0.5 ? tinted : plain;
+        draw(engine, viewOf(${source}));
+    `).replace(
+            "async function main",
+            `const WATER: ShaderUniformDecl = { name: "uWater", type: "vec4<f32>", defaultValue: [0, 0, 0, 0] };
+    function viewOf(source: ShaderMaterial): ShaderMaterial {
+        const view = createMaterialView(source, { features: 0 }) as ShaderMaterial;
+        const uniformDecls = ${uniformDecls};
+        Object.defineProperties(view, { fragmentSource: { value: wgsl\`\${NORMAL}\`, configurable: true }, uniformDecls: { value: uniformDecls, configurable: true } });
+        return view;
+    }
+    async function main`,
+        );
+    const plainSlotsRefusal =
+        /input\.ts:\d+:\d+: A ShaderMaterial view keeps its source's slots; its redefinitions \(fragmentSource, uniformDecls\) declare other uniforms, samplers or storage buffers than shader variant 'plain'/;
+    for (const [uniformDecls, source] of [
+        ["withDecl(source.uniformDecls, WATER)", "plain"],
+        ["withDecl(withDecl(source.uniformDecls, CARVE), WATER)", "plain"],
+        // Each material the run time may pass is viewed on its own.
+        ["withDecl(withDecl(source.uniformDecls, CARVE), WATER)", "chosen"],
+    ] as const)
+        assert.throws(
+            () => compileSource(withView(uniformDecls, source)),
+            plainSlotsRefusal,
+            `${source}: ${uniformDecls}`,
+        );
+});
+
 const runtimeDefaultsSource = `${prelude}
     async function main(): Promise<void> {
         const engine = await createEngine({});

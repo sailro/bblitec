@@ -2246,11 +2246,16 @@ export class BindingScopes {
         delete writable(value).recordProperties;
     }
 
-    /** Materialize mutable members when a compile-time value escapes. */
+    /**
+     * Materialize mutable members when a compile-time value escapes; a
+     * field of its records, or of its tuple's, that `isUnchangedField`
+     * answers keeps its value (`materializeRecordScalars`).
+     */
     public materializeEscapingValue(
         value: Value,
         label: string,
         node?: ts.Expression,
+        isUnchangedField?: (path: readonly string[], member: Value) => boolean,
     ): Value {
         // A value holding a part generation cannot read has no native
         // storage: it escapes as generation holds it.
@@ -2283,13 +2288,25 @@ export class BindingScopes {
             ) {
                 return value;
             }
-            return this.materializeRecordScalars(value, label, true, node);
+            return this.materializeRecordScalars(
+                value,
+                label,
+                true,
+                node,
+                undefined,
+                isUnchangedField,
+            );
         }
         if (value.kind === "tuple" && value.tupleElements) {
             return {
                 ...value,
                 tupleElements: value.tupleElements.map((element, index) =>
-                    this.materializeEscapingValue(element, `${label}_${index}`),
+                    this.materializeEscapingValue(
+                        element,
+                        `${label}_${index}`,
+                        undefined,
+                        isUnchangedField,
+                    ),
                 ),
             };
         }

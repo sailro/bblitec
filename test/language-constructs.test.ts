@@ -1481,6 +1481,165 @@ check(
 `,
 );
 
+// A spread literal of compile-time tuples is one: each spread builds a new
+// array, read at generation, mutated, aliased, stored and compared as the
+// run time keeps it.
+check(
+    "spread-literals-of-compile-time-tuples-are-new-arrays",
+    `
+    function reads(): void {
+        const rows = [{ name: "a", n: 1 }, { name: "b", n: 2 }];
+        const more = [...rows, { name: "c", n: 3 }];
+        if (more.length !== 3 || more[2]!.n !== 3 || more[0]!.name !== "a" || !more.some((row) => row.name === "c")) throw new Error("reads");
+    }
+    function mutation(): void {
+        const lanes = [1, 2];
+        const grown = [...lanes, 3];
+        grown.push(4);
+        grown[0] = 9;
+        if (lanes.length !== 2 || lanes[0] !== 1 || grown.join(",") !== "9,2,3,4") throw new Error("mutation after the spread");
+    }
+    function aliasing(): void {
+        const lanes = [1, 2];
+        const grown = [...lanes, 3];
+        const alias = grown;
+        alias.push(5);
+        alias[1] = 8;
+        if (grown.length !== 4 || grown[1] !== 8 || alias !== grown || lanes[1] !== 2) throw new Error("aliasing");
+    }
+    function identity(): void {
+        const lanes = [1, 2];
+        const copy = [...lanes];
+        const again = [...lanes];
+        if (copy === lanes || copy === again || copy.length !== again.length) throw new Error("identity");
+    }
+    function escape(): void {
+        const lanes = [1, 2];
+        const lists: number[][] = [];
+        const copy = [...lanes];
+        lists.push(copy);
+        lists[0]![0] = 7;
+        const holder: { items: number[] } = { items: [...lanes, ...copy] };
+        holder.items.push(6);
+        if (copy[0] !== 7 || lists[0] !== copy || holder.items.join(",") !== "1,2,7,2,6" || lanes[0] !== 1) throw new Error("escape into storage");
+    }
+    function records(): void {
+        const rows = [{ name: "a", n: 1 }, { name: "b", n: 2 }];
+        const more = [...rows, { name: "c", n: 3 }];
+        more[0]!.n = 5;
+        more.push({ name: "d", n: 4 });
+        if (more[0] !== rows[0] || rows[0]!.n !== 5 || rows.length !== 2 || more.length !== 4) throw new Error("record elements");
+    }
+    function elementWrite(): void {
+        const rows = [{ name: "a", n: 1 }, { name: "b", n: 2 }];
+        const copy = [...rows];
+        copy[1]!.n = 6;
+        if (rows[1]!.n !== 6 || copy[1] !== rows[1]) throw new Error("element write");
+    }
+    reads();
+    mutation();
+    aliasing();
+    identity();
+    escape();
+    records();
+    elementWrite();
+`,
+);
+
+// A helper's spread of the declarations it is given returns new arrays over
+// the same records, searched at generation and written where they live.
+check(
+    "spread-results-a-helper-returns-keep-element-identity-and-writes",
+    `
+    interface Row { name: string; size: number }
+    function hasRow<T extends { name: string }>(rows: readonly T[], name: string): boolean {
+        let visits = 0;
+        const found = rows.some((row) => { visits++; return row.name === name; });
+        if (visits === 0 && rows.length > 0) throw new Error("predicate effects");
+        return found;
+    }
+    function withRow<T extends { name: string }>(rows: readonly T[], row: T): T[] {
+        return hasRow(rows, row.name) ? [...rows] : [...rows, row];
+    }
+    const EXTRA: Row = { name: "extra", size: 4 };
+    const READ: readonly Row[] = [{ name: "a", size: 1 }, { name: "b", size: 2 }];
+    const SAME: readonly Row[] = [{ name: "a", size: 1 }, { name: "b", size: 2 }];
+    const GROWN: readonly Row[] = [{ name: "a", size: 1 }, { name: "b", size: 2 }];
+    const PUSHED: readonly Row[] = [{ name: "a", size: 1 }, { name: "b", size: 2 }];
+    function reads(): void {
+        const added = withRow(withRow(READ, EXTRA), EXTRA);
+        if (added.length !== 3 || added[2]!.name !== "extra" || !hasRow(added, "a") || hasRow(added, "z")) throw new Error("reads");
+    }
+    function identity(): void {
+        const added = withRow(SAME, EXTRA);
+        const kept = withRow(SAME, SAME[0]!);
+        if (added.length !== 3 || kept.length !== 2 || added === kept || kept === SAME) throw new Error("helper results");
+        if (added[0] !== SAME[0] || added[2] !== EXTRA || kept[1] !== SAME[1]) throw new Error("element identity");
+    }
+    function writes(): void {
+        const added = withRow(GROWN, EXTRA);
+        added[0]!.size += 1;
+        if (GROWN[0]!.size !== 2 || added[0]!.size !== 2 || added.length !== 3) throw new Error("writes through results");
+    }
+    function pushes(): void {
+        const added = withRow(PUSHED, EXTRA);
+        added.push({ name: "pushed", size: 0 });
+        if (added.length !== 4 || PUSHED.length !== 2 || added[3]!.name !== "pushed" || added[0]!.size !== 1) throw new Error("push onto results");
+    }
+    reads();
+    identity();
+    writes();
+    pushes();
+`,
+);
+
+// A field `Object.assign` replaces on a record a helper's spread returns is
+// read where it lives.
+check(
+    "spread-results-a-helper-returns-read-a-field-object-assign-replaces",
+    `
+    interface Row { name: string; size: number }
+    function hasRow<T extends { name: string }>(rows: readonly T[], name: string): boolean {
+        return rows.some((row) => row.name === name);
+    }
+    function withRow<T extends { name: string }>(rows: readonly T[], row: T): T[] {
+        return hasRow(rows, row.name) ? [...rows] : [...rows, row];
+    }
+    const EXTRA: Row = { name: "extra", size: 4 };
+    const ROWS: readonly Row[] = [{ name: "a", size: 1 }, { name: "b", size: 2 }];
+    function assigns(): void {
+        const added = withRow(ROWS, EXTRA);
+        Object.assign(added[0]!, { name: "assigned" });
+        if (ROWS[0]!.name !== "assigned" || !hasRow(added, "assigned") || hasRow(added, "a")) throw new Error("writes the program spells otherwise");
+    }
+    assigns();
+`,
+);
+
+// A field a write through another record type replaces on a record a
+// helper's spread returns is read where it lives.
+check(
+    "spread-results-a-helper-returns-read-a-field-another-type-replaces",
+    `
+    interface Row { name: string; size: number }
+    function withRow<T extends { name: string }>(rows: readonly T[], row: T): T[] {
+        return [...rows, row];
+    }
+    function rename(row: { name: string }): void {
+        row.name = "renamed";
+    }
+    const EXTRA: Row = { name: "extra", size: 4 };
+    const ROWS: readonly Row[] = [{ name: "a", size: 1 }, { name: "b", size: 2 }];
+    function renames(): void {
+        const added = withRow(ROWS, EXTRA);
+        rename(added[1]!);
+        if (added[1]!.name !== "renamed") throw new Error("result renamed");
+        if (ROWS[1]!.name !== "renamed") throw new Error("source renamed");
+    }
+    renames();
+`,
+);
+
 check(
     "push-spreads-what-an-array-literal-spreads",
     `

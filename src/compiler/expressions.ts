@@ -228,6 +228,7 @@ import {
 } from "./data-types.js";
 import { isBinaryDataType } from "./data-types/typed-arrays.js";
 import { refuseUnreadableRead, unlessUnreadable } from "./unreadable-values.js";
+import { StorageDemand } from "./storage-demand.js";
 import { readCallableProperty } from "./properties.js";
 import {
     compileJsonCall,
@@ -1524,15 +1525,37 @@ export class ExpressionLowerer {
                 });
                 if (dataType?.kind !== "vector" && dataType?.kind !== "tuple")
                     return spreadLanes();
+                // Spreads of compile-time tuples build one, as `[a, b]` does.
+                let stopped: StorageDemand | undefined;
+                try {
+                    const generation = this.context.keptEmission(() =>
+                        this.generationSpreadLanes(unwrapped),
+                    );
+                    if (generation) return generation;
+                } catch (error) {
+                    if (!(error instanceof StorageDemand)) throw error;
+                    stopped = error;
+                }
                 // An array holding a part generation cannot read has no
                 // native storage: it is generation's, its lanes as spread.
-                const native = unlessUnreadable(() =>
-                    this.context.keptEmission(
-                        () => this.nativeSpreadArray(unwrapped, dataType),
-                        () => true,
-                    ),
-                );
-                return native ?? spreadLanes();
+                const native = (): Value | undefined =>
+                    unlessUnreadable(() =>
+                        this.context.keptEmission(
+                            () => this.nativeSpreadArray(unwrapped, dataType),
+                            () => true,
+                        ),
+                    );
+                if (!stopped) return native() ?? spreadLanes();
+                // A spread whose storage a demand stops is not known to be
+                // one: the native array raises that demand joined with its
+                // later members' (`storeLiteralMember`); whatever else it
+                // meets, the demand stands.
+                try {
+                    native();
+                } catch (error) {
+                    if (!(error instanceof CompileError)) throw error;
+                }
+                throw stopped;
             }
             const pins = this.context.evaluationOrder.operandsToPin(
                 unwrapped.elements,
@@ -2822,6 +2845,45 @@ export class ExpressionLowerer {
         }
         const staticNumber = staticNumberValue(this.context, expression);
         return staticNumber === undefined ? value : { ...value, staticNumber };
+    }
+
+    /**
+     * A spread array literal whose every spread is a compile-time tuple,
+     * as a compile-time tuple of its lanes in source order, each other
+     * element a lane as `[a, b]` builds it, pinned where a later element
+     * changes what it reads; undefined at the first spread of any other
+     * value.
+     */
+    private generationSpreadLanes(
+        literal: ts.ArrayLiteralExpression,
+    ): Value | undefined {
+        const pins = this.context.evaluationOrder.operandsToPin(
+            literal.elements,
+        );
+        const pinned = (value: Value, element: ts.Expression): Value =>
+            pinOperand(this.context, value, element, "array_member");
+        const lanes: Value[] = [];
+        for (const [index, element] of literal.elements.entries()) {
+            if (!ts.isSpreadElement(element)) {
+                const value = this.laneValue(element);
+                lanes.push(
+                    pins[index]
+                        ? pinned(value, element)
+                        : this.builtLane(value, element),
+                );
+                continue;
+            }
+            const iterated = this.context.dataLowerer.iteratedElements(
+                this.context.dataLowerer.tupleSpreadValue(element.expression),
+            );
+            if (!iterated || !("lanes" in iterated)) return undefined;
+            lanes.push(
+                ...(pins[index]
+                    ? iterated.lanes.map((lane) => pinned(lane, element))
+                    : iterated.lanes),
+            );
+        }
+        return { kind: "tuple", cpp: "", tupleElements: lanes };
     }
 
     /** A spread array literal stored natively as `dataType`. */

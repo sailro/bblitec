@@ -30,6 +30,7 @@ import {
 } from "./binding-rebinds.js";
 import {
     absenceOf,
+    hasScalarFacts,
     holdsUnreadable,
     knownCondition,
     ownKeysKnown,
@@ -54,6 +55,7 @@ import {
     unionMembers,
     boundedTupleElements,
     fixedTupleElements,
+    arrayElementType,
 } from "./type-facts.js";
 import {
     requireAbsenceTag,
@@ -7536,9 +7538,43 @@ export class UserFunctionLowerer {
                         returned,
                         label,
                         expression,
+                        this.unwrittenElementFields(context, ir, returned),
                     )),
             requiresExplicitDiscard: true,
         };
+    }
+
+    /**
+     * The fields a returned tuple's records keep: a scalar field the
+     * call's element type declares, which no write in the program replaces
+     * (`recordFieldIsWritten`), keeps its value wherever the record goes.
+     */
+    private unwrittenElementFields(
+        context: UserFunctionContext,
+        ir: UserFunctionIr,
+        value: Value,
+    ): ((path: readonly string[], member: Value) => boolean) | undefined {
+        if (
+            value.kind !== "tuple" ||
+            !value.tupleElements?.some((element) => element.kind === "record")
+        )
+            return undefined;
+        const invocation = this.invocations.get(ir.declaration)?.call;
+        const element =
+            invocation &&
+            arrayElementType(
+                context.checker,
+                context.checker.getTypeAtLocation(invocation),
+            );
+        if (!element) return undefined;
+        const declared = context.checker.getNonNullableType(element);
+        return (path, member) =>
+            path.length === 1 &&
+            hasScalarFacts(member) &&
+            !member.parameterBinding &&
+            context.checker.getPropertyOfType(declared, path[0]!) !==
+                undefined &&
+            !recordFieldIsWritten(context, element, path[0]!);
     }
 
     /** Fresh argument records keep scalar facts across a read-only consumer. */

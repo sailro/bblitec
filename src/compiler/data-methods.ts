@@ -576,6 +576,115 @@ function unboundOwner(
     );
 }
 
+const scalarTuplePredicates = new Set(["some", "every", "findIndex"]);
+const tuplePredicateMethods = new Set([
+    ...scalarTuplePredicates,
+    "filter",
+    "find",
+]);
+/**
+ * A predicate method (`some`, `every`, `filter`, `find`, `findIndex`)
+ * over a compile-time tuple's `elements`, folded at generation where its
+ * callback answers each element so; undefined otherwise.
+ */
+function foldTuplePredicate(
+    lowerer: DataLowerer,
+    call: ts.CallExpression,
+    method: string,
+    owner: Value,
+    elements: readonly Value[],
+): Value | undefined {
+    if (!tuplePredicateMethods.has(method)) return undefined;
+    // A callback that is not a local function -- a stored expression, a
+    // library function -- is evaluated once by the run-time callback path;
+    // speculative folding must not re-run its getters.
+    const callback =
+        call.arguments.length === 1
+            ? lowerer.context.unwrap(argumentAt(call, 0))
+            : undefined;
+    if (
+        !callback ||
+        !(
+            ts.isIdentifier(callback) ||
+            ts.isArrowFunction(callback) ||
+            ts.isFunctionExpression(callback)
+        ) ||
+        lowerer.promiseCallbackType(callback)
+    )
+        return undefined;
+    return lowerer.context.probeEmission((): Value | undefined => {
+        const selected: Value[] = [];
+        for (let index = 0; index < elements.length; ++index) {
+            const matched = lowerer.context.compilePredicateWithValues(
+                callback,
+                [
+                    elements[index]!,
+                    {
+                        kind: "number",
+                        cpp: `${index}.0`,
+                        staticNumber: index,
+                        dataType: { kind: "number" },
+                    },
+                    owner,
+                ],
+                call,
+            );
+            if (matched.staticBoolean === undefined) {
+                return undefined;
+            }
+            if (method === "filter") {
+                if (matched.staticBoolean) selected.push(elements[index]!);
+                continue;
+            }
+            if (
+                (method === "find" || method === "findIndex") &&
+                matched.staticBoolean
+            ) {
+                return method === "find"
+                    ? elements[index]!
+                    : {
+                          kind: "number",
+                          cpp: `${index}.0`,
+                          staticNumber: index,
+                          dataType: { kind: "number" },
+                      };
+            }
+            if (
+                (method === "some" && matched.staticBoolean) ||
+                (method === "every" && !matched.staticBoolean)
+            ) {
+                return {
+                    kind: "boolean",
+                    cpp: matched.staticBoolean ? "true" : "false",
+                    staticBoolean: matched.staticBoolean,
+                    dataType: { kind: "boolean" },
+                };
+            }
+        }
+        if (method === "filter")
+            return {
+                kind: "tuple",
+                cpp: "",
+                tupleElements: selected,
+            };
+        if (method === "find") return undefinedValue();
+        if (method === "findIndex")
+            return {
+                kind: "number",
+                cpp: "-1.0",
+                staticNumber: -1,
+                dataType: { kind: "number" },
+            };
+        const result = method === "every";
+        return {
+            kind: "boolean",
+            cpp: result ? "true" : "false",
+            staticBoolean: result,
+            dataType: { kind: "boolean" },
+        };
+    });
+}
+
 export function compileDataMethodCall(
     lowerer: DataLowerer,
     call: ts.CallExpression,
@@ -784,6 +893,18 @@ export function compileDataMethodCall(
         dynamicOwner?.kind === "tuple" &&
         lowerer.prefersRuntimeTupleIteration(ownerExpression, call.arguments[0])
     ) {
+        // An answer that holds no element (`some`, `every`, `findIndex`)
+        // folds over the tuple's own elements: no object identity to keep.
+        const folded = scalarTuplePredicates.has(method)
+            ? foldTuplePredicate(
+                  lowerer,
+                  call,
+                  method,
+                  dynamicOwner,
+                  dynamicOwner.tupleElements ?? [],
+              )
+            : undefined;
+        if (folded) return folded;
         dynamicOwner =
             lowerer.materializeConstantArray(ownerExpression) ??
             lowerer.materializeKnownTuple(ownerExpression, dynamicOwner) ??
@@ -873,16 +994,10 @@ export function compileDataMethodCall(
             };
         }
     }
-    const predicateMethod =
-        method === "some" ||
-        method === "every" ||
-        method === "filter" ||
-        method === "find" ||
-        method === "findIndex";
     if (
         tupleOwnerElements &&
         dynamicOwner &&
-        predicateMethod &&
+        tuplePredicateMethods.has(method) &&
         call.arguments.length !== 1
     ) {
         lowerer.context.fail(
@@ -890,105 +1005,17 @@ export function compileDataMethodCall(
             `Tuple Array.${method} requires exactly one callback.`,
         );
     }
-    // A callback that is not a local function -- a stored expression, a
-    // library function -- is evaluated once by the run-time callback path;
-    // speculative folding must not re-run its getters.
-    const callback =
-        call.arguments.length === 1
-            ? lowerer.context.unwrap(argumentAt(call, 0))
+    const folded =
+        tupleOwnerElements && dynamicOwner
+            ? foldTuplePredicate(
+                  lowerer,
+                  call,
+                  method,
+                  dynamicOwner,
+                  tupleOwnerElements,
+              )
             : undefined;
-    if (
-        tupleOwnerElements &&
-        dynamicOwner &&
-        predicateMethod &&
-        callback &&
-        (ts.isIdentifier(callback) ||
-            ts.isArrowFunction(callback) ||
-            ts.isFunctionExpression(callback))
-    ) {
-        const folded = lowerer.promiseCallbackType(callback)
-            ? undefined
-            : lowerer.context.probeEmission((): Value | undefined => {
-                  const selected: Value[] = [];
-                  for (
-                      let index = 0;
-                      index < tupleOwnerElements.length;
-                      ++index
-                  ) {
-                      const matched =
-                          lowerer.context.compilePredicateWithValues(
-                              callback,
-                              [
-                                  tupleOwnerElements[index]!,
-                                  {
-                                      kind: "number",
-                                      cpp: `${index}.0`,
-                                      staticNumber: index,
-                                      dataType: { kind: "number" },
-                                  },
-                                  dynamicOwner,
-                              ],
-                              call,
-                          );
-                      if (matched.staticBoolean === undefined) {
-                          return undefined;
-                      }
-                      if (method === "filter") {
-                          if (matched.staticBoolean)
-                              selected.push(tupleOwnerElements[index]!);
-                          continue;
-                      }
-                      if (
-                          (method === "find" || method === "findIndex") &&
-                          matched.staticBoolean
-                      ) {
-                          return method === "find"
-                              ? tupleOwnerElements[index]!
-                              : {
-                                    kind: "number",
-                                    cpp: `${index}.0`,
-                                    staticNumber: index,
-                                    dataType: { kind: "number" },
-                                };
-                      }
-                      if (
-                          (method === "some" && matched.staticBoolean) ||
-                          (method === "every" && !matched.staticBoolean)
-                      ) {
-                          return {
-                              kind: "boolean",
-                              cpp: matched.staticBoolean ? "true" : "false",
-                              staticBoolean: matched.staticBoolean,
-                              dataType: { kind: "boolean" },
-                          };
-                      }
-                  }
-                  if (method === "filter")
-                      return {
-                          kind: "tuple",
-                          cpp: "",
-                          tupleElements: selected,
-                      };
-                  if (method === "find") return undefinedValue();
-                  if (method === "findIndex")
-                      return {
-                          kind: "number",
-                          cpp: "-1.0",
-                          staticNumber: -1,
-                          dataType: { kind: "number" },
-                      };
-                  const result = method === "every";
-                  return {
-                      kind: "boolean",
-                      cpp: result ? "true" : "false",
-                      staticBoolean: result,
-                      dataType: { kind: "boolean" },
-                  };
-              });
-        if (folded) {
-            return folded;
-        }
-    }
+    if (folded) return folded;
     const snapshotOwner = dynamicOwner?.staticElementsOwner ?? dynamicOwner;
     // Native elements whose generation facts are whole -- records, or
     // strings and numbers known at generation -- can each specialize a map
