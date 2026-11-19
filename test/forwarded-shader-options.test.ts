@@ -79,3 +79,56 @@ test("reads a forwarded options record's storage buffers spread from module-cons
         );
     }
 });
+
+test("a module constant declaration keeps its fields after a list holding it escapes", () => {
+    // The program writes through PALETTE (a Map keeps the lists), so its
+    // declaration proves its own keys; a field write on a type that can hold
+    // it keeps the list's scalars from being proven unwritten. The second
+    // material still reads the constant's fields.
+    const compiled = compileSource(`
+        import { createBox, createEngine, createShaderMaterial, wgsl } from "babylon-lite";
+        import type { ShaderMaterial } from "babylon-lite";
+        interface StorageDecl { readonly name: string; readonly type: string }
+        const PALETTE: StorageDecl = { name: "uPalette", type: "array<vec4<f32>>" };
+        const SCENE: StorageDecl = { name: "uScene", type: "array<vec4<f32>>" };
+        function sceneDecls(): StorageDecl[] {
+            return [SCENE];
+        }
+        function rename(decl: { name: string; type: string }, name: string): void {
+            decl.name = name;
+        }
+        const lists = new Map<string, StorageDecl[]>();
+        function mask(name: string): ShaderMaterial {
+            lists.set(name, [PALETTE, ...sceneDecls()]);
+            return createShaderMaterial({
+                name,
+                vertexSource: wgsl\`struct VOut { @builtin(position) position: vec4<f32> };
+@vertex fn mainVertex(input: VertexInput) -> VOut {
+    var o: VOut;
+    o.position = shaderSystem.worldViewProjection * vec4<f32>(input.position + uPalette[0].xyz + uScene[0].xyz, 1.0);
+    return o;
+}\`,
+                fragmentSource: wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`,
+                attributes: ["position"],
+                storageBuffers: [PALETTE, ...sceneDecls()],
+                uniforms: ["worldViewProjection"],
+            });
+        }
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            const local = { name: "a", type: "b" };
+            rename(local, String(Math.random()));
+            createBox(engine).material = mask("first");
+            createBox(engine).material = mask("second");
+        }
+        void main();
+    `);
+    const [program] = compiled.manifest.customShaderPrograms;
+    assert.deepEqual(
+        program?.storageBuffers.map(({ name, type }) => ({ name, type })),
+        [
+            { name: "uPalette", type: "array<vec4<f32>>" },
+            { name: "uScene", type: "array<vec4<f32>>" },
+        ],
+    );
+});

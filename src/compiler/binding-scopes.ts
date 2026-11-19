@@ -1885,12 +1885,15 @@ export class BindingScopes {
                 `std::shared_ptr<${resourceType}>`,
             );
         const storedCpp = cell?.cpp ?? cppName;
+        // A read-only parameter keeps what generation knows of its argument:
+        // its scalar, or the record facts its argument carries.
         const constantParameter =
             readOnlyParameter &&
             ((value.kind === "number" && value.staticNumber !== undefined) ||
                 (isStringValue(value) && value.staticString !== undefined) ||
                 (value.kind === "boolean" &&
-                    value.staticBoolean !== undefined)) &&
+                    value.staticBoolean !== undefined) ||
+                value.recordProperties !== undefined) &&
             !value.parameterBinding;
         const storedType = resourceStorage?.type ?? value.dataType;
         const bound =

@@ -3324,6 +3324,11 @@ export interface ValueFields {
     /** Complete own-key order proven for a native record whose key set cannot change. */
     recordOwnKeys?: readonly string[];
     /**
+     * `recordOwnKeys` are what a binding's declaration proves of the object
+     * it creates, not a holder's view of an object the holder built.
+     */
+    declaredOwnKeys?: true;
+    /**
      * The object literal whose object this record is: the literal at a field
      * of a `const`'s literal, read where no write replaces that field.
      */

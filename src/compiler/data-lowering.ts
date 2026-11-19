@@ -10536,12 +10536,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 this.context.bindings.retainRecordPropertiesAlias(
                     element,
                     unwrittenScalars ||
-                        // An object only its struct decides the keys of (a
-                        // module constant's) was not built for the array:
-                        // the array's escape withdraws the array's view of
-                        // it, as a holder's escape leaves its own facts.
+                        // An object whose keys its struct decides or its
+                        // declaration proves (a module constant's) was not
+                        // built for the array: the array's escape withdraws
+                        // the array's view of it, as a holder's escape
+                        // leaves its own facts.
                         (element.kind !== "record" &&
-                            element.recordOwnKeys === undefined &&
+                            (element.recordOwnKeys === undefined ||
+                                element.declaredOwnKeys === true) &&
                             ownKeys[index] !== undefined),
                 );
             writable(owner).staticElements = elements.map((element, index) => ({

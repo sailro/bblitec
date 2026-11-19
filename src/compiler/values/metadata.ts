@@ -61,6 +61,7 @@ const resourceMetadataFields = {
         "recordProperties",
         "recordPropertyOrder",
         "recordOwnKeys",
+        "declaredOwnKeys",
         "moduleNamespace",
         "staticJson",
         "shaderRecipeLookup",
