@@ -9,7 +9,6 @@ import type { Value } from "../types.js";
 import { valueDataType } from "../values/model.js";
 import { writable } from "../emission-transaction.js";
 import { isJsonValue } from "../json-bridge.js";
-import { callSignatures, unionMembers } from "../type-facts.js";
 import {
     unwrappedKnownValue,
     type DataSinkHost,
@@ -57,66 +56,39 @@ function unionValue(
             : undefined) ??
         valueDataType(value) ??
         (ts.isExpression(node) ? lowerer.dataTypeAt(node) : undefined);
-    let memberIndex = type.members.findIndex(
-        (member) =>
-            source &&
-            (dataTypesEqual(source, member) ||
-                lowerer.spanCompatible(source, member) ||
-                (source.kind === "enum" && member.kind === "string")),
-    );
+    // A callback keeps its declaration's checked signature even when a
+    // container stores it without an expression or contextual type of its
+    // own. Reads and writes select the same arm even when equivalent
+    // declarations carry different completion proofs.
+    let memberIndex: number;
+    if (
+        (value.kind === "callback" && value.callbackDeclaration) ||
+        value.dataType?.kind === "function"
+    ) {
+        memberIndex = functionArmIndex(type, () => {
+            const declaration = value.callbackDeclaration;
+            return declaration
+                ? lowerer.context.dataTypes.fromStoredTsType(
+                      lowerer.context.checker.getTypeAtLocation(declaration),
+                      declaration,
+                  )
+                : value.dataType;
+        });
+        if (memberIndex < 0) return undefined;
+    } else
+        memberIndex = type.members.findIndex(
+            (member) =>
+                source &&
+                (dataTypesEqual(source, member) ||
+                    lowerer.spanCompatible(source, member) ||
+                    (source.kind === "enum" && member.kind === "string")),
+        );
     // Record literals and arrays can have a contextual union type. Select the
     // arm through the normal sinks so field conversion and escape rules agree.
     if (memberIndex < 0)
         memberIndex = type.members.findIndex((member) =>
             lowerer.knownValueFitsSink(value, member, node),
         );
-    // A function is the union's one function arm, lowered into its storage;
-    // beside others, the arm of the signature its place in the program
-    // gives it (a record property's declared method).
-    if (
-        memberIndex < 0 &&
-        ((value.kind === "callback" && value.callbackDeclaration) ||
-            value.dataType?.kind === "function")
-    ) {
-        memberIndex = functionArmIndex(type, () => {
-            const checker = lowerer.context.checker;
-            const contextual =
-                expression && checker.getContextualType(expression);
-            if (!contextual) return undefined;
-            const declared = lowerer.context.dataTypes.fromStoredTsType(
-                contextual,
-                node,
-            );
-            if (declared?.kind === "function") return declared;
-            // A context of several function types: the one the function's
-            // own type is assignable to, with as many parameters when more
-            // than one is (`() => T` fits `(x) => T` too).
-            const own =
-                value.kind === "callback" &&
-                value.callbackDeclaration !== undefined
-                    ? checker.getTypeAtLocation(value.callbackDeclaration)
-                    : undefined;
-            const arity = own && callSignatures(checker, own, "exact")[0]
-                ?.parameters.length;
-            if (!own || arity === undefined) return undefined;
-            const fitting = unionMembers(contextual).filter(
-                (member) =>
-                    callSignatures(checker, member, "exact").length > 0 &&
-                    checker.isTypeAssignableTo(own, member),
-            );
-            const chosen =
-                fitting.length === 1
-                    ? fitting
-                    : fitting.filter(
-                          (member) =>
-                              callSignatures(checker, member, "exact")[0]
-                                  ?.parameters.length === arity,
-                      );
-            return chosen.length === 1
-                ? lowerer.context.dataTypes.fromStoredTsType(chosen[0]!, node)
-                : undefined;
-        });
-    }
     // A promise is the union's one promise arm, stored as that arm stores
     // one (`T | Promise<T>` returning what an async call returned).
     if (memberIndex < 0 && value.kind === "promise")

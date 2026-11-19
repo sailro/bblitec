@@ -5183,7 +5183,7 @@ check(
 );
 
 // A closure stored where a union holds several function types takes the
-// one its own signature fits, by its parameter count where more fit.
+// one with its own parameter and result types.
 check(
     "a-closure-in-a-union-of-function-types-takes-the-arm-its-signature-fits",
     `
@@ -5199,6 +5199,100 @@ check(
     const marked = batches[1]!.resume as (mark: number) => number;
     total += none() + marked(5);
     if (total !== 7 + 3 + 10) throw new Error("total " + total);
+`,
+);
+check(
+    "batch-method-unions-in-returned-records-and-optional-containers",
+    `
+    interface ScalarBatch {
+        add(x: number, y: number): number;
+        resumeFrom(n: number): void;
+    }
+    interface ListBatch {
+        add(variant: number, x: number, y: number): number;
+        resumeFrom(marks: readonly number[]): void;
+    }
+    const calls: number[] = [];
+    function scalar(): ScalarBatch {
+        return {
+            add(x, y) { return x + y; },
+            resumeFrom(n) { calls.push(n * 2); },
+        };
+    }
+    function list(): ListBatch {
+        return {
+            add(variant, x, y) { return variant * (x + y); },
+            resumeFrom(marks) { calls.push(marks.length * 3); },
+        };
+    }
+    type Add = number | ScalarBatch["add"] | ListBatch["add"];
+    type Resume = number | ScalarBatch["resumeFrom"] | ListBatch["resumeFrom"];
+    interface Schedule { add?: Add[]; resume?: Resume[]; direct?: Resume }
+    function adds() { return [scalar().add, list().add]; }
+    function resumes() { return [scalar().resumeFrom, list().resumeFrom]; }
+    // The returned arrays' elements have no contextual expression at the
+    // record sink; the closures must keep their checked declarations.
+    const schedules = new Map<string, Schedule>();
+    schedules.set("active", { add: adds(), resume: resumes(), direct: list().resumeFrom });
+    schedules.set("empty", {});
+    const schedule = schedules.get("active")!;
+    const indices = new Int32Array([0, 1]);
+    const scalarAdd = schedule.add![indices[0]!] as ScalarBatch["add"];
+    const listAdd = schedule.add![indices[1]!] as ListBatch["add"];
+    const scalarResume = schedule.resume![indices[0]!] as ScalarBatch["resumeFrom"];
+    const listResume = schedule.resume![indices[1]!] as ListBatch["resumeFrom"];
+    scalarResume(scalarAdd(2, 3));
+    listResume([listAdd(2, 3, 4), 7]);
+    const direct = schedule.direct as ListBatch["resumeFrom"];
+    direct([1]);
+    if (scalarAdd(2, 3) !== 5 || listAdd(2, 3, 4) !== 14 || calls.join(",") !== "10,6,3")
+        throw new Error("stored batch methods " + calls.join(","));
+    if (schedules.get("empty")!.resume !== undefined) throw new Error("absent methods");
+`,
+);
+
+check(
+    "shared-batch-record-layouts-keep-each-method-signature",
+    `
+    interface Group { values: number[] }
+    interface ScalarBatch extends Group {
+        add(x: number, y: number): void;
+        resumeFrom(n: number): void;
+    }
+    interface ListBatch extends Group {
+        add(variant: number, x: number, y: number): void;
+        resumeFrom(marks: readonly number[]): void;
+    }
+    function scalar(): ScalarBatch {
+        const values = [0];
+        return {
+            values,
+            add: (x: number, y: number): void => { values[0] += x + y; },
+            resumeFrom: (n: number): void => { values[0] = n; },
+        };
+    }
+    function list(): ListBatch {
+        const values = [0];
+        return {
+            values,
+            add: (variant: number, x: number, y: number): void => { values[0] += variant * (x + y); },
+            resumeFrom: (marks: readonly number[]): void => { values[0] = marks.length; },
+        };
+    }
+    function retain(batch: ScalarBatch | ListBatch): ScalarBatch | ListBatch { return batch; }
+    const retained = [retain(scalar()), retain(list())];
+    const plain = retained[0]! as ScalarBatch, marked = retained[1]! as ListBatch;
+    const indices = new Int32Array([0, 1]);
+    const extra = indices[1]! ? marked : undefined;
+    const shared: readonly Group[] = [plain, marked, ...(extra ? [extra] : [])];
+    if (shared[0] !== plain || shared[1] !== marked) throw new Error("shared identity");
+    const a = shared[indices[0]!]! as ScalarBatch;
+    const b = shared[indices[1]!]! as ListBatch;
+    a.resumeFrom(5); a.add(2, 3);
+    b.resumeFrom([1, 2, 3]); b.add(2, 3, 4);
+    let total = 0;
+    for (const group of shared) total += group.values[0]!;
+    if (total !== 44) throw new Error("shared batch calls " + total);
 `,
 );
 // A comma expression's value is its right side, stored as the sink stores
@@ -16999,16 +17093,16 @@ check(
 `,
 );
 
-test("a union with several function arms refuses a function value", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-            interface Slot { pick: number | (() => number) | ((value: number) => number) }
-            const slots: Slot[] = [{ pick: () => 1 }];
-            if (slots.length !== 1) throw new Error("x");`),
-        /does not match the expected data union/,
-    );
-});
+check(
+    "a-constant-callback-selects-its-declared-union-arm",
+    `
+    interface Slot { pick: number | (() => number) | ((value: number) => number) }
+    const slots: Slot[] = [{ pick: () => 1 }, { pick: (value: number) => value * 2 }];
+    const first = slots[0]!.pick as () => number;
+    const second = slots[1]!.pick as (value: number) => number;
+    if (first() !== 1 || second(3) !== 6) throw new Error("function arms");
+`,
+);
 
 check(
     "recursive-function-varying-literal-argument",

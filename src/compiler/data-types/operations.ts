@@ -71,9 +71,29 @@ export function soleMemberIndex(
         : first;
 }
 
+/** The completion facts a function type's declaration proves. */
+export const completionFacts = [
+    "undefinedCompletion",
+    "awaitedUndefinedCompletion",
+    "nonThenableCompletion",
+    "freshCompletion",
+] as const;
+
+/** A function type without its declaration site and completion facts. */
+export function withoutCompletionFacts(
+    type: DataType<"function">,
+): DataType<"function"> {
+    const { signatureSite: _site, ...signature } = type;
+    for (const fact of completionFacts) delete signature[fact];
+    return signature;
+}
+
 /**
- * The union's one function arm, or beside others the arm whose signature
- * equals `signature()` (asked only then); -1 when none does.
+ * The union's one function arm, or beside others the arm with the same
+ * parameter/result storage as `signature()` (asked only then). Declaration
+ * sites, identity observations and completion proofs do not select an arm;
+ * the function sink checks those contracts after selection. Distinct
+ * parameter/result storage never matches merely by arity or assignability.
  */
 export function functionArmIndex(
     type: DataType<"union">,
@@ -87,8 +107,8 @@ export function functionArmIndex(
               (member) =>
                   member.kind === "function" &&
                   dataTypesEqual(
-                      { ...member, identity: true },
-                      { ...own, identity: true },
+                      { ...withoutCompletionFacts(member), identity: true },
+                      { ...withoutCompletionFacts(own), identity: true },
                   ),
           )
         : -1;

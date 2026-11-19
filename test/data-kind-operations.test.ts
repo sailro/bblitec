@@ -5,6 +5,7 @@ import {
     containsDataKind,
     dataTypeKey,
     dataTypesEqual,
+    functionArmIndex,
 } from "../src/compiler/data-types/operations.js";
 
 test("stored-type traversal distinguishes callback signatures from contained resources", () => {
@@ -47,6 +48,89 @@ test("stored-type traversal distinguishes callback signatures from contained res
     assert.equal(
         containsDataKind(root, "json", fields, true, new Set()),
         false,
+    );
+});
+
+test("function union arms use parameter and result storage, not declaration proofs", () => {
+    const scalar: DataType<"function"> = {
+        kind: "function",
+        signatureSite: "scalar-interface",
+        parameters: [{ kind: "number" }],
+    };
+    const list: DataType<"function"> = {
+        ...scalar,
+        signatureSite: "list-interface",
+        parameters: [{ kind: "vector", element: { kind: "number" } }],
+    };
+    const union: DataType<"union"> = { kind: "union", members: [scalar, list] };
+    assert.equal(
+        functionArmIndex(union, () => ({
+            ...list,
+            signatureSite: "list-body",
+            identity: true,
+            undefinedCompletion: true,
+            awaitedUndefinedCompletion: true,
+            nonThenableCompletion: true,
+        })),
+        1,
+    );
+    assert.equal(
+        functionArmIndex(union, () => ({
+            ...scalar,
+            parameters: [{ kind: "boolean" }],
+        })),
+        -1,
+    );
+    assert.equal(
+        functionArmIndex(union, () => ({
+            ...scalar,
+            result: { kind: "number" },
+        })),
+        -1,
+    );
+    assert.equal(
+        functionArmIndex(union, () => ({
+            ...scalar,
+            optionalParameters: [0],
+        })),
+        -1,
+    );
+    assert.equal(
+        functionArmIndex(union, () => ({
+            ...list,
+            restParameter: 0,
+        })),
+        -1,
+    );
+    const numeric: DataType<"function"> = {
+        ...scalar,
+        result: { kind: "number" },
+    };
+    const text: DataType<"function"> = {
+        ...scalar,
+        result: { kind: "string" },
+    };
+    assert.equal(
+        functionArmIndex(
+            { kind: "union", members: [numeric, text] },
+            () => text,
+        ),
+        1,
+    );
+    // Equivalent declarations share storage; differing parameter/result
+    // storage above cannot be selected just because the arity agrees.
+    assert.equal(
+        functionArmIndex(
+            {
+                kind: "union",
+                members: [
+                    scalar,
+                    { ...scalar, signatureSite: "another-interface" },
+                ],
+            },
+            () => scalar,
+        ),
+        0,
     );
 });
 

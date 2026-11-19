@@ -30,6 +30,8 @@ import {
     isTypedArrayType,
 } from "./data-types/typed-arrays.js";
 import {
+    completionFacts,
+    withoutCompletionFacts,
     dataTypeChildren,
     dataTypeCppType,
     dataTypeKey,
@@ -1290,23 +1292,6 @@ function holdsRecordStorage(type: DataType): boolean {
         ((type.kind === "vector" || type.kind === "span") &&
             holdsRecordStorage(fieldStorage(type.element)))
     );
-}
-
-/** The completion facts a function type's declaration proves. */
-const completionFacts = [
-    "undefinedCompletion",
-    "awaitedUndefinedCompletion",
-    "nonThenableCompletion",
-    "freshCompletion",
-] as const;
-
-/** A function type without its declaration site and completion facts. */
-function withoutCompletionFacts(
-    type: DataType<"function">,
-): DataType<"function"> {
-    const { signatureSite: _site, ...signature } = type;
-    for (const fact of completionFacts) delete signature[fact];
-    return signature;
 }
 
 /** One fact two shapes give: shapes that disagree leave `conflict`. */
