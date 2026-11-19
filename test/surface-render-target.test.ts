@@ -110,14 +110,14 @@ test("surface render targets retain sampled depth and validate descriptor owners
             `${setup} createRenderTargetTexture(engine, {format: engine.format, samples: 1, size: {width: 2 ** 32 - 1, height: 4}}); } void main();`,
         ),
     );
-    // A surface stand-in is re-read at every build, which no native size is.
+    // Constant getters do not depend on the engine canvas's backing extent.
     assert.throws(
         () =>
             compileSource(
                 `${setup} const half = { get width(): number { return 32; }, get height(): number { return 32; } };
                 createRenderTargetTexture(engine, {format: engine.format, samples: 1, size: {canvas: half}} as Parameters<typeof createRenderTargetTexture>[1]); } void main();`,
             ),
-        /sized by a surface stand-in \(`size: \{ canvas \}`\) reads canvas\.width and canvas\.height again at every build/,
+        /surface stand-in requires pure width\/height getters/,
     );
 });
 

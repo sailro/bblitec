@@ -537,6 +537,9 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
   including after transmission. A base on an auxiliary surface, TAA and `moveRenderingContext` refuse.
 - Render targets accept explicit pinned-default `depthCompare` and `depthClearValue`; other values refuse.
   Explicit `depthCompare` overrides ShaderMaterial depth state. `scene.surface` reads require a known primary-surface scene.
+- `size: { canvas: standIn }` accepts pure width/height getters over the engine canvas's corresponding backing extent
+  and numeric literals (`+`, `-`, `*`, `/`, `||`, `&&`, `Math.max/min/floor/ceil/trunc/abs`). Each build resolves the current
+  extents, including resize rebuilds; other stand-ins refuse. Resolved dimensions must be positive uint32 integers.
 - `buildFrameGraphTask(getFrameGraph(scene), task)` records a render or effect render task added to a live scene, which
   refuses to execute until then, an SSAO task (settings and working resolution) or a copy task (its source resolves at
   every execute). `removeTask` unlists every registration of a task, which keeps its passes and resources. The private

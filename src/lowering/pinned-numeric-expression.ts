@@ -33,6 +33,16 @@ export function cppPrimary(text: string): RenderedCpp {
     return { text, precedence: cppPrecedence.primary };
 }
 
+/** Numeric `||`/`&&`: evaluate the left once and select the right lazily, preserving NaN truthiness. */
+export function numericLogicalValueCpp(
+    left: string,
+    right: string,
+    or: boolean,
+    temporary: string,
+): string {
+    return `([&]() { auto&& ${temporary} = ${left}; return bbl::js::number_truthy(static_cast<double>(${temporary})) ? static_cast<double>(${or ? temporary : right}) : static_cast<double>(${or ? right : temporary}); }())`;
+}
+
 const precedence = new Map<ts.SyntaxKind, number>([
     [ts.SyntaxKind.BarBarToken, cppPrecedence.logicalOr],
     [ts.SyntaxKind.AmpersandAmpersandToken, cppPrecedence.logicalAnd],

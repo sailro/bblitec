@@ -2626,6 +2626,8 @@ export interface ValueFields {
     uiLookupId?: string;
     /** This engine/surface/scene presents into a retained host canvas. */
     surfaceCanvas?: true;
+    /** The engine created on this retained canvas; aliases preserve its ownership proof. */
+    canvasEngineIdentity?: symbol;
     /** The scene was created on its engine's primary surface. */
     scenePrimarySurface?: true;
     environmentAsset?: CompileAsset;

@@ -1965,6 +1965,9 @@ struct RenderTargetRecord {
     ScaleRounding scale_rounding = ScaleRounding::floor;
     /** Canvas-sized default graph targets inherit their scene's surface. */
     std::optional<UiElementHandle> surface_canvas{};
+    /**
+     * Generated surface-scale or pure stand-in getters, evaluated against this build's source extent.
+     */
     SurfaceRenderTargetSizeResolver resolve_surface_size = nullptr;
     std::shared_ptr<RenderTargetLifecycle> lifecycle{};
     DepthTextureFormat depth_format = DepthTextureFormat::depth24_plus_stencil8;

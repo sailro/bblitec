@@ -5121,8 +5121,10 @@ class Compiler implements LoweringServices {
     ): Value {
         this.expectArgumentCount(call, 1, 2);
         let canvasArgument = "";
+        let engineCanvas: Value | undefined;
         if (this.options.workers) {
             const canvas = this.compileValue(argumentAt(call, 0));
+            engineCanvas = canvas;
             if (
                 canvas.kind !== "offscreen-canvas" &&
                 canvas.kind !== "ui-element"
@@ -5293,6 +5295,7 @@ class Compiler implements LoweringServices {
             [...this.ui.nativeHostUiTags().values()].includes("canvas")
         ) {
             const canvas = this.compileValue(argumentAt(call, 0));
+            engineCanvas = canvas;
             if (canvas.kind === "ui-element") {
                 if (canvas.uiTag !== "canvas")
                     this.fail(
@@ -5330,12 +5333,15 @@ class Compiler implements LoweringServices {
         if (floatingOrigin) {
             this.reachFeature("renderer:floating-origin", call);
         }
+        const engineIdentity = Symbol();
+        if (engineCanvas)
+            writable(engineCanvas).canvasEngineIdentity = engineIdentity;
         return {
             kind: "engine",
             cpp: engineCpp,
             engineCpp,
             // The default-engine spelling and every alias are one engine.
-            engineIdentity: Symbol(),
+            engineIdentity,
             ...(this.options.workers ? { ownedEngineCpp: cppName } : {}),
             msaaSamples,
             ...(surfaceCanvas ? { surfaceCanvas: true as const } : {}),
