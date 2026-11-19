@@ -192,6 +192,15 @@ void update_shadow_generators(GpuState& state, const Scene& scene, Engine& engin
             }
         });
 }
+
+SDL_GPUTextureSamplerBinding csm_receiver_binding(const GpuState& state,
+                                                  ShadowGeneratorHandle generator) {
+    if (generator.value >= state.shadow_generators.size())
+        pal::refuse_invalid_frame_handle("A CSM receiver texture has an invalid generator.");
+    if (!handle_at(state.shadow_generators, generator).map || !state.shadow_comparison_sampler)
+        gpu_error("A CSM receiver texture is not ready.");
+    return {handle_at(state.shadow_generators, generator).map, state.shadow_comparison_sampler};
+}
 #endif
 
 } // namespace sdl_scene

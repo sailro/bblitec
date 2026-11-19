@@ -1465,6 +1465,9 @@ inline void write_effect_state(JsonWriter& json, const Engine& engine) {
                 json.field("kind", "render-target");
                 json.field("depth", slot.render_texture->depth_only);
                 json.handle("target", slot.render_texture->target.value);
+            } else if (slot.csm_texture) {
+                json.field("kind", "csm-receiver");
+                json.handle("generator", slot.csm_texture->value);
             } else {
                 json.field("color", slot.texture.color);
                 // The rounded byte IS the texture (`create_solid_texture`),

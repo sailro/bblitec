@@ -2903,6 +2903,10 @@ void run_esm_blur(DawnState& state, WGPUCommandEncoder encoder, WGPUTextureView 
 WGPUTextureView shadow_map_view(DawnState& state, const Engine& engine,
                                 ShadowGeneratorHandle handle);
 
+/** A CSM receiver texture's view and comparison sampler, which shader materials and effects bind. */
+DawnCsmReceiverBinding csm_receiver_binding(DawnState& state, const Engine& engine,
+                                            ShadowGeneratorHandle generator);
+
 /**
  * The generators in `scene.lights` order, as a list a row's own light index
  * can be looked up in.

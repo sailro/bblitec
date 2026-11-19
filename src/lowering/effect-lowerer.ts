@@ -364,6 +364,7 @@ export class EffectLowerer {
             header: "",
             source: `// ${this.provenance()}
 #include <bblite/runtime.hpp>
+#include <bblite/features/shadows_csm.hpp>
 #include <bblite/upstream/effect_variants.hpp>
 
 #include <stdexcept>
@@ -393,7 +394,7 @@ EffectWrapperHandle create_effect_wrapper(
         slot.name = std::string(binding.name);
         slot.binding = binding.binding;
         slot.depth_texture = binding.depth_texture;
-        slot.volume_texture = binding.volume_texture;
+        slot.view_dimension = binding.view_dimension;
         wrapper.textures.push_back(std::move(slot));
     }
     engine.effect_wrappers.push_back(std::move(wrapper));
@@ -434,9 +435,10 @@ void set_effect_uniforms(
 
 ${this.lowerTextureSlotLookup()}
 // The layout's view dimension: \`"3d"\` exactly for a Texture3D, whose view is
-// \`dimension: "3d"\`.
-static void require_effect_view_dimension(const EffectTextureSlot& slot, bool volume) {
-    if (slot.volume_texture != volume)
+// \`dimension: "3d"\`, and \`"2d-array"\` exactly for a CSM receiver texture.
+static void require_effect_view_dimension(const EffectTextureSlot& slot,
+                                          EffectViewDimension dimension) {
+    if (slot.view_dimension != dimension)
         throw std::runtime_error("Effect texture view dimension does not match its binding layout.");
 }
 
@@ -450,10 +452,11 @@ void set_effect_texture(
         find_effect_texture_slot(${recordAt("engine.effect_wrappers", "effect")}, key);
     if (slot.depth_texture)
         throw std::runtime_error("Effect depth bindings require a depth texture.");
-    require_effect_view_dimension(slot, false);
+    require_effect_view_dimension(slot, EffectViewDimension::texture_2d);
     slot.texture = texture;
     slot.pixels_texture.reset();
     slot.render_texture.reset();
+    slot.csm_texture.reset();
     slot.set = true;
 }
 
@@ -466,9 +469,11 @@ void set_effect_texture(
         find_effect_texture_slot(${recordAt("engine.effect_wrappers", "effect")}, key);
     if (slot.depth_texture)
         throw std::runtime_error("Effect depth bindings require a depth texture.");
-    require_effect_view_dimension(slot, texture.depth.has_value());
+    require_effect_view_dimension(slot, texture.depth ? EffectViewDimension::texture_3d
+                                                      : EffectViewDimension::texture_2d);
     slot.pixels_texture = std::move(texture);
     slot.render_texture.reset();
+    slot.csm_texture.reset();
     slot.set = true;
 }
 
@@ -499,11 +504,33 @@ void set_effect_texture(
         throw std::runtime_error("setEffectTexture requires a render-target texture.");
     if (texture.depth_only != slot.depth_texture)
         throw std::runtime_error("Effect texture sample type does not match its binding layout.");
-    require_effect_view_dimension(slot, false);
+    require_effect_view_dimension(slot, EffectViewDimension::texture_2d);
     slot.render_texture = texture;
     slot.pixels_texture.reset();
+    slot.csm_texture.reset();
     slot.set = true;
 }
+
+#if BBLITE_SHADOWS_CSM
+// A CSM receiver texture: the generator's depth array (\`dimension: "2d-array"\`)
+// with its comparison sampler, which the pass binds when the scene records it.
+void set_effect_csm_texture(
+    Engine& engine,
+    EffectWrapperHandle effect,
+    const EffectBindingKey& key,
+    ShadowGeneratorHandle generator) {
+    EffectTextureSlot& slot =
+        find_effect_texture_slot(${recordAt("engine.effect_wrappers", "effect")}, key);
+    require_csm_receiver_generator(engine, generator);
+    if (!slot.depth_texture)
+        throw std::runtime_error("Effect texture sample type does not match its binding layout.");
+    require_effect_view_dimension(slot, EffectViewDimension::texture_2d_array);
+    slot.csm_texture = generator;
+    slot.pixels_texture.reset();
+    slot.render_texture.reset();
+    slot.set = true;
+}
+#endif
 
 EffectRendererHandle create_effect_renderer(
     Engine& engine,

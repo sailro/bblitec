@@ -13,6 +13,13 @@ import type { EffectManifest } from "./compiler/types.js";
 import { effectStageStems } from "./lowering/effect-lowerer.js";
 import { nativeBlendFactor } from "./lowering/pinned-blend-table.js";
 
+/** The native view dimension of each `viewDimension` an effect texture declares. */
+const effectViewDimensions = {
+    "2d": "texture_2d",
+    "2d-array": "texture_2d_array",
+    "3d": "texture_3d",
+} as const;
+
 export function pinnedEffectVariantsHeader(
     provenance: string,
     effects: readonly EffectManifest[],
@@ -33,7 +40,8 @@ export function pinnedEffectVariantsHeader(
                     `${binding.uniformBytes}u, ` +
                     `${Math.max(0, binding.texture)}u, ` +
                     `${binding.textureSampleType === "depth"}, ` +
-                    `${binding.viewDimension === "3d"}},`,
+                    `EffectViewDimension::${effectViewDimensions[binding.viewDimension ?? "2d"]}, ` +
+                    `${binding.comparison === true}},`,
             );
         }
         const blend = effect.blend
@@ -88,8 +96,10 @@ struct EffectVariantBinding {
     std::uint32_t texture;
     /** A declared depth texture; otherwise the pin's float sample layout. */
     bool depth_texture;
-    /** A declared \`viewDimension: "3d"\` texture; otherwise the pin's 2d view. */
-    bool volume_texture;
+    /** A texture's declared \`viewDimension\`; the pin's 2d view otherwise. */
+    EffectViewDimension view_dimension;
+    /** A declared \`samplerType: "comparison"\` sampler; otherwise the pin's filtering one. */
+    bool comparison_sampler;
 };
 
 ${cpp.table("EffectVariantBinding", "effect_variant_bindings", bindingRows.length, `${bindingRows.join("\n") || "    // No reached effect declares one."}`)}

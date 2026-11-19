@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
+import { EffectLowerer } from "../src/lowering/effect-lowerer.js";
 import { lowerPixelsTexture3DFactory } from "../src/lowering/pixels-texture-volume.js";
+import { pinnedEffectVariantsHeader } from "../src/pinned-effect-cpp.js";
 import {
     cppFunction,
+    cppRecord,
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
@@ -214,12 +218,12 @@ test("effect texture view dimensions and 3D texture options refuse what is not l
     refused(
         '{ binding: 4, kind: "texture", viewDimension: "3d" }',
         '{ binding: 4, kind: "texture", viewDimension: "cube" }',
-        /Effect textures take a 2d or a 3d view\./,
+        /Effect textures take a 2d, a 2d-array or a 3d view\./,
     );
     refused(
         '{ binding: 4, kind: "texture", viewDimension: "3d" }',
         '{ binding: 4, kind: "texture", textureSampleType: "depth", viewDimension: "3d" }',
-        /A depth effect texture takes a 2d view\./,
+        /A depth effect texture takes a 2d or a 2d-array view\./,
     );
     refused(
         '{ filter: "nearest" }',
@@ -306,5 +310,150 @@ int main() {
 }
 `,
         { expectedOutput: "", timeoutMs: 10000 },
+    );
+});
+
+const csmFixture = "test/fixtures/effect-csm-receiver.ts";
+const compileCsmFixture = (from = "", to = "") => {
+    const fixture = readFileSync(csmFixture, "utf8");
+    assert.ok(fixture.includes(from), from);
+    return compileSource(fixture.replace(from, to), { fileName: csmFixture });
+};
+
+test("a comparison sampler samples a CSM receiver texture through a 2d-array depth binding", () => {
+    const compiled = compileCsmFixture();
+    // The pin's layout entries: `comparison` for the sampler, a depth
+    // texture over a 2d-array view, and the sampler paired with it.
+    assert.deepEqual(
+        compiled.manifest.effects[0]?.bindings.map((binding) => [
+            binding.binding,
+            binding.kind,
+            binding.texture,
+            binding.comparison ?? false,
+            binding.textureSampleType ?? "float",
+            binding.viewDimension ?? "2d",
+        ]),
+        [
+            [0, "sampler", 0, true, "float", "2d"],
+            [1, "texture", -1, false, "depth", "2d-array"],
+            [2, "uniform", -1, false, "float", "2d"],
+        ],
+    );
+    // The receiver texture's native value is its generator.
+    assert.match(
+        compiled.cpp,
+        /bbl::set_effect_csm_texture\(v_engine, v_effect, bbl::EffectBindingKey\{static_cast<double>\(1\.0\)\}, bbl::get_csm_receiver_texture\(v_engine, v_generator\)\)/,
+    );
+});
+
+test("effect comparison samplers and 2d-array textures refuse what a CSM receiver texture does not fill", () => {
+    const sampler = '{ binding: 0, kind: "sampler", samplerType: "comparison", textureBinding: 1 }';
+    const texture = '{ binding: 1, kind: "texture", textureSampleType: "depth", viewDimension: "2d-array" }';
+    const refusals: readonly (readonly [string, string, RegExp])[] = [
+        [
+            texture,
+            '{ binding: 1, kind: "texture", textureSampleType: "depth", viewDimension: "2d" }',
+            /A comparison effect sampler samples a 2d-array depth texture, the CSM receiver texture whose sampler compares\./,
+        ],
+        [
+            texture,
+            '{ binding: 1, kind: "texture", viewDimension: "2d-array" }',
+            /A 2d-array effect texture is a depth texture: only getCsmReceiverTexture fills one\./,
+        ],
+        [
+            sampler,
+            '{ binding: 0, kind: "sampler", textureBinding: 1 }',
+            /a filtering sampler over it is not lowered\./,
+        ],
+        [
+            sampler,
+            '{ binding: 0, kind: "sampler", samplerType: "non-filtering", textureBinding: 1 }',
+            /Effect samplers take the filtering or the comparison binding type\./,
+        ],
+    ];
+    for (const [from, to, message] of refusals)
+        assert.throws(() => compileCsmFixture(from, to), message);
+});
+
+test("a CSM receiver texture fills only a 2d-array depth slot and binds per draw", (t) => {
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native compiler unavailable");
+        return;
+    }
+    // A third binding, a 2d depth texture, for the slot the receiver texture refuses.
+    const effects = compileCsmFixture(
+        '{ binding: 2, kind: "uniform", uniformByteLength: 16 }',
+        '{ binding: 2, kind: "texture", textureSampleType: "depth" }',
+    ).manifest.effects;
+    const variants = pinnedEffectVariantsHeader("fixture", effects);
+    const directory = resolve("artifacts/effect-csm-receiver");
+    mkdirSync(join(directory, "include/bblite/upstream"), { recursive: true });
+    writeFileSync(
+        join(directory, "include/bblite/upstream/effect_variants.hpp"),
+        variants.header,
+    );
+    const pixels = readFileSync("native/src/pal_effect_pixels.hpp", "utf8");
+    const shared = readFileSync("native/src/pal_gpu_shared.cpp", "utf8");
+    runGeneratedProgram(
+        tools,
+        "effect-csm-receiver",
+        `#include <bblite/upstream/effect_variants.hpp>
+${variants.definitions}
+${new EffectLowerer(new LoweringContext()).lowerFactory().source}
+#include "pal_texture_upload_cache.hpp"
+#include <iostream>
+using namespace bbl;
+namespace bbl::pal {
+${cppFunction(shared, "const EffectTextureSlot& effect_texture_slot(const EffectWrapperRecord& wrapper,")}
+${cppFunction(pixels, "inline TextureSamplerState effect_slot_sampler(")}
+${cppRecord(pixels, "template <typename Image> class EffectTextureImages {")}
+} // namespace bbl::pal
+template <class F> std::string refusal(F function) {
+    try { function(); } catch (const std::runtime_error& error) { return error.what(); }
+    return "none";
+}
+ShadowGeneratorHandle generator(Engine& engine, ShadowFilter filter) {
+    ShadowGeneratorRecord record;
+    record.filter = filter;
+    engine.shadow_generators.push_back(record);
+    return ShadowGeneratorHandle{static_cast<std::uint32_t>(engine.shadow_generators.size() - 1)};
+}
+struct Image {};
+int main() {
+    // The variant rows: a comparison sampler, a 2d-array depth texture, a 2d one.
+    const auto& rows = upstream::effect_variant_bindings;
+    std::cout << rows[0].comparison_sampler << rows[1].comparison_sampler
+              << (rows[1].view_dimension == EffectViewDimension::texture_2d_array)
+              << (rows[2].view_dimension == EffectViewDimension::texture_2d) << rows[2].depth_texture;
+    Engine engine;
+    const ShadowGeneratorHandle csm = generator(engine, ShadowFilter::csm_directional);
+    const ShadowGeneratorHandle pcf = generator(engine, ShadowFilter::pcf_directional);
+    const EffectWrapperHandle effect = create_effect_wrapper(engine, 0);
+    std::cout << " | " << refusal([&] { set_effect_csm_texture(engine, effect, EffectBindingKey{1.0}, pcf); })
+              << " | " << refusal([&] { set_effect_csm_texture(engine, effect, EffectBindingKey{2.0}, csm); })
+              << " | " << refusal([&] { set_effect_texture(engine, effect, EffectBindingKey{1.0}, SolidTexture{}); });
+    set_effect_csm_texture(engine, effect, EffectBindingKey{1.0}, csm);
+    const EffectTextureSlot& slot = engine.effect_wrappers[effect.value].textures.at(0);
+    // Its depth array and comparison sampler are the scene's: nothing to upload.
+    pal::EffectTextureImages<Image> images;
+    const auto image = images.add(engine, slot, 0, [](const EffectTextureSlot&) { return Image{}; });
+    std::cout << " | " << slot.set << (slot.csm_texture && slot.csm_texture->value == csm.value)
+              << effect_slot_binds_per_draw(slot) << (image == nullptr);
+}
+`,
+        {
+            flags: [
+                "/DBBLITE_SHADOWS_CSM=1",
+                "/I",
+                "native/src",
+                `/I${join(directory, "include")}`,
+            ],
+            timeoutMs: 20000,
+            expectedOutput:
+                "10111 | Invalid CSM receiver texture. | " +
+                "Effect texture view dimension does not match its binding layout. | " +
+                "Effect depth bindings require a depth texture. | 1111",
+        },
     );
 });

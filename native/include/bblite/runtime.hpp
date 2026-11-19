@@ -3363,20 +3363,39 @@ struct SplatMeshRecord {
 
 #include <bblite/runtime/sprite-records.hpp>
 
+/**
+ * An effect texture layout's `viewDimension`: a `Texture3D` fills a 3d view
+ * and a CSM receiver texture, a depth array, a 2d-array one.
+ */
+enum class EffectViewDimension {
+    texture_2d,
+    texture_2d_array,
+    texture_3d,
+};
+
 struct EffectTextureSlot {
     std::string name;
     /** The descriptor's binding number, which `setEffectTexture` also matches. */
     std::uint32_t binding = 0;
     bool depth_texture = false;
-    /** A declared `viewDimension: "3d"` binding, which only a `Texture3D` fills. */
-    bool volume_texture = false;
+    EffectViewDimension view_dimension = EffectViewDimension::texture_2d;
     SolidTexture texture{};
     /** Shared CPU texels retain their identity and live upload versions. */
     std::optional<PixelsTexture> pixels_texture;
     /** A render target's texture, resolved where a frame graph records the pass. */
     std::optional<RenderTextureRef> render_texture;
+    /**
+     * A CSM receiver texture (`getCsmReceiverTexture`): the generator's depth
+     * array and comparison sampler, resolved where a scene records the pass.
+     */
+    std::optional<ShadowGeneratorHandle> csm_texture;
     bool set = false;
 };
+
+/** A slot whose texture and sampler a pass resolves when it records, not when it uploads. */
+inline bool effect_slot_binds_per_draw(const EffectTextureSlot& slot) {
+    return slot.render_texture || slot.csm_texture;
+}
 
 /**
  * One `EffectWrapper`: which composed module it draws and what fills the
@@ -8618,6 +8637,12 @@ void set_shader_render_texture(Engine& engine, MaterialHandle material, std::uin
                                RenderTextureRef texture);
 void set_shader_csm_texture(Engine& engine, MaterialHandle material, std::uint32_t slot,
                             ShadowGeneratorHandle generator);
+/** A CSM receiver texture's generator (`getCsmReceiverTexture`): a cascaded one. */
+inline void require_csm_receiver_generator(const Engine& engine, ShadowGeneratorHandle generator) {
+    if (generator.value >= engine.shadow_generators.size() ||
+        handle_at(engine.shadow_generators, generator).filter != ShadowFilter::csm_directional)
+        throw std::runtime_error("Invalid CSM receiver texture.");
+}
 void set_shadow_caster_material(Engine& engine, MaterialHandle material, MaterialHandle caster);
 void set_shader_pixels_texture(Engine& engine, MaterialHandle material, std::uint32_t slot,
                                const PixelsTexture& texture);
@@ -9573,6 +9598,9 @@ void set_effect_texture(Engine& engine, EffectWrapperHandle effect, const Effect
                         const StoredTexture& texture);
 void set_effect_texture(Engine& engine, EffectWrapperHandle effect, const EffectBindingKey& key,
                         RenderTextureRef texture);
+/** `setEffectTexture` with a CSM receiver texture, whose native value is its generator. */
+void set_effect_csm_texture(Engine& engine, EffectWrapperHandle effect, const EffectBindingKey& key,
+                            ShadowGeneratorHandle generator);
 void dispose_effect_wrapper(Engine& engine, EffectWrapperHandle effect);
 /** The pin's bind-group build for the wrapper's declared bindings; refuses a released slot. */
 void require_effect_bind_group(const Engine& engine, EffectWrapperHandle effect);

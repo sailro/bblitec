@@ -457,7 +457,7 @@ public:
                                                    target_samples(state, record));
                 }
                 upload_dawn_effect_pass(state, engine, pass, task.effect.effect);
-                bind_dawn_effect_render_textures(
+                bind_dawn_effect_per_draw_textures(
                     state.device, engine, pass, task.effect.effect,
                     [&](const RenderTextureRef& source) -> WGPUTextureView {
                         if (source.depth_only)

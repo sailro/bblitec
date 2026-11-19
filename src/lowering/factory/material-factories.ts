@@ -1104,11 +1104,7 @@ void set_shader_csm_texture(
     std::uint32_t slot,
     ShadowGeneratorHandle generator) {
     MaterialRecord& record = shader_material(engine, material);
-    if (generator.value >= engine.shadow_generators.size() ||
-        ${recordAt("engine.shadow_generators", "generator")}.filter !=
-            ShadowFilter::csm_directional) {
-        throw std::runtime_error("Invalid CSM receiver texture.");
-    }
+    require_csm_receiver_generator(engine, generator);
     const auto [slots, at] = shader_slot_owner(engine, record, ShaderDeclarationList::samplers, slot);
     if (slots.shader_textures.size() <= at) {
         slots.shader_textures.resize(at + 1);

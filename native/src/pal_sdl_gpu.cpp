@@ -24,6 +24,7 @@
 #include <bblite/features/compute_frame_graph.hpp>
 #include <bblite/features/frame_post_submit.hpp>
 #include <bblite/features/screenshot_capture.hpp>
+#include <bblite/features/shadows_csm.hpp>
 #include <bblite/features/device_recovery.hpp>
 #include <bblite/features/has_billboards.hpp>
 #include <bblite/features/has_clustered_lights.hpp>
@@ -3695,9 +3696,15 @@ public:
                                 sdl_timed_pass(command, timing_sequence.pass());
                             SdlRenderPass effect_pass{
                                 SDL_BeginGPURenderPass(command, &effect_target, 1, nullptr)};
+                            EffectCsmTextureSource csm_texture;
+#if BBLITE_SHADOWS_CSM && BBLITE_SHADOW_RECEIVERS
+                            csm_texture = [&](ShadowGeneratorHandle generator) {
+                                return csm_receiver_binding(state, generator);
+                            };
+#endif
                             record_effect_task_pass(command, effect_pass, engine, pass, task,
                                                     effect_output.width, effect_output.height,
-                                                    source_texture);
+                                                    source_texture, csm_texture);
                             effect_pass.end();
                             if (target_record.swapchain) {
                                 capture_texture = effect_target.texture;

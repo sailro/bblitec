@@ -288,14 +288,7 @@ void bind_shader_material_textures(GpuState& state, SDL_GPURenderPass* pass,
         if (owner.slot < owner.material.shader_csm_textures.size() &&
             owner.material.shader_csm_textures[owner.slot].value != invalid_handle) {
 #if BBLITE_SHADOW_RECEIVERS
-            const ShadowGeneratorHandle generator = owner.material.shader_csm_textures[owner.slot];
-            if (generator.value >= state.shadow_generators.size())
-                pal::refuse_invalid_frame_handle("Shader CSM receiver has an invalid generator.");
-            if (!handle_at(state.shadow_generators, generator).map ||
-                !state.shadow_comparison_sampler)
-                gpu_error("Shader CSM receiver texture is not ready.");
-            return {handle_at(state.shadow_generators, generator).map,
-                    state.shadow_comparison_sampler};
+            return csm_receiver_binding(state, owner.material.shader_csm_textures[owner.slot]);
 #else
             gpu_error("Shader CSM texture in a build with no shadow receiver.");
 #endif

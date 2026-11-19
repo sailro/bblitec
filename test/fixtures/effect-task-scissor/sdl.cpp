@@ -22,10 +22,12 @@ struct EffectPass {
     SDL_GPUGraphicsPipeline* pipeline = nullptr;
 };
 using EffectRenderTextureSource = std::function<SDL_GPUTexture*(const RenderTextureRef&)>;
+using EffectCsmTextureSource = std::function<SDL_GPUTextureSamplerBinding(ShadowGeneratorHandle)>;
 /** The backend's `_record` half: the fixture's fullscreen triangle. */
 inline void record_effect_pass(SDL_GPUCommandBuffer*, SDL_GPURenderPass* render_pass, const Engine&,
                                const EffectPass& pass, EffectWrapperHandle,
-                               const EffectRenderTextureSource& = {}) {
+                               const EffectRenderTextureSource& = {},
+                               const EffectCsmTextureSource& = {}) {
     SDL_BindGPUGraphicsPipeline(render_pass, pass.pipeline);
     SDL_DrawGPUPrimitives(render_pass, 3, 1, 0, 0);
 }

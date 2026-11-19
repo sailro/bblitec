@@ -24,6 +24,7 @@
 #include <bblite/features/compute_frame_graph.hpp>
 #include <bblite/features/frame_post_submit.hpp>
 #include <bblite/features/screenshot_capture.hpp>
+#include <bblite/features/shadows_csm.hpp>
 #include <bblite/features/device_recovery.hpp>
 #include <bblite/features/has_billboards.hpp>
 #include <bblite/features/has_clustered_lights.hpp>
@@ -3992,11 +3993,18 @@ public:
                                     target_sample_count(state, target_record));
                             }
                             upload_dawn_effect_pass(state, engine, pass, task.effect.effect);
-                            bind_dawn_effect_render_textures(
+                            DawnEffectCsmTextureSource csm_texture;
+#if BBLITE_SHADOWS_CSM && BBLITE_SHADOW_RECEIVERS
+                            csm_texture = [&](ShadowGeneratorHandle generator) {
+                                return csm_receiver_binding(state, engine, generator);
+                            };
+#endif
+                            bind_dawn_effect_per_draw_textures(
                                 state.device, engine, pass, task.effect.effect,
                                 [&](const RenderTextureRef& reference) {
                                     return source_texture_view(reference).second;
-                                });
+                                },
+                                csm_texture);
                             WGPURenderPassColorAttachment attachment =
                                 WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
                             attachment.view =

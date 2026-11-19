@@ -495,8 +495,10 @@ export interface EffectBindingManifest {
     kind: "uniform" | "texture" | "sampler";
     /** Explicit texture layout sample type; the pin defaults to float. */
     textureSampleType?: "float" | "depth";
-    /** A texture layout's `viewDimension: "3d"`; absent is the pin's 2d default. */
-    viewDimension?: "3d";
+    /** A texture layout's `viewDimension` other than the pin's 2d default. */
+    viewDimension?: "2d-array" | "3d";
+    /** A sampler layout's `samplerType: "comparison"`; absent is the pin's filtering default. */
+    comparison?: true;
     /** `uniformByteLength` after the pin's align4; 0 for the other kinds. */
     uniformBytes: number;
     /**

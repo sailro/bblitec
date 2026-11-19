@@ -593,7 +593,9 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
   vertices refuse. A fragment held in an unwritten `const` helper result may select finite variants from boolean
   or string-literal-union inputs when those inputs re-read unchanged at the wrapper; unbounded text refuses.
   Effect textures come from solid/pixel factories or render targets, with 2D float or depth layouts;
-  scene frame graphs sample depth through `textureLoad`. Effect samplers use the `filtering` binding type.
+  scene frame graphs sample depth through `textureLoad`. Effect samplers use the `filtering` binding type, or
+  `comparison` over a `viewDimension: "2d-array"` depth layout, which takes only `getCsmReceiverTexture` and samples
+  its comparison sampler in a scene frame graph's effect task.
   `viewDimension: "3d"` float layouts take `createTexture3DFromPixels` textures, which bind nowhere else.
 - `createSsaoTask` (XeGTAO): every quality, view normals from a geometry task or reconstructed from depth, temporal
   reconstruction with a geometry `velocityTexture` (and `velocityHasPreviousDepth`), `resetSsaoTemporal`,

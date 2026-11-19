@@ -15,9 +15,12 @@ inline TextureSamplerState effect_slot_sampler(const Engine& engine, const Effec
     return effect_texture_sampler();
 }
 
-/** Images owned by one effect pass; render targets remain borrowed at draw time. */
+/**
+ * Images owned by one effect pass; render targets and CSM receiver textures
+ * remain borrowed at draw time.
+ */
 template <typename Image> class EffectTextureImages {
-    enum class Kind { solid, pixels, render };
+    enum class Kind { solid, pixels, per_draw };
     struct Binding {
         std::uint32_t binding = 0;
         std::size_t position = 0;
@@ -31,14 +34,14 @@ template <typename Image> class EffectTextureImages {
     TextureUploadCache<Image> images_;
 
     static Kind kind(const EffectTextureSlot& slot) {
-        return slot.render_texture   ? Kind::render
-               : slot.pixels_texture ? Kind::pixels
-                                     : Kind::solid;
+        return effect_slot_binds_per_draw(slot) ? Kind::per_draw
+               : slot.pixels_texture            ? Kind::pixels
+                                                : Kind::solid;
     }
 
     template <typename Upload>
     std::shared_ptr<Image> acquire(const EffectTextureSlot& slot, Upload upload) {
-        if (slot.render_texture)
+        if (effect_slot_binds_per_draw(slot))
             return {};
         if (slot.pixels_texture) {
             const TextureData source = pixels_texture_image(*slot.pixels_texture);
@@ -71,7 +74,7 @@ public:
             const auto identity = slot.pixels_texture ? slot.pixels_texture->identity : 0;
             const TextureSamplerState sampler = effect_slot_sampler(engine, slot);
             if (current == binding.kind && sampler == binding.sampler &&
-                (current == Kind::render ||
+                (current == Kind::per_draw ||
                  (current == Kind::pixels && identity == binding.identity) ||
                  (current == Kind::solid && slot.texture.texel == binding.solid)))
                 continue;

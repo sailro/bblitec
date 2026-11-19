@@ -1893,6 +1893,14 @@ void run_esm_blur(GpuState& state, SDL_GPUCommandBuffer* command, std::uint32_t 
 #endif
 
 void update_shadow_generators(GpuState& state, const Scene& scene, Engine& engine);
+
+/**
+ * A CSM receiver texture as a binding (`getCsmReceiverTexture`): the
+ * generator's depth array and its comparison sampler (`sg._depthSampler`),
+ * which shader materials and effects bind.
+ */
+SDL_GPUTextureSamplerBinding csm_receiver_binding(const GpuState& state,
+                                                  ShadowGeneratorHandle generator);
 #endif
 
 #if BBLITE_STANDARD_VARIANTS > 0

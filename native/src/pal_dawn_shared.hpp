@@ -129,6 +129,15 @@ template <std::size_t Count> std::array<WGPUVertexAttribute, Count> vertex_attri
  * One level's write into a 2D texture: the byte offset of its first texel
  * in the source bytes, its row pitch and its extent.
  */
+/**
+ * A CSM receiver texture as a binding (`getCsmReceiverTexture`): the
+ * generator's depth array view and its comparison sampler (`sg._depthSampler`).
+ */
+struct DawnCsmReceiverBinding {
+    WGPUTextureView view = nullptr;
+    WGPUSampler sampler = nullptr;
+};
+
 struct DawnTextureLevelWrite {
     std::uint32_t level = 0;
     std::size_t offset = 0;

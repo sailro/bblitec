@@ -399,13 +399,10 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
                          owner.material.shader_csm_textures[owner.slot].value != invalid_handle;
         if (csm) {
 #if BBLITE_SHADOW_RECEIVERS
-            const ShadowGeneratorHandle generator = owner.material.shader_csm_textures[owner.slot];
-            if (generator.value >= engine.shadow_generators.size()) {
-                pal::refuse_invalid_frame_handle("Shader CSM receiver has an invalid generator.");
-            }
-            ensure_shadow_samplers(state);
-            view = shadow_map_view(state, engine, generator);
-            sampler = state.shadow_comparison_sampler;
+            const DawnCsmReceiverBinding csm_binding =
+                csm_receiver_binding(state, engine, owner.material.shader_csm_textures[owner.slot]);
+            view = csm_binding.view;
+            sampler = csm_binding.sampler;
 #else
             dawn_error("Shader CSM texture in a build with no receiver.");
 #endif
