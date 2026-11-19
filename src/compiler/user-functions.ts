@@ -14,6 +14,7 @@ import { isJsonValue } from "./json-bridge.js";
 import { activeSurvey } from "./survey.js";
 import { emptyStorage } from "./empty-storage.js";
 import { onlyDirectCalls } from "./written-holders.js";
+import { shaderViewCall } from "./shader-material-views.js";
 import {
     someAnalysisNode,
     forEachAnalysisNode,
@@ -1628,6 +1629,7 @@ export interface UserFunctionContext
             | "asyncActivations"
             | "withOwnedCallbackBody"
             | "checker"
+            | "symbols"
             | "program"
             | "dataTypes"
             | "dataLowerer"
@@ -6909,6 +6911,13 @@ export class UserFunctionLowerer {
             );
         }
         const site = !this.activeCallSites.has(callNode);
+        const views = shaderViewCall(
+            context,
+            callNode,
+            ir.declaration.parameters,
+            arguments_,
+        );
+        let failed = false;
         this.active.add(ir.declaration);
         this.activeCallSites.add(callNode);
         const enclosingInvocation = this.invocations.get(ir.declaration);
@@ -6921,7 +6930,7 @@ export class UserFunctionLowerer {
             });
         try {
             if (!body?.generator)
-                this.bindCallParameters(context, ir, arguments_, callNode);
+                this.bindCallParameters(context, ir, views.values, callNode);
             if (body?.generator) {
                 context.beginNativeFunctionBody(undefined, false, {
                     generator: body.generator,
@@ -7093,13 +7102,25 @@ export class UserFunctionLowerer {
                 body?.resultType,
                 captureReturn,
             );
+        } catch (error) {
+            failed = true;
+            throw error;
         } finally {
-            context.bindings.popScope();
-            if (site) this.activeCallSites.delete(callNode);
-            if (outermost) this.active.delete(ir.declaration);
-            if (enclosingInvocation)
-                this.invocations.set(ir.declaration, enclosingInvocation);
-            else this.invocations.delete(ir.declaration);
+            try {
+                let rebind: (() => void) | undefined;
+                try {
+                    if (!failed) rebind = views.capture();
+                } finally {
+                    context.bindings.popScope();
+                }
+                rebind?.();
+            } finally {
+                if (site) this.activeCallSites.delete(callNode);
+                if (outermost) this.active.delete(ir.declaration);
+                if (enclosingInvocation)
+                    this.invocations.set(ir.declaration, enclosingInvocation);
+                else this.invocations.delete(ir.declaration);
+            }
         }
     }
 

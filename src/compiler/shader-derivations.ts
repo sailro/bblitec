@@ -37,7 +37,7 @@ import {
 } from "./record-observations.js";
 import { sourceFilesWalk } from "./analysis-walk.js";
 import {
-    functionOfDeclaration,
+    isSupportedFunction,
     notJson,
     isSuspensionPoint,
     objectLiteralMembers,
@@ -1087,9 +1087,10 @@ export function optionsBinding(
     const fixed = ts.isParameter(declaration)
         ? ts.isIdentifier(declaration.name) &&
           !declaration.dotDotDotToken &&
+          isSupportedFunction(declaration.parent) &&
           !parameterIsRebound(
               context.checker,
-              functionOfDeclaration(declaration)!,
+              declaration.parent,
               declaration.name,
           )
         : ts.isVariableDeclaration(declaration) &&

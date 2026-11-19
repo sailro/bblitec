@@ -400,7 +400,14 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
   On such a view, effect-free `Object.defineProperty`/`defineProperties` data descriptors after its `const`
   declaration, in its block or that block's `if` branches and before any other use of the view on their path, redefine
   its sources, `attributes`, declaration lists and pipeline state; the view draws a program compiled per source variant and
-  branch, selected at run time. A source of run-time variant may be any variant the program creates, as such a call's
+  branch, selected at run time. Synchronous helpers without explicit returns may make these definitions through one
+  unreassigned parameter used only for definitions; subsequent caller definitions read the helper's resulting programs.
+  Native revision descriptors use a private zero-initialized offset: their getter adds it to the source revision
+  (or `Math.max` of the source's UBO and uniform revisions), and their setter subtracts that source revision from
+  its assigned value. These descriptors and pre-use cache resets emit nothing: `_shaderDevice`/`_shaderBindings`
+  require `undefined`, `_shaderCustomUbo`/`_shaderCustomSpec`/`_shaderCustomData` require `null`, and
+  `_shaderCustomVersion` requires `-1`. Other revision descriptors and cache-reset values refuse.
+  A source of run-time variant may be any variant the program creates, as such a call's
   argument may. A view's program takes no uniform defaults; a run-time default a redefinition gives refuses where the
   view's field reads it. A definition giving the view such maps makes them its slots: a record read from its source
   aliases that slot, any other is the view's own, and a declared uniform the map lacks packs as zero. Redefinitions

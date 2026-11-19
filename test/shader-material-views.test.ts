@@ -196,6 +196,193 @@ test("a view redefined on the branches of a run-time test draws the program of t
     }
 });
 
+test("a helper's unreassigned view parameter redefines the caller's branch before a later definition", () => {
+    const compiled = compileSource(`${prelude}
+    function finish(view: ShaderMaterial): void {
+        Object.defineProperty(view, "depthOnlyFragment", { value: true });
+    }
+    function adapt(view: ShaderMaterial): void {
+        Object.defineProperty(view, "fragmentSource", { value: wgsl\`\${NORMAL}\` });
+        finish(view);
+    }
+    async function main(): Promise<void> {
+        const engine = await createEngine({});
+        const ground = createShaderMaterial(${groundOptions});
+        const view = createMaterialView(ground, { features: 0 }) as ShaderMaterial;
+        if (Math.random() > 0.5) {
+            adapt(view);
+        } else {
+            Object.defineProperty(view, "blend", { value: { color: { operation: "add", srcFactor: "zero", dstFactor: "one" }, alpha: { operation: "add", srcFactor: "zero", dstFactor: "one" } } });
+        }
+        Object.defineProperty(view, "transmissive", { value: false });
+        draw(engine, view);
+    }
+    void main();
+`);
+    const programs = compiled.manifest.customShaderPrograms;
+    assert.ok(
+        programs.some(
+            (item) =>
+                /normalize\(cross\(dpdx/.test(item.fragmentSource) &&
+                item.depthOnlyFragment,
+        ),
+    );
+    assert.ok(
+        programs.some(
+            (item) => item.blend?.[0] === "zero" && !item.depthOnlyFragment,
+        ),
+    );
+    assert.equal(
+        (compiled.cpp.match(/bbl::derive_shader_material_view\(/g) ?? [])
+            .length,
+        4,
+    );
+});
+
+const revisionHelper = `
+    type Revisions = ShaderMaterial & { _uniformVersion: number; _resourceVersion: number; _uboVersion: number };
+    function revision(read: () => number, related: () => number = read): PropertyDescriptor {
+        let offset = 0;
+        return {
+            get() { return Math.max(read(), related()) + offset; },
+            set(value: number) { offset = value - Math.max(read(), related()); },
+            configurable: true,
+        };
+    }
+`;
+
+test("an unentered definition-only helper branch does not make the later view definition an observed use", () => {
+    const compiled = compileSource(`${prelude}
+    function install(view: ShaderMaterial): void {
+        Object.defineProperty(view, "fragmentSource", { value: wgsl\`\${NORMAL}\` });
+    }
+    async function main(): Promise<void> {
+        const engine = await createEngine({});
+        const ground = createShaderMaterial(${groundOptions});
+        const view = createMaterialView(ground, { features: 0 }) as ShaderMaterial;
+        if (ground.needAlphaBlending) install(view);
+        else Object.defineProperty(view, "depthOnlyFragment", { value: true });
+        Object.defineProperty(view, "transmissive", { value: false });
+        draw(engine, view);
+    }
+    void main();
+`);
+    assert.ok(
+        compiled.manifest.customShaderPrograms.some(
+            (item) => item.depthOnlyFragment,
+        ),
+    );
+});
+
+test("a helper installs native revisions and exact cache resets before the caller's next definition", () => {
+    const compiled = compileSource(`${prelude}${revisionHelper}
+    type Decl = { name: string; type: "vec4<f32>" };
+    type UniformSlot = { decl: Decl; value: Float32Array };
+    type UniformState = Revisions & { _uniformValues: Map<string, UniformSlot> };
+    const EXTRA: Decl = { name: "uIdentity", type: "vec4<f32>" };
+    function install(view: ShaderMaterial, source: ShaderMaterial, base: number): void {
+        const src = source as UniformState;
+        const values = new Map<string, UniformSlot>(src._uniformValues);
+        values.set(EXTRA.name, { decl: EXTRA, value: Float32Array.of(base, 0, 0, 0) });
+        Object.defineProperties(view, {
+            uniformDecls: { value: [...source.uniformDecls.filter(d => d.name !== EXTRA.name), EXTRA], configurable: true },
+            _uniformValues: { value: values, configurable: true },
+            _uniformVersion: revision(() => src._uniformVersion),
+            _resourceVersion: revision(() => src._resourceVersion),
+            _uboVersion: revision(() => src._uboVersion, () => src._uniformVersion),
+            _shaderDevice: { value: undefined, writable: true },
+            _shaderBindings: { value: undefined, writable: true },
+            _shaderCustomUbo: { value: null, writable: true },
+            _shaderCustomSpec: { value: null, writable: true },
+            _shaderCustomData: { value: null, writable: true },
+            _shaderCustomVersion: { value: -1, writable: true },
+        });
+    }
+    async function main(): Promise<void> {
+        const engine = await createEngine({});
+        const ground = createShaderMaterial(${groundOptions});
+        const view = createMaterialView(ground, { features: 0 }) as ShaderMaterial;
+        if (Math.random() > 0.5) {
+            Object.defineProperty(view, "vertexSource", { value: ground.vertexSource });
+            Object.defineProperty(view, "fragmentSource", { value: wgsl\`\${NORMAL}\` });
+            install(view, ground, Math.random());
+        } else {
+            Object.defineProperty(view, "depthOnlyFragment", { value: true });
+        }
+        Object.defineProperty(view, "transmissive", { value: false });
+        draw(engine, view);
+    }
+    void main();
+`);
+    assert.match(compiled.cpp, /bbl::install_shader_view_slots\(/);
+    assert.ok(
+        compiled.manifest.customShaderPrograms.some((item) =>
+            item.uniforms.includes("uIdentity:vec4<f32>"),
+        ),
+    );
+    assert.doesNotMatch(compiled.cpp, /_shaderCustomVersion|_uniformVersion/);
+});
+
+test("view helpers refuse observed or reassigned parameters, early returns, and non-native descriptors", () => {
+    const source = (
+        helper: string,
+        call = "install(view, ground);",
+    ): string => `${prelude}${revisionHelper}
+    function install(view: ShaderMaterial, source: ShaderMaterial): void { ${helper} }
+    async function main(): Promise<void> {
+        const engine = await createEngine({});
+        const ground = createShaderMaterial(${groundOptions});
+        const view = createMaterialView(ground, { features: 0 }) as ShaderMaterial;
+        ${call}
+        Object.defineProperty(view, "transmissive", { value: false });
+        draw(engine, view);
+    }
+    void main();`;
+    for (const helper of [
+        `view = source; Object.defineProperty(view, "depthOnlyFragment", { value: true });`,
+        `console.log(view.name); Object.defineProperty(view, "depthOnlyFragment", { value: true });`,
+        `if (Math.random() > 0.5) return; Object.defineProperty(view, "depthOnlyFragment", { value: true });`,
+        `Object.defineProperty(view, "_uniformVersion", revision(() => (source as Revisions)._resourceVersion));`,
+        `Object.defineProperty(view, "_uniformVersion", { get() { return 0; }, set(value: number) {} });`,
+        `Object.defineProperty(view, "_shaderDevice", { value: null });`,
+        `Object.defineProperty(view, "_shaderCustomVersion", { value: 0 });`,
+        `Object.defineProperty(view, "_shaderCustomData", { value: undefined });`,
+    ])
+        assert.throws(
+            () => compileSource(source(helper)),
+            /ShaderMaterial|material view/,
+        );
+    assert.throws(
+        () =>
+            compileSource(
+                source(
+                    `Object.defineProperty(view, "depthOnlyFragment", { value: true });`,
+                    `console.log(view.name); install(view, ground);`,
+                ),
+            ),
+        /ShaderMaterial view/,
+    );
+    const revisionSource = source(
+        `Object.defineProperty(view, "_uniformVersion", revision(() => (source as Revisions)._uniformVersion));`,
+    );
+    for (const changed of [
+        revisionSource.replace("+ offset;", "+ 1;"),
+        revisionSource.replace(
+            "offset = value - Math.max(read(), related());",
+            "offset = 0;",
+        ),
+        revisionSource.replace(
+            "let offset = 0;",
+            `let offset = 0; console.log("effect");`,
+        ),
+        revisionSource.replace("related()) + offset", "related()) * offset"),
+    ])
+        assert.throws(
+            () => compileSource(changed),
+            /source-following additive revision/,
+        );
+});
+
 const variantsSource = `${prelude}
     async function main(): Promise<void> {
         const engine = await createEngine({});
@@ -331,8 +518,8 @@ test("a view refuses redefinitions generation cannot derive a program from", () 
             /A ShaderMaterial's slot map is a Map from names to records of 'decl' and 'current'/,
         ],
         [
-            `Object.defineProperties(view, { _shaderCustomUbo: { value: null, writable: true } });`,
-            /A ShaderMaterial view redefines only the properties its program is built from \(.*\); '_shaderCustomUbo' is not one\./,
+            `Object.defineProperties(view, { _shaderCustomUbo: { value: 0, writable: true } });`,
+            /A ShaderMaterial view's '_shaderCustomUbo' cache reset requires the literal null\./,
         ],
         [
             `Object.defineProperty(view, "fragmentSource", { get: () => NORMAL });`,

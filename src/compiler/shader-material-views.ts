@@ -53,8 +53,14 @@ import {
     typeComponents,
 } from "../shader-material-programs.js";
 import { bindingReferences } from "./binding-references.js";
-import { isLibraryStatic } from "./symbols.js";
+import { bindingRebinds } from "./binding-rebinds.js";
+import { callTarget } from "./parameter-effects.js";
+import { someAnalysisNode } from "./analysis-walk.js";
+import { isGlobalUndefined, isLibraryStatic } from "./symbols.js";
 import {
+    isSupportedFunction,
+    isAsyncFunction,
+    functionOfDeclaration,
     outermostWrapper,
     statementsBeside,
     unwrapExpression,
@@ -666,10 +672,30 @@ interface ViewRedefinition {
  * built from, or of a slot map (`SLOT_MAPS`).
  */
 function viewRedefinitions(
-    context: Pick<ShaderMaterialViewContext, "fail">,
+    context: Pick<ShaderMaterialViewContext, "checker" | "fail">,
     definitions: readonly ViewDefinition[],
 ): ViewRedefinition[] {
-    return definitions.map(({ key, site, node, descriptor, value }) => {
+    return definitions.flatMap(({ key, site, node, descriptor, value }) => {
+        const reset = NATIVE_VIEW_CACHE_RESETS.get(key);
+        if (reset) {
+            const expression = value && unwrapExpression(value);
+            const valid =
+                expression &&
+                (reset === "undefined"
+                    ? isGlobalUndefined(context.checker, expression)
+                    : reset === "null"
+                      ? expression.kind === ts.SyntaxKind.NullKeyword
+                      : ts.isPrefixUnaryExpression(expression) &&
+                        expression.operator === ts.SyntaxKind.MinusToken &&
+                        ts.isNumericLiteral(expression.operand) &&
+                        expression.operand.text === "1");
+            if (!valid)
+                context.fail(
+                    node,
+                    `A ShaderMaterial view's '${key}' cache reset requires the literal ${reset}.`,
+                );
+            return [];
+        }
         if (!viewFields().includes(key) && !Object.hasOwn(SLOT_MAPS, key))
             context.fail(
                 site,
@@ -680,8 +706,263 @@ function viewRedefinitions(
                 node,
                 `A ShaderMaterial view's '${key}' is redefined by a literal data descriptor: a 'value' and literal 'enumerable', 'configurable' or 'writable' flags.`,
             );
-        return { key, value, descriptor };
+        return [{ key, value, descriptor }];
     });
+}
+
+// Dawn keys bindings by material_handle; SDL_GPU's shader_draw_textures
+// selects the handle's own cache. These pre-use resets therefore emit nothing.
+const NATIVE_VIEW_CACHE_RESETS: ReadonlyMap<
+    string,
+    "undefined" | "null" | "-1"
+> = new Map([
+    ["_shaderDevice", "undefined"],
+    ["_shaderBindings", "undefined"],
+    ["_shaderCustomUbo", "null"],
+    ["_shaderCustomSpec", "null"],
+    ["_shaderCustomData", "null"],
+    ["_shaderCustomVersion", "-1"],
+]);
+
+/**
+ * The native version counters already follow source changes and local
+ * assignments. Admit an additive revision descriptor only when its complete
+ * factory proves that contract: a private zero-initialized offset, a getter
+ * `sourceRevision + offset`, and a setter `offset = value - sourceRevision`.
+ * Merely mentioning a version field in an arbitrary getter proves nothing.
+ */
+export function nativeShaderViewRevision(
+    context: ShaderMaterialViewContext & Pick<LoweringServices, "program">,
+    target: ts.Identifier,
+    key: string,
+    expression: ts.Expression,
+    readDescriptor: (expression: ts.Expression) => {
+        get:
+            | ts.MethodDeclaration
+            | ts.FunctionExpression
+            | ts.ArrowFunction
+            | undefined;
+        set:
+            | ts.MethodDeclaration
+            | ts.FunctionExpression
+            | ts.ArrowFunction
+            | undefined;
+        attributes: ReadonlyMap<string, boolean>;
+        data: boolean;
+    },
+): boolean {
+    if (!["_uniformVersion", "_resourceVersion", "_uboVersion"].includes(key))
+        return false;
+    const refuse = (): never =>
+        context.fail(
+            expression,
+            `A ShaderMaterial view's '${key}' needs a source-following additive revision descriptor with a private local offset; other accessors are not native revision counters.`,
+        );
+    const call = context.unwrap(expression);
+    if (!ts.isCallExpression(call)) return refuse();
+    const name = context.unwrap(call.expression);
+    if (!ts.isIdentifier(name)) return refuse();
+    const symbol = context.symbols.valueSymbol(name);
+    const declaration = symbol?.valueDeclaration;
+    const fn = declaration && functionOfDeclaration(declaration);
+    if (
+        !symbol ||
+        !fn?.body ||
+        !ts.isBlock(fn.body) ||
+        isAsyncFunction(fn) ||
+        fn.asteriskToken ||
+        bindingRebinds(
+            context.checker,
+            context.program.getSourceFiles(),
+            symbol,
+        ).length ||
+        fn.body.statements.length !== 2 ||
+        fn.parameters.length < 1 ||
+        fn.parameters.length > 2 ||
+        call.arguments.length < 1 ||
+        call.arguments.length > fn.parameters.length
+    )
+        return refuse();
+    const facts = context.bindings.lookupOptional(target)!.shaderMaterialView!;
+    const sameSource = (
+        expression: ts.Expression,
+        seen = new Set<ts.Symbol>(),
+    ): boolean => {
+        const receiver = context.unwrap(expression);
+        if (!ts.isIdentifier(receiver) || !optionsBinding(context, receiver))
+            return false;
+        const symbol = context.symbols.valueSymbol(receiver)!;
+        if (
+            facts.sourceName &&
+            symbol === context.symbols.valueSymbol(facts.sourceName)
+        )
+            return true;
+        if (context.bindings.lookupOptional(receiver)?.cpp === facts.source.cpp)
+            return true;
+        if (seen.has(symbol)) return false;
+        seen.add(symbol);
+        const declaration = symbol.valueDeclaration;
+        return (
+            !!declaration &&
+            ts.isVariableDeclaration(declaration) &&
+            !!declaration.initializer &&
+            sameSource(declaration.initializer, seen)
+        );
+    };
+    const callbackField = (expression: ts.Expression): string | undefined => {
+        const callback = context.unwrap(expression);
+        if (
+            (!ts.isArrowFunction(callback) &&
+                !ts.isFunctionExpression(callback)) ||
+            callback.parameters.length ||
+            isAsyncFunction(callback) ||
+            (ts.isFunctionExpression(callback) && callback.asteriskToken)
+        )
+            return undefined;
+        const body = callback.body;
+        const value = ts.isBlock(body)
+            ? body.statements.length === 1 &&
+              ts.isReturnStatement(body.statements[0]!)
+                ? body.statements[0].expression
+                : undefined
+            : body;
+        const read = value && context.unwrap(value);
+        return read &&
+            ts.isPropertyAccessExpression(read) &&
+            sameSource(read.expression)
+            ? read.name.text
+            : undefined;
+    };
+    const readers = new Map<ts.Symbol, string>();
+    for (const [index, parameter] of fn.parameters.entries()) {
+        if (!ts.isIdentifier(parameter.name) || parameter.dotDotDotToken)
+            return refuse();
+        const argument = call.arguments[index];
+        const fallback =
+            parameter.initializer && context.unwrap(parameter.initializer);
+        const field = argument
+            ? callbackField(argument)
+            : fallback && ts.isIdentifier(fallback)
+              ? readers.get(context.symbols.valueSymbol(fallback)!)
+              : undefined;
+        if (
+            field !== key &&
+            !(
+                index === 1 &&
+                key === "_uboVersion" &&
+                field === "_uniformVersion"
+            )
+        )
+            return refuse();
+        readers.set(context.symbols.valueSymbol(parameter.name)!, field);
+    }
+    const [initialize, returned] = fn.body.statements;
+    if (
+        !initialize ||
+        !ts.isVariableStatement(initialize) ||
+        initialize.declarationList.declarations.length !== 1 ||
+        !returned ||
+        !ts.isReturnStatement(returned) ||
+        !returned.expression
+    )
+        return refuse();
+    const offset = initialize.declarationList.declarations[0]!;
+    if (
+        !ts.isIdentifier(offset.name) ||
+        variableKind(offset) !== "let" ||
+        !offset.initializer ||
+        !ts.isNumericLiteral(offset.initializer) ||
+        offset.initializer.text !== "0"
+    )
+        return refuse();
+    const offsetSymbol = context.symbols.valueSymbol(offset.name);
+    const isOffset = (expression: ts.Expression): boolean => {
+        const value = context.unwrap(expression);
+        return (
+            ts.isIdentifier(value) &&
+            context.symbols.valueSymbol(value) === offsetSymbol
+        );
+    };
+    const base = (expression: ts.Expression): string | undefined => {
+        const value = context.unwrap(expression);
+        if (!ts.isCallExpression(value)) return undefined;
+        const callee = context.unwrap(value.expression);
+        if (ts.isIdentifier(callee) && value.arguments.length === 0)
+            return readers.get(context.symbols.valueSymbol(callee)!);
+        if (
+            !isLibraryStatic(
+                context.checker,
+                value.expression,
+                "Math",
+                "max",
+            ) ||
+            value.arguments.length !== 2
+        )
+            return undefined;
+        const left = base(value.arguments[0]!);
+        const right = base(value.arguments[1]!);
+        return left && right ? `max(${left},${right})` : undefined;
+    };
+    // Object statics owns descriptor syntax and attribute validation.
+    const { get, set, attributes, data } = readDescriptor(returned.expression);
+    if (
+        !get ||
+        !set ||
+        data ||
+        isAsyncFunction(get) ||
+        isAsyncFunction(set) ||
+        ("asteriskToken" in get && get.asteriskToken) ||
+        ("asteriskToken" in set && set.asteriskToken) ||
+        [...attributes.values()].some((flag) => !flag)
+    )
+        return refuse();
+    const getBody = get.body && ts.isBlock(get.body) ? get.body : undefined;
+    const setBody = set.body && ts.isBlock(set.body) ? set.body : undefined;
+    const getStatement = getBody?.statements[0];
+    const setStatement = setBody?.statements[0];
+    if (
+        !get ||
+        !set ||
+        get.parameters.length ||
+        set.parameters.length !== 1 ||
+        getBody?.statements.length !== 1 ||
+        setBody?.statements.length !== 1 ||
+        !getStatement ||
+        !ts.isReturnStatement(getStatement) ||
+        !getStatement.expression ||
+        !setStatement ||
+        !ts.isExpressionStatement(setStatement)
+    )
+        return refuse();
+    const sum = context.unwrap(getStatement.expression);
+    const assignment = context.unwrap(setStatement.expression);
+    const parameter = set.parameters[0]!;
+    if (
+        !ts.isBinaryExpression(sum) ||
+        sum.operatorToken.kind !== ts.SyntaxKind.PlusToken ||
+        !isOffset(sum.right) ||
+        !ts.isBinaryExpression(assignment) ||
+        assignment.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+        !isOffset(assignment.left) ||
+        !ts.isIdentifier(parameter.name) ||
+        parameter.initializer ||
+        parameter.dotDotDotToken
+    )
+        return refuse();
+    const difference = context.unwrap(assignment.right);
+    const source = base(sum.left);
+    if (
+        !source ||
+        !source.includes(key) ||
+        !ts.isBinaryExpression(difference) ||
+        difference.operatorToken.kind !== ts.SyntaxKind.MinusToken ||
+        !ts.isIdentifier(difference.left) ||
+        context.symbols.valueSymbol(difference.left) !==
+            context.symbols.valueSymbol(parameter.name) ||
+        base(difference.right) !== source
+    )
+        return refuse();
+    return true;
 }
 
 /** Whether a node is the target of an `Object.defineProperty` / `Object.defineProperties` call. */
@@ -707,18 +988,21 @@ function definesOn(checker: ts.TypeChecker, node: ts.Node): boolean {
 
 /**
  * The view's declaration and a definition's statement, when the statement
- * runs where the declaration does: after the view's `const` declaration in
- * its block, or inside the blocks and `if` branches of a statement there,
- * before every other use of the view. Undefined for any other statement.
+ * runs where the declaration does: after the view's `const` declaration,
+ * or in an unreassigned parameter's body, including their blocks and `if`
+ * branches, before every other use. Undefined for any other statement.
  */
 function definitionReach(
-    context: Pick<ShaderMaterialViewContext, "checker" | "symbols"> &
+    context: Pick<
+        ShaderMaterialViewContext,
+        "bindings" | "checker" | "symbols" | "unwrap"
+    > &
         Pick<LoweringServices, "program">,
     call: ts.CallExpression,
     view: ts.Identifier,
 ):
     | {
-          readonly declared: ts.VariableStatement;
+          readonly after: readonly ts.Statement[];
           readonly statement: ts.ExpressionStatement;
       }
     | undefined {
@@ -729,15 +1013,25 @@ function definitionReach(
         declaration && ts.isVariableDeclaration(declaration)
             ? declaration.parent.parent
             : undefined;
+    const body =
+        declaration &&
+        ts.isParameter(declaration) &&
+        isSupportedFunction(declaration.parent)
+            ? declaration.parent.body
+            : undefined;
+    const after =
+        declared && ts.isVariableStatement(declared)
+            ? statementsBeside(declared, "after")
+            : body && ts.isBlock(body)
+              ? body.statements
+              : undefined;
     if (
         !ts.isExpressionStatement(statement) ||
         unwrapExpression(statement.expression) !== call ||
-        !declared ||
-        !ts.isVariableStatement(declared) ||
-        variableKind(declaration!) !== "const"
+        !after ||
+        !optionsBinding(context, view)
     )
         return undefined;
-    const after = statementsBeside(declared, "after") ?? [];
     let node: ts.Node = statement;
     while (!after.some((sibling) => sibling === node)) {
         const parent = node.parent;
@@ -757,18 +1051,269 @@ function definitionReach(
         symbol!,
     ).filter(
         (reference) =>
-            reference.pos > declared.end &&
+            reference.pos > (declared?.end ?? body!.pos) &&
             reference.end <= statement.pos &&
             !onOtherBranch(reference, statement),
     );
     return between.every(
         (reference) =>
-            definesOn(context.checker, reference) &&
+            definitionOnlyReference(context, reference) &&
             ts.findAncestor(reference, ts.isFunctionLike) ===
-                ts.findAncestor(declared, ts.isFunctionLike),
+                ts.findAncestor(declaration, ts.isFunctionLike),
     )
-        ? { declared, statement }
+        ? { after, statement }
         : undefined;
+}
+
+/**
+ * A direct definition or a helper using its parameter only for definitions.
+ * This syntactic proof also covers calls on branches generation never enters.
+ */
+function definitionOnlyReference(
+    context: Pick<LoweringServices, "checker" | "program">,
+    reference: ts.Expression,
+    visiting = new Set<ts.Node>(),
+): boolean {
+    if (definesOn(context.checker, reference)) return true;
+    const argument = outermostWrapper(reference);
+    const call = argument.parent;
+    if (!ts.isCallExpression(call) || !ts.isExpressionStatement(call.parent))
+        return false;
+    const index = call.arguments.findIndex((item) => item === argument);
+    const target = callTarget(context.checker, call);
+    if (
+        index < 0 ||
+        target.kind !== "bodies" ||
+        target.engine ||
+        target.bodies.length !== 1
+    )
+        return false;
+    const fn = target.bodies[0]!;
+    if (
+        !isSupportedFunction(fn) ||
+        visiting.has(fn) ||
+        isAsyncFunction(fn) ||
+        fn.asteriskToken
+    )
+        return false;
+    const parameter = fn.parameters[index];
+    if (
+        !parameter ||
+        !ts.isIdentifier(parameter.name) ||
+        parameter.dotDotDotToken
+    )
+        return false;
+    const callee = unwrapExpression(call.expression);
+    if (!ts.isIdentifier(callee)) return false;
+    const calleeSymbol = context.checker.getSymbolAtLocation(callee);
+    if (
+        !calleeSymbol ||
+        bindingRebinds(
+            context.checker,
+            context.program.getSourceFiles(),
+            calleeSymbol,
+        ).length
+    )
+        return false;
+    const symbol = context.checker.getSymbolAtLocation(parameter.name);
+    if (!symbol) return false;
+    visiting.add(fn);
+    const valid = bindingReferences(
+        context.program,
+        context.checker,
+        symbol,
+    ).every(
+        (read) =>
+            ts.findAncestor(read, ts.isFunctionLike) === fn &&
+            definitionOnlyReference(context, read, visiting),
+    );
+    visiting.delete(fn);
+    return valid;
+}
+
+/** Record one definition (including an inlined helper), joining its enclosing branches. */
+function recordViewDefinition(
+    context: Pick<
+        ShaderMaterialViewContext,
+        "bindings" | "checker" | "symbols" | "unwrap" | "fail"
+    > &
+        Pick<LoweringServices, "program">,
+    call: ts.CallExpression,
+    target: ts.Identifier,
+    derived: ReadonlyMap<string, string>,
+): void {
+    const view = context.bindings.lookupOptional(target)!;
+    const facts = view.shaderMaterialView!;
+    const reach = definitionReach(context, call, target);
+    if (!reach)
+        context.fail(
+            call,
+            "A ShaderMaterial view helper redefines an unobserved const or unreassigned parameter in its block or if branches.",
+        );
+    const { after, statement } = reach;
+    const recorded: ShaderMaterialView = {
+        ...facts,
+        defined: new Map([...facts.defined, [statement, derived]]),
+    };
+    const top = after.find(
+        (sibling) =>
+            sibling.pos <= statement.pos && statement.end <= sibling.end,
+    )!;
+    const reachable = programsThrough(
+        recorded,
+        after.slice(0, after.indexOf(top) + 1),
+        facts.declared,
+    );
+    const updated = withShaderVariants(view, [...reachable.keys()]);
+    writable(updated).shaderMaterialView = { ...recorded, programs: reachable };
+    context.bindings.rebindCompileTimeValue(target, updated);
+}
+
+/**
+ * A synchronous inlined helper receives the programs reaching its call, not
+ * the union of its caller's other branches. Its completed definitions are
+ * rebound only after the parameter scope has been left.
+ */
+export function shaderViewCall(
+    context: Pick<
+        ShaderMaterialViewContext,
+        "bindings" | "checker" | "symbols" | "unwrap" | "fail"
+    > &
+        Pick<LoweringServices, "program">,
+    call: ts.Node,
+    parameters: readonly ts.ParameterDeclaration[],
+    values: readonly Value[],
+): {
+    readonly values: readonly Value[];
+    capture(): () => void;
+} {
+    const entries: Array<{
+        target: ts.Identifier;
+        parameter: ts.Identifier;
+        initial: ShaderMaterialView;
+        statements: readonly ts.Statement[];
+    }> = [];
+    const arguments_ = values.map((value, index) => {
+        if (!value.shaderMaterialView || !ts.isCallExpression(call))
+            return value;
+        const argument = call.arguments[index];
+        const parameter = parameters[index]?.name;
+        const target = argument && context.unwrap(argument);
+        if (
+            !target ||
+            !ts.isIdentifier(target) ||
+            !parameter ||
+            !ts.isIdentifier(parameter)
+        )
+            return value;
+        const owner = parameters[index]!.parent;
+        const body = isSupportedFunction(owner) ? owner.body : undefined;
+        if (!body || !ts.isBlock(body)) return value;
+        const facts = value.shaderMaterialView;
+        const reach = definitionReach(context, call, target);
+        const programs = reach
+            ? programsThrough(
+                  facts,
+                  reach.after,
+                  facts.declared,
+                  reach.statement,
+              )
+            : facts.programs;
+        const boundSource =
+            facts.sourceName &&
+            context.bindings.lookupOptional(facts.sourceName);
+        const sourceIndex = values.findIndex(
+            (argument) =>
+                argument.cpp === facts.source.cpp ||
+                argument.cpp === boundSource?.cpp,
+        );
+        const sourceParameter =
+            sourceIndex < 0 ? undefined : parameters[sourceIndex]?.name;
+        const initial: ShaderMaterialView = {
+            ...facts,
+            programs,
+            declared: programs,
+            defined: new Map(),
+            ...(sourceParameter && ts.isIdentifier(sourceParameter)
+                ? { sourceName: sourceParameter }
+                : {}),
+        };
+        entries.push({
+            target,
+            parameter,
+            initial,
+            statements: body.statements,
+        });
+        const updated = withShaderVariants(value, [...programs.keys()]);
+        writable(updated).shaderMaterialView = initial;
+        return updated;
+    });
+    return {
+        values: arguments_,
+        capture: () => {
+            const updates = entries.flatMap(
+                ({ target, parameter, initial, statements }) => {
+                    const facts =
+                        context.bindings.lookupOptional(
+                            parameter,
+                        )?.shaderMaterialView;
+                    if (!facts || facts.defined.size === 0) return [];
+                    if (entries.length > 1)
+                        context.fail(
+                            parameter,
+                            "A ShaderMaterial view definition helper takes one view parameter; multiple possibly aliased view parameters are not supported.",
+                        );
+                    const symbol = context.symbols.valueSymbol(parameter)!;
+                    const owner = parameter.parent.parent;
+                    if (
+                        !isSupportedFunction(owner) ||
+                        isAsyncFunction(owner) ||
+                        owner.asteriskToken ||
+                        someAnalysisNode(
+                            owner,
+                            (node) =>
+                                ts.isReturnStatement(node) &&
+                                ts.findAncestor(node, ts.isFunctionLike) ===
+                                    owner,
+                        )
+                    )
+                        context.fail(
+                            parameter,
+                            "A ShaderMaterial view definition helper is synchronous and has no explicit returns.",
+                        );
+                    if (
+                        !optionsBinding(context, parameter) ||
+                        !bindingReferences(
+                            context.program,
+                            context.checker,
+                            symbol,
+                        ).every((reference) =>
+                            definitionOnlyReference(context, reference),
+                        )
+                    )
+                        context.fail(
+                            parameter,
+                            "A ShaderMaterial view helper's parameter is used only for definitions and is never reassigned or exposed.",
+                        );
+                    return [
+                        {
+                            target,
+                            programs: programsThrough(
+                                facts,
+                                statements,
+                                initial.declared,
+                            ),
+                        },
+                    ];
+                },
+            );
+            return () => {
+                if (!ts.isCallExpression(call)) return;
+                for (const { target, programs } of updates)
+                    recordViewDefinition(context, call, target, programs);
+            };
+        },
+    };
 }
 
 /** Whether two nodes sit on the two branches of one `if` statement. */
@@ -999,6 +1544,26 @@ export function compileShaderMaterialViewDefinitions(
     const installed = new Set(installs.map(({ slots }) => slots.list));
     if (definitions.length > 0)
         deriveViewPrograms(context, call, target, definitions, installed);
+    else {
+        const view = context.bindings.lookupOptional(target)!;
+        const reach = definitionReach(context, call, target);
+        if (!reach)
+            context.fail(
+                call,
+                "A ShaderMaterial view's slot maps and native cache resets are defined before any other use of the view.",
+            );
+        recordViewDefinition(
+            context,
+            call,
+            target,
+            programsThrough(
+                view.shaderMaterialView!,
+                reach.after,
+                view.shaderMaterialView!.declared,
+                reach.statement,
+            ),
+        );
+    }
     const view = context.bindings.lookupOptional(target)!;
     const engine = context.requireEngine(view, call);
     if (installed.has("uniforms"))
@@ -1048,8 +1613,7 @@ function deriveViewPrograms(
             call,
             "A ShaderMaterial view's program is redefined by a statement after the view's `const` declaration, in its block or the `if` branches there, before any other use of the view: the programs it may draw are then the ones every later use reads.",
         );
-    const { declared, statement } = reach;
-    const after = statementsBeside(declared, "after")!;
+    const { after, statement } = reach;
     // The programs the view may draw where the statement runs.
     const current = programsThrough(facts, after, facts.declared, statement);
     // A source of no variant created yet derives none; a later creation
@@ -1201,23 +1765,5 @@ function deriveViewPrograms(
     });
     // Later uses read the programs every path through the statements up to
     // this one's may leave.
-    const recorded: ShaderMaterialView = {
-        ...facts,
-        defined: new Map([...facts.defined, [statement, derived]]),
-    };
-    const top = after.find(
-        (sibling) =>
-            sibling.pos <= statement.pos && statement.end <= sibling.end,
-    )!;
-    const reachable = programsThrough(
-        recorded,
-        after.slice(0, after.indexOf(top) + 1),
-        facts.declared,
-    );
-    const updated = withShaderVariants(view, [...reachable.keys()]);
-    writable(updated).shaderMaterialView = {
-        ...recorded,
-        programs: reachable,
-    };
-    context.bindings.rebindCompileTimeValue(target, updated);
+    recordViewDefinition(context, call, target, derived);
 }

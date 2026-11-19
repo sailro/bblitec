@@ -2,6 +2,7 @@ import { writable } from "./emission-transaction.js";
 import { knownCondition, presentCopy } from "./values/model.js";
 import {
     compileShaderMaterialViewDefinitions,
+    nativeShaderViewRevision,
     shaderMaterialViewTarget,
     type ShaderMaterialViewContext,
 } from "./shader-material-views.js";
@@ -1863,6 +1864,10 @@ function definedProperties(
     context: ObjectStaticContext,
     call: ts.CallExpression,
     operation: DefinitionOperation,
+    nativeDefinition: (
+        key: string,
+        expression: ts.Expression,
+    ) => boolean = () => false,
 ): PropertyDefinition[] {
     if (operation === "defineProperty") {
         const key = context.compileValue(argumentAt(call, 1)).staticString;
@@ -1871,6 +1876,7 @@ function definedProperties(
                 call,
                 "Object.defineProperty needs a property key known at generation.",
             );
+        if (nativeDefinition(key, argumentAt(call, 2))) return [];
         return [
             propertyDefinition(
                 context,
@@ -1888,7 +1894,7 @@ function definedProperties(
             "Object.defineProperties needs a literal descriptor map.",
         );
     const keys = new Set<string>();
-    return descriptors.properties.map((property) => {
+    return descriptors.properties.flatMap((property) => {
         const key = property.name && propertyKey(property.name);
         if (
             !ts.isPropertyAssignment(property) ||
@@ -1901,13 +1907,16 @@ function definedProperties(
                 "Object.defineProperties needs distinct literal property keys without spreads, methods or accessors.",
             );
         keys.add(key);
-        return propertyDefinition(
-            context,
-            operation,
-            key,
-            property.initializer,
-            property,
-        );
+        if (nativeDefinition(key, property.initializer)) return [];
+        return [
+            propertyDefinition(
+                context,
+                operation,
+                key,
+                property.initializer,
+                property,
+            ),
+        ];
     });
 }
 
@@ -1927,7 +1936,46 @@ function compileObjectDefinitions(
     const view = global ? undefined : shaderMaterialViewTarget(context, call);
     const target =
         global || view ? undefined : definitionTarget(context, call, operation);
-    const definitions = definedProperties(context, call, operation);
+    const definitions = definedProperties(
+        context,
+        call,
+        operation,
+        (key, expression) =>
+            !!view &&
+            nativeShaderViewRevision(
+                context,
+                view,
+                key,
+                expression,
+                (descriptor) => {
+                    const parsed = propertyDefinition(
+                        context,
+                        operation,
+                        key,
+                        descriptor,
+                        call,
+                    );
+                    const getter = parsed.members.find(
+                        (member) => member.name === "get",
+                    );
+                    const setter = parsed.members.find(
+                        (member) => member.name === "set",
+                    );
+                    return {
+                        get:
+                            getter?.name === "get"
+                                ? getter.callback
+                                : undefined,
+                        set:
+                            setter?.name === "set"
+                                ? setter.callback
+                                : undefined,
+                        attributes: parsed.attributes,
+                        data: !parsed.accessor,
+                    };
+                },
+            ),
+    );
     if (view)
         return compileShaderMaterialViewDefinitions(
             context,
