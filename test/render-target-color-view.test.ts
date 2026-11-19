@@ -23,7 +23,7 @@ const program = (
     texture: string,
     use = "setEffectTexture(copy, 1, texture);",
 ): string => `
-import { addTask, createEffectRenderTask, createEffectWrapper, createEngine, createRenderTarget, createRenderTargetTexture, createSceneContext, getOrCreateSampler, registerScene, setEffectTexture, startEngine, type Texture2D } from "@babylonjs/lite";
+import { acquireTexture, addTask, createEffectRenderTask, createEffectWrapper, createEngine, createRenderTarget, createRenderTargetTexture, createSceneContext, getOrCreateSampler, registerScene, releaseTexture, setEffectTexture, startEngine, type Texture2D } from "@babylonjs/lite";
 interface RenderTargetInternals { _colorView: GPUTextureView | null; _depthView: GPUTextureView | null; _colorTexture: GPUTexture | null }
 const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
 const scene = createSceneContext(engine);
@@ -39,7 +39,8 @@ const sampler = getOrCreateSampler(engine, { magFilter: "nearest", minFilter: "n
 const internals = source as unknown as RenderTargetInternals;
 const otherInternals = other as unknown as RenderTargetInternals;
 const multisampledInternals = multisampled as unknown as RenderTargetInternals;
-void otherInternals; void multisampledInternals;
+const fixedInternals = createRenderTargetTexture(engine, { lbl: "fixed", format: "rg16float", samples: 1, size: { width: 8, height: 4 } }).rt as unknown as RenderTargetInternals;
+void otherInternals; void multisampledInternals; void fixedInternals; void acquireTexture; void releaseTexture;
 const live = (rt: ReturnType<typeof createRenderTarget>, liveSampler: GPUSampler): Texture2D => {
     const target = rt as unknown as RenderTargetInternals;
     return { get view(): GPUTextureView { return target._colorView!; }, sampler: liveSampler, _sampleType: "float" } as unknown as Texture2D;
@@ -138,6 +139,43 @@ test("a stored record over a render target's colour view keeps its own facade", 
     );
 });
 
+const LIVE =
+    '{ get texture(): GPUTexture { return internals._colorTexture!; }, get view(): GPUTextureView { return internals._colorView!; }, sampler, _sampleType: "float" } as unknown as Texture2D';
+const ONCE =
+    '{ texture: fixedInternals._colorTexture!, view: fixedInternals._colorView!, sampler, _sampleType: "float" } as unknown as Texture2D';
+
+test("a Texture2D record of a render target's colour, read live or once, acquires and binds as the pin reads it", () => {
+    // acquireTexture counts the colour texture the live `texture` getter reads.
+    assert.match(
+        compileSource(
+            program(
+                LIVE,
+                "acquireTexture(texture); setEffectTexture(copy, 1, texture);",
+            ),
+        ).cpp,
+        /bbl::set_effect_texture\(v_engine, v_copy, bbl::EffectBindingKey\{static_cast<double>\(1\.0\)\}, bbl::render_target_color_view\(v_engine, v_internals, v_sampler\)\);/,
+    );
+    // Read once: the colour texture and view as they are, bound or stored.
+    const bound = compileSource(program(ONCE)).cpp;
+    assert.match(
+        bound,
+        /bbl::set_effect_texture\(v_engine, v_copy, bbl::EffectBindingKey\{static_cast<double>\(1\.0\)\}, bbl::render_target_color_snapshot\(v_engine, v_\w+, v_\w+, v_sampler\)\);/,
+    );
+    assert.match(
+        bound,
+        /bbl::render_target_color_texture\(v_engine, v_fixedInternals\)[\s\S]*bbl::render_target_color_view_object\(v_engine, v_fixedInternals\)/,
+    );
+    assert.match(
+        compileSource(
+            program(
+                ONCE,
+                "let held: Texture2D | null = null; held = texture; if (held) setEffectTexture(copy, 1, held);",
+            ),
+        ).cpp,
+        /bbl::StoredTexture\{bbl::retained_render_texture\(v_engine, bbl::render_target_color_snapshot\(v_engine, v_\w+, v_\w+, v_sampler, \(\*v_\w+_sampleType\w*\)\)\)\}/,
+    );
+});
+
 test("a Texture2D record over a colour view refuses what the pin's read would not give", () => {
     const refusals: readonly [string, RegExp][] = [
         [
@@ -168,6 +206,25 @@ test("a Texture2D record over a colour view refuses what the pin's read would no
     ];
     for (const [texture, message] of refusals)
         assert.throws(() => compileSource(program(texture)), message);
+    const uses: readonly [string, string, RegExp][] = [
+        [
+            INLINE,
+            "acquireTexture(texture);",
+            /acquireTexture counts the record's `texture`; this record over a render target's colour states none\./,
+        ],
+        [
+            LIVE,
+            "releaseTexture(texture);",
+            /releaseTexture over a Texture2D record of a render target's colour may destroy the target's attachment/,
+        ],
+        [
+            "{ texture: fixedInternals._colorTexture!, view: fixedInternals._colorView!, sampler, uScale: 2 } as unknown as Texture2D",
+            "setEffectTexture(copy, 1, texture);",
+            /A Texture2D record holding a render target's colour states its `view` \(the target's `_colorView`\), optionally its `texture` \(the same target's `_colorTexture`\), a `sampler` and at most `_sampleType: "float"`; this one states texture, view, sampler, uScale\./,
+        ],
+    ];
+    for (const [texture, use, message] of uses)
+        assert.throws(() => compileSource(program(texture, use)), message);
 });
 
 test("a mesh keys a WeakMap of objects by its own identity", () => {
@@ -313,12 +370,43 @@ int main() {
     const ObjectIdentityTokens copied = engine.mesh_identities;
     std::cout << " " << same(first, again) << same(first, reused) << same(first, second)
               << !first.expired() << copied.empty();
+    // Read once: a fixed target's colour binds as its live view; a colour a
+    // build replaces, a view of no target, another texture and none refuse.
+    const RenderTargetHandle fixed = target(engine, true, 1), built = target(engine, true, 1);
+    for (const RenderTargetHandle handle : {fixed, built}) {
+        engine.render_targets[handle.value].color_view = true;
+        engine.render_targets[handle.value].color_texture = publish_gpu_texture_identity(engine);
+    }
+    engine.render_targets[fixed.value].allocation = TargetAllocation::fixed;
+    const auto view = render_target_color_view_object(engine, fixed);
+    const RenderTextureRef once =
+        render_target_color_snapshot(engine, render_target_color_texture(engine, fixed), view, sampler);
+    std::cout << " "
+              << (view && view->texture == engine.render_targets[fixed.value].color_texture &&
+                  view->object == view->texture.object)
+              << (once.target == fixed && once.record_sampler == nearest)
+              << refused([&] {
+                     (void)render_target_color_snapshot(
+                         engine, std::nullopt, render_target_color_view_object(engine, built), sampler);
+                 })
+              << refused([&] {
+                     (void)render_target_color_snapshot(
+                         engine, std::nullopt,
+                         create_texture_view(engine, publish_gpu_texture_identity(engine)), sampler);
+                 })
+              << refused([&] {
+                     (void)render_target_color_snapshot(
+                         engine, render_target_color_texture(engine, built), view, sampler);
+                 })
+              << refused([&] {
+                     (void)render_target_color_snapshot(engine, std::nullopt, std::nullopt, sampler);
+                 });
 }
 `,
         {
             flags: ["/I", "native/src", `/I${join(directory, "include")}`],
             timeoutMs: 20000,
-            expectedOutput: "1110 11 1101111 1 211 10011",
+            expectedOutput: "1110 11 1101111 1 211 10011 111111",
         },
     );
 });

@@ -21,7 +21,7 @@ import {
     type Value,
 } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
-import { renderTargetColorViewTexture } from "../data-sinks/resources.js";
+import { texture2DFromRecord } from "../data-sinks/resources.js";
 import { compileBlendState, type BlendStateContext } from "../blend-state.js";
 import {
     compileStaticNumber,
@@ -531,11 +531,8 @@ export function compileEffectIntrinsic(
                         ));
             const given = context.compileValue(argumentAt(call, 2));
             const texture =
-                renderTargetColorViewTexture(
-                    context,
-                    given,
-                    argumentAt(call, 2),
-                ) ?? given;
+                texture2DFromRecord(context, given, argumentAt(call, 2)) ??
+                given;
             if (texture.kind !== "render-texture") {
                 context.expectKind(texture, "texture", argumentAt(call, 2));
                 if (

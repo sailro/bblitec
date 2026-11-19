@@ -21,7 +21,7 @@ import { arrayShape, unionMembers } from "./type-facts.js";
  * Pinned exports whose only effect the native realm does not represent.
  * The browser pool counts texture ownership; native records retain their
  * CPU texture and each backend counts its own bindings, so both lower to
- * nothing (`compileAcquireTexture`).
+ * nothing (`compileTextureOwnership`).
  */
 export const inertPinnedExports: ReadonlySet<string> = new Set([
     "acquireTexture",

@@ -53,6 +53,7 @@ import {
     type ObjectValidationContext,
 } from "../option-helpers.js";
 import { valueKindOf } from "../type-facts.js";
+import { texture2DFromRecord } from "../data-sinks/resources.js";
 
 /** loadTexture2D's filters: the sampler rule reads them at generation. */
 const textureFilter: TableOption = {
@@ -114,6 +115,8 @@ export interface AssetIntrinsicContext
             | "runCallOverHeldData"
             | "requireEngine"
             | "requireDefaultEngine"
+            | "withRecordScopes"
+            | "expectSameEngine"
             | "fail"
             | "resolveStaticExpression"
             | "expectStaticArrayLiteral"
@@ -254,17 +257,41 @@ export function compileAssetIntrinsic(
     return assetIntrinsicHandlers.get(importedName)?.(context, call);
 }
 
-function compileAcquireTexture(
+/**
+ * `acquireTexture`/`releaseTexture`: the browser pool counts ownership of
+ * the record's `texture`. Native retains the CPU texture record and lets
+ * each backend count its uploaded bindings, so the source-level top-up/drop
+ * has no additional native lifetime operation. A record over a render
+ * target's colour acquires the colour texture its `texture` reads; a
+ * release may destroy that attachment, which native target ownership does
+ * not represent.
+ */
+function compileTextureOwnership(
     context: AssetIntrinsicContext,
     call: ts.CallExpression,
+    release: boolean,
 ): Value | undefined {
     context.expectArgumentCount(call, 1, 1);
-    const texture = context.compileValue(argumentAt(call, 0));
-    context.expectKind(texture, "texture", argumentAt(call, 0));
-    // The browser pool counts ownership of a standalone GPUTexture.
-    // Native retains the CPU texture record and lets each backend
-    // count its uploaded bindings, so the source-level top-up/drop
-    // has no additional native lifetime operation.
+    const argument = argumentAt(call, 0);
+    const given = context.compileValue(argument);
+    const texture = texture2DFromRecord(context, given, argument) ?? given;
+    if (texture.kind === "render-texture" && given.kind === "record") {
+        if (release)
+            context.fail(
+                argument,
+                "releaseTexture over a Texture2D record of a render target's " +
+                    "colour may destroy the target's attachment, which native " +
+                    "target ownership does not represent.",
+            );
+        if (!given.recordGetters?.texture && !given.recordProperties?.texture)
+            context.fail(
+                argument,
+                "acquireTexture counts the record's `texture`; this record " +
+                    "over a render target's colour states none.",
+            );
+        return { kind: "void", cpp: "" };
+    }
+    context.expectKind(texture, "texture", argument);
     return { kind: "void", cpp: "" };
 }
 
@@ -1405,8 +1432,14 @@ const assetIntrinsicHandlers = new EmissionMap<
         (context, call) =>
             compileAssetDecoderConfiguration(context, "setDracoBaseUrl", call),
     ],
-    ["acquireTexture", compileAcquireTexture],
-    ["releaseTexture", compileAcquireTexture],
+    [
+        "acquireTexture",
+        (context, call) => compileTextureOwnership(context, call, false),
+    ],
+    [
+        "releaseTexture",
+        (context, call) => compileTextureOwnership(context, call, true),
+    ],
     ["getContainerMeshes", compileGetContainerMeshes],
     ["loadGltf", compileLoadGltf],
     ["loadSplat", compileLoadSplat],

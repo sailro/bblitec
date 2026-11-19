@@ -1019,6 +1019,22 @@ export const propertyRules: readonly PropertyRule[] = [
         impure: true,
         feature: "frame-graph:color-texture-identity",
     },
+    // Its `_colorView`, read through a cast: the view `buildRenderTarget`
+    // creates with each `_colorTexture`, null when that is.
+    {
+        owner: "render-target",
+        property: "_colorView",
+        value: "data",
+        dataType: {
+            kind: "optional",
+            inner: { kind: "handle", handle: "gpu-texture-view" },
+        },
+        helper: "bbl::render_target_color_view_object",
+        helperTakesEngine: true,
+        helperReturnsFreshData: true,
+        impure: true,
+        feature: "frame-graph:color-texture-identity",
+    },
     {
         owner: "camera",
         property: "alpha",

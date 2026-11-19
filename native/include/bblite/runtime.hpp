@@ -6123,6 +6123,49 @@ render_target_color_texture(const Engine& engine, RenderTargetHandle target) {
         return std::nullopt;
     return record.color_texture;
 }
+/**
+ * `rt._colorView`: the one view `buildRenderTarget` creates with each
+ * `_colorTexture`, so that allocation's ordinal names the view object too
+ * (the shared counter gives no other object that ordinal).
+ */
+[[nodiscard]] inline js::Nullable<GpuTextureView>
+render_target_color_view_object(const Engine& engine, RenderTargetHandle target) {
+    const js::Nullable<GpuTextureIdentity> texture = render_target_color_texture(engine, target);
+    if (!texture)
+        return std::nullopt;
+    return GpuTextureView{*texture, texture->object};
+}
+/**
+ * A Texture2D record holding a render target's `_colorView` (and optionally
+ * its `_colorTexture`) as read at one moment, with its own sampler and
+ * `_sampleType`. A fixed eager target keeps that colour until disposal, so
+ * the record binds as the target's colour view (`render_target_color_view`);
+ * a target whose builds or resizes replace its colour is refused.
+ */
+inline RenderTextureRef render_target_color_snapshot(const Engine& engine,
+                                                     const js::Nullable<GpuTextureIdentity>& texture,
+                                                     const js::Nullable<GpuTextureView>& view,
+                                                     const GpuSampler& sampler,
+                                                     std::string_view sample_type = "float") {
+    if (!view || (texture && !(*texture == view->texture)))
+        throw std::runtime_error("A Texture2D record of a render target's colour states that "
+                                 "colour's view, and its texture when it states one.");
+    for (std::uint32_t index = 0; index < engine.render_targets.size(); ++index) {
+        const RenderTargetHandle target{index};
+        const auto& record = engine.render_targets[index];
+        if (!render_target_color_view_set(engine, target) ||
+            !(record.color_texture == view->texture))
+            continue;
+        if (record.allocation != TargetAllocation::fixed)
+            throw std::runtime_error(
+                "A Texture2D record holding a render target's colour view as read once binds "
+                "only a fixed-size createRenderTargetTexture target: a frame-graph build "
+                "replaces this target's colour.");
+        return render_target_color_view(engine, target, sampler, sample_type);
+    }
+    throw std::runtime_error("A Texture2D record of GPU parts without its size binds a live "
+                             "render target's colour view; this view is of none.");
+}
 /** `texture.sampler = sampler` on a render target's texture or depth facade. */
 inline void set_render_texture_sampler(Engine& engine, const RenderTextureRef& texture,
                                        const GpuSampler& sampler) {
