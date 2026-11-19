@@ -233,7 +233,9 @@ export function renderTargetColorViewTexture(
         node,
     );
     const signature = target.renderTargetSignature;
-    if (signature && (!signature.hasColor || signature.samples > 1))
+    // A count the run decides is checked where the view is made
+    // (`bbl::render_target_color_view`).
+    if (signature && (!signature.hasColor || signature.samples === 4))
         context.fail(
             node,
             "A Texture2D record binds a render target's colour view only " +

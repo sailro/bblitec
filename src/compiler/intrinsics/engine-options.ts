@@ -464,7 +464,7 @@ export function compileRenderTargetOptions(
     const { width, height, surface } = sized;
     const sampleCount = samples
         ? compileRenderTargetSampleCount(context, samples)
-        : "1u";
+        : { cpp: "1u", count: 1 as const };
     const format = colorFormat && context.unwrap(colorFormat);
     const surfaceFormat =
         !!format &&
@@ -483,7 +483,7 @@ export function compileRenderTargetOptions(
         colorFormat && !surfaceFormat
             ? staticTableEntry(context, renderTargetColorFormat, colorFormat)
             : undefined;
-    let cpp = `bbl::RenderTargetOptions{${sampleCount}, ${colorFormat ? "true" : "false"}, ${depthFormat ? "true" : "false"}, false, ${width}, ${height}}`;
+    let cpp = `bbl::RenderTargetOptions{${sampleCount.cpp}, ${colorFormat ? "true" : "false"}, ${depthFormat ? "true" : "false"}, false, ${width}, ${height}}`;
     if (depthCompareCpp)
         cpp = `[&]() { auto options = ${cpp}; options.depth_compare = ${depthCompareCpp}; return options; }()`;
     if (colorClass || depthClass) {
@@ -500,7 +500,7 @@ export function compileRenderTargetOptions(
         signature: {
             hasColor: colorFormat !== undefined,
             ...(depth ? { depthFormat: depth } : {}),
-            samples: Number.parseInt(sampleCount),
+            samples: sampleCount.count,
         },
     };
 }
@@ -741,7 +741,7 @@ export function compileGeometryTaskOptions(
             nameExpression
                 ? context.compileStringLiteral(nameExpression)
                 : `geometry-${manifest.shaderIndex}`,
-        )}, ${manifest.shaderIndex}u, ${samplesExpression ? compileRenderTargetSampleCount(context, samplesExpression) : "1u"}, {${compiledDescriptions.join(", ")}}, ${target?.cpp ?? "bbl::RenderTargetHandle{}"}, ${clearColorExpression ? "true" : "false"}, ${clearColorExpression ? context.compileColor4(clearColorExpression) : "bbl::Color4{}"}, {}}`,
+        )}, ${manifest.shaderIndex}u, ${samplesExpression ? compileRenderTargetSampleCount(context, samplesExpression).cpp : "1u"}, {${compiledDescriptions.join(", ")}}, ${target?.cpp ?? "bbl::RenderTargetHandle{}"}, ${clearColorExpression ? "true" : "false"}, ${clearColorExpression ? context.compileColor4(clearColorExpression) : "bbl::Color4{}"}, {}}`,
         manifest,
     };
 }
@@ -941,34 +941,57 @@ export function optionalRenderTarget(
  * there — a scene wanting depth values reads them out of the colour
  * attachment the geometry task writes them to, which is what the pin does.
  * Refusing it here names the property; the backend would only fail the pipeline.
+ *
+ * `passSource`: the texture is a post-process pass's `sourceTexture`
+ * (`noteSampledTextureSamples`).
  */
 export function compileTextureReference(
     context: EngineOptionContext,
     object: ts.ObjectLiteralExpression,
     property: string,
     sampling: "color" | "any" = "any",
+    passSource = false,
 ): string {
     const expression = context.objectProperty(object, property);
     if (!expression) {
         context.fail(object, `Frame-graph task requires ${property}.`);
     }
     const value = context.compileValue(expression);
-    if (
-        !value.renderTargetSignature ||
-        value.renderTargetSignature.samples !== 1
-    ) {
-        context.admissions.noteTemporalRecordBoundary(
-            expression,
-            "TAA post-process sampling requires a proven single-sample source texture as required by the pinned GPU state",
-            "always",
-        );
-    }
+    noteSampledTextureSamples(context, expression, value, passSource);
     return compileRenderTextureValue(
         context,
         expression,
         value,
         `Frame-graph ${property}`,
         { sampling },
+    );
+}
+
+/**
+ * TAA's temporal frames sample a texture only at one sample. A post-process
+ * pass's source (`passSource`) is checked where the pass builds its GPU
+ * state, as the pin's `createPostProcessGpuState` refuses a multisampled one
+ * (`upstream::require_single_sample_post_process_source`), so a render
+ * target whose count the run decides is admitted; any other sampled texture,
+ * and any count known at generation, must be proven single-sample here.
+ */
+export function noteSampledTextureSamples(
+    context: EngineOptionContext,
+    expression: ts.Expression,
+    value: Value,
+    passSource: boolean,
+): void {
+    const signature = value.renderTargetSignature;
+    if (
+        signature &&
+        (signature.samples === 1 ||
+            (passSource && signature.samples === undefined))
+    )
+        return;
+    context.admissions.noteTemporalRecordBoundary(
+        expression,
+        "TAA post-process sampling requires a proven single-sample source texture as required by the pinned GPU state",
+        "always",
     );
 }
 

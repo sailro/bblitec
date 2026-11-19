@@ -158,6 +158,77 @@ test("TAA observes presentation identity separately from history order and retai
     }
 });
 
+test("TAA admits a source whose sample count the run decides; the pass refuses a multisampled one as the pin's GPU state does", async (t) => {
+    // The scene's samples come from a run-time choice, and the branch that
+    // adds TAA is the one where that choice is one sample.
+    const decided = `
+import { createEngine, createSceneContext, createRenderTarget, createRenderTask,
+    createTaaPostProcessTask } from "babylon-lite";
+const engine = await createEngine({});
+const scene = createSceneContext(engine, { defaultRenderTask: false });
+function setup(samples: 1 | 4, halton: boolean) {
+    const source = createRenderTarget({ format: engine.format, dFormat: "depth24plus-stencil8", samples, size: engine });
+    const sourceTask = createRenderTask({ rt: source }, engine, scene);
+    if (halton) ${create()};
+}
+const msaa = Math.random() < 0.5;
+setup(msaa ? 4 : 1, !msaa);
+`;
+    assert.doesNotThrow(() => compileSource(decided));
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const lowered = new PostProcessLowerer(new LoweringContext(), [
+        {
+            intrinsic: "createBlackAndWhitePostProcessTask",
+            shaderIndex: 0,
+            options: {},
+        },
+    ]).lowerTaskRecords();
+    const output = resolve("artifacts/temporal-post-process-contracts");
+    mkdirSync(output, { recursive: true });
+    const sourcePath = join(output, "source-samples.cpp");
+    writeFileSync(
+        sourcePath,
+        `#include <bblite/runtime.hpp>
+#include <cstdio>
+#include <stdexcept>
+namespace bbl::upstream {
+${definition(lowered.source, "void require_single_sample_post_process_source(")}
+}
+int main() {
+    bbl::Engine engine;
+    engine.render_targets.resize(2);
+    engine.render_targets[1].samples = 4;
+    bbl::PostProcessPassOptions pass;
+    pass.name = "taa-blend";
+    pass.source.target = bbl::RenderTargetHandle{0};
+    bbl::upstream::require_single_sample_post_process_source(engine, pass);
+    pass.source.target = bbl::RenderTargetHandle{1};
+    try {
+        bbl::upstream::require_single_sample_post_process_source(engine, pass);
+    } catch (const std::runtime_error& error) {
+        std::puts(error.what());
+        return 0;
+    }
+    return 1;
+}
+`,
+    );
+    const executable = join(output, "source-samples.exe");
+    runNativeFixtureCompiler(tools, [
+        `/Fo:${output}\\`,
+        `/Fe:${executable}`,
+        sourcePath,
+    ]);
+    assert.equal(
+        execFileSync(executable, { encoding: "utf8" }).trim(),
+        'PostProcessTask "taa-blend": multisampled source textures are not supported. Use a sampleCount: 1 source RenderTarget.',
+    );
+});
+
 test("existing composites retain their observed final output with and without a target", async () => {
     for (const intrinsic of [
         "createBloomPostProcessTask",

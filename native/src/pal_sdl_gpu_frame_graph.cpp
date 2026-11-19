@@ -276,6 +276,7 @@ void record_post_process(State& state, Engine& engine, TaskHandle task_handle,
                            SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER);
     }
     if (gpu.program == npos) {
+        upstream::require_single_sample_post_process_source(engine, pass);
         gpu.program = post_process_program(state, info.module_index, output.format,
                                            target_samples(state, output_record), pass.alpha_mode);
         gpu.uniforms.assign(((info.uniform_byte_length + 15u) & ~15u) / 4u, 0.0f);

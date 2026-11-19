@@ -275,6 +275,7 @@ void record_post_process(State& state, Engine& engine, TaskHandle task_handle,
         source_height = source.height;
     }
     if (gpu.program == npos) {
+        upstream::require_single_sample_post_process_source(engine, pass);
         gpu.program =
             post_process_program(state, info, output.format, target_samples(state, output_record),
                                  pass.alpha_mode, pass.extra_textures.size());

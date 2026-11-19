@@ -2246,6 +2246,7 @@ prepare_post_process_pass(GpuState& state, Engine& engine, TaskHandle handle,
         // (the circle-of-confusion map is r16) or follow its source's. The
         // pin builds the pipeline against that target's own sample count and
         // resolves nothing; what it refuses is a multisampled *source*.
+        upstream::require_single_sample_post_process_source(engine, pass);
         gpu.program =
             post_process_program(state, shader_info.module_index,
                                  handle_at(state.render_targets, pass.output_target).color_format,

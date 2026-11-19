@@ -3183,7 +3183,8 @@ export interface ValueFields {
     renderTargetSignature?: {
         readonly hasColor: boolean;
         readonly depthFormat?: string;
-        readonly samples: number;
+        /** Undefined for a count the run decides. */
+        readonly samples: 1 | 4 | undefined;
     };
     /**
      * Set instead when a `task` value names a screen-space effect. Its

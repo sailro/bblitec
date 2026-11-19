@@ -42,6 +42,7 @@ import type {
 } from "../types.js";
 import {
     compileTextureReference,
+    noteSampledTextureSamples,
     optionalRenderTarget,
     requiredObjectNumber,
     type EngineOptionContext,
@@ -90,6 +91,7 @@ export function compilePostProcessTaskOptions(
         object,
         "sourceTexture",
         "color",
+        true,
     );
     const target = optionalRenderTarget(context, object, "targetTexture", true);
 
@@ -220,16 +222,7 @@ export function compilePostProcessCompositeOptions(
     }
     const source = context.compileValue(sourceExpression);
     context.expectKind(source, "render-target", sourceExpression);
-    if (
-        !source.renderTargetSignature ||
-        source.renderTargetSignature.samples !== 1
-    ) {
-        context.admissions.noteTemporalRecordBoundary(
-            sourceExpression,
-            "TAA post-process sampling requires a proven single-sample source texture as required by the pinned GPU state",
-            "always",
-        );
-    }
+    noteSampledTextureSamples(context, sourceExpression, source, true);
 
     const target = optionalRenderTarget(context, object, "targetTexture", true);
 

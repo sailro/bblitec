@@ -33,6 +33,7 @@ import {
     compositeScalarFunction,
 } from "./post-process-accessors.js";
 import { recordAt } from "../compiler/record-access.js";
+import { pinnedErrorCode, pinnedErrorMessageCpp } from "./pinned-error.js";
 
 /** The feature every post-process refusal is keyed on. */
 const POST_PROCESS_FEATURE = "renderer:post-process";
@@ -438,10 +439,63 @@ void write_post_process_uniforms(
     std::uint32_t source_height,
     float* data);
 
+/**
+ * The pin's refusal of a multisampled source, run where a backend builds
+ * a pass's GPU state.
+ */
+void require_single_sample_post_process_source(
+    const Engine& engine,
+    const PostProcessPassOptions& pass);
+
 } // namespace bbl::upstream
 ${this.compositeDeclarations()}
 ${[...lifecycleHeaders].join("\n")}
 ${sceneUbo ? `${sceneUbo.jitterHeader()}\n${sceneUbo.cacheHeader()}\n${sceneUbo.storageHeader()}\n${sceneUbo.packingHeader()}` : ""}`;
+    }
+
+    /**
+     * `createPostProcessGpuState`'s refusal of a multisampled source over
+     * the pass's task name. It checks a render-target source: the one kind
+     * whose sample count the compiler admits undecided
+     * (`noteSampledTextureSamples`).
+     */
+    private sourceSamplesCheck(): string {
+        const { declaration: gpuState } = this.context.functionDeclaration(
+            TASK_MODULE,
+            "createPostProcessGpuState",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(gpuState, "source"),
+            "task.sourceTexture",
+            "Post-process GPU state source",
+        );
+        const guard = gpuState.body?.statements.find(
+            (statement): statement is ts.IfStatement =>
+                ts.isIfStatement(statement) &&
+                this.context.expressionMatchesShape(
+                    statement.expression,
+                    "(source._descriptor.samples ?? 1) !== 1",
+                ),
+        );
+        if (!guard)
+            return this.context.contractError(
+                gpuState,
+                "Expected the post-process multisampled-source refusal.",
+            );
+        const message = pinnedErrorMessageCpp(
+            this.context,
+            pinnedErrorCode(this.context, guard, 1),
+            [{ cpp: "pass.name" }],
+        );
+        return `// ${this.context.provenance(TASK_MODULE, "createPostProcessGpuState", "its multisampled-source refusal")}
+void require_single_sample_post_process_source(
+    const Engine& engine,
+    const PostProcessPassOptions& pass) {
+    if (pass.source.source == RenderTextureSource::render_target &&
+        handle_at(engine.render_targets, pass.source.target).samples != 1) {
+        throw std::runtime_error(${message});
+    }
+}`;
     }
 
     /** The pin's own switch, as the emitted table's case arms. */
@@ -515,6 +569,8 @@ ${this.blendCases()}        default:
             return PostProcessBlend{};
     }
 }
+
+${this.sourceSamplesCheck()}
 
 void write_post_process_uniforms(
     const Engine& engine,
