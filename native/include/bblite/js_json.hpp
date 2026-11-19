@@ -1254,6 +1254,32 @@ template <typename T>
     return object && value.native_identity() == static_cast<const void*>(object.get());
 }
 
+/** A boxed record's field holding a native handle, which no document view reflects. */
+[[noreturn]] inline void refuse_native_handle_field(std::string_view key) {
+    throw std::runtime_error("Dynamic object field '" + std::string(key) +
+                             "' holds a native handle, which no document view reflects.");
+}
+
+/**
+ * A boxed record's field that may hold a native handle: absent it reads
+ * undefined and empty it reads null, as a document reflects them; a held
+ * handle refuses (`refuse_native_handle_field`).
+ */
+template <typename T>
+[[nodiscard]] JsonValue native_handle_field_json(std::string_view key, const T& field) {
+    if constexpr (detail::is_tagged_v<T>) {
+        if (!field.defined())
+            return JsonValue{};
+        return native_handle_field_json(key, field.value());
+    } else if constexpr (IsNullable<T>::value) {
+        if (!field.has_value())
+            return JsonValue::null_value();
+        return native_handle_field_json(key, *field);
+    } else {
+        refuse_native_handle_field(key);
+    }
+}
+
 template <typename T> [[nodiscard]] JsonValue json_value(const std::optional<T>& value) {
     return value ? json_value(*value) : JsonValue{};
 }

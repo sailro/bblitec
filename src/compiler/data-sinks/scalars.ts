@@ -235,7 +235,18 @@ function valueJson(
     // A native observation wrapper only supplies reads; a plain record
     // therefore acquires the document owner before entering this storage.
     // A pinned record type has no document form; the document holds a copy.
+    // Nor does a native handle: a record holding one enters as itself, boxed
+    // by reference (`markJsonBoxed`), as JavaScript keeps the object.
     if (value.dataType?.kind === "struct") {
+        if (
+            value.cpp &&
+            lowerer.context.dataTypes.holdsNativeHandle(value.dataType)
+        )
+            return lowerer.context.dataTypes.jsonValueCpp(
+                value.dataType,
+                value.cpp,
+                node,
+            );
         const demand = lowerer.context.dataTypes.documentRecordDemand(
             value.dataType.name,
             expression,

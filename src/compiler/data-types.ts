@@ -11932,7 +11932,50 @@ export class DataTypeRegistry {
         return this.jsonValueCpp(field.type, cpp, node);
     }
 
-    /** Native object views retain the original reference and read its live fields. */
+    /**
+     * Whether values of `type` hold a native object (a handle, an event
+     * target or another native carrier, `isNativeStructuralView`), in place
+     * or through their containers and record fields: no document has a form
+     * for one.
+     */
+    public holdsNativeHandle(
+        type: DataType,
+        seen: Set<string> = new Set(),
+    ): boolean {
+        if (isNativeStructuralView(type)) return true;
+        switch (type.kind) {
+            case "optional":
+            case "tagged":
+                return this.holdsNativeHandle(type.inner, seen);
+            case "vector":
+            case "set":
+                return this.holdsNativeHandle(type.element, seen);
+            case "map":
+                return (
+                    this.holdsNativeHandle(type.key, seen) ||
+                    this.holdsNativeHandle(type.value, seen)
+                );
+            case "union":
+                return type.members.some((member) =>
+                    this.holdsNativeHandle(member, seen),
+                );
+            case "struct":
+                if (seen.has(type.name)) return false;
+                seen.add(type.name);
+                return (this.structsByName.get(type.name)?.fields ?? []).some(
+                    (field) => this.holdsNativeHandle(field.type, seen),
+                );
+            default:
+                return false;
+        }
+    }
+
+    /**
+     * Native object views retain the original reference and read its live
+     * fields; a field holding a native handle reads undefined or null while
+     * it holds none, and refuses a held one (`native_handle_field_json`), as
+     * no document holds the handle.
+     */
     public markJsonBoxed(type: DataType<"struct">, node: ts.Node): void {
         if (!this.isReferenceStruct(type.name)) {
             const demand = this.nativeRecordSources.get(type.name);
@@ -11981,7 +12024,8 @@ export class DataTypeRegistry {
             this.ownPresence(type.name, field, "value", "->", node);
             if (
                 this.jsonFieldValueCpp(type.name, field, "value", node) ===
-                undefined
+                    undefined &&
+                !this.holdsNativeHandle(field.type)
             )
                 this.fail(
                     node,
@@ -12011,12 +12055,13 @@ export class DataTypeRegistry {
             );
             fields.forEach((field, index) => {
                 const property = `value->${field.name}${field.accessor ? ".get()" : ""}`;
-                const cpp = this.jsonFieldValueCpp(
-                    name,
-                    field,
-                    property,
-                    node,
-                )!;
+                const cpp = this.jsonFieldValueCpp(name, field, property, node);
+                if (cpp === undefined) {
+                    lines.push(
+                        `    if (key == ${stringLiteral(field.sourceName)}) return bbl::js::native_handle_field_json(key, ${property});`,
+                    );
+                    return;
+                }
                 // An absent shared object reads undefined, not its null, and
                 // a nullable field's empty storage refuses to guess.
                 const presence = presences[index];

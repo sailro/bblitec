@@ -19832,6 +19832,81 @@ test(
     },
 );
 
+// A record holding meshes, stored in an `object` field, is that very record:
+// the document holds it boxed by reference, its live fields read through the
+// box, and its mesh field refuses reflection, as no document holds a handle.
+test("an object field holds a record whose fields hold meshes as that record", (t) => {
+    const { cpp } = compileSource(`
+        import { createBox, type EngineContext, type Mesh } from "@babylonjs/lite";
+        interface Placed { x: number }
+        interface Marker extends Placed { tag: number; meshes: Mesh[] }
+        interface Frame { x: number; owner?: object }
+        function frameOf(placed: Placed): Frame | null {
+            if (!Number.isFinite(placed.x)) return null;
+            return { x: placed.x * 2, owner: placed };
+        }
+        function inspect(engine: EngineContext): number {
+            const mesh = createBox(engine);
+            const markers: Marker[] = [{ x: 1, tag: 3, meshes: [mesh] }, { x: 2, tag: 4, meshes: [] }];
+            const frames = new Map<object, Frame>();
+            for (const marker of markers) {
+                const frame = frameOf(marker);
+                if (frame) frames.set(marker, frame);
+            }
+            const first = frames.get(markers[0]!);
+            if (!first || first.owner !== markers[0] || first.x !== 2) throw new Error("owner identity");
+            if (frames.get(markers[1]!)?.owner === markers[0]) throw new Error("distinct owners");
+            markers[0]!.tag = 7;
+            if ((first.owner as { tag?: unknown }).tag !== 7) throw new Error("live view");
+            if (markers[0]!.meshes.length !== 1) throw new Error("meshes");
+            return frames.size;
+        }
+        const inspections: Array<typeof inspect> = [inspect];
+    `);
+    assert.match(
+        cpp,
+        /if \(key == "meshes"\) return bbl::js::native_handle_field_json\(key, value->\w+\);/,
+    );
+    const entry =
+        /double (\w+)\(\[\[maybe_unused\]\] bblscene::(\w+)& \w+, \[\[maybe_unused\]\] bbl::StoredEngine \w+\);/.exec(
+            cpp,
+        );
+    assert.ok(entry, "inspection entry");
+    if (!native) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(
+        native,
+        "language-constructs/object-field-record-with-meshes",
+        `
+        #define main generated_main
+        ${cpp}
+        #undef main
+        #include <cassert>
+        namespace bbl {
+            MeshHandle create_box(Engine& engine, BoxOptions) {
+                engine.meshes.emplace_back();
+                return {0, 0};
+            }
+        }
+        int main() {
+            const bbl::js::RealmScope realm;
+            auto engine = std::make_shared<bbl::Engine>();
+            bblscene::${entry[2]} environment{};
+            assert(bblscene::${entry[1]}(environment, bbl::StoredEngine{engine}) == 2);
+            bool refused = false;
+            try {
+                static_cast<void>(bblscene::json_value_property(bbl::js::make_ref<bblscene::MarkerData>(), "meshes"));
+            } catch (const std::runtime_error&) {
+                refused = true;
+            }
+            assert(refused);
+        }
+    `,
+    );
+});
+
 check(
     "a-local-record-stored-as-a-closed-key-record-is-that-record",
     `
