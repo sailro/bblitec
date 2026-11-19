@@ -75,6 +75,7 @@ export {
     passesByReferenceKind,
     presentDataType,
     soleMemberIndex,
+    soleArrayArmIndex,
     isOpaqueReference,
     isNativeStructuralView,
     isScalarDataType,

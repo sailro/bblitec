@@ -99,6 +99,7 @@ import {
     absenceKind,
     admitsUndefined,
     arrayElementType,
+    arrayShape,
     declaredContextualType,
     isNullable,
     provenPresent,
@@ -179,6 +180,7 @@ import { absentReceiverMessage, isDirectDataProperty } from "./properties.js";
 import { representedResultType } from "./represented-result.js";
 import {
     arrayWriteObservation,
+    readonlyArrayWriteObservation,
     recordFieldIsWritten,
     builtRecordFieldIsWritten,
 } from "./record-observations.js";
@@ -230,6 +232,7 @@ import {
     type TypedArrayKind,
     callMember,
     isUiElementHandleType,
+    soleArrayArmIndex,
     soleMemberIndex,
 } from "./data-types.js";
 import {
@@ -873,6 +876,30 @@ function updateStepCpp(
 /** Whether an expression's wrappers include a type assertion. */
 function assertsType(expression: ts.Expression): boolean {
     return wrappersUnder(expression).some(isTypeAssertion);
+}
+
+/**
+ * The element facts a view of `value`'s array shares with it: the snapshot
+ * and its owner, which a write through any view withdraws.
+ */
+function elementFacts(
+    value: Value,
+): Pick<
+    Value,
+    "staticElements" | "staticElementsOwner" | "runtimeElementTemplate"
+> {
+    const facts = value.staticElementsOwner ?? value;
+    return {
+        ...(facts.staticElements
+            ? {
+                  staticElements: facts.staticElements,
+                  staticElementsOwner: facts,
+              }
+            : {}),
+        ...(facts.runtimeElementTemplate
+            ? { runtimeElementTemplate: facts.runtimeElementTemplate }
+            : {}),
+    };
 }
 
 /**
@@ -4605,12 +4632,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 narrowed,
                 expression,
             );
-            if (index >= 0)
-                return this.projectedNativeValue(
+            if (index >= 0) {
+                const member = value.dataType.members[index]!;
+                const projected = this.projectedNativeValue(
                     value,
                     `std::get<${index}>(${value.cpp})`,
-                    value.dataType.members[index]!,
+                    member,
                 );
+                // The array arm is the array the union's element facts
+                // describe: writes through it reach them.
+                return member.kind === "vector"
+                    ? { ...projected, ...elementFacts(value) }
+                    : projected;
+            }
             if (!this.sharesSomeMembers(value.dataType, narrowed)) return value;
             const members = compileDataValueSink(
                 narrowed,
@@ -6388,31 +6422,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     writable(value).optionalFoundCpp = "true";
                 }
             }
+            // An array slot, or a union slot whose array arm holds the
+            // record's linked array (`retainRecordArrayLiteralFacts`) and
+            // no write in the program can change.
+            const slotType =
+                field.type.kind === "optional" ? field.type.inner : field.type;
             if (
                 staticField &&
-                (field.type.kind === "vector" ||
-                    (field.type.kind === "optional" &&
-                        field.type.inner.kind === "vector"))
-            ) {
-                const facts = staticField.staticElementsOwner ?? staticField;
-                return {
-                    ...value,
-                    ...(facts.staticElements
-                        ? { staticElements: facts.staticElements }
-                        : {}),
-                    ...(facts.staticElements
-                        ? {
-                              staticElementsOwner: facts,
-                          }
-                        : {}),
-                    ...(facts.runtimeElementTemplate
-                        ? {
-                              runtimeElementTemplate:
-                                  facts.runtimeElementTemplate,
-                          }
-                        : {}),
-                };
-            }
+                (slotType.kind === "vector" ||
+                    (slotType.kind === "union" &&
+                        soleArrayArmIndex(slotType) >= 0 &&
+                        staticField.dataType?.kind === "vector" &&
+                        this.unwrittenSlotArrays(field, staticField)))
+            )
+                return { ...value, ...elementFacts(staticField) };
             if (staticField?.staticNumber !== undefined) {
                 writable(value).staticNumber = staticField.staticNumber;
             }
@@ -6856,7 +6879,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 freshData: true,
             };
         }
-        if (mode === "write" && dataType.kind === "tuple") {
+        // An element write changes the array whatever path names it: a
+        // field's array (`record.lanes[0] = x`) drops the element facts its
+        // record holds, which the root binding's do not reach.
+        if (
+            mode === "write" &&
+            (dataType.kind === "tuple" || dataType.kind === "vector")
+        ) {
             this.invalidateStaticElements(owner);
         }
         if (dataType.kind === "module-namespace") {
@@ -10378,6 +10407,33 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
     }
 
+    /**
+     * Whether no write in the program changes `array`, the array a union
+     * field holds, whatever path reaches it: no write reaches arrays of the
+     * types the field's declarations hold, or the array is its record
+     * literal's own and they hold it only as readonly arrays
+     * (`readonlyArrayWriteObservation`).
+     */
+    private unwrittenSlotArrays(field: DataStructField, array: Value): boolean {
+        const { checker } = this.context;
+        const declared = (field.declarations ?? []).flatMap((declaration) =>
+            presentMembers(checker.getTypeAtLocation(declaration)).filter(
+                (member) => arrayShape(checker, member) !== undefined,
+            ),
+        );
+        return (
+            declared.length > 0 &&
+            declared.every((type) =>
+                array.recordLiteralArray &&
+                arrayShape(checker, type)?.mutable === false
+                    ? readonlyArrayWriteObservation(this.context, type) ===
+                      undefined
+                    : arrayWriteObservation(this.context, type, type) ===
+                      undefined,
+            )
+        );
+    }
+
     /** Link literal array fields to their stored owner before aliases can write them. */
     public retainRecordArrayLiteralFacts(owner: Value, node: ts.Node): void {
         const type = owner.dataType;
@@ -10389,16 +10445,32 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             "accessors",
         )) {
             const source = properties[field.sourceName];
-            const memberType =
+            const held =
                 field.type.kind === "optional" ? field.type.inner : field.type;
+            // A union slot holds a literal array in its one array arm.
+            const arm = held.kind === "union" ? soleArrayArmIndex(held) : -1;
+            const memberType =
+                held.kind === "union" && arm >= 0 ? held.members[arm]! : held;
             if (source?.kind !== "tuple" || memberType.kind !== "vector")
                 continue;
             const storedSlot = `${owner.cpp}${this.context.dataTypes.memberAccess(type.name)}${field.name}`;
             const slot = field.accessor ? `${storedSlot}.get()` : storedSlot;
+            const present =
+                field.type.kind === "optional" ? `(*${slot})` : slot;
             const member = this.leafValue(
-                field.type.kind === "optional" ? `(*${slot})` : slot,
+                held.kind === "union"
+                    ? `std::get<${arm}>(${present})`
+                    : present,
                 memberType,
             );
+            const literal = ts.isExpression(node)
+                ? literalMember(node, field.sourceName)
+                : undefined;
+            if (
+                literal &&
+                ts.isArrayLiteralExpression(unwrapExpression(literal))
+            )
+                writable(member).recordLiteralArray = true;
             this.retainArrayLiteralFacts(member, source, node);
             writable(properties)[field.sourceName] = member;
         }

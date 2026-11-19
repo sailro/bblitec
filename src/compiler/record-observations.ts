@@ -509,6 +509,102 @@ export function arrayWriteObservation(
 }
 
 /**
+ * Why the elements of an array only ever referenced as `type`, a readonly
+ * array (`readonly number[]`) -- a literal a record field of that type
+ * holds alone -- could change, or undefined when nothing can: no reference
+ * to it writes, so only an assertion retyping a value as, or as holding, a
+ * mutable array that may hold its elements makes it writable.
+ */
+export function readonlyArrayWriteObservation(
+    context: RecordObservationContext,
+    type: ts.Type,
+): string | undefined {
+    let answer = readonlyArrayWriteAnswers.get(type);
+    if (answer === undefined) {
+        answer = assertedWritableArray(context, type) ?? null;
+        readonlyArrayWriteAnswers.set(type, answer);
+    }
+    return answer ?? undefined;
+}
+
+/** @unjournaled {@link readonlyArrayWriteObservation}'s answers by type: pure functions of the checked program. */
+const readonlyArrayWriteAnswers = new WeakMap<ts.Type, string | null>();
+
+/** {@link readonlyArrayWriteObservation}, computed. */
+function assertedWritableArray(
+    context: RecordObservationContext,
+    type: ts.Type,
+): string | undefined {
+    const { checker } = context;
+    const element = arrayElementType(checker, type);
+    const related = (other: ts.Type): boolean =>
+        element === undefined ||
+        checker.isTypeAssignableTo(element, other) ||
+        checker.isTypeAssignableTo(other, element);
+    const assertion = programObservations(context.program).assertions.find(
+        ({ asserted }) =>
+            holdsMutableArray(checker, asserted, related, new Set()),
+    );
+    return (
+        assertion &&
+        `an assertion to '${checker.typeToString(assertion.asserted)}' may write such arrays`
+    );
+}
+
+/**
+ * Whether a value of `type` holds, as itself or anywhere inside, a mutable
+ * array whose element type `related` accepts. An open type may hold any,
+ * but an `unknown` one is written only through a further assertion, and a
+ * type parameter holds what its constraint does.
+ */
+function holdsMutableArray(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+    related: (element: ts.Type) => boolean,
+    seen: Set<ts.Type>,
+): boolean {
+    if (seen.has(type)) return false;
+    seen.add(type);
+    if ((type.flags & ts.TypeFlags.Unknown) !== 0) return false;
+    if ((type.flags & ts.TypeFlags.TypeParameter) !== 0) {
+        const constraint = checker.getBaseConstraintOfType(type);
+        return (
+            constraint !== undefined &&
+            holdsMutableArray(checker, constraint, related, seen)
+        );
+    }
+    if ((type.flags & OPEN_HOLDER_FLAGS) !== 0) return true;
+    if (type.isUnionOrIntersection())
+        return type.types.some((member) =>
+            holdsMutableArray(checker, member, related, seen),
+        );
+    const shape = arrayShape(checker, type);
+    if (shape)
+        return (
+            (shape.mutable && related(shape.element)) ||
+            holdsMutableArray(checker, shape.element, related, seen)
+        );
+    if ((type.flags & ts.TypeFlags.Object) === 0) return false;
+    return (
+        checker
+            .getPropertiesOfType(type)
+            .some((property) =>
+                holdsMutableArray(
+                    checker,
+                    checker.getTypeOfSymbol(property),
+                    related,
+                    seen,
+                ),
+            ) ||
+        checker
+            .getIndexInfosOfType(type)
+            .some((index) =>
+                holdsMutableArray(checker, index.type, related, seen),
+            )
+    );
+}
+
+/**
  * Whether `array` names a binding that builds its array before any other
  * reference can hold it: a function's `const` initialized with a new array,
  * named in no nested function or class, where every statement writing

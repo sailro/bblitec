@@ -162,6 +162,21 @@ export function isScalarDataType(
     );
 }
 
+/**
+ * The union's one array arm when its other arms are scalars
+ * (`number | number[]`): the arm a literal array the union holds is stored
+ * in. -1 when it has none, or another arm could hold an array.
+ */
+export function soleArrayArmIndex(type: DataType<"union">): number {
+    const index = soleMemberIndex(type, "vector");
+    return index >= 0 &&
+        type.members.every(
+            (member, at) => at === index || isScalarDataType(member),
+        )
+        ? index
+        : -1;
+}
+
 /** The traits of a primitive held in a native value class (`primitive`). */
 export function primitiveTraits(
     type: DataType | undefined,

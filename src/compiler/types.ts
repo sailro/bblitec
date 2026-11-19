@@ -3333,6 +3333,11 @@ export interface ValueFields {
      * of a `const`'s literal, read where no write replaces that field.
      */
     recordLiteral?: ts.ObjectLiteralExpression;
+    /**
+     * The native array a record literal's own array literal created: no
+     * other reference held it when the record took it.
+     */
+    recordLiteralArray?: true;
     /** Module namespace exports are live bindings and cannot be written through this record. */
     moduleNamespace?: true;
     /** Fields alias an already-retained native object; escaping must preserve those field references. */

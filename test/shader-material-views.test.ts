@@ -767,6 +767,9 @@ test("a ShaderMaterial view's program takes no defaults, so declarations it is g
     );
 });
 
+const viewOwnSlotsRefusal =
+    /input\.ts:\d+:\d+: A ShaderMaterial view keeps its source's slots; its redefinitions \(fragmentSource, uniformDecls\) declare other uniforms, samplers or storage buffers than shader variant 'tinted', which slots of the view's own would hold: the same definition gives the view the slot maps holding them\./;
+
 test("a ShaderMaterial view's declarations a helper adds a module constant declaration to are known at generation", () => {
     // The helper's read-only parameter keeps the constant's fields and own
     // keys while the helper stores it in the list.
@@ -779,10 +782,21 @@ test("a ShaderMaterial view's declarations a helper adds a module constant decla
         "async function main",
         'const WATER: ShaderUniformDecl = { name: "uWater", type: "vec4<f32>" };\n    async function main',
     );
-    assert.throws(
-        () => compileSource(source),
-        /input\.ts:\d+:\d+: A ShaderMaterial view keeps its source's slots; its redefinitions \(fragmentSource, uniformDecls\) declare other uniforms, samplers or storage buffers than shader variant 'tinted', which slots of the view's own would hold: the same definition gives the view the slot maps holding them\./,
+    assert.throws(() => compileSource(source), viewOwnSlotsRefusal);
+});
+
+test("a ShaderMaterial view's declarations a helper adds a module constant declaration with a literal default array to are known at generation", () => {
+    // The helper's read-only parameter keeps the constant's fields, its
+    // default array included, while the helper stores it in the list.
+    const source = sharedDefaultSource(`
+        const view = createMaterialView(tinted, { features: 0 }) as ShaderMaterial;
+        Object.defineProperties(view, { fragmentSource: { value: wgsl\`\${NORMAL}\`, configurable: true }, uniformDecls: { value: withDecl(tinted.uniformDecls, WATER), configurable: true } });
+        draw(engine, view);
+    `).replace(
+        "async function main",
+        'const WATER: ShaderUniformDecl = { name: "uWater", type: "vec4<f32>", defaultValue: [0, 0, 0, 0] };\n    async function main',
     );
+    assert.throws(() => compileSource(source), viewOwnSlotsRefusal);
 });
 
 const runtimeDefaultsSource = `${prelude}

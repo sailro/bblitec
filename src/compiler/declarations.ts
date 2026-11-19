@@ -2115,8 +2115,11 @@ export class DeclarationLowerer {
                         : "copy",
                 );
             }
+            // A reference, or a wrapper copy of a path holding the same
+            // array, is a view of that array: it shares its element facts.
             const staticElementsOwner =
-                aliases && narrowed.staticElements
+                (aliases || (wrapperCopiesIdentity && !constructs)) &&
+                narrowed.staticElements
                     ? (narrowed.staticElementsOwner ?? narrowed)
                     : undefined;
             const optionalHandle =

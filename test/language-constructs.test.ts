@@ -2293,6 +2293,90 @@ check(
 `,
 );
 
+check(
+    "element-writes-through-record-field-arrays-reach-later-reads",
+    `
+    type Lanes = { readonly name: string; readonly lanes?: number[] };
+    type Mixed = { readonly name: string; readonly lanes?: number | number[] };
+    const WATER: Lanes = { name: "water", lanes: [1, 2, 3] };
+    const MIXED: Mixed = { name: "mixed", lanes: [1, 2, 3] };
+    function describe(item: Lanes | Mixed): string {
+        return \`\${item.name}=\${JSON.stringify(item.lanes)}\`;
+    }
+    (WATER.lanes as number[])[0] = 7;
+    (MIXED.lanes as number[])[1] = 8;
+    const water = \`\${describe(WATER)}\`;
+    const mixed = \`\${describe(MIXED)}\`;
+    if (water !== "water=[7,2,3]") throw new Error(water);
+    if (mixed !== "mixed=[1,8,3]") throw new Error(mixed);
+`,
+);
+
+check(
+    "callee-element-writes-through-record-parameters-reach-later-reads",
+    `
+    type Lanes = { readonly name: string; readonly lanes?: number[] };
+    type Mixed = { readonly name: string; readonly lanes?: number | number[] };
+    const WATER: Lanes = { name: "water", lanes: [1, 2, 3] };
+    const MIXED: Mixed = { name: "mixed", lanes: [1, 2, 3] };
+    function describe(item: Lanes | Mixed): string {
+        return \`\${item.name}=\${JSON.stringify(item.lanes)}\`;
+    }
+    function poke(item: Lanes | Mixed, index: number): void {
+        (item.lanes as number[])[index] = 7;
+    }
+    poke(WATER, 0);
+    poke(MIXED, 2);
+    const water = \`\${describe(WATER)}\`;
+    const mixed = \`\${describe(MIXED)}\`;
+    if (water !== "water=[7,2,3]") throw new Error(water);
+    if (mixed !== "mixed=[1,2,7]") throw new Error(mixed);
+`,
+);
+
+check(
+    "locals-holding-record-field-arrays-share-their-elements",
+    `
+    type Lanes = { readonly name: string; readonly lanes?: number[] };
+    type Mixed = { readonly name: string; readonly lanes?: number | number[] };
+    const WATER: Lanes = { name: "water", lanes: [1, 2, 3] };
+    const MIXED: Mixed = { name: "mixed", lanes: [1, 2, 3] };
+    function describe(item: Lanes | Mixed): string {
+        return \`\${item.name}=\${JSON.stringify(item.lanes)}\`;
+    }
+    const waterLanes = WATER.lanes;
+    if (waterLanes) waterLanes[0] = 7;
+    const mixedLanes = MIXED.lanes;
+    if (Array.isArray(mixedLanes)) mixedLanes[1] = 8;
+    const water = \`\${describe(WATER)}\`;
+    const mixed = \`\${describe(MIXED)}\`;
+    if (water !== "water=[7,2,3]") throw new Error(water);
+    if (mixed !== "mixed=[1,8,3]") throw new Error(mixed);
+`,
+);
+
+check(
+    "deferred-readers-of-union-field-arrays-see-later-writes",
+    `
+    type Mixed = { readonly name: string; readonly lanes?: number | number[] };
+    type Fixed = { readonly name: string; readonly lanes?: number | readonly number[] };
+    const MIXED: Mixed = { name: "mixed", lanes: [1, 2, 3] };
+    const FIXED: Fixed = { name: "fixed", lanes: [1, 2, 3] };
+    function describe(item: Mixed | Fixed): string {
+        return \`\${item.name}=\${JSON.stringify(item.lanes)}\`;
+    }
+    const readers: Array<() => string> = [];
+    readers.push(() => \`\${describe(MIXED)}\`);
+    readers.push(() => \`\${describe(FIXED)}\`);
+    (MIXED.lanes as number[])[0] = 7;
+    (FIXED as unknown as { lanes: number[] }).lanes[2] = 9;
+    const mixed = readers[0]!();
+    const fixed = readers[1]!();
+    if (mixed !== "mixed=[7,2,3]") throw new Error(mixed);
+    if (fixed !== "fixed=[1,2,9]") throw new Error(fixed);
+`,
+);
+
 test("an alias into a field container refuses after that container resizes", () => {
     assert.throws(
         () =>

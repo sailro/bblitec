@@ -1193,12 +1193,19 @@ export class NativeFunctionLowerer {
                           )
                         : rawValue;
                 // Constness belongs to the borrowed wrapper, not its record.
-                // Writing or retaining it invalidates every linked view's facts.
+                // Writing or retaining it, or writing an object it holds
+                // (`record.lanes[0] = x`), invalidates every linked view's
+                // facts.
                 if (
                     value.kind === "data" &&
                     (value.recordProperties || value.staticElementsOwner) &&
                     (!directKernel ||
                         !parameterOnlyRead(
+                            this.context.checker,
+                            directKernel,
+                            parameter.name,
+                        ) ||
+                        !parameterIsReadOnly(
                             this.context.checker,
                             directKernel,
                             parameter.name,
