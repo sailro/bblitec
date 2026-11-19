@@ -906,6 +906,16 @@ function binaryLibraryClass(type: ts.Type): boolean {
     );
 }
 
+/** The pin's `Mat4`: the reached native matrix producers own its F32 storage. */
+function pinnedMatrix(type: ts.Type): boolean {
+    return isPinnedType(type, ["Mat4"]);
+}
+
+/** A binary library class or a pinned matrix: a member stored as its binary storage. */
+function binaryStorageMember(type: ts.Type): boolean {
+    return binaryLibraryClass(type) || pinnedMatrix(type);
+}
+
 /** A typed array of numbers, or an array whose elements are numbers. */
 function numericArrayMember(checker: ts.TypeChecker, type: ts.Type): boolean {
     if (
@@ -5765,10 +5775,10 @@ export class DataTypeRegistry {
         if (typedArray) {
             return { kind: typedArray };
         }
-        if (isPinnedType(type, ["Mat4"])) {
-            // The reached native matrix producers own F32 storage. Keep the pin's
-            // opaque, numerically indexed interface through parameters and returns;
-            // ordinary data sinks still refuse incompatible F64 producers.
+        if (pinnedMatrix(type)) {
+            // Keep the pin's opaque, numerically indexed interface through
+            // parameters and returns; ordinary data sinks still refuse
+            // incompatible F64 producers.
             return { kind: "f32array" };
         }
         const pinnedHandle = this.nativeHandleKind(type);
@@ -7236,11 +7246,12 @@ export class DataTypeRegistry {
             type.types.some((member) => !binaryLibraryClass(member))
         )
             return { kind: "numberindex" };
-        // Opaque handles and library binary classes retain their alternatives;
-        // a common-field record would discard their owners and identities.
+        // Opaque handles, library binary classes and pinned matrices retain
+        // their alternatives (`Mat4 | Float32Array` is one F32 storage); a
+        // common-field record would discard their owners and identities.
         if (
             handles.every((kind) => kind !== undefined) ||
-            type.types.every(binaryLibraryClass)
+            type.types.every(binaryStorageMember)
         )
             return this.fromMixedUnion(type, node);
         // A record union whose component stores shapes its own layout does
@@ -7457,7 +7468,7 @@ export class DataTypeRegistry {
             ) &&
             !callablePair() &&
             !arrays &&
-            !type.types.every(binaryLibraryClass) &&
+            !type.types.every(binaryStorageMember) &&
             !type.types.every(
                 (member) => this.nativeHandleKind(member) !== undefined,
             )

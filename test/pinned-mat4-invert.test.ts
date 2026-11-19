@@ -11,9 +11,26 @@ import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 const tools = optionalNativeFixtureTools();
+
+/** `artifacts/<name>` holding the pinned matrix headers a generated program includes. */
+function matrixFixtureDirectory(name: string): string {
+    const output = resolve("artifacts", name);
+    const include = join(output, "bblite/upstream");
+    mkdirSync(include, { recursive: true });
+    writeFileSync(
+        join(include, "pinned_mat4_invert.hpp"),
+        pinnedMat4InvertHeader(new LoweringContext()),
+    );
+    writeFileSync(
+        join(include, "pinned_mat4_create.hpp"),
+        pinnedMat4CreateHeader(new LoweringContext()),
+    );
+    return output;
+}
 
 test(
     "matrix inverse preserves pinned Float32 lanes, null singulars, and fresh result storage",
@@ -41,17 +58,7 @@ test(
                 ),
             ),
         ];
-        const output = resolve("artifacts/pinned-mat4-invert");
-        const include = join(output, "bblite/upstream");
-        mkdirSync(include, { recursive: true });
-        writeFileSync(
-            join(include, "pinned_mat4_invert.hpp"),
-            pinnedMat4InvertHeader(new LoweringContext()),
-        );
-        writeFileSync(
-            join(include, "pinned_mat4_create.hpp"),
-            pinnedMat4CreateHeader(new LoweringContext()),
-        );
+        const output = matrixFixtureDirectory("pinned-mat4-invert");
         const bits = (data: Float32Array): string =>
             [...new Uint32Array(data.buffer)]
                 .map((value) => `std::bit_cast<float>(${value}u)`)
@@ -119,6 +126,32 @@ test(
         execFileSync(executable, { encoding: "utf8" });
     },
 );
+
+test("a Mat4 and a Float32Array fallback share one F32 storage", () => {
+    const compiled = compileSource(`
+        import { composeMat4, invertMat4 } from "babylon-lite";
+        import type { Mat4 } from "babylon-lite";
+        const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+        function inverseOr(matrix: Mat4 | null) {
+            return matrix ? (invertMat4(matrix) ?? IDENTITY) : IDENTITY;
+        }
+        function upload(matrix: Mat4 | null, target: Float32Array): void {
+            const inverse = matrix ? (invertMat4(matrix) ?? IDENTITY) : IDENTITY;
+            target.set(inverse as ArrayLike<number>, 12);
+        }
+        const target = new Float32Array(28);
+        upload(composeMat4(7, 0, 0, 0, 0, 0, 1, 1, 1, 1), target);
+        if (target[24] !== -7 || target[27] !== 1) throw new Error("inverse lanes changed");
+        upload(composeMat4(7, 0, 0, 0, 0, 0, 1, 0, 1, 1), target);
+        if (target[12] !== 1 || target[24] !== 0) throw new Error("fallback lanes changed");
+        if (inverseOr(null) !== IDENTITY) throw new Error("fallback identity changed");
+    `);
+    assert.match(compiled.cpp, /bbl::js::F32Array v_fn\d+_inverse = /);
+    if (!tools) return;
+    runGeneratedProgram(tools, "pinned-mat4-fallback", compiled.cpp, {
+        flags: ["/I", matrixFixtureDirectory("pinned-mat4-fallback")],
+    });
+});
 
 test("Mat4 recognition follows the pinned symbol and refuses unsupported F64 storage", () => {
     const local = compileSource(`
