@@ -135,6 +135,7 @@ import {
     snapshotReadCpp,
     statedTruthinessCpp,
     valueForKind,
+    withCommonResourceMetadata,
     withNativeMetadata,
     type Value,
     type NullableResourceType,
@@ -2123,12 +2124,20 @@ export class DeclarationLowerer {
                 narrowed.staticElements
                     ? (narrowed.staticElementsOwner ?? narrowed)
                     : undefined;
+            // A const keeps the resource facts its selection's present arms
+            // share; a reassigned slot may hold another resource.
             const optionalHandle =
                 narrowed.dataType.kind === "optional" &&
                 narrowed.dataType.inner.kind === "handle"
-                    ? this.context.dataLowerer.leafValue(
-                          optionalValueCpp(boundCpp),
-                          narrowed.dataType.inner,
+                    ? withCommonResourceMetadata(
+                          this.context.dataLowerer.leafValue(
+                              optionalValueCpp(boundCpp),
+                              narrowed.dataType.inner,
+                          ),
+                          narrowed.runtimeElementTemplate &&
+                              variableKind(declaration) === "const"
+                              ? [narrowed.runtimeElementTemplate]
+                              : [],
                       )
                     : undefined;
             const taggedValue =
@@ -2220,6 +2229,7 @@ export class DeclarationLowerer {
                               }
                             : {}),
                         ...(!narrowed.freshData &&
+                        !optionalHandle &&
                         narrowed.runtimeElementTemplate
                             ? {
                                   runtimeElementTemplate:

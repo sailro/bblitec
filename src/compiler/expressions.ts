@@ -6171,6 +6171,42 @@ export class ExpressionLowerer {
         return provenVoidAsUndefined(this.context, value, expression) ?? value;
     }
 
+    /**
+     * The resource facts every present arm of an optional handle selection
+     * shares (`flag ? createRenderTarget(...) : null` keeps its target's
+     * attachment signature), for the storage the selection fills.
+     */
+    private presentHandleTemplate(
+        unwrapped: ts.ConditionalExpression,
+        type: DataType<"handle">,
+    ): Value | undefined {
+        const present = [unwrapped.whenTrue, unwrapped.whenFalse].filter(
+            (arm) =>
+                !this.context.symbols.isNullishLiteral(
+                    this.context.unwrap(arm),
+                ),
+        );
+        const values = this.context.probeEmission(
+            () => {
+                try {
+                    return present.map((arm) =>
+                        this.inRuntimeControlFlow(() => this.compileValue(arm)),
+                    );
+                } catch (error) {
+                    if (error instanceof CompileError) return undefined;
+                    throw error;
+                }
+            },
+            () => false,
+        );
+        if (
+            !values?.length ||
+            values.some((value) => value.kind !== type.handle)
+        )
+            return undefined;
+        return commonResourceValue(values[0]!, values);
+    }
+
     private compileConditionalValue(
         unwrapped: ts.ConditionalExpression,
     ): Value | undefined {
@@ -6491,6 +6527,13 @@ export class ExpressionLowerer {
                           this.context.dataLowerer.objectIdentity(unwrapped),
                       )
                     : undefined;
+            const handleTemplate =
+                conditionalType.inner.kind === "handle"
+                    ? this.presentHandleTemplate(
+                          unwrapped,
+                          conditionalType.inner,
+                      )
+                    : undefined;
             return {
                 kind: "data",
                 cpp:
@@ -6507,6 +6550,9 @@ export class ExpressionLowerer {
                           objectIdentityCpp: objectIdentity,
                           optionalFoundCpp: `(${objectIdentity}) != nullptr`,
                       }
+                    : {}),
+                ...(handleTemplate
+                    ? { runtimeElementTemplate: handleTemplate }
                     : {}),
             };
         }

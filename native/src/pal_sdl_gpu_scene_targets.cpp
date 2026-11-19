@@ -141,8 +141,8 @@ void create_transmission_color(GpuState& state) {
 #endif
 
 #if BBLITE_HAS_PBR_RENDERER
-void encode_metal_depth_copy(GpuState& state, SDL_GPUCommandBuffer* command,
-                             const GpuRenderTarget& target) {
+void encode_metal_depth_copy(GpuState& state, SDL_GPUCommandBuffer* command, SDL_GPUTexture* depth,
+                             SDL_GPUTexture* depth_copy) {
     if (!state.depth_copy_pipeline) {
         constexpr const char* source = R"msl(
 #include <metal_stdlib>
@@ -183,14 +183,14 @@ fragment float copy_fs(float4 p [[position]], depth2d<float> t [[texture(0)]]) {
             gpu_error("SDL_CreateGPUGraphicsPipeline depth copy");
     }
     SDL_GPUColorTargetInfo color{};
-    color.texture = target.depth_copy;
+    color.texture = depth_copy;
     color.load_op = SDL_GPU_LOADOP_DONT_CARE;
     color.store_op = SDL_GPU_STOREOP_STORE;
     SdlRenderPass pass{SDL_BeginGPURenderPass(command, &color, 1, nullptr)};
     if (!pass)
         gpu_error("SDL_BeginGPURenderPass depth copy");
     SDL_BindGPUGraphicsPipeline(pass, state.depth_copy_pipeline.get());
-    const SDL_GPUTextureSamplerBinding binding{target.depth, state.depth_sampler};
+    const SDL_GPUTextureSamplerBinding binding{depth, state.depth_sampler};
     SDL_BindGPUFragmentSamplers(pass, 0, &binding, 1);
     count_gpu_draw(SDL_DrawGPUPrimitives, pass, 3, 1, 0, 0);
 }

@@ -440,10 +440,10 @@ void write_post_process_uniforms(
     float* data);
 
 /**
- * The pin's refusal of a multisampled source, run where a backend builds
- * a pass's GPU state.
+ * The pin's refusals of a colourless or multisampled source, run where a
+ * backend builds a pass's GPU state.
  */
-void require_single_sample_post_process_source(
+void require_post_process_source(
     const Engine& engine,
     const PostProcessPassOptions& pass);
 
@@ -454,12 +454,12 @@ ${sceneUbo ? `${sceneUbo.jitterHeader()}\n${sceneUbo.cacheHeader()}\n${sceneUbo.
     }
 
     /**
-     * `createPostProcessGpuState`'s refusal of a multisampled source over
-     * the pass's task name. It checks a render-target source: the one kind
-     * whose sample count the compiler admits undecided
-     * (`noteSampledTextureSamples`).
+     * `createPostProcessGpuState`'s refusals of a colourless and of a
+     * multisampled source over the pass's task name. They check a
+     * render-target source: the one kind whose attachments the compiler
+     * admits unchecked (`noteSampledTextureSamples`).
      */
-    private sourceSamplesCheck(): string {
+    private sourceCheck(): string {
         const { declaration: gpuState } = this.context.functionDeclaration(
             TASK_MODULE,
             "createPostProcessGpuState",
@@ -469,31 +469,47 @@ ${sceneUbo ? `${sceneUbo.jitterHeader()}\n${sceneUbo.cacheHeader()}\n${sceneUbo.
             "task.sourceTexture",
             "Post-process GPU state source",
         );
-        const guard = gpuState.body?.statements.find(
-            (statement): statement is ts.IfStatement =>
-                ts.isIfStatement(statement) &&
-                this.context.expressionMatchesShape(
-                    statement.expression,
-                    "(source._descriptor.samples ?? 1) !== 1",
-                ),
-        );
-        if (!guard)
-            return this.context.contractError(
-                gpuState,
-                "Expected the post-process multisampled-source refusal.",
+        const message = (shape: string, refusal: string): string => {
+            const guard = gpuState.body?.statements.find(
+                (statement): statement is ts.IfStatement =>
+                    ts.isIfStatement(statement) &&
+                    this.context.expressionMatchesShape(
+                        statement.expression,
+                        shape,
+                    ),
             );
-        const message = pinnedErrorMessageCpp(
-            this.context,
-            pinnedErrorCode(this.context, guard, 1),
-            [{ cpp: "pass.name" }],
+            if (!guard)
+                return this.context.contractError(
+                    gpuState,
+                    `Expected the post-process ${refusal} refusal.`,
+                );
+            return pinnedErrorMessageCpp(
+                this.context,
+                pinnedErrorCode(this.context, guard, 1),
+                [{ cpp: "pass.name" }],
+            );
+        };
+        const colourless = message(
+            "!source._colorTexture || !source._colorView",
+            "colourless-source",
         );
-        return `// ${this.context.provenance(TASK_MODULE, "createPostProcessGpuState", "its multisampled-source refusal")}
-void require_single_sample_post_process_source(
+        const multisampled = message(
+            "(source._descriptor.samples ?? 1) !== 1",
+            "multisampled-source",
+        );
+        return `// ${this.context.provenance(TASK_MODULE, "createPostProcessGpuState", "its colourless- and multisampled-source refusals")}
+void require_post_process_source(
     const Engine& engine,
     const PostProcessPassOptions& pass) {
-    if (pass.source.source == RenderTextureSource::render_target &&
-        handle_at(engine.render_targets, pass.source.target).samples != 1) {
-        throw std::runtime_error(${message});
+    if (pass.source.source != RenderTextureSource::render_target) {
+        return;
+    }
+    const RenderTargetRecord& source = handle_at(engine.render_targets, pass.source.target);
+    if (!source.has_color) {
+        throw std::runtime_error(${colourless});
+    }
+    if (source.samples != 1) {
+        throw std::runtime_error(${multisampled});
     }
 }`;
     }
@@ -570,7 +586,7 @@ ${this.blendCases()}        default:
     }
 }
 
-${this.sourceSamplesCheck()}
+${this.sourceCheck()}
 
 void write_post_process_uniforms(
     const Engine& engine,

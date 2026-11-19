@@ -2684,7 +2684,7 @@ export interface ValueFields {
     staticElementIndex?: number;
     /** Shared by aliases even after their generation-known elements are withdrawn. */
     collectionCardinality?: CollectionCardinality;
-    /** Representative metadata for a handle read from a runtime container. */
+    /** Representative metadata for a handle read from a runtime container: an array's elements, or an optional's present handle. */
     runtimeElementTemplate?: Value;
     /**
      * Keep this lookup nullable when it initializes a local even if

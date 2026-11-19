@@ -3624,7 +3624,7 @@ prepare_dawn_post_process_pass(DawnState& state, Engine& engine, TaskHandle hand
     const std::uint32_t output_width = extent.output_width;
     const std::uint32_t output_height = extent.output_height;
     if (gpu.program == npos) {
-        upstream::require_single_sample_post_process_source(engine, pass);
+        upstream::require_post_process_source(engine, pass);
         gpu.program = post_process_program(
             state, info, handle_at(state.render_targets, pass.output_target).color_format,
             target_sample_count(state, output_record), pass.alpha_mode, pass.extra_textures.size());

@@ -3049,12 +3049,15 @@ public:
                             GpuRenderTarget& target = pal::resolve_gpu_target(
                                 engine, state.render_targets, task.render.target, target_user);
 #if BBLITE_HAS_TAA
+                            // A colour pass needs its colour texture; a
+                            // depth-only one queues as the pin's no-colour
+                            // pass, over its own scene UBO.
                             if (temporal && (task.source_scene != graph_scene.state ||
                                              task.render.scene_stages ||
                                              task.render.shadow_generator.value != invalid_handle ||
-                                             !target.color)) {
+                                             (target_record.has_color && !target.color))) {
                                 throw std::runtime_error(
-                                    "Temporal source requires a prepared Standard color pass in its owning scene.");
+                                    "Temporal source requires a prepared Standard color or depth-only pass in its owning scene.");
                             }
 #endif
                             CameraRecord* const task_camera = task_pass_camera(engine, task);
@@ -3219,6 +3222,52 @@ public:
                                 continue;
                             }
 #endif
+#if BBLITE_HAS_TAA
+                            // A temporal frame queues the task's pass, colour or
+                            // depth-only, to encode in task order once every
+                            // pass is prepared, over the task's retained scene UBO.
+                            const auto queue_temporal_pass =
+                                [&](std::optional<SDL_GPUColorTargetInfo> color,
+                                    const SDL_GPUDepthStencilTargetInfo* depth,
+                                    const ShaderTaskTarget& shader_target,
+                                    SDL_GPUTexture* depth_copy) {
+                                    timing_sequence.refuse("render tasks of temporal frames");
+#if BBLITE_EXTERNAL_RENDERABLES
+                                    refuse_external_renderables(
+                                        graph_scene, "a temporal anti-aliasing source pass");
+#endif
+                                    PreparedSdlScenePass prepared;
+                                    prepared.target = color;
+                                    if (depth)
+                                        prepared.depth = *depth;
+                                    prepared.depth_copy = depth_copy;
+                                    if (const std::optional<PixelViewport> rectangle =
+                                            upstream::pass_camera_viewport(
+                                                task_camera, static_cast<double>(target.width),
+                                                static_cast<double>(target.height))) {
+                                        prepared.viewport =
+                                            SDL_GPUViewport{static_cast<float>(rectangle->x),
+                                                            static_cast<float>(rectangle->y),
+                                                            static_cast<float>(rectangle->width),
+                                                            static_cast<float>(rectangle->height),
+                                                            0.0f,
+                                                            1.0f};
+                                        prepared.scissor =
+                                            SDL_Rect{rectangle->x, rectangle->y,
+                                                     rectangle->width, rectangle->height};
+                                    }
+                                    upstream::sort_transparent_draws(
+                                        handle_at(task_draw_lists, handle).transparent, engine,
+                                        task_camera);
+                                    draw_scene(graph_scene, graph_meshes, nullptr, {}, {},
+                                               task_matrix, task_camera, task_pass_matrices,
+                                               handle, handle_at(task_draw_lists, handle),
+                                               nullptr, nullptr, nullptr, nullptr, nullptr, false,
+                                               &prepared.draws, task.scene_uniforms,
+                                               shader_target);
+                                    temporal_passes.emplace_back(std::move(prepared));
+                                };
+#endif
                             if (!target_record.has_color) {
                                 if (!target_record.has_depth || !target.depth) {
                                     throw std::runtime_error(
@@ -3245,6 +3294,17 @@ public:
                                 task_depth.store_op = SDL_GPU_STOREOP_STORE;
                                 task_depth.stencil_load_op = task_depth.load_op;
                                 task_depth.stencil_store_op = SDL_GPU_STOREOP_STORE;
+                                const ShaderTaskTarget depth_target{
+                                    SDL_GPU_TEXTUREFORMAT_INVALID, target.depth_format,
+                                    target_sample_count(state, target_record),
+                                    target_record.depth_compare};
+#if BBLITE_HAS_TAA
+                                if (temporal) {
+                                    queue_temporal_pass(std::nullopt, &task_depth, depth_target,
+                                                        target.depth_copy);
+                                    continue;
+                                }
+#endif
                                 auto depth_timing = sdl_timed_pass(command, timing_sequence.pass());
                                 SdlRenderPass task_pass{
                                     SDL_BeginGPURenderPass(command, nullptr, 0, &task_depth)};
@@ -3263,14 +3323,12 @@ public:
                                            nullptr, {}
 #endif
                                            ,
-                                           ShaderTaskTarget{
-                                               SDL_GPU_TEXTUREFORMAT_INVALID, target.depth_format,
-                                               target_sample_count(state, target_record),
-                                               target_record.depth_compare});
+                                           depth_target);
                                 task_pass.end();
                                 depth_timing.run();
                                 if (target.depth_copy)
-                                    encode_metal_depth_copy(state, command, target);
+                                    encode_metal_depth_copy(state, command, target.depth,
+                                                            target.depth_copy);
                                 continue;
                             }
                             SDL_GPUColorTargetInfo target_info{};
@@ -3352,42 +3410,9 @@ public:
                                 target_record.depth_compare};
 #if BBLITE_HAS_TAA
                             if (temporal) {
-                                // The temporal source's pass is encoded after its
-                                // post-process writes, outside this task.
                                 (void)pal::task_pass_breaks(task, {.temporal = true});
-                                timing_sequence.refuse("temporal anti-aliasing sources");
-#if BBLITE_EXTERNAL_RENDERABLES
-                                refuse_external_renderables(graph_scene,
-                                                            "a temporal anti-aliasing source pass");
-#endif
-                                PreparedSdlScenePass prepared;
-                                prepared.target = target_info;
-                                if (task_depth_pointer)
-                                    prepared.depth = *task_depth_pointer;
-                                if (const std::optional<PixelViewport> rectangle =
-                                        upstream::pass_camera_viewport(
-                                            task_camera, static_cast<double>(target.width),
-                                            static_cast<double>(target.height))) {
-                                    prepared.viewport =
-                                        SDL_GPUViewport{static_cast<float>(rectangle->x),
-                                                        static_cast<float>(rectangle->y),
-                                                        static_cast<float>(rectangle->width),
-                                                        static_cast<float>(rectangle->height),
-                                                        0.0f,
-                                                        1.0f};
-                                    prepared.scissor =
-                                        SDL_Rect{rectangle->x, rectangle->y, rectangle->width,
-                                                 rectangle->height};
-                                }
-                                upstream::sort_transparent_draws(
-                                    handle_at(task_draw_lists, handle).transparent, engine,
-                                    task_camera);
-                                draw_scene(graph_scene, graph_meshes, nullptr, {}, {}, task_matrix,
-                                           task_camera, task_pass_matrices, handle,
-                                           handle_at(task_draw_lists, handle), nullptr, nullptr,
-                                           nullptr, nullptr, nullptr, false, &prepared.draws,
-                                           task.scene_uniforms, task_shader_target);
-                                temporal_passes.emplace_back(std::move(prepared));
+                                queue_temporal_pass(target_info, task_depth_pointer,
+                                                    task_shader_target, nullptr);
                                 continue;
                             }
 #endif
@@ -3996,6 +4021,9 @@ public:
                 for (const auto& prepared : temporal_passes) {
                     if (const auto* source = std::get_if<PreparedSdlScenePass>(&prepared)) {
                         encode_sdl_gpu_prepared_scene(command, *source);
+                        if (source->depth_copy)
+                            encode_metal_depth_copy(state, command, source->depth->texture,
+                                                    source->depth_copy);
                     } else if (const auto* copy = std::get_if<PreparedSdlCopyPass>(&prepared)) {
                         encode_sdl_copy_pass(command, *copy, capture_texture);
                     } else {

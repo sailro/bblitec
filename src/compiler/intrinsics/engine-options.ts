@@ -536,12 +536,12 @@ export function compileRenderTaskOptions(
     const target = context.compileValue(targetExpression);
     context.expectKind(target, "render-target", targetExpression);
     const signature = target.renderTargetSignature;
-    // A temporal frame prepares every render task's colour pass against the
-    // task target's own attachments; a depth-only pass has no prepared arm.
-    if (!signature?.hasColor) {
+    // A temporal frame prepares every render task's pass, colour or
+    // depth-only, against the attachments its target is proven to have.
+    if (!signature) {
         context.admissions.noteTemporalRecordBoundary(
             expression,
-            "a render task whose target has no proven colour attachment (temporal frames prepare colour passes only)",
+            "a render task whose target has no proven attachment signature",
             "always",
         );
     }
@@ -971,7 +971,7 @@ export function compileTextureReference(
  * TAA's temporal frames sample a texture only at one sample. A post-process
  * pass's source (`passSource`) is checked where the pass builds its GPU
  * state, as the pin's `createPostProcessGpuState` refuses a multisampled one
- * (`upstream::require_single_sample_post_process_source`), so a render
+ * (`upstream::require_post_process_source`), so a render
  * target whose count the run decides is admitted; any other sampled texture,
  * and any count known at generation, must be proven single-sample here.
  */

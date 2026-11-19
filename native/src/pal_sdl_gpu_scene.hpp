@@ -2123,8 +2123,8 @@ inline SDL_FColor geometry_clear_color(GeometryTextureType type) {
 
 // Metal's float view of depth expands to (d,d,d,1). Material slots need
 // (d,0,0,1), matching the shared R32 depth-copy contract used by Dawn.
-void encode_metal_depth_copy(GpuState& state, SDL_GPUCommandBuffer* command,
-                             const GpuRenderTarget& target);
+void encode_metal_depth_copy(GpuState& state, SDL_GPUCommandBuffer* command, SDL_GPUTexture* depth,
+                             SDL_GPUTexture* depth_copy);
 
 void release_render_target(SDL_GPUDevice* device, GpuRenderTarget& target);
 
@@ -2247,7 +2247,7 @@ prepare_post_process_pass(GpuState& state, Engine& engine, TaskHandle handle,
         // (the circle-of-confusion map is r16) or follow its source's. The
         // pin builds the pipeline against that target's own sample count and
         // resolves nothing; what it refuses is a multisampled *source*.
-        upstream::require_single_sample_post_process_source(engine, pass);
+        upstream::require_post_process_source(engine, pass);
         gpu.program =
             post_process_program(state, shader_info.module_index,
                                  handle_at(state.render_targets, pass.output_target).color_format,

@@ -3201,12 +3201,15 @@ public:
 #if BBLITE_HAS_TAA
                             if (temporal) {
                                 (void)pal::task_pass_breaks(task, {.temporal = true});
+                                // A colour pass needs its colour texture; a
+                                // depth-only one encodes below as the pin's
+                                // no-colour pass, over its own scene UBO.
                                 if (task.source_scene != graph_scene.state ||
                                     task.render.scene_stages ||
                                     task.render.shadow_generator.value != invalid_handle ||
-                                    !target.color) {
+                                    (target_record.has_color && !target.color)) {
                                     throw std::runtime_error(
-                                        "Temporal source requires an admitted Standard color pass in its owning scene.");
+                                        "Temporal source requires an admitted Standard color or depth-only pass in its owning scene.");
                                 }
 #if BBLITE_EXTERNAL_RENDERABLES
                                 refuse_external_renderables(graph_scene,

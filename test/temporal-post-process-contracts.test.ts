@@ -158,7 +158,7 @@ test("TAA observes presentation identity separately from history order and retai
     }
 });
 
-test("TAA admits a source whose sample count the run decides; the pass refuses a multisampled one as the pin's GPU state does", async (t) => {
+test("TAA admits a source whose sample count the run decides; the pass refuses a colourless or multisampled one as the pin's GPU state does", async (t) => {
     // The scene's samples come from a run-time choice, and the branch that
     // adds TAA is the one where that choice is one sample.
     const decided = `
@@ -196,24 +196,27 @@ setup(msaa ? 4 : 1, !msaa);
 #include <cstdio>
 #include <stdexcept>
 namespace bbl::upstream {
-${definition(lowered.source, "void require_single_sample_post_process_source(")}
+${definition(lowered.source, "void require_post_process_source(")}
 }
 int main() {
     bbl::Engine engine;
-    engine.render_targets.resize(2);
+    engine.render_targets.resize(3);
     engine.render_targets[1].samples = 4;
+    engine.render_targets[2].has_color = false;
     bbl::PostProcessPassOptions pass;
     pass.name = "taa-blend";
     pass.source.target = bbl::RenderTargetHandle{0};
-    bbl::upstream::require_single_sample_post_process_source(engine, pass);
-    pass.source.target = bbl::RenderTargetHandle{1};
-    try {
-        bbl::upstream::require_single_sample_post_process_source(engine, pass);
-    } catch (const std::runtime_error& error) {
-        std::puts(error.what());
-        return 0;
+    bbl::upstream::require_post_process_source(engine, pass);
+    for (const std::uint32_t refused : {1u, 2u}) {
+        pass.source.target = bbl::RenderTargetHandle{refused};
+        try {
+            bbl::upstream::require_post_process_source(engine, pass);
+            return 1;
+        } catch (const std::runtime_error& error) {
+            std::puts(error.what());
+        }
     }
-    return 1;
+    return 0;
 }
 `,
     );
@@ -223,9 +226,12 @@ int main() {
         `/Fe:${executable}`,
         sourcePath,
     ]);
-    assert.equal(
-        execFileSync(executable, { encoding: "utf8" }).trim(),
-        'PostProcessTask "taa-blend": multisampled source textures are not supported. Use a sampleCount: 1 source RenderTarget.',
+    assert.deepEqual(
+        execFileSync(executable, { encoding: "utf8" }).trim().split(/\r?\n/),
+        [
+            'PostProcessTask "taa-blend": multisampled source textures are not supported. Use a sampleCount: 1 source RenderTarget.',
+            'PostProcessTask "taa-blend": sourceTexture has no color texture. Render the source to an offscreen RenderTarget before post-processing.',
+        ],
     );
 });
 

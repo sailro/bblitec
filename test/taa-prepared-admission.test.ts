@@ -172,19 +172,16 @@ test("TAA preparation requires one proven registered scene while preserving same
     );
 });
 
-test("TAA pass signatures admit the target's own attachments and refuse colourless passes and multisampled or unproven sampling", () => {
+test("TAA pass signatures admit the target's own attachments and refuse multisampled or unproven sampling", () => {
     for (const source of [
         prefix.replace('dFormat:"depth24plus-stencil8",', ""),
         prefix.replace('"depth24plus-stencil8"', '"depth32float"'),
         prefix.replace("format:engine.format", 'format:"rgba16float"'),
+        // A colourless source pass is admitted; sampling it is refused where
+        // the pass builds its GPU state, as the pin's is.
+        prefix.replace("format:engine.format,", ""),
     ])
         assert.doesNotThrow(() => compileSource(source + taa));
-    const colourless = prefix.replace("format:engine.format,", "");
-    assert.doesNotThrow(() => compileSource(colourless));
-    assert.throws(
-        () => compileSource(colourless + taa),
-        /render task whose target has no proven colour attachment/,
-    );
     const multisampled = prefix.replace("samples:1", "samples:4");
     assert.doesNotThrow(() => compileSource(multisampled));
     assert.throws(
@@ -253,14 +250,36 @@ const pass=createRenderTask({name:"normals",rt:normals.rt,clrColor:{r:0,g:0,b:0,
 enableRenderTaskMeshRefresh(pass);
 addTaskAtStart(scene,pass);`;
 
-test("TAA admits another render task drawing into its own target formats", () => {
-    const own = ownTargetPass('format:"rgba8unorm",');
-    assert.doesNotThrow(() => compileSource(own));
-    assert.doesNotThrow(() => compileSource(own + taa));
-    const colourless = ownTargetPass("");
-    assert.doesNotThrow(() => compileSource(colourless));
+test("TAA admits another render task drawing into its own target formats, colour or depth-only", () => {
+    for (const format of ['format:"rgba8unorm",', ""]) {
+        const own = ownTargetPass(format);
+        assert.doesNotThrow(() => compileSource(own));
+        assert.doesNotThrow(() => compileSource(own + taa));
+    }
+});
+
+test("TAA admits a multisampled depth-only render task, as an app's mesh-blending visibility pass builds it", () => {
+    const direct = `const visibility=createRenderTarget({lbl:"visibility",dFormat:"depth24plus-stencil8",samples:4,size:engine});
+const visibilityTask=createRenderTask({name:"visibility",rt:visibility,cam:camera,autoMirror:false},engine,scene);
+enableRenderTaskMeshRefresh(visibilityTask);`;
+    // A runtime-selected target keeps its attachment signature through the
+    // optional storage its selection fills.
+    const selected = `const sceneSamples:1|4=Math.random()<2?4:1;
+const visibility=sceneSamples>1?createRenderTarget({lbl:"visibility",dFormat:"depth24plus-stencil8",samples:4,size:engine}):null;
+const visibilityTask=visibility?createRenderTask({name:"visibility",rt:visibility,cam:camera,autoMirror:false},engine,scene):null;
+if(visibilityTask)enableRenderTaskMeshRefresh(visibilityTask);`;
+    for (const visibility of [direct, selected]) {
+        const source = ownTargetPass('format:"rgba8unorm",') + visibility;
+        assert.doesNotThrow(() => compileSource(source));
+        assert.doesNotThrow(() => compileSource(source + taa));
+    }
+    // A reassignable slot may hold another target: its signature is unproven.
+    const reassignable =
+        ownTargetPass('format:"rgba8unorm",') +
+        selected.replace("const visibility=", "let visibility=");
+    assert.doesNotThrow(() => compileSource(reassignable));
     assert.throws(
-        () => compileSource(colourless + taa),
-        /render task whose target has no proven colour attachment/,
+        () => compileSource(reassignable + taa),
+        /render task whose target has no proven attachment signature/,
     );
 });
