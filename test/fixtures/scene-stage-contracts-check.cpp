@@ -359,6 +359,19 @@ struct SdlGraph : Graph {
                           std::get<last - 1>(parameters), std::get<last>(parameters));
     }
 #include "SdlGraphStages.hpp"
+    // The pipelines the pass draws through, which `encode` reads off the
+    // task's attachments before the stages it runs.
+    ShaderTaskTarget task_shader_target{};
+    void graph() {
+        task_shader_target = ShaderTaskTarget{
+            target.color_format,
+            task_depth_pointer ? (task.render.depth.source == RenderTextureSource::geometry_depth
+                                      ? state.depth_format
+                                      : target.depth_format)
+                               : SDL_GPU_TEXTUREFORMAT_INVALID,
+            target_sample_count(state, target_record), target_record.depth_compare};
+        graph_stages();
+    }
 };
 struct DawnGraph : Graph {
     struct DawnTaskTarget {

@@ -153,7 +153,7 @@ test("stored render targets require proven attachment signatures for temporal pa
     assert.doesNotThrow(() => compileSource(prefix + cached));
     assert.throws(
         () => compileSource(prefix + cached + taa),
-        /engine color format and depth24plus-stencil8/,
+        /render task whose target has no proven colour attachment/,
     );
     assert.throws(
         () =>

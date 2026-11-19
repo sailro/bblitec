@@ -2413,9 +2413,7 @@ public:
                                                 ,
                                                 std::vector<PreparedSdlDraw>* deferred = nullptr,
                                                 const std::shared_ptr<PersistentSceneUniforms>&
-                                                    deferred_scene = {},
-                                                std::optional<SDL_GPUSampleCount> deferred_samples =
-                                                    {}
+                                                    deferred_scene = {}
 #endif
                                                 ,
                                                 std::optional<ShaderTaskTarget> shader_target = {},
@@ -2440,11 +2438,7 @@ public:
                         [[maybe_unused]] const auto task_samples =
                             shader_target
                                 ? std::optional<SDL_GPUSampleCount>{shader_target->samples}
-#if BBLITE_HAS_TAA
-                                : deferred_samples;
-#else
-                            : std::optional<SDL_GPUSampleCount>{};
-#endif
+                                : std::optional<SDL_GPUSampleCount>{};
                         bool scene_matrix_bound = true;
                         // One dispatch for both passes; only the sources
                         // differ (`secondary_pipeline_for`).
@@ -2970,7 +2964,7 @@ public:
                                    nullptr, nullptr, nullptr, false
 #if BBLITE_HAS_TAA
                                    ,
-                                   nullptr, {}, {}
+                                   nullptr, {}
 #endif
                                    ,
                                    frame_attachment
@@ -3056,8 +3050,7 @@ public:
                             if (temporal && (task.source_scene != graph_scene.state ||
                                              task.render.scene_stages ||
                                              task.render.shadow_generator.value != invalid_handle ||
-                                             !target.color ||
-                                             target.color_format != state.frame_color_format)) {
+                                             !target.color)) {
                                 throw std::runtime_error(
                                     "Temporal source requires a prepared Standard color pass in its owning scene.");
                             }
@@ -3265,7 +3258,7 @@ public:
                                            nullptr, nullptr, nullptr, false
 #if BBLITE_HAS_TAA
                                            ,
-                                           nullptr, {}, {}
+                                           nullptr, {}
 #endif
                                            ,
                                            ShaderTaskTarget{
@@ -3343,6 +3336,18 @@ public:
                                 task_depth.stencil_store_op = SDL_GPU_STOREOP_STORE;
                                 task_depth_pointer = &task_depth;
                             }
+                            // The pipelines this colour pass draws through: the
+                            // task's own attachments, an external depth in the
+                            // frame's depth format.
+                            const ShaderTaskTarget task_shader_target{
+                                target.color_format,
+                                task_depth_pointer ? (task.render.depth.source ==
+                                                              RenderTextureSource::geometry_depth
+                                                          ? state.depth_format
+                                                          : target.depth_format)
+                                                   : SDL_GPU_TEXTUREFORMAT_INVALID,
+                                target_sample_count(state, target_record),
+                                target_record.depth_compare};
 #if BBLITE_HAS_TAA
                             if (temporal) {
                                 // The temporal source's pass is encoded after its
@@ -3379,8 +3384,7 @@ public:
                                            task_camera, task_pass_matrices, handle,
                                            handle_at(task_draw_lists, handle), nullptr, nullptr,
                                            nullptr, nullptr, nullptr, false, &prepared.draws,
-                                           task.scene_uniforms,
-                                           target_sample_count(state, target_record));
+                                           task.scene_uniforms, task_shader_target);
                                 temporal_passes.emplace_back(std::move(prepared));
                                 continue;
                             }
@@ -3477,27 +3481,18 @@ public:
                                 }
 #endif
                             }
-                            draw_scene(
-                                graph_scene, graph_meshes, task_pass, state.shader_pipelines,
-                                state.shader_a2c_pipelines, task_matrix, task_camera,
-                                task_pass_matrices, handle, handle_at(task_draw_lists, handle),
-                                nullptr, nullptr, nullptr, nullptr, nullptr,
-                                task.render.scene_stages
+                            draw_scene(graph_scene, graph_meshes, task_pass, state.shader_pipelines,
+                                       state.shader_a2c_pipelines, task_matrix, task_camera,
+                                       task_pass_matrices, handle,
+                                       handle_at(task_draw_lists, handle), nullptr, nullptr,
+                                       nullptr, nullptr, nullptr, task.render.scene_stages
 #if BBLITE_HAS_TAA
-                                ,
-                                nullptr, {}, {}
+                                       ,
+                                       nullptr, {}
 #endif
-                                ,
-                                ShaderTaskTarget{target.color_format,
-                                                 task_depth_pointer
-                                                     ? (task.render.depth.source ==
-                                                                RenderTextureSource::geometry_depth
-                                                            ? state.depth_format
-                                                            : target.depth_format)
-                                                     : SDL_GPU_TEXTUREFORMAT_INVALID,
-                                                 target_sample_count(state, target_record),
-                                                 target_record.depth_compare},
-                                &pass_breaks, resume_pass, task_externals);
+                                       ,
+                                       task_shader_target, &pass_breaks, resume_pass,
+                                       task_externals);
                             if (task.render.scene_stages) {
 #if BBLITE_HAS_TEXT
                                 // The scene's text, bound for this pass's

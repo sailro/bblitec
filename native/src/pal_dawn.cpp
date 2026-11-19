@@ -3202,7 +3202,7 @@ public:
                                 if (task.source_scene != graph_scene.state ||
                                     task.render.scene_stages ||
                                     task.render.shadow_generator.value != invalid_handle ||
-                                    !target.color || target.color_format != state.surface_format) {
+                                    !target.color) {
                                     throw std::runtime_error(
                                         "Temporal source requires an admitted Standard color pass in its owning scene.");
                                 }

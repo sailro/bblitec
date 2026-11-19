@@ -89,7 +89,7 @@ test("scene attachments preserve MSAA and sprite contexts retain target, load an
                 join(output, `${backend}GraphStages.hpp`),
                 `void graph_mesh_stages(bool draw_scene_billboard_stages, FixturePassBreaks* pass_breaks, std::optional<std::function<int()>> resume_pass, const void* externals) {
                 ${encode.slice(meshStart, meshEnd)}
-            } void graph() { ${encode.slice(graphStart, graphEnd)} }`,
+            } void graph_stages() { ${encode.slice(graphStart, graphEnd)} }`,
             );
         } else {
             const graphStart = encode.indexOf(

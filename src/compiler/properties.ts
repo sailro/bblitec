@@ -239,6 +239,8 @@ interface PropertyRead {
      */
     carriesRenderTextureAspect?: true;
     renderTextureAspect?: "depth";
+    /** Carries the owner's proven target descriptor onto the target read. */
+    carriesRenderTargetSignature?: true;
     /**
      * Carries which recorded node-particle set the owner names onto the
      * value read, so the element access that follows can say which set's
@@ -1926,6 +1928,7 @@ export const propertyRules: readonly PropertyRule[] = [
         property: "rt",
         value: "render-target",
         field: "rt",
+        carriesRenderTargetSignature: true,
     },
     {
         // `loadSplat`'s promise that the sort worker has produced its first
@@ -2313,6 +2316,10 @@ export function readProperty(
                             isDepthTexture: true as const,
                             renderTextureSource: "render-target" as const,
                         }
+                      : {}),
+                  ...(rule.carriesRenderTargetSignature &&
+                  owner.renderTargetSignature
+                      ? { renderTargetSignature: owner.renderTargetSignature }
                       : {}),
               });
     if (rule.record || rule.field) {

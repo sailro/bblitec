@@ -498,7 +498,6 @@ export function compileRenderTargetOptions(
         hasColor: colorFormat !== undefined,
         ...(surface ? { surface } : {}),
         signature: {
-            surfaceFormat,
             hasColor: colorFormat !== undefined,
             ...(depth ? { depthFormat: depth } : {}),
             samples: Number.parseInt(sampleCount),
@@ -537,14 +536,12 @@ export function compileRenderTaskOptions(
     const target = context.compileValue(targetExpression);
     context.expectKind(target, "render-target", targetExpression);
     const signature = target.renderTargetSignature;
-    if (
-        !signature?.surfaceFormat ||
-        !signature.hasColor ||
-        signature.depthFormat !== "depth24plus-stencil8"
-    ) {
+    // A temporal frame prepares every render task's colour pass against the
+    // task target's own attachments; a depth-only pass has no prepared arm.
+    if (!signature?.hasColor) {
         context.admissions.noteTemporalRecordBoundary(
             expression,
-            "TAA source preparation requires the engine color format and depth24plus-stencil8 attachment",
+            "a render task whose target has no proven colour attachment (temporal frames prepare colour passes only)",
             "always",
         );
     }

@@ -172,19 +172,19 @@ test("TAA preparation requires one proven registered scene while preserving same
     );
 });
 
-test("TAA pass signatures refuse missing depth, alternate depth and multisampled or unproven sampling", () => {
+test("TAA pass signatures admit the target's own attachments and refuse colourless passes and multisampled or unproven sampling", () => {
     for (const source of [
         prefix.replace('dFormat:"depth24plus-stencil8",', ""),
         prefix.replace('"depth24plus-stencil8"', '"depth32float"'),
-        prefix.replace("format:engine.format,", ""),
         prefix.replace("format:engine.format", 'format:"rgba16float"'),
-    ]) {
-        assert.doesNotThrow(() => compileSource(source));
-        assert.throws(
-            () => compileSource(source + taa),
-            /engine color format and depth24plus-stencil8/,
-        );
-    }
+    ])
+        assert.doesNotThrow(() => compileSource(source + taa));
+    const colourless = prefix.replace("format:engine.format,", "");
+    assert.doesNotThrow(() => compileSource(colourless));
+    assert.throws(
+        () => compileSource(colourless + taa),
+        /render task whose target has no proven colour attachment/,
+    );
     const multisampled = prefix.replace("samples:1", "samples:4");
     assert.doesNotThrow(() => compileSource(multisampled));
     assert.throws(
@@ -216,5 +216,36 @@ test("TAA pass signatures refuse missing depth, alternate depth and multisampled
                     "createRenderTask({rt,rst:resolved}",
                 ) + taa.replace("sourceTexture:rt", "sourceTexture:resolved"),
         ),
+    );
+});
+
+/** A normal pre-pass beside the TAA source, as an app's SSAO source builds it. */
+const ownTargetPass = (
+    format: string,
+) => `import {createEngine, createSceneContext, createRenderTarget, createRenderTask,
+    createTaaPostProcessTask, createArcRotateCamera, createSurfaceRenderTargetTexture, withSampledDepthTexture,
+    enableRenderTaskMeshRefresh, addTaskAtStart} from "@babylonjs/lite";
+const engine=await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+const scene=createSceneContext(engine,{defaultRenderTask:false});
+const camera=createArcRotateCamera(0,1,6,{x:0,y:0,z:0});
+scene.camera=camera;
+const rt=createRenderTarget({format:engine.format,dFormat:"depth24plus-stencil8",samples:1,size:engine});
+const source=createRenderTask({rt},engine,scene);
+const normals=createSurfaceRenderTargetTexture(engine,{${format}dFormat:"depth24plus",depthCompare:"greater-equal",
+    depthClearValue:0,samples:1,size:{surface:engine,scale:.5}},withSampledDepthTexture);
+const pass=createRenderTask({name:"normals",rt:normals.rt,clrColor:{r:0,g:0,b:0,a:1},clr:true,cam:camera,cs:true,
+    autoMirror:false},engine,scene);
+enableRenderTaskMeshRefresh(pass);
+addTaskAtStart(scene,pass);`;
+
+test("TAA admits another render task drawing into its own target formats", () => {
+    const own = ownTargetPass('format:"rgba8unorm",');
+    assert.doesNotThrow(() => compileSource(own));
+    assert.doesNotThrow(() => compileSource(own + taa));
+    const colourless = ownTargetPass("");
+    assert.doesNotThrow(() => compileSource(colourless));
+    assert.throws(
+        () => compileSource(colourless + taa),
+        /render task whose target has no proven colour attachment/,
     );
 });

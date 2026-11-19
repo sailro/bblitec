@@ -3181,7 +3181,6 @@ export interface ValueFields {
     copyTask?: true;
     /** Proven target descriptor retained by aliases for pass-signature admission. */
     renderTargetSignature?: {
-        readonly surfaceFormat: boolean;
         readonly hasColor: boolean;
         readonly depthFormat?: string;
         readonly samples: number;
