@@ -186,3 +186,36 @@ test("a spread of unowned handles into engine-owned storage pairs them with the 
     `);
     assert.match(cpp, /bbl::js::array_from_iterable</);
 });
+
+test("an entry program compares an optional stored handle with a plain one by its slot", () => {
+    // Every unowned material of the entry program is its one engine's, so
+    // the cached record's material compares with the mesh's alone.
+    const { cpp } = compileSource(`
+        import { addToScene, createBox, createEngine, createSceneContext, createStandardMaterial } from "@babylonjs/lite";
+        import type { Material, Mesh } from "@babylonjs/lite";
+        interface CachedView { source: Material; base: number; view: Material | null }
+        const views = new Map<Mesh, CachedView>();
+        async function main(): Promise<void> {
+            const engine = await createEngine(document.createElement("canvas"));
+            const scene = createSceneContext(engine);
+            const box = createBox(engine, { size: 1 });
+            box.material = createStandardMaterial();
+            addToScene(scene, box);
+            for (const mesh of scene.meshes) {
+                const material = mesh.material;
+                if (!material) continue;
+                const base = mesh.position.x > 0 ? 3 : 0;
+                const cached = views.get(mesh);
+                let view: Material | null;
+                if (cached?.source === material && cached.base === base) view = cached.view;
+                else {
+                    view = material;
+                    views.set(mesh, { source: material, base, view });
+                }
+                console.log(view === null);
+            }
+        }
+        void main();
+    `);
+    assert.match(cpp, /\.has_value\(\) && \(\*\w+\) == v_\w+_material\)/);
+});

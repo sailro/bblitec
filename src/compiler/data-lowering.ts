@@ -21014,12 +21014,22 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 isEngineScopedHandleKind(type.inner.handle) &&
                 !type.inner.ownedEngine
             ) {
-                this.context.dataTypes.requireEngineParameterStorage(
-                    value?.engineOwnerParameter,
-                );
                 // A parameter or local holding the handle stores its engine
                 // beside it.
                 const local = this.context.unwrap(operand);
+                // Another operand (a property chain) has no storage to give
+                // it one; an entry program's unowned handles share its one
+                // default engine (`unownedHandleOwner`), so its slot
+                // compares alone.
+                if (
+                    !ts.isIdentifier(local) &&
+                    belongsToEntryEngine(type.inner.handle) &&
+                    this.context.defaultEngine() !== undefined
+                )
+                    continue;
+                this.context.dataTypes.requireEngineParameterStorage(
+                    value?.engineOwnerParameter,
+                );
                 if (ts.isIdentifier(local)) {
                     const declaration = resolvedSymbol(
                         this.context.checker,
