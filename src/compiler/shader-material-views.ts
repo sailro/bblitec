@@ -30,6 +30,7 @@ import {
     fieldsReadingOthers,
     holdsRuntimeLeaf,
     isShaderMaterialType,
+    materialKeyedMapRead,
     optionFact,
     optionsBinding,
     pinnedShaderMaterialField,
@@ -89,6 +90,7 @@ import {
     withShaderVariants,
 } from "./values/model.js";
 import { unlessRefused } from "./compile-error.js";
+import { sceneRelativeSourceLabel } from "../source-location.js";
 
 /** A `createMaterialView` over a ShaderMaterial. */
 export interface ShaderMaterialView {
@@ -2010,12 +2012,14 @@ function deriveViewPrograms(
                                 `'${spelled(value)}' gives a ShaderMaterial view's '${key}' a '${String(field.copies)}' of '${String(Reflect.get(item, "name"))}' the run time decides; a view's program takes none, so generation keeps none to read.`,
                         );
                         const program = viewProgramFact(field.option, fact);
-                        if (runTimeFact(program))
+                        if (runTimeFact(program)) {
+                            const read = materialKeyedMapRead(context, value);
                             context.fail(
                                 value,
                                 unreadableFactRefusal(program) ??
-                                    `A ShaderMaterial view's '${key}' compiles into its program at generation; this value is decided at run time.`,
+                                    `A ShaderMaterial view's '${key}' compiles into its program at generation; ${read ? `it reads '${spelled(read)}' (${sceneRelativeSourceLabel(read)}), an entry of a map keyed by ShaderMaterial, which generation does not hold` : "this value is decided at run time"}.`,
                             );
+                        }
                         return [field.option, fact];
                     }),
                 ),

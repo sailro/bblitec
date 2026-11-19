@@ -16,6 +16,7 @@
 import ts from "typescript";
 import { doubleLiteral } from "../cpp-literals.js";
 import { bindingReferences } from "./binding-references.js";
+import { constInitializer } from "./browser-erasure.js";
 import { unlessRefused } from "./compile-error.js";
 import {
     emissionArray,
@@ -29,6 +30,7 @@ import type {
     ShaderSourceText,
 } from "./lowering-services.js";
 import { staticJsonValue } from "./option-helpers.js";
+import { forEachReturn } from "./loop-control.js";
 import { parameterIsRebound } from "./parameter-effects.js";
 import {
     arrayWriteObservation,
@@ -36,8 +38,10 @@ import {
     recordKeysAreWritten,
 } from "./record-observations.js";
 import { sourceFilesWalk } from "./analysis-walk.js";
+import { calledFunction, calledOrigin, namedMember } from "./symbols.js";
 import {
     isSupportedFunction,
+    isValueReference,
     notJson,
     isSuspensionPoint,
     objectLiteralMembers,
@@ -1281,7 +1285,7 @@ function recipeStore(
                   : { json },
         );
     }
-    const recipeType = mapValueType(context, receiver);
+    const recipeType = mapTypeArguments(context.checker, receiver)?.[1];
     const written =
         recipeType &&
         writtenFact(context, recipeType, {
@@ -1305,18 +1309,72 @@ function recipeStore(
     return { variant, member: memberName, options: creation.options, members };
 }
 
-/** The value type of the map a receiver names. */
-function mapValueType(
-    context: Pick<ShaderDerivationContext, "checker">,
+/** The key and value types of the map a receiver names. */
+function mapTypeArguments(
+    checker: ts.TypeChecker,
     receiver: ts.Expression,
-): ts.Type | undefined {
-    const type = context.checker.getNonNullableType(
-        context.checker.getTypeAtLocation(receiver),
+): readonly ts.Type[] | undefined {
+    const type = checker.getNonNullableType(
+        checker.getTypeAtLocation(receiver),
     );
     return (type.flags & ts.TypeFlags.Object) !== 0 &&
         ((type as ts.ObjectType).objectFlags & ts.ObjectFlags.Reference) !== 0
-        ? context.checker.getTypeArguments(type as ts.TypeReference)[1]
+        ? checker.getTypeArguments(type as ts.TypeReference)
         : undefined;
+}
+
+/**
+ * The first library `get` of a map keyed by ShaderMaterial whose entry
+ * `expression` reads: among its operands, through the initializers of the
+ * `const` bindings it names and the returns of the source functions it
+ * calls. Generation holds no entry of such a map (a recipe map's `get`
+ * carries only its lookup, `readShaderRecipe`), so a value reading one is
+ * the run time's.
+ */
+export function materialKeyedMapRead(
+    context: Pick<ShaderDerivationContext, "checker" | "symbols" | "unwrap">,
+    expression: ts.Expression,
+): ts.CallExpression | undefined {
+    const { checker } = context;
+    const visited = new Set<ts.Node>();
+    const visit = (node: ts.Node): ts.CallExpression | undefined => {
+        if (visited.has(node) || ts.isFunctionLike(node)) return undefined;
+        visited.add(node);
+        if (ts.isIdentifier(node)) {
+            const initializer = isValueReference(node)
+                ? constInitializer(context, node)
+                : undefined;
+            return initializer && visit(initializer);
+        }
+        if (ts.isCallExpression(node)) {
+            const callee = namedMember(
+                checker,
+                context.unwrap(node.expression),
+            );
+            const key =
+                callee?.name === "get" &&
+                calledOrigin(checker, node) === "default-lib"
+                    ? mapTypeArguments(checker, callee.expression)?.[0]
+                    : undefined;
+            if (key && isShaderMaterialType(key)) return node;
+            const fn = calledFunction(checker, node);
+            if (fn?.body && !visited.has(fn)) {
+                visited.add(fn);
+                const returned: ts.Expression[] = [];
+                if (ts.isBlock(fn.body))
+                    forEachReturn([fn.body], ({ expression }) => {
+                        if (expression) returned.push(expression);
+                    });
+                else returned.push(fn.body);
+                for (const value of returned) {
+                    const found = visit(value);
+                    if (found) return found;
+                }
+            }
+        }
+        return ts.forEachChild(node, visit);
+    };
+    return visit(expression);
 }
 
 /**

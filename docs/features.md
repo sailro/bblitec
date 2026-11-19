@@ -421,7 +421,8 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
   view's field reads it. A definition giving the view such maps makes them its slots: a record read from its source
   aliases that slot, any other is the view's own, and a declared uniform the map lacks packs as zero. Redefinitions
   declaring other uniforms, samplers or storage buffers than the source without the maps holding them, other fields,
-  other run-time values, or a source of a variant the program never creates refuse; so do a given map lacking a
+  other run-time values, or a source of a variant the program never creates refuse; a run-time value read from an entry
+  of a ShaderMaterial-keyed map refuses naming that `get`. So do a given map lacking a
   declared sampler or storage buffer and a record read from another material, at run time.
   Depth-only render tasks use each
   material's pipeline, including custom vertex transforms and `depthOnlyFragment` discards.

@@ -831,6 +831,53 @@ test("a view refuses redefinitions generation cannot derive a program from", () 
         assert.throws(() => compileSource(view(statement, source)), refusal);
 });
 
+test("a view's redefinition reading an entry of a ShaderMaterial-keyed map refuses, naming the map read", () => {
+    // A side table each material's creation declares once: generation holds
+    // the stores, not which entry a material of a variant finds.
+    const compiled = (): ReturnType<typeof compileSource> =>
+        compileSource(`${prelude}
+    import type { Mesh } from "@babylonjs/lite";
+    interface Geometry { readonly source: string }
+    const geometries = new WeakMap<ShaderMaterial, Geometry>();
+    function declareGeometry(material: ShaderMaterial, geometry: Geometry): void {
+        if (geometries.has(material)) throw new Error("Geometry is already declared");
+        geometries.set(material, Object.freeze({ source: geometry.source }));
+    }
+    function geometryOf(material: ShaderMaterial): Geometry | undefined {
+        return geometries.get(material);
+    }
+    function tinted(name: string, tint: string): ShaderMaterial {
+        const material = createShaderMaterial({ name, vertexSource: wgsl\`\${VERT}\`, fragmentSource: wgsl\`\${surface(tint)}\`, attributes: ["position"], uniforms: ["worldViewProjection", "world"] });
+        declareGeometry(material, { source: VERT });
+        return material;
+    }
+    function depthView(source: ShaderMaterial): ShaderMaterial {
+        const view = createMaterialView(source, { features: 0 }) as ShaderMaterial;
+        const geometry = geometryOf(source);
+        const vertexSource = geometry?.source ?? source.vertexSource;
+        Object.defineProperties(view, {
+            vertexSource: { value: vertexSource, enumerable: true, configurable: true },
+            fragmentSource: { value: wgsl\`\${NORMAL}\`, enumerable: true, configurable: true },
+        });
+        return view;
+    }
+    async function main(): Promise<void> {
+        const engine = await createEngine({});
+        const mesh = createMeshFromData(engine, "tri", new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]), new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]), new Uint32Array([0, 1, 2]));
+        const registry = { add(target: Mesh): ShaderMaterial { return depthView(target.material as ShaderMaterial); } };
+        mesh.material = tinted("warm", "vec3<f32>(1.0, 0.5, 0.0)");
+        draw(engine, registry.add(mesh));
+        mesh.material = tinted("cold", "vec3<f32>(0.0, 0.5, 1.0)");
+        draw(engine, registry.add(mesh));
+    }
+    void main();
+`);
+    assert.throws(
+        compiled,
+        /A ShaderMaterial view's 'vertexSource' compiles into its program at generation; it reads 'geometries\.get\(material\)' \(input\.ts:\d+:\d+\), an entry of a map keyed by ShaderMaterial, which generation does not hold\./,
+    );
+});
+
 test("a view over a material of run-time variant derives a program per variant the program creates, later creations included", () => {
     const source = (creates: boolean): string => `${prelude}
     import { createStandardMaterial } from "@babylonjs/lite";
