@@ -2099,6 +2099,33 @@ export class DataLowerer {
     }
 
     private readonly functionStorageFlow = new FunctionStorageFlow();
+    private readonly functionPropertyFlow = new FunctionStorageFlow();
+
+    private refuseErasedFunctionProperties(node: ts.Node): never {
+        return this.context.fail(
+            node,
+            "A stored function's properties cannot be read after callable record storage erased them.",
+        );
+    }
+
+    /** Absence is valid only if storage never erased a callable record's properties. */
+    public noteFunctionProperties(
+        type: DataType<"function">,
+        use: "reads" | "erases",
+        node: ts.Node,
+    ): void {
+        if (
+            type.generic ||
+            !this.functionPropertyFlow.note(
+                {
+                    signatureSite: type.signatureSite,
+                    abi: "function-properties",
+                },
+                use === "reads" ? "reads" : "passes",
+            )
+        )
+            this.refuseErasedFunctionProperties(node);
+    }
 
     private refuseDroppedArguments(node: ts.Node): never {
         return this.context.fail(
@@ -2152,21 +2179,30 @@ export class DataLowerer {
             }
             if (from.kind === "function" && to.kind === "function") {
                 this.context.dataTypes.connectFunctionCompletion(from, to);
-                if (
-                    !from.generic &&
-                    !to.generic &&
-                    !this.functionStorageFlow.connect(
-                        {
-                            signatureSite: from.signatureSite,
-                            abi: this.context.dataTypes.cppType(from),
-                        },
-                        {
-                            signatureSite: to.signatureSite,
-                            abi: this.context.dataTypes.cppType(to),
-                        },
+                if (!from.generic && !to.generic) {
+                    const sourceContract = {
+                        signatureSite: from.signatureSite,
+                        abi: this.context.dataTypes.cppType(from),
+                    };
+                    const targetContract = {
+                        signatureSite: to.signatureSite,
+                        abi: this.context.dataTypes.cppType(to),
+                    };
+                    if (
+                        !this.functionPropertyFlow.connect(
+                            { ...sourceContract, abi: "function-properties" },
+                            { ...targetContract, abi: "function-properties" },
+                        )
                     )
-                )
-                    this.refuseDroppedArguments(node);
+                        this.refuseErasedFunctionProperties(node);
+                    if (
+                        !this.functionStorageFlow.connect(
+                            sourceContract,
+                            targetContract,
+                        )
+                    )
+                        this.refuseDroppedArguments(node);
+                }
                 for (
                     let index = 0;
                     index <
@@ -6116,6 +6152,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (!dataType) {
             return undefined;
         }
+        const uninstalled =
+            dataType.kind === "function"
+                ? this.context.propertyAccess.readUninstalledFunctionMember(
+                      owner,
+                      access,
+                  )
+                : undefined;
+        if (uninstalled) return uninstalled;
         if (dataType.kind === "symbol")
             return symbolProperty(this, owner, property);
         if (dataType.kind === "regexp" && property === "lastIndex")

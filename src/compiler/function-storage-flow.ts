@@ -17,9 +17,10 @@ interface StorageContract {
 }
 
 /**
- * Reached callback conversions connect source contracts. A dropped argument
- * conflicts only within that value flow and the storage ABI that drops it.
- * Missing source contracts conservatively share every value of that ABI.
+ * Reached callback conversions connect source contracts. Conflicting reads
+ * and producers are checked within that value flow and observation domain:
+ * one storage ABI for dropped arguments, all ABIs for erased properties.
+ * Missing source contracts conservatively share every value of that domain.
  */
 export class FunctionStorageFlow {
     private readonly parents = new EmissionMap<string, string>();

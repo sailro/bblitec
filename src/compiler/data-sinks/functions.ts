@@ -492,6 +492,7 @@ function valueFunction(
             ? lowerer.context.dataTypes.structCall(value.dataType.name)
             : undefined;
     if (callType) {
+        lowerer.noteFunctionProperties(callType, "erases", node);
         lowerer.context.useNativeValue(value);
         return lowerer.compileKnownValueForSink(
             lowerer.leafValue(`(${value.cpp})->${callMember}`, callType),

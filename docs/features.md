@@ -88,6 +88,8 @@ Rules:
 - A stored binding whose literal spells plain JSON that no layout holds (empty arrays, elements of mixed shapes: a
   JSON import of saved data) is a document.
 - Reached `Iterable<T>` parameters specialize to concrete collection storage, preserving iterator cursor identity.
+- Callable records retain optional properties when selected beside plain functions. Mixed tuple arrays read absent
+  properties on plain functions as `undefined`; reading properties after erasure into bare function storage refuses.
 - A module `let` assigned only by unreachable functions keeps its initializer. Strict comparisons fold through `const`
   aliases, absent `??` lefts and generation-known booleans.
 - Literals handed to functions keep their facts unless a callee's write reaches a member they hold. Static descriptor

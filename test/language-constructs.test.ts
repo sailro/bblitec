@@ -21703,6 +21703,69 @@ check(
 );
 
 check(
+    "optional-function-properties-survive-mixed-tuple-array-sources",
+    `
+    type Reader = (() => number) & { changed?: (notify: () => void) => () => void };
+    let notifications = 0;
+    let stopped = 0;
+    function watched(value: number): Reader {
+        return Object.assign(() => value, {
+            changed: (notify: () => void) => {
+                notify();
+                return () => { stopped += value; };
+            },
+        });
+    }
+    function connect(rows: readonly (readonly [string | number, Reader])[]): number {
+        const cleanup: Array<() => void> = [];
+        let total = 0;
+        rows.forEach(([, read], index) => {
+            total += read();
+            if (read.changed) cleanup.push(read.changed(() => { notifications += index + 1; }));
+        });
+        cleanup.forEach((stop) => stop());
+        return total;
+    }
+    const plain: Array<() => number> = [() => 5, () => 11];
+    const gate = new Float32Array([1, 0]);
+    const present = watched(3);
+    const fallback = () => 5;
+    const selected = gate[0]! > 0 ? present : fallback;
+    const absent = gate[1]! > 0 ? watched(9) : () => 5;
+    const total = connect([["first", selected], [1, plain[0]!], ["last", watched(7)], [3, plain[1]!], ["absent", absent]]);
+    if (total !== 31 || notifications !== 4 || stopped !== 10 || selected !== present)
+        throw new Error("readers " + total + " " + notifications + " " + stopped);
+    let produced = 0;
+    const factories: Array<() => () => number> = [() => { produced++; return () => 13; }];
+    if ((factories[0]!() as Reader).changed !== undefined || produced !== 1)
+        throw new Error("receiver evaluated " + produced);
+`,
+);
+
+test("an optional property refuses function storage that erased installed properties", () => {
+    for (const [writeFirst, parameter] of [
+        [true, ""],
+        [false, ""],
+        [true, "index: number"],
+        [false, "index: number"],
+    ] as const) {
+        assert.throws(
+            () =>
+                compileSource(`
+                type Reader = ((${parameter}) => number) & { changed?: () => void };
+                const readers: Array<(${parameter}) => number> = [() => 1];
+                const decorated: (() => number) & { changed?: () => void } = Object.assign(() => 2, { changed: () => {} });
+                function inspect(reader: Reader): boolean { return !!reader.changed; }
+                ${writeFirst ? "readers.push(decorated);" : ""}
+                inspect(readers[0]!);
+                ${writeFirst ? "" : "readers.push(decorated);"}
+                `),
+            /properties cannot be read after callable record storage erased them/,
+        );
+    }
+});
+
+check(
     "a-record-argument-container-field-holds-the-absence-the-program-writes",
     `
     interface Pt { x: number; z: number; w?: number }

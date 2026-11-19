@@ -17,6 +17,7 @@
 import { readShaderMaterialFact } from "./shader-material-views.js";
 import { EVENT_TYPE_MEMBER, foreignEventTypes } from "./dom-listeners.js";
 import { AbsentRecordProperties } from "./absent-record-properties.js";
+import { callbackFunction } from "./user-functions.js";
 import { readEngineRenderFunction } from "./engine-render-function.js";
 import { elementChildrenSnapshot, readByOneWalk } from "./element-children.js";
 import {
@@ -4456,36 +4457,37 @@ export class PropertyAccessLowerer {
      */
     /**
      * A member a function object never received, read as `undefined`: the
-     * function is made by an arrow or function expression and carries no
-     * installed properties, and a program type declares the member optional
-     * (`(() => T) & { onResize?: ... }`). Properties are installed only on a
-     * fresh function (`Object.assign`) or through a binding whose declaration
-     * then stores a callable record, and the function's own and prototype
-     * members are library declarations.
+     * function carries no installed properties, and a program type declares
+     * the member optional (`(() => T) & { onResize?: ... }`). Installed
+     * properties live in callable records; stored functions must prove no
+     * such record lost its properties into their storage. Function intrinsic
+     * and prototype members remain library declarations.
      */
-    private isUninstalledFunctionMember(
+    public readUninstalledFunctionMember(
         owner: Value,
         expression: ts.PropertyAccessExpression,
-    ): boolean {
-        const declaration = owner.callbackDeclaration;
+    ): Value | undefined {
+        const declaration = callbackFunction(this.context.checker, owner);
+        const stored = owner.dataType?.kind === "function";
         if (
-            owner.kind !== "callback" ||
-            owner.dataType !== undefined ||
+            (!stored && owner.kind !== "callback") ||
+            (!stored && owner.dataType !== undefined) ||
             owner.recordProperties !== undefined ||
             owner.intrinsicName !== undefined ||
             owner.hostFunction !== undefined ||
-            !declaration ||
-            !(
-                ts.isArrowFunction(declaration) ||
-                ts.isFunctionExpression(declaration)
-            ) ||
+            (!stored &&
+                (!declaration ||
+                    !(
+                        ts.isArrowFunction(declaration) ||
+                        ts.isFunctionExpression(declaration)
+                    ))) ||
             writeSiteOf(expression) !== undefined
         )
-            return false;
+            return undefined;
         const members =
             accessedPropertySymbol(this.context.checker, expression)
                 ?.declarations ?? [];
-        return (
+        const optional =
             members.length > 0 &&
             members.every(
                 (member) =>
@@ -4493,8 +4495,16 @@ export class PropertyAccessLowerer {
                         ts.isMethodSignature(member)) &&
                     member.questionToken !== undefined &&
                     declarationOrigin(member) === "program",
-            )
-        );
+            );
+        if (!optional) return undefined;
+        if (owner.dataType?.kind === "function")
+            this.context.dataLowerer.noteFunctionProperties(
+                owner.dataType,
+                "reads",
+                expression,
+            );
+        this.context.emitDiscardedValue(owner);
+        return undefinedValue();
     }
 
     private readOwnerProperty(
@@ -4581,8 +4591,11 @@ export class PropertyAccessLowerer {
             }
             return undefined;
         }
-        if (this.isUninstalledFunctionMember(owner, expression))
-            return undefinedValue();
+        const uninstalled = this.readUninstalledFunctionMember(
+            owner,
+            expression,
+        );
+        if (uninstalled) return uninstalled;
         // A handle collection's size. The concept's other operations are
         // its loop and its searches; this is the same native vector read
         // through its one remaining JavaScript member, which is how both

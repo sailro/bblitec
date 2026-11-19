@@ -6396,12 +6396,42 @@ export class ExpressionLowerer {
             armRecord(unwrapped.whenTrue) !== undefined &&
             armRecord(unwrapped.whenFalse) !== undefined &&
             armRecord(unwrapped.whenTrue) !== armRecord(unwrapped.whenFalse);
-        const conditionalType =
+        let conditionalType =
             inferred && (selectedArray?.kind === "span" || distinctRecordArms)
                 ? this.context.dataTypes.markStoredObjectReferences(inferred)
                 : inferred?.kind === "enum"
                   ? { kind: "string" as const }
                   : inferred;
+        // TypeScript can collapse a callable record beside a plain function
+        // to the latter's signature. That is a view, not permission to erase
+        // the selected function object's installed properties.
+        if (conditionalType?.kind === "function") {
+            const arms = [unwrapped.whenTrue, unwrapped.whenFalse];
+            for (const arm of arms) {
+                const type = this.context.checker.getTypeAtLocation(arm);
+                const record = this.context.dataLowerer.dataTypeAt(arm);
+                if (
+                    record?.kind !== "struct" ||
+                    !this.context.dataTypes.structCall(record.name)
+                )
+                    continue;
+                if (
+                    !arms.every((source) =>
+                        this.context.checker.isTypeAssignableTo(
+                            this.context.checker.getTypeAtLocation(source),
+                            type,
+                        ),
+                    )
+                )
+                    this.context.fail(
+                        unwrapped,
+                        "Conditional function objects require a callable record layout that holds both arms.",
+                    );
+                conditionalType =
+                    this.context.dataTypes.markStoredObjectReferences(record);
+                break;
+            }
+        }
         if (
             conditionalType?.kind === "string" ||
             conditionalType?.kind === "number" ||
