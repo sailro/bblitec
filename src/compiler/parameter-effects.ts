@@ -1467,25 +1467,34 @@ function parameterIntactBefore(
         ) !== fn
     )
         return false;
-    const runsAfter = (node: ts.Node): boolean =>
-        node.pos >= read.end || (node.pos <= read.pos && node.end >= read.end);
-    return effects.uses.every((use) => {
-        if (useLeavesIntact(checker, use)) return true;
-        if (!use.nested) return runsAfter(use.node);
-        // The closure holding the use, created in the function's own body.
-        let closure: ts.Node | undefined;
-        for (
-            let node: ts.Node | undefined = use.node;
-            node && node !== fn;
-            node = node.parent
-        )
-            if (ts.isFunctionLike(node)) closure = node;
+    return effects.uses.every(
+        (use) => useLeavesIntact(checker, use) || useRunsAfter(use, fn, read),
+    );
+}
+
+/** A use, or the creation of its non-hoisted closure, follows this read. */
+function useRunsAfter(
+    use: ParameterUse,
+    fn: EffectFunction,
+    read: ts.Node,
+): boolean {
+    if (!use.nested)
         return (
-            closure !== undefined &&
-            !ts.isFunctionDeclaration(closure) &&
-            closure.pos >= read.end
+            use.node.pos >= read.end ||
+            (use.node.pos <= read.pos && use.node.end >= read.end)
         );
-    });
+    let closure: ts.Node | undefined;
+    for (
+        let node: ts.Node | undefined = use.node;
+        node && node !== fn;
+        node = node.parent
+    )
+        if (ts.isFunctionLike(node)) closure = node;
+    return (
+        closure !== undefined &&
+        !ts.isFunctionDeclaration(closure) &&
+        closure.pos >= read.end
+    );
 }
 
 /**
@@ -1608,15 +1617,29 @@ export function parameterHeldObjectWritten(
  * The first keys of the parameter slots a write can reach (`""` for the
  * object itself): a write through `param.a`, or through a value computed
  * from it, cannot replace `param.b`'s slot, whatever the values alias.
+ * At a read in the function's own straight-line body, later uses do not
+ * invalidate its slots yet.
  */
 export function parameterWrittenSlots(
     checker: ts.TypeChecker,
     fn: EffectFunction,
     binding: ts.Identifier,
+    before?: ts.Node,
 ): ReadonlySet<string> {
+    const effects = parameterEffects(checker, fn, binding);
+    const atRead =
+        before !== undefined &&
+        effects.analyzable &&
+        !effects.deferred &&
+        ts.findAncestor(
+            before,
+            (node) =>
+                ts.isFunctionLike(node) || ts.isIterationStatement(node, false),
+        ) === fn;
     return new Set(
-        parameterEffects(checker, fn, binding)
-            .uses.filter(
+        effects.uses
+            .filter((use) => !atRead || !useRunsAfter(use, fn, before))
+            .filter(
                 (use) =>
                     use.kind === "write" ||
                     use.kind === "rebind" ||

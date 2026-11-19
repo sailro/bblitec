@@ -391,6 +391,7 @@ import {
     type ResourceLoop,
 } from "./compiler/resource-loops.js";
 import { StaticExpansionBudget } from "./compiler/static-expansion.js";
+import { compileWithRuntimeCaseSplit } from "./compiler/runtime-case-split.js";
 import type {
     CollectionCardinality,
     CollectionSite,
@@ -3726,7 +3727,12 @@ class Compiler implements LoweringServices {
             runtimeProfileConstructionIntrinsics.has(importedName) &&
             this.isRuntimeResourceConstruction();
         const mark = this.sceneManifest.compositionMark();
-        const value = compileRegisteredIntrinsic(this, importedName, call);
+        const value = compileWithRuntimeCaseSplit(
+            this,
+            call,
+            () => compileRegisteredIntrinsic(this, importedName, call),
+            "held-text",
+        );
         if (
             value &&
             [
@@ -6660,7 +6666,9 @@ class Compiler implements LoweringServices {
         return ts.isCallExpression(call) &&
             !call.questionDotToken &&
             moduleLevelCallee(this.checker, call.expression) &&
-            call.arguments.every((argument) => this.rereadsAlike(argument))
+            call.arguments.every((argument) =>
+                this.rereadsAlike(argument, identifier),
+            )
             ? { declaration, call }
             : undefined;
     }
@@ -6682,7 +6690,7 @@ class Compiler implements LoweringServices {
      * declaration's (`rerunCallInitializer`) and nothing writes through the
      * binding.
      */
-    private settledCallInitializer(
+    public settledCallInitializer(
         identifier: ts.Identifier,
     ): ts.CallExpression | undefined {
         const initializer = this.rerunCallInitializer(identifier);
@@ -6887,10 +6895,10 @@ class Compiler implements LoweringServices {
      * Whether a later re-read of an expression sees what its first
      * evaluation saw: a call in it returns a literal, and its names are
      * functions, consts nothing writes through, or parameter members their
-     * function only reads.
+     * function only reads (up to `atRead`, when supplied).
      */
-    private rereadsAlike(expression: ts.Expression): boolean {
-        const known = this.rereadAlike.get(expression);
+    private rereadsAlike(expression: ts.Expression, atRead?: ts.Node): boolean {
+        const known = atRead ? undefined : this.rereadAlike.get(expression);
         if (known !== undefined) return known;
         const stableName = (name: ts.Identifier): boolean => {
             const named = this.symbols.valueSymbol(name)?.valueDeclaration;
@@ -6920,6 +6928,7 @@ class Compiler implements LoweringServices {
                     this.checker,
                     named.parent,
                     binding,
+                    atRead,
                 );
                 return (
                     !written.has("") &&
@@ -6948,7 +6957,7 @@ class Compiler implements LoweringServices {
             return !ts.forEachChild(node, (child) => !stable(child));
         };
         const alike = stable(expression);
-        this.rereadAlike.set(expression, alike);
+        if (!atRead) this.rereadAlike.set(expression, alike);
         return alike;
     }
 

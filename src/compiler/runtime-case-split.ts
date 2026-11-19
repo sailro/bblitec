@@ -64,6 +64,7 @@ export type CaseSplitContext = Pick<
     | "reachShaderCreations"
     | "requireEngine"
     | "sceneManifest"
+    | "settledCallInitializer"
     | "userFunctions"
 >;
 
@@ -151,13 +152,16 @@ export function armSpecializesCall(
  * that depends on more than `MAX_SELECTORS`, whose tests' outcomes make
  * more than `MAX_ARMS` arms, or that reads more than
  * `MAX_CANDIDATE_SELECTORS`, keeps its refusal, which then says so.
+ * Intrinsics use `held-text`: only the finite inputs of replayable string
+ * initializers select, not otherwise unsupported run-time options.
  */
 export function compileWithRuntimeCaseSplit(
     context: CaseSplitContext,
     call: ts.CallExpression,
     compile: () => Value | undefined,
+    selectors: "arguments" | "held-text" = "arguments",
 ): Value | undefined {
-    const tests = selectorTests(context, call);
+    const tests = selectorTests(context, call, selectors === "held-text");
     if (tests === undefined) return compile();
     try {
         return context.probeEmission(compile, () => true);
@@ -701,6 +705,7 @@ export function moduleLevelCallee(
 function selectorTests(
     context: CaseSplitContext,
     call: ts.CallExpression,
+    onlyHeldText: boolean,
 ): SelectorTests | undefined {
     const calls: ts.CallExpression[] = [];
     const effects = (node: ts.Node): boolean => {
@@ -753,6 +758,7 @@ function selectorTests(
     // can be (`selectedModuleConstants`) is asked only where an answer
     // depends on it.
     const candidates: { node: ts.Expression; index: number }[] = [];
+    const heldCalls = new Set<ts.CallExpression>();
     const known = new Map<
         ts.Expression,
         readonly ts.Identifier[] | undefined
@@ -795,16 +801,35 @@ function selectorTests(
                 candidates.push({ node, index: groups.length });
         }
     };
-    const visit = (node: ts.Node): void => {
+    const visit = (node: ts.Node, held = false): void => {
         if (ts.isFunctionLike(node)) return;
         // A name whose declaration deferred its selection reads it here.
         const deferred =
             ts.isIdentifier(node) && context.bindings.deferredSelection(node);
-        if (deferred) {
+        if (deferred && (!onlyHeldText || held)) {
             unchanging.add(deferred.condition);
             addGroup("condition", deferred.condition);
         }
         if (!effectful) {
+            // Required text can be held in a const's closed-helper result.
+            // The same replay proof the static evaluator uses admits its
+            // finite arguments here; the arm then folds that initializer.
+            if (
+                ts.isIdentifier(node) &&
+                isValueReference(node) &&
+                context.bindings.lookupOptional(node)?.staticString ===
+                    undefined &&
+                holdsOnly(context.checker.getTypeAtLocation(node), ["string"])
+            ) {
+                const initializer = context.settledCallInitializer(node);
+                if (initializer && !heldCalls.has(initializer)) {
+                    heldCalls.add(initializer);
+                    calls.push(initializer);
+                    visit(initializer, true);
+                }
+            }
+        }
+        if (!effectful && (!onlyHeldText || held)) {
             if (ts.isConditionalExpression(node))
                 addGroup("condition", node.condition);
             // A value of a few outcomes a module's function is handed
@@ -825,10 +850,10 @@ function selectorTests(
                 valuePosition(node.name);
             if (ts.isSpreadAssignment(node)) valuePosition(node.expression);
         }
-        ts.forEachChild(node, visit);
+        ts.forEachChild(node, (child) => visit(child, held));
     };
     call.arguments.forEach((argument) => {
-        if (!effectful) valuePosition(argument);
+        if (!effectful && !onlyHeldText) valuePosition(argument);
         visit(argument);
     });
     if (

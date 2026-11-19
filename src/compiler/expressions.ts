@@ -421,6 +421,7 @@ export interface ExpressionContext
             | "handleCollections"
             | "compileRegisteredConstant"
             | "compileRegisteredIntrinsic"
+            | "settledCallInitializer"
             | "compileThinInstanceUploadHelper"
             | "compilePixelsTextureUpload"
             | "compileStaticFetch"

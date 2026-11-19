@@ -582,7 +582,8 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
 - Contact shadows, one-bounce GI, screen-space ambient occlusion
   (`createScreenSpaceAmbientOcclusionPostProcessTask`), EffectWrapper/EffectRenderer with bounded layouts and an
   add-equation blend state over `zero`, `one`, `src-alpha`, `one-minus-src-alpha`, `dst` and `dst-alpha`; custom
-  vertices refuse.
+  vertices refuse. A fragment held in an unwritten `const` helper result may select finite variants from boolean
+  or string-literal-union inputs when those inputs re-read unchanged at the wrapper; unbounded text refuses.
   Effect textures come from solid/pixel factories or render targets, with 2D float or depth layouts;
   scene frame graphs sample depth through `textureLoad`. Effect samplers use the `filtering` binding type.
   `viewDimension: "3d"` float layouts take `createTexture3DFromPixels` textures, which bind nowhere else.
