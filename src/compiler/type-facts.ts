@@ -537,7 +537,7 @@ export function arrayShape(
 }
 
 /** Which absent values a type admits. */
-interface Nullability {
+export interface Nullability {
     /** A member is `null`. */
     readonly null: boolean;
     /** A member is `undefined` or `void`, which reads as undefined. */

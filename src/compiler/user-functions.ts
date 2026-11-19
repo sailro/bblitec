@@ -7527,6 +7527,8 @@ export class UserFunctionLowerer {
             }
         }
         const label = `return_${ir.name}`;
+        // The type the caller holds the result as.
+        const declared = settled ?? resultType;
         const unchangedFields = this.freshReturnReadOnlyFields(
             context,
             ir,
@@ -7546,6 +7548,8 @@ export class UserFunctionLowerer {
                       undefined,
                       (path) =>
                           path.length === 1 && unchangedFields.has(path[0]!),
+                      false,
+                      declared,
                   )
                 : ir.returnNeedsSnapshot
                   ? // The snapshot is the call's own result.
@@ -7560,6 +7564,7 @@ export class UserFunctionLowerer {
                         label,
                         expression,
                         this.unwrittenElementFields(context, ir, returned),
+                        declared,
                     )),
             requiresExplicitDiscard: true,
         };

@@ -21588,3 +21588,22 @@ check(
     if (total !== 6 || patchPos !== null || patchNrm !== null || patchIdx !== null) throw new Error("patch " + total);
 `,
 );
+
+check(
+    "a-record-argument-container-field-holds-the-absence-the-program-writes",
+    `
+    interface Pt { x: number; z: number; w?: number }
+    interface Resolved { name: string; easedFull?: readonly { x: number; z: number }[] }
+    type Ctx = Pick<Resolved, "name" | "easedFull">;
+    function lay(r: Ctx, corners: number): number {
+        if (corners > 0) r.easedFull = undefined;
+        if (r.easedFull) { const pos = r.easedFull.map((p) => ({ x: p.x, z: p.z })); return pos.length; }
+        return -1;
+    }
+    const gate = new Float32Array([1, 0]);
+    const pts: Pt[] = [{ x: 0, z: 0 }, { x: 1, z: 1 }];
+    const cleared = lay({ name: "a", easedFull: pts }, gate[0]! > 0.5 ? 1 : 0);
+    const kept = lay({ name: "b", easedFull: pts }, gate[1]! > 0.5 ? 1 : 0);
+    if (cleared !== -1 || kept !== 2) throw new Error("eased " + cleared + " " + kept);
+`,
+);

@@ -77,6 +77,7 @@ import { isNativeOwnerRecord } from "./native-owner-carrier.js";
 import { recordPropertyKeys } from "./object-statics.js";
 import { parameterProjectionIsReadOnly } from "./parameter-projection-effects.js";
 import { recordFieldIsWritten } from "./record-observations.js";
+import { nullability, type Nullability } from "./type-facts.js";
 import { loopBoundMayChange, walkReachedLoopNodes } from "./resource-loops.js";
 import { calledFunction } from "./symbols.js";
 import {
@@ -1685,6 +1686,7 @@ export class BindingScopes {
                                 path[0]!,
                             ))),
                 true,
+                this.context.checker.getTypeAtLocation(identifier),
             );
         }
         if (value.kind === "void") {
@@ -2247,15 +2249,17 @@ export class BindingScopes {
     }
 
     /**
-     * Materialize mutable members when a compile-time value escapes; a
-     * field of its records, or of its tuple's, that `isUnchangedField`
-     * answers keeps its value (`materializeRecordScalars`).
+     * Materialize mutable members when a compile-time value escapes into a
+     * holder of type `declared`; a field of its records, or of its
+     * tuple's, that `isUnchangedField` answers keeps its value
+     * (`materializeRecordScalars`).
      */
     public materializeEscapingValue(
         value: Value,
         label: string,
         node?: ts.Expression,
         isUnchangedField?: (path: readonly string[], member: Value) => boolean,
+        declared?: ts.Type,
     ): Value {
         // A value holding a part generation cannot read has no native
         // storage: it escapes as generation holds it.
@@ -2295,6 +2299,8 @@ export class BindingScopes {
                 node,
                 undefined,
                 isUnchangedField,
+                false,
+                declared,
             );
         }
         if (value.kind === "tuple" && value.tupleElements) {
@@ -3408,6 +3414,7 @@ export class BindingScopes {
         materialized = new Map<object, Value>(),
         isUnchangedField?: (path: readonly string[], member: Value) => boolean,
         snapshotScalarData = false,
+        declared?: ts.Type,
     ): Value {
         if (
             record.retainedNativeRecord ||
@@ -3533,6 +3540,7 @@ export class BindingScopes {
                         ((path, member) =>
                             isUnchangedField([name, ...path], member)),
                     snapshotScalarData,
+                    declared && this.declaredFieldType(declared, name),
                 );
                 continue;
             }
@@ -3542,17 +3550,30 @@ export class BindingScopes {
                 !property.nativeBinding &&
                 this.isMutableRecordContainer(property.dataType)
             ) {
+                // A container slot the program can empty holds the absent
+                // value its declared field admits beside the one it holds.
+                const absence = declared && this.writtenAbsence(declared, name);
+                const nullable =
+                    absence &&
+                    this.context.dataTypes.nullableType(
+                        property.dataType,
+                        !absence.null,
+                    );
+                const dataType =
+                    nullable?.kind === "optional"
+                        ? nullable
+                        : property.dataType;
+                if (dataType !== property.dataType) this.context.reachJsData();
                 properties[name] = {
                     ...property,
+                    dataType,
                     ...emitSharedCell(
                         this.context,
                         this.context.allocateTemporaryCppName(
                             `${label}_${name}`,
                         ),
                         {
-                            type: this.context.dataTypes.cppType(
-                                property.dataType,
-                            ),
+                            type: this.context.dataTypes.cppType(dataType),
                             initializer: property.cpp,
                             attributes: "[[maybe_unused]] ",
                         },
@@ -3724,6 +3745,37 @@ export class BindingScopes {
             );
         }
         return result;
+    }
+
+    /** The present type `declared` gives its field `name`, if it declares one. */
+    private declaredFieldType(
+        declared: ts.Type,
+        name: string,
+    ): ts.Type | undefined {
+        const field = this.context.checker.getPropertyOfType(declared, name);
+        return (
+            field &&
+            this.context.checker.getNonNullableType(
+                this.context.checker.getTypeOfSymbol(field),
+            )
+        );
+    }
+
+    /**
+     * The absent values `declared` admits in its field `name`, when a write
+     * in the program can store one there.
+     */
+    private writtenAbsence(
+        declared: ts.Type,
+        name: string,
+    ): Nullability | undefined {
+        const field = this.context.checker.getPropertyOfType(declared, name);
+        if (!field) return undefined;
+        const absent = nullability(this.context.checker.getTypeOfSymbol(field));
+        return (absent.null || absent.undefined) &&
+            recordFieldIsWritten(this.context, declared, name, true)
+            ? absent
+            : undefined;
     }
 
     private isMutableRecordContainer(dataType: DataType): boolean {
