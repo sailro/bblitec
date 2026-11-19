@@ -5182,6 +5182,25 @@ check(
 `,
 );
 
+// A closure stored where a union holds several function types takes the
+// one its own signature fits, by its parameter count where more fit.
+check(
+    "a-closure-in-a-union-of-function-types-takes-the-arm-its-signature-fits",
+    `
+    interface Batch { resume: number | (() => number) | ((mark: number) => number) }
+    const base = new Float32Array([2])[0]!;
+    const batches: Batch[] = [{ resume: () => base + 1 }, { resume: (mark: number) => mark * base }, { resume: 7 }];
+    let total = 0;
+    for (const batch of batches) {
+        const resume = batch.resume;
+        if (typeof resume === "number") total += resume;
+    }
+    const none = batches[0]!.resume as () => number;
+    const marked = batches[1]!.resume as (mark: number) => number;
+    total += none() + marked(5);
+    if (total !== 7 + 3 + 10) throw new Error("total " + total);
+`,
+);
 // A comma expression's value is its right side, stored as the sink stores
 // it (an empty array as the other arm's record array), after its left side
 // runs in the arm that takes it.

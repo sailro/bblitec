@@ -9,6 +9,7 @@ import type { Value } from "../types.js";
 import { valueDataType } from "../values/model.js";
 import { writable } from "../emission-transaction.js";
 import { isJsonValue } from "../json-bridge.js";
+import { callSignatures, unionMembers } from "../type-facts.js";
 import {
     unwrappedKnownValue,
     type DataSinkHost,
@@ -78,11 +79,41 @@ function unionValue(
             value.dataType?.kind === "function")
     ) {
         memberIndex = functionArmIndex(type, () => {
+            const checker = lowerer.context.checker;
             const contextual =
-                expression &&
-                lowerer.context.checker.getContextualType(expression);
-            return contextual
-                ? lowerer.context.dataTypes.fromStoredTsType(contextual, node)
+                expression && checker.getContextualType(expression);
+            if (!contextual) return undefined;
+            const declared = lowerer.context.dataTypes.fromStoredTsType(
+                contextual,
+                node,
+            );
+            if (declared?.kind === "function") return declared;
+            // A context of several function types: the one the function's
+            // own type is assignable to, with as many parameters when more
+            // than one is (`() => T` fits `(x) => T` too).
+            const own =
+                value.kind === "callback" &&
+                value.callbackDeclaration !== undefined
+                    ? checker.getTypeAtLocation(value.callbackDeclaration)
+                    : undefined;
+            const arity = own && callSignatures(checker, own, "exact")[0]
+                ?.parameters.length;
+            if (!own || arity === undefined) return undefined;
+            const fitting = unionMembers(contextual).filter(
+                (member) =>
+                    callSignatures(checker, member, "exact").length > 0 &&
+                    checker.isTypeAssignableTo(own, member),
+            );
+            const chosen =
+                fitting.length === 1
+                    ? fitting
+                    : fitting.filter(
+                          (member) =>
+                              callSignatures(checker, member, "exact")[0]
+                                  ?.parameters.length === arity,
+                      );
+            return chosen.length === 1
+                ? lowerer.context.dataTypes.fromStoredTsType(chosen[0]!, node)
                 : undefined;
         });
     }
