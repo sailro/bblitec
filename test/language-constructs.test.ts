@@ -4956,6 +4956,29 @@ check(
 `,
 );
 
+// A comma expression's value is its right side, stored as the sink stores
+// it (an empty array as the other arm's record array), after its left side
+// runs in the arm that takes it.
+check(
+    "a-comma-arm-stores-its-right-side-as-the-other-arms-array",
+    `
+    interface Range { binding: number; from: number }
+    class Batch {
+        count = 0;
+        begun = 0;
+        begin(): void { this.count = 0; this.begun++; }
+        beginRetaining(bindings: number[]): Range[] { this.count = bindings.length; return bindings.map((binding, from) => ({ binding, from })); }
+    }
+    const batch = new Batch();
+    const gate = new Float32Array([1, 0]);
+    const kept = gate[0]! > 0.5 ? batch.beginRetaining([3, 4]) : (batch.begin(), []);
+    if (kept.length !== 2 || kept[1]!.binding !== 4 || batch.begun !== 0) throw new Error("retained " + kept.length + " " + batch.begun);
+    const fresh = gate[1]! > 0.5 ? batch.beginRetaining([3, 4]) : (batch.begin(), []);
+    let total = 0;
+    for (const range of fresh) total += range.from;
+    if (fresh.length !== 0 || total !== 0 || batch.begun !== 1 || batch.count !== 0) throw new Error("begun " + fresh.length + " " + batch.begun);
+`
+);
 // A missed element falls back to an empty literal its record type cannot
 // hold: both are stored as the narrower record the parameter declares.
 check(

@@ -12386,6 +12386,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 expression,
             );
         const unwrapped = this.context.unwrap(expression);
+        // `(a, b)`: the left side runs for its effects and the right side
+        // is the value this sink stores (as `compileValue` reads it).
+        if (
+            ts.isBinaryExpression(unwrapped) &&
+            unwrapped.operatorToken.kind === ts.SyntaxKind.CommaToken
+        ) {
+            this.context.emitExpressionAsStatement(unwrapped.left);
+            return this.compileForSink(unwrapped.right, dataType);
+        }
         // `a.x = b.x = null`: the inner assignment's value
         // (compileAssignmentValue), converted for this sink.
         if (
