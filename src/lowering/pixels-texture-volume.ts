@@ -5,6 +5,7 @@ import {
 } from "../pinned-address-modes.js";
 import type { LoweringContext } from "./context.js";
 import { pinnedErrorCode, pinnedErrorMessageCpp } from "./pinned-error.js";
+import { jsToUint32Call } from "./pinned-operators.js";
 
 const pixelsTextureModule = "src/texture/pixels-texture.ts";
 
@@ -118,9 +119,9 @@ PixelsTexture create_texture_3d_from_bytes(
         throw std::runtime_error(${lengthMessage});
     PixelsTexture texture;
     texture.rgba = std::move(bytes);
-    texture.width = static_cast<std::uint32_t>(width);
-    texture.height = static_cast<std::uint32_t>(height);
-    texture.depth = static_cast<std::uint32_t>(depth);
+    texture.width = ${jsToUint32Call("width")};
+    texture.height = ${jsToUint32Call("height")};
+    texture.depth = ${jsToUint32Call("depth")};
     texture.srgb = options.srgb;
     texture.identity = engine.next_pixels_texture_identity++;
     const TextureAddressMode address =

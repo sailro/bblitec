@@ -301,6 +301,13 @@ export function operandYield(
     }
 }
 
+/** Which of `||` and `&&` a node is: the selections that yield their left operand by its truthiness. */
+export function truthinessSelection(node: ts.Node): "||" | "&&" | undefined {
+    if (!ts.isBinaryExpression(node)) return undefined;
+    const left = operandYield(node, node.left);
+    return left === truthyValue ? "||" : left === falsyValue ? "&&" : undefined;
+}
+
 /** The `c ? a : b` an expression is, past its wrappers. */
 export function conditionalExpression(
     expression: ts.Expression,

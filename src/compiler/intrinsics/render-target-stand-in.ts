@@ -13,6 +13,7 @@ import {
     mathMemberAccess,
 } from "../math-intrinsics.js";
 import { namedMember } from "../symbols.js";
+import { truthinessSelection } from "../syntax.js";
 import type { Value } from "../types.js";
 
 type Context = Pick<
@@ -115,18 +116,14 @@ export function renderTargetStandIn(
                 if (!Number.isFinite(number)) return refuse(part);
                 return cppPrimary(doubleLiteral(number));
             }
-            if (
-                ts.isBinaryExpression(part) &&
-                (part.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
-                    part.operatorToken.kind ===
-                        ts.SyntaxKind.AmpersandAmpersandToken)
-            ) {
+            const logical = truthinessSelection(part);
+            if (logical && ts.isBinaryExpression(part)) {
                 context.reachJsData();
                 return cppPrimary(
                     numericLogicalValueCpp(
                         render(part.left).text,
                         render(part.right).text,
-                        part.operatorToken.kind === ts.SyntaxKind.BarBarToken,
+                        logical === "||",
                         `extent_${logicalIndex++}`,
                     ),
                 );

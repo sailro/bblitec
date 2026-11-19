@@ -489,6 +489,20 @@ export function calledFunction(
         : undefined;
 }
 
+/**
+ * The type a call gives the parameter at `index` of the signature it
+ * resolves to, its type arguments instantiated; undefined past its
+ * parameters.
+ */
+export function calledParameterType(
+    checker: ts.TypeChecker,
+    call: ts.CallLikeExpression,
+    index: number,
+): ts.Type | undefined {
+    const parameter = checker.getResolvedSignature(call)?.parameters[index];
+    return parameter && checker.getTypeOfSymbol(parameter);
+}
+
 /** The member a dotted access or a literal-typed computed key names. */
 export function accessedPropertySymbol(
     checker: ts.TypeChecker,

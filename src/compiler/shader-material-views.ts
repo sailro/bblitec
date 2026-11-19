@@ -56,10 +56,14 @@ import { bindingReferences } from "./binding-references.js";
 import { bindingRebinds } from "./binding-rebinds.js";
 import { callTarget } from "./parameter-effects.js";
 import { someAnalysisNode } from "./analysis-walk.js";
-import { isGlobalUndefined, isLibraryStatic } from "./symbols.js";
+import {
+    declaredSymbol,
+    isGlobalUndefined,
+    isLibraryStatic,
+} from "./symbols.js";
 import {
     isSupportedFunction,
-    isAsyncFunction,
+    functionKind,
     functionOfDeclaration,
     outermostWrapper,
     statementsBeside,
@@ -769,8 +773,7 @@ export function nativeShaderViewRevision(
         !symbol ||
         !fn?.body ||
         !ts.isBlock(fn.body) ||
-        isAsyncFunction(fn) ||
-        fn.asteriskToken ||
+        functionKind(fn) !== "plain" ||
         bindingRebinds(
             context.checker,
             context.program.getSourceFiles(),
@@ -784,7 +787,7 @@ export function nativeShaderViewRevision(
     )
         return refuse();
     const facts = context.bindings.lookupOptional(target)!.shaderMaterialView!;
-    const sameSource = (
+    const isViewSource = (
         expression: ts.Expression,
         seen = new Set<ts.Symbol>(),
     ): boolean => {
@@ -806,7 +809,7 @@ export function nativeShaderViewRevision(
             !!declaration &&
             ts.isVariableDeclaration(declaration) &&
             !!declaration.initializer &&
-            sameSource(declaration.initializer, seen)
+            isViewSource(declaration.initializer, seen)
         );
     };
     const callbackField = (expression: ts.Expression): string | undefined => {
@@ -815,8 +818,7 @@ export function nativeShaderViewRevision(
             (!ts.isArrowFunction(callback) &&
                 !ts.isFunctionExpression(callback)) ||
             callback.parameters.length ||
-            isAsyncFunction(callback) ||
-            (ts.isFunctionExpression(callback) && callback.asteriskToken)
+            functionKind(callback) !== "plain"
         )
             return undefined;
         const body = callback.body;
@@ -829,7 +831,7 @@ export function nativeShaderViewRevision(
         const read = value && context.unwrap(value);
         return read &&
             ts.isPropertyAccessExpression(read) &&
-            sameSource(read.expression)
+            isViewSource(read.expression)
             ? read.name.text
             : undefined;
     };
@@ -909,10 +911,8 @@ export function nativeShaderViewRevision(
         !get ||
         !set ||
         data ||
-        isAsyncFunction(get) ||
-        isAsyncFunction(set) ||
-        ("asteriskToken" in get && get.asteriskToken) ||
-        ("asteriskToken" in set && set.asteriskToken) ||
+        functionKind(get) !== "plain" ||
+        functionKind(set) !== "plain" ||
         [...attributes.values()].some((flag) => !flag)
     )
         return refuse();
@@ -1092,8 +1092,7 @@ function definitionOnlyReference(
     if (
         !isSupportedFunction(fn) ||
         visiting.has(fn) ||
-        isAsyncFunction(fn) ||
-        fn.asteriskToken
+        functionKind(fn) !== "plain"
     )
         return false;
     const parameter = fn.parameters[index];
@@ -1105,7 +1104,7 @@ function definitionOnlyReference(
         return false;
     const callee = unwrapExpression(call.expression);
     if (!ts.isIdentifier(callee)) return false;
-    const calleeSymbol = context.checker.getSymbolAtLocation(callee);
+    const calleeSymbol = declaredSymbol(context.checker, callee);
     if (
         !calleeSymbol ||
         bindingRebinds(
@@ -1115,7 +1114,7 @@ function definitionOnlyReference(
         ).length
     )
         return false;
-    const symbol = context.checker.getSymbolAtLocation(parameter.name);
+    const symbol = declaredSymbol(context.checker, parameter.name);
     if (!symbol) return false;
     visiting.add(fn);
     const valid = bindingReferences(
@@ -1267,8 +1266,7 @@ export function shaderViewCall(
                     const owner = parameter.parent.parent;
                     if (
                         !isSupportedFunction(owner) ||
-                        isAsyncFunction(owner) ||
-                        owner.asteriskToken ||
+                        functionKind(owner) !== "plain" ||
                         someAnalysisNode(
                             owner,
                             (node) =>

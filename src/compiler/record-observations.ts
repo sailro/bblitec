@@ -36,6 +36,7 @@ import {
     calledDeclaration,
     calledFunction,
     calledOrigin,
+    calledParameterType,
     namedMember,
     libraryStaticMember,
 } from "./symbols.js";
@@ -676,7 +677,6 @@ function handedOnReadonly(
                 checker.getTypeAtLocation(consumer.assignment.left),
             );
         case "argument": {
-            const signature = checker.getResolvedSignature(consumer.call);
             const authored = calledFunction(checker, consumer.call);
             const declaration =
                 authored ??
@@ -688,14 +688,16 @@ function handedOnReadonly(
                 positionalParameter(consumer.call, declaration, consumer.index);
             const instantiated =
                 parameter &&
-                signature?.parameters[
-                    declaration.parameters.indexOf(parameter)
-                ];
+                calledParameterType(
+                    checker,
+                    consumer.call,
+                    declaration.parameters.indexOf(parameter),
+                );
             return (
                 parameter !== undefined &&
                 instantiated !== undefined &&
                 holdsReadonly(checker.getTypeAtLocation(parameter.name)) &&
-                holdsReadonly(checker.getTypeOfSymbol(instantiated))
+                holdsReadonly(instantiated)
             );
         }
         default:

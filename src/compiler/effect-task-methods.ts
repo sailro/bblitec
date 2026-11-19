@@ -1,8 +1,8 @@
 import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
-import { namedMember } from "./symbols.js";
-import { unwrapExpression, variableKind } from "./syntax.js";
+import { declaredSymbol, namedMember } from "./symbols.js";
+import { isAsyncFunction, unwrapExpression, variableKind } from "./syntax.js";
 
 /** The effect task methods scene code can read, bind and replace. */
 export function isEffectTaskMethodName(
@@ -66,14 +66,14 @@ export function requireEffectTaskWrapper(
     const receiver = unwrapExpression(owner);
     const wrapper = unwrapExpression(assignment.right);
     const receiverSymbol = ts.isIdentifier(receiver)
-        ? context.checker.getSymbolAtLocation(receiver)
+        ? declaredSymbol(context.checker, receiver)
         : undefined;
     const sameReceiver = (node: ts.Expression): boolean => {
         const value = unwrapExpression(node);
         return (
             receiverSymbol !== undefined &&
             ts.isIdentifier(value) &&
-            receiverSymbol === context.checker.getSymbolAtLocation(value)
+            receiverSymbol === declaredSymbol(context.checker, value)
         );
     };
     let callsOriginal = false;
@@ -82,7 +82,7 @@ export function requireEffectTaskWrapper(
         if (ts.isCallExpression(node) && node.arguments.length === 0) {
             const name = unwrapExpression(node.expression);
             const declaration = ts.isIdentifier(name)
-                ? context.checker.getSymbolAtLocation(name)?.valueDeclaration
+                ? declaredSymbol(context.checker, name)?.valueDeclaration
                 : undefined;
             if (
                 declaration &&
@@ -114,9 +114,7 @@ export function requireEffectTaskWrapper(
     if (
         ts.isArrowFunction(wrapper) &&
         wrapper.parameters.length === 0 &&
-        !wrapper.modifiers?.some(
-            (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
-        )
+        !isAsyncFunction(wrapper)
     )
         visit(wrapper.body);
     if (!callsOriginal)
