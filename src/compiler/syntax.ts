@@ -1595,6 +1595,11 @@ export function isUpdateExpression(node: ts.Node): node is UpdateExpression {
     );
 }
 
+/** The step an update adds to its operand: 1 for `++`, -1 for `--`. */
+export function updateStep(node: UpdateExpression): 1 | -1 {
+    return node.operator === ts.SyntaxKind.PlusPlusToken ? 1 : -1;
+}
+
 /**
  * The property key a literal converts to (ToPropertyKey): a string or a
  * template without substitutions as written, a number or bigint as its

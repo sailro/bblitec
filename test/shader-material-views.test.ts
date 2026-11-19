@@ -383,6 +383,199 @@ test("view helpers refuse observed or reassigned parameters, early returns, and 
         );
 });
 
+/**
+ * A view revision counting the changes it observes: a followed revision
+ * unlike the one its last read saw, or an assignment unlike the last one.
+ */
+const observedRevisionSource = `${prelude}
+    import { setShaderUniform } from "@babylonjs/lite";
+    type Decl = { name: string; type: "vec4<f32>" };
+    type UniformSlot = { decl: Decl; value: Float32Array };
+    type UniformState = ShaderMaterial & { _uniformValues: Map<string, UniformSlot>; _uniformVersion: number; _resourceVersion: number; _uboVersion: number };
+    const GAIN: Decl = { name: "uGain", type: "vec4<f32>" };
+    function observed(follow: () => number, alongside: () => number = () => 0): PropertyDescriptor {
+        let lastFollowed = follow();
+        let lastAlongside = alongside();
+        let lastStored = lastFollowed;
+        let count = lastFollowed;
+        return {
+            get() {
+                const followed = follow();
+                const beside = alongside();
+                if (followed !== lastFollowed || beside !== lastAlongside) {
+                    lastFollowed = followed;
+                    lastAlongside = beside;
+                    count += 1;
+                }
+                return count;
+            },
+            set(next: number) {
+                if (next !== lastStored) {
+                    ++count;
+                    lastStored = next;
+                }
+            },
+            enumerable: true,
+            configurable: true,
+        };
+    }
+    function gained(view: ShaderMaterial, source: ShaderMaterial): void {
+        const src = source as UniformState;
+        const values = new Map<string, UniformSlot>(src._uniformValues);
+        values.set(GAIN.name, { decl: GAIN, value: Float32Array.of(1, 1, 1, 1) });
+        Object.defineProperties(view, {
+            fragmentSource: { value: wgsl\`\${surface("shaderUniforms.uTint * shaderUniforms.uGain.xyz")}\`, configurable: true },
+            uniformDecls: { value: [...source.uniformDecls, GAIN], configurable: true },
+            _uniformValues: { value: values, configurable: true },
+            _uniformVersion: observed(() => src._uniformVersion),
+            _resourceVersion: observed(() => src._resourceVersion),
+            _uboVersion: observed(() => src._uboVersion, () => src._uniformVersion),
+            _shaderCustomVersion: { value: -1, writable: true },
+        });
+    }
+    async function main(): Promise<void> {
+        const engine = await createEngine({});
+        const ground = createShaderMaterial(${groundOptions});
+        const view = createMaterialView(ground, { features: 0 }) as ShaderMaterial;
+        gained(view, ground);
+        draw(engine, view);
+        setShaderUniform(ground, "uTint", [0, 1, 0]);
+        setShaderUniform(view, "uGain", [2, 2, 2, 1]);
+    }
+    void main();
+`;
+
+test("a view revision counting the changes it observes is the native view counter, and other counting shapes refuse", () => {
+    const compiled = compileSource(observedRevisionSource);
+    assert.match(compiled.cpp, /bbl::install_shader_view_slots\(/);
+    assert.ok(
+        compiled.manifest.customShaderPrograms.some((item) =>
+            item.uniforms.includes("uGain:vec4<f32>"),
+        ),
+    );
+    assert.doesNotMatch(compiled.cpp, /_uniformVersion|lastFollowed/);
+    for (const [from, to] of [
+        // An assignment of the same number is a change.
+        ["if (next !== lastStored) {", "{"],
+        // A change of the related revision goes unseen.
+        [
+            "followed !== lastFollowed || beside !== lastAlongside",
+            "followed !== lastFollowed",
+        ],
+        // The sentinel the pin resets its upload stamp to.
+        ["let count = lastFollowed;", "let count = -1;"],
+        // An assignment equal to the first count would go unseen.
+        [
+            "let lastStored = lastFollowed;",
+            "let lastStored = lastFollowed + 1;",
+        ],
+        // The read is not the count.
+        ["return count;", "return lastFollowed;"],
+        // Another revision followed.
+        [
+            "_uniformVersion: observed(() => src._uniformVersion)",
+            "_uniformVersion: observed(() => src._resourceVersion)",
+        ],
+    ] as const) {
+        const changed = observedRevisionSource.replace(from, to);
+        assert.notEqual(changed, observedRevisionSource);
+        assert.throws(
+            () => compileSource(changed),
+            /a revision counting the changes it observes/,
+            to,
+        );
+    }
+    // The program reading or writing the number would meet the native counter's.
+    for (const use of [
+        "if ((view as UniformState)._uniformVersion > 3) draw(engine, ground);",
+        "(view as UniformState)._uniformVersion = 5;",
+    ])
+        assert.throws(
+            () =>
+                compileSource(
+                    observedRevisionSource.replace(
+                        "draw(engine, view);",
+                        `draw(engine, view); ${use}`,
+                    ),
+                ),
+            /Unsupported property (value|assignment) '\(view as UniformState\)\._uniformVersion'/,
+        );
+});
+
+test("a view revision counting the changes it observes natively re-uploads the view's uniforms on a source change and a local set", (t) => {
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native compiler required.");
+        return;
+    }
+    const { compiled, cpp } = compileShaderMaterialFixture(
+        observedRevisionSource,
+    );
+    const views = new FactoryLowerer(
+        new LoweringContext(),
+    ).lowerNoColorMaterialViews(false, false, false, false, true).source;
+    const id = (name: string): number =>
+        compiled.manifest.customShaderPrograms.findIndex(
+            (candidate) => candidate.name === name,
+        );
+    const gained = compiled.manifest.customShaderPrograms.find((item) =>
+        item.uniforms.includes("uGain:vec4<f32>"),
+    )!.name;
+    runGeneratedProgram(
+        native,
+        "shader-material-views/observed-revision",
+        `
+${cpp}
+#include <array>
+#include <cstdio>
+namespace bbl {
+namespace {
+${cppFunction(views, "MaterialHandle create_no_color_material_view(")}
+}
+${cppFunction(views, "MaterialHandle create_shader_material_view(")}
+${cppFunction(views, "void derive_shader_material_view(")}
+// The slot maps' setters, which this run does not reach.
+void set_shader_pixels_texture(Engine&, MaterialHandle, std::uint32_t, const std::variant<FileTexture, PixelsTexture>&) { throw std::runtime_error("unreached"); }
+void set_shader_storage_buffer(Engine&, MaterialHandle, std::uint32_t, StorageBufferHandle) { throw std::runtime_error("unreached"); }
+}
+int main(){
+    bbl::Engine engine;
+    const auto source = bbl::create_shader_material(engine, ${id("ground")}u);
+    const auto view = bbl::create_shader_material_view(engine, source);
+    bbl::derive_shader_material_view(engine, view, ${id(gained)}u, false);
+    const auto& own = bbl::handle_at(engine.materials, view);
+    const auto offset = [](const char* name) {
+        for (const auto& slot : bbl::upstream::shader_variant_info(${id(gained)}u).uniform_slots)
+            if (std::string_view(slot.name) == name) return slot.offset;
+        throw std::runtime_error("no uniform");
+    };
+    // What the view's UBO holds after a draw, and whether that draw re-uploaded it.
+    double stamp = -1;
+    const auto draw = [&] {
+        const auto& values = bbl::shader_uniform_render_values(own);
+        for (std::uint32_t lane = 0; lane < 3u; ++lane) std::printf("%g,", static_cast<double>(values.at(offset("uTint") + lane)));
+        std::printf("%g%s ", static_cast<double>(values.at(offset("uGain"))), own.shader_uniform_upload->version != stamp ? "+" : "=");
+        stamp = own.shader_uniform_upload->version;
+    };
+    draw();
+    draw();
+    bbl::set_shader_uniform(engine, source, "uTint", std::array<double, 3>{0.0, 1.0, 0.0});
+    draw();
+    bbl::set_shader_uniform(engine, view, "uGain", std::array<double, 4>{2.0, 2.0, 2.0, 1.0});
+    draw();
+    // An unchanged value is no change.
+    bbl::set_shader_uniform(engine, view, "uGain", std::array<double, 4>{2.0, 2.0, 2.0, 1.0});
+    draw();
+}
+`,
+        {
+            // uGain is the view's own slot: zero until set, as this run installs no slot map.
+            expectedOutput:
+                "1,0.5,0.25,0+ 1,0.5,0.25,0= 0,1,0,0+ 0,1,0,2+ 0,1,0,2= ",
+        },
+    );
+});
+
 const variantsSource = `${prelude}
     async function main(): Promise<void> {
         const engine = await createEngine({});
@@ -647,6 +840,184 @@ int main(){
 }
 `,
         { expectedOutput: "warm-1:1:0:1:0 cold-1:1:1:0:0 " },
+    );
+});
+
+const conditionalSpreadSource = (descriptors: string): string => `${prelude}
+    async function main(): Promise<void> {
+        const engine = await createEngine({});
+        const ground = createShaderMaterial(${groundOptions});
+        const view = createMaterialView(ground, { features: 0 }) as ShaderMaterial;
+        const lifted = Math.random() > 0.5;
+        Object.defineProperties(view, {${descriptors}});
+        Object.defineProperty(view, "depthOnlyFragment", { value: true });
+        draw(engine, view);
+    }
+    void main();
+`;
+
+const liftedDescriptors = `
+            vertexSource: { value: wgsl\`\${VERT.replace("1.0); return o;", "2.0); return o;")}\`, enumerable: true, configurable: true },
+            attributes: { value: ["position"], enumerable: true, configurable: true },`;
+
+const conditionalSpread = `
+        ...(lifted ? {${liftedDescriptors}
+        } : {}),
+        fragmentSource: { value: wgsl\`\${NORMAL}\`, enumerable: true, configurable: true },`;
+
+test("a view's descriptor map opening with a conditional spread defines the spread's keys only where its test selects them", () => {
+    for (const [spread, liftedWhen] of [
+        [conditionalSpread, "true"],
+        [
+            conditionalSpread
+                .replace(`lifted ? {${liftedDescriptors}`, "lifted ? {} : {")
+                .replace("} : {}),", `${liftedDescriptors} }),`),
+            "false",
+        ],
+    ] as const) {
+        const compiled = compileSource(conditionalSpreadSource(spread));
+        const programs = compiled.manifest.customShaderPrograms;
+        const id = (name: string): number =>
+            programs.findIndex((candidate) => candidate.name === name);
+        // Both definition sets derive from the source's options.
+        const sets = programs.filter(
+            (candidate) =>
+                /dpdx/.test(candidate.fragmentSource) &&
+                !candidate.depthOnlyFragment,
+        );
+        const raised = sets.find((candidate) =>
+            /2\.0\); return o;/.test(candidate.vertexSource),
+        );
+        const kept = sets.find((candidate) => candidate !== raised);
+        assert.ok(raised && kept && sets.length === 2);
+        assert.equal(
+            kept.vertexSource,
+            program(compiled, "ground").vertexSource,
+        );
+        // The test selects the set at run time.
+        const [first, second] =
+            liftedWhen === "true" ? [raised, kept] : [kept, raised];
+        assert.match(
+            compiled.cpp,
+            new RegExp(
+                `if \\(v_lifted\\) \\{\\s*bbl::derive_shader_material_view\\(\\w+, \\w+, ${id(first.name)}u, false\\);\\s*\\} else \\{\\s*bbl::derive_shader_material_view\\(\\w+, \\w+, ${id(second.name)}u, false\\);\\s*\\}`,
+            ),
+        );
+        // A later definition derives from either set's program.
+        const site = compiled.cpp.match(
+            /derive_shader_material_view\(\w+, \w+, bblscene::derived_shader_variant_(\d+)\(/,
+        )?.[1];
+        assert.ok(site, "the later definition selects from the view's variant");
+        const table = cppFunction(
+            compiled.cpp,
+            `inline std::uint32_t derived_shader_variant_${site}(`,
+        );
+        for (const from of [raised, kept])
+            assert.match(table, new RegExp(`case ${id(from.name)}u:`));
+    }
+});
+
+test("a view's descriptor map spreads only a leading conditional between descriptors and {}, and other targets refuse spreads", () => {
+    const viewRefusal =
+        /Object\.defineProperties on a ShaderMaterial view spreads only, as the map's first member, a conditional between a literal descriptor map and \{\}\./;
+    const refuses = (descriptors: string, refusal: RegExp): void =>
+        assert.throws(
+            () => compileSource(conditionalSpreadSource(descriptors)),
+            refusal,
+            descriptors,
+        );
+    const [opening, closing] = conditionalSpread.split(
+        "        fragmentSource:",
+    );
+    refuses(`fragmentSource:${closing!}${opening!}`, viewRefusal);
+    refuses(
+        conditionalSpread.replace(
+            "} : {}),",
+            `} : { depthOnlyFragment: { value: true } }),`,
+        ),
+        viewRefusal,
+    );
+    refuses(`...{${liftedDescriptors} },`, viewRefusal);
+    refuses(
+        conditionalSpread.replace(
+            "...(lifted ? {",
+            "...(lifted ? { ...{ transmissive: { value: false } },",
+        ),
+        /Object\.defineProperties needs distinct literal property keys without spreads, methods or accessors\./,
+    );
+    assert.throws(
+        () =>
+            compileSource(`
+    const record = { a: 1, b: 2 };
+    Object.defineProperties(record, { ...(Math.random() > 0.5 ? { a: { value: 3, enumerable: true, writable: true, configurable: true } } : {}) });
+    console.log(record.a);
+`),
+        /Object\.defineProperties needs distinct literal property keys without spreads, methods or accessors\./,
+    );
+});
+
+test("a view's conditional spread natively derives the set its test selects, and a later definition derives from it", (t) => {
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native compiler required.");
+        return;
+    }
+    const { compiled, cpp } = compileShaderMaterialFixture(
+        conditionalSpreadSource(conditionalSpread),
+    );
+    const views = new FactoryLowerer(
+        new LoweringContext(),
+    ).lowerNoColorMaterialViews(false, false, false, false, true).source;
+    // The generated definition statements, run as the program runs them.
+    const statements = compiled.cpp.match(
+        /if \(v_lifted\) \{[\s\S]*?\} else \{[\s\S]*?\}\s*bbl::derive_shader_material_view\(v_engine, v_view, bblscene::derived_shader_variant_(\d+)\(.*\);/,
+    );
+    assert.ok(statements, "the spread's selection and the later definition");
+    const programs = compiled.manifest.customShaderPrograms;
+    const table = cppFunction(
+        compiled.cpp,
+        `inline std::uint32_t derived_shader_variant_${statements[1]!}(`,
+    );
+    // The depth-only program derived from each set's, the lifted set first.
+    const drawn = (from: string): string => {
+        const id = programs.findIndex((candidate) => candidate.name === from);
+        const to = table.match(new RegExp(`case ${id}u: return (\\d+)u;`))?.[1];
+        assert.ok(to, from);
+        return programs[Number(to)]!.name;
+    };
+    assert.match(
+        program(compiled, "ground-1").vertexSource,
+        /2\.0\); return o;/,
+    );
+    runGeneratedProgram(
+        native,
+        "shader-material-views/conditional-spread",
+        `
+${cpp}
+#include <cstdio>
+namespace bbl {
+namespace {
+${cppFunction(views, "MaterialHandle create_no_color_material_view(")}
+}
+${cppFunction(views, "MaterialHandle create_shader_material_view(")}
+${cppFunction(views, "void derive_shader_material_view(")}
+${cppFunction(views, "std::uint32_t shader_material_view_variant(")}
+}
+namespace bblscene {
+${table}
+}
+int main(){
+    bbl::Engine v_engine;
+    const auto ground = bbl::create_shader_material(v_engine, ${programs.findIndex((candidate) => candidate.name === "ground")}u);
+    for (const bool v_lifted : {true, false}) {
+        const auto v_view = bbl::create_shader_material_view(v_engine, ground);
+        ${statements[0]}
+        const auto& record = bbl::handle_at(v_engine.materials, v_view);
+        std::printf("%s ", bbl::upstream::shader_variant_info(record.shader_variant).name);
+    }
+}
+`,
+        { expectedOutput: `${drawn("ground-1")} ${drawn("ground-2")} ` },
     );
 });
 

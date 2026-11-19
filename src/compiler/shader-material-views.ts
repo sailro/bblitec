@@ -62,18 +62,25 @@ import {
     isLibraryStatic,
 } from "./symbols.js";
 import {
+    equalityOperator,
     isSupportedFunction,
     functionKind,
     functionOfDeclaration,
+    isUpdateExpression,
     outermostWrapper,
     statementsBeside,
+    truthinessSelection,
     unwrapExpression,
+    updateStep,
     variableKind,
+    writeSites,
 } from "./syntax.js";
+import { finalReturn } from "./loop-control.js";
 import type { DataStructField } from "./data-types.js";
 import type { DataType } from "./data-types/model.js";
 import type { CompiledShaderProgram, Value } from "./types.js";
 import {
+    knownCondition,
     shaderVariantFacts,
     shaderVariantsOf,
     unreadableRefusal,
@@ -114,6 +121,7 @@ export type ShaderMaterialViewContext = Omit<
         LoweringServices,
         | "allocateTemporaryCppName"
         | "compileShaderSource"
+        | "conditions"
         | "dataLowerer"
         | "dataTypes"
         | "emit"
@@ -135,6 +143,13 @@ interface ViewDefinition {
     readonly descriptor: ts.ObjectLiteralExpression;
     /** A data descriptor's value; an accessor descriptor has none. */
     readonly value: ts.Expression | undefined;
+    /** Where a conditional spread holds the definition: defined only where its test is `holds`. */
+    readonly condition?: ViewDefinitionCondition;
+}
+
+export interface ViewDefinitionCondition {
+    readonly test: ts.Expression;
+    readonly holds: boolean;
 }
 
 /** A slot map: the declarations its entries follow, and what each entry holds. */
@@ -728,12 +743,38 @@ const NATIVE_VIEW_CACHE_RESETS: ReadonlyMap<
     ["_shaderCustomVersion", "-1"],
 ]);
 
+type RevisionAccessor =
+    ts.MethodDeclaration | ts.FunctionExpression | ts.ArrowFunction;
+
+/** A revision descriptor factory: its readers, its private state and its accessors. */
+interface RevisionFactory {
+    readonly context: ShaderMaterialViewContext;
+    readonly key: string;
+    /** Each reader parameter following a source revision, to the field it reads. */
+    readonly readers: ReadonlyMap<ts.Symbol, string>;
+    /** Each reader parameter giving a constant. */
+    readonly constants: ReadonlySet<ts.Symbol>;
+    /** The factory's statements before its `return`. */
+    readonly state: readonly ts.Statement[];
+    readonly get: ts.Block;
+    readonly set: ts.Block;
+    /** The setter's parameter. */
+    readonly value: ts.Identifier;
+}
+
 /**
- * The native version counters already follow source changes and local
- * assignments. Admit an additive revision descriptor only when its complete
- * factory proves that contract: a private zero-initialized offset, a getter
- * `sourceRevision + offset`, and a setter `offset = value - sourceRevision`.
- * Merely mentioning a version field in an arbitrary getter proves nothing.
+ * The native view revision counters (`shader_uniform_version`,
+ * `shader_slot_version`) are the view's own count plus its source's: they
+ * change where the source's do and where the pin writes the view's by `++`
+ * (`setUniformValue`, `setShaderTexture`). The pin reads a view's revision
+ * only to compare it with a number it read from that revision before
+ * (`updateCustomUbo`, the packet's `_lastResourceVersion`), and a
+ * ShaderMaterial's `_uboVersion` not at all, so a descriptor
+ * whose read changes exactly there is that counter. Its complete factory
+ * proves it, in one of two shapes: an additive offset
+ * (`additiveRevision`) or a count of observed changes
+ * (`observedChangeRevision`). Merely mentioning a version field in an
+ * arbitrary getter proves nothing.
  */
 export function nativeShaderViewRevision(
     context: ShaderMaterialViewContext & Pick<LoweringServices, "program">,
@@ -741,16 +782,8 @@ export function nativeShaderViewRevision(
     key: string,
     expression: ts.Expression,
     readDescriptor: (expression: ts.Expression) => {
-        get:
-            | ts.MethodDeclaration
-            | ts.FunctionExpression
-            | ts.ArrowFunction
-            | undefined;
-        set:
-            | ts.MethodDeclaration
-            | ts.FunctionExpression
-            | ts.ArrowFunction
-            | undefined;
+        get: RevisionAccessor | undefined;
+        set: RevisionAccessor | undefined;
         attributes: ReadonlyMap<string, boolean>;
         data: boolean;
     },
@@ -760,7 +793,7 @@ export function nativeShaderViewRevision(
     const refuse = (): never =>
         context.fail(
             expression,
-            `A ShaderMaterial view's '${key}' needs a source-following additive revision descriptor with a private local offset; other accessors are not native revision counters.`,
+            `A ShaderMaterial view's '${key}' needs a native revision counter: a source-following additive revision descriptor with a private local offset, or a revision counting the changes it observes (a source read or an assignment unlike the last); other accessors are not native revision counters.`,
         );
     const call = context.unwrap(expression);
     if (!ts.isCallExpression(call)) return refuse();
@@ -779,7 +812,6 @@ export function nativeShaderViewRevision(
             context.program.getSourceFiles(),
             symbol,
         ).length ||
-        fn.body.statements.length !== 2 ||
         fn.parameters.length < 1 ||
         fn.parameters.length > 2 ||
         call.arguments.length < 1 ||
@@ -812,7 +844,10 @@ export function nativeShaderViewRevision(
             isViewSource(declaration.initializer, seen)
         );
     };
-    const callbackField = (expression: ts.Expression): string | undefined => {
+    /** What a parameterless synchronous callback returns. */
+    const callbackResult = (
+        expression: ts.Expression,
+    ): ts.Expression | undefined => {
         const callback = context.unwrap(expression);
         if (
             (!ts.isArrowFunction(callback) &&
@@ -828,7 +863,10 @@ export function nativeShaderViewRevision(
                 ? body.statements[0].expression
                 : undefined
             : body;
-        const read = value && context.unwrap(value);
+        return value && context.unwrap(value);
+    };
+    const callbackField = (expression: ts.Expression): string | undefined => {
+        const read = callbackResult(expression);
         return read &&
             ts.isPropertyAccessExpression(read) &&
             isViewSource(read.expression)
@@ -836,12 +874,20 @@ export function nativeShaderViewRevision(
             : undefined;
     };
     const readers = new Map<ts.Symbol, string>();
+    const constants = new Set<ts.Symbol>();
     for (const [index, parameter] of fn.parameters.entries()) {
         if (!ts.isIdentifier(parameter.name) || parameter.dotDotDotToken)
             return refuse();
+        const reader = context.symbols.valueSymbol(parameter.name)!;
         const argument = call.arguments[index];
         const fallback =
             parameter.initializer && context.unwrap(parameter.initializer);
+        const supplied = argument ?? fallback;
+        const constant = supplied && callbackResult(supplied);
+        if (index > 0 && constant && ts.isNumericLiteral(constant)) {
+            constants.add(reader);
+            continue;
+        }
         const field = argument
             ? callbackField(argument)
             : fallback && ts.isIdentifier(fallback)
@@ -856,18 +902,66 @@ export function nativeShaderViewRevision(
             )
         )
             return refuse();
-        readers.set(context.symbols.valueSymbol(parameter.name)!, field);
+        readers.set(reader, field);
     }
-    const [initialize, returned] = fn.body.statements;
+    const returned = finalReturn(fn.body);
+    if (!returned?.expression) return refuse();
+    // Object statics owns descriptor syntax and attribute validation.
+    const { get, set, attributes, data } = readDescriptor(returned.expression);
+    const value = set?.parameters[0];
     if (
-        !initialize ||
-        !ts.isVariableStatement(initialize) ||
-        initialize.declarationList.declarations.length !== 1 ||
-        !returned ||
-        !ts.isReturnStatement(returned) ||
-        !returned.expression
+        !get?.body ||
+        !set?.body ||
+        !ts.isBlock(get.body) ||
+        !ts.isBlock(set.body) ||
+        data ||
+        functionKind(get) !== "plain" ||
+        functionKind(set) !== "plain" ||
+        [...attributes.values()].some((flag) => !flag) ||
+        get.parameters.length ||
+        set.parameters.length !== 1 ||
+        !value ||
+        !ts.isIdentifier(value.name) ||
+        value.initializer ||
+        value.dotDotDotToken
     )
         return refuse();
+    const factory: RevisionFactory = {
+        context,
+        key,
+        readers,
+        constants,
+        state: fn.body.statements.slice(0, -1),
+        get: get.body,
+        set: set.body,
+        value: value.name,
+    };
+    return (
+        additiveRevision(factory) || observedChangeRevision(factory) || refuse()
+    );
+}
+
+/**
+ * A private zero-initialized offset, a getter `sourceRevision + offset`
+ * and a setter `offset = value - sourceRevision`.
+ */
+function additiveRevision({
+    context,
+    key,
+    readers,
+    state,
+    get,
+    set,
+    value,
+}: RevisionFactory): boolean {
+    const [initialize] = state;
+    if (
+        state.length !== 1 ||
+        !initialize ||
+        !ts.isVariableStatement(initialize) ||
+        initialize.declarationList.declarations.length !== 1
+    )
+        return false;
     const offset = initialize.declarationList.declarations[0]!;
     if (
         !ts.isIdentifier(offset.name) ||
@@ -876,7 +970,7 @@ export function nativeShaderViewRevision(
         !ts.isNumericLiteral(offset.initializer) ||
         offset.initializer.text !== "0"
     )
-        return refuse();
+        return false;
     const offsetSymbol = context.symbols.valueSymbol(offset.name);
     const isOffset = (expression: ts.Expression): boolean => {
         const value = context.unwrap(expression);
@@ -905,64 +999,271 @@ export function nativeShaderViewRevision(
         const right = base(value.arguments[1]!);
         return left && right ? `max(${left},${right})` : undefined;
     };
-    // Object statics owns descriptor syntax and attribute validation.
-    const { get, set, attributes, data } = readDescriptor(returned.expression);
+    const [getStatement] = get.statements;
+    const [setStatement] = set.statements;
     if (
-        !get ||
-        !set ||
-        data ||
-        functionKind(get) !== "plain" ||
-        functionKind(set) !== "plain" ||
-        [...attributes.values()].some((flag) => !flag)
-    )
-        return refuse();
-    const getBody = get.body && ts.isBlock(get.body) ? get.body : undefined;
-    const setBody = set.body && ts.isBlock(set.body) ? set.body : undefined;
-    const getStatement = getBody?.statements[0];
-    const setStatement = setBody?.statements[0];
-    if (
-        !get ||
-        !set ||
-        get.parameters.length ||
-        set.parameters.length !== 1 ||
-        getBody?.statements.length !== 1 ||
-        setBody?.statements.length !== 1 ||
+        get.statements.length !== 1 ||
+        set.statements.length !== 1 ||
         !getStatement ||
         !ts.isReturnStatement(getStatement) ||
         !getStatement.expression ||
         !setStatement ||
         !ts.isExpressionStatement(setStatement)
     )
-        return refuse();
+        return false;
     const sum = context.unwrap(getStatement.expression);
     const assignment = context.unwrap(setStatement.expression);
-    const parameter = set.parameters[0]!;
     if (
         !ts.isBinaryExpression(sum) ||
         sum.operatorToken.kind !== ts.SyntaxKind.PlusToken ||
         !isOffset(sum.right) ||
         !ts.isBinaryExpression(assignment) ||
         assignment.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
-        !isOffset(assignment.left) ||
-        !ts.isIdentifier(parameter.name) ||
-        parameter.initializer ||
-        parameter.dotDotDotToken
+        !isOffset(assignment.left)
     )
-        return refuse();
+        return false;
     const difference = context.unwrap(assignment.right);
     const source = base(sum.left);
+    return (
+        !!source &&
+        source.includes(key) &&
+        ts.isBinaryExpression(difference) &&
+        difference.operatorToken.kind === ts.SyntaxKind.MinusToken &&
+        ts.isIdentifier(difference.left) &&
+        context.symbols.valueSymbol(difference.left) ===
+            context.symbols.valueSymbol(value) &&
+        base(difference.right) === source
+    );
+}
+
+/**
+ * A count of the changes the descriptor observes. Its private `let` state
+ * holds the number each reader last gave, the number last assigned and the
+ * count, both starting at the same reader's first number or literal. The
+ * getter reads each reader once into a `const` and, when any differs from
+ * the number it last gave, stores them all and counts one; it returns the
+ * count. The setter counts an assignment unlike the last one and stores
+ * it. The count never falls below the last assignment, so each `++` the pin
+ * writes is one change, and it never starts at the pin's -1 upload sentinel.
+ */
+function observedChangeRevision({
+    context,
+    readers,
+    constants,
+    state,
+    get,
+    set,
+    value,
+}: RevisionFactory): boolean {
+    const symbolOf = (expression: ts.Expression): ts.Symbol | undefined => {
+        const name = context.unwrap(expression);
+        return ts.isIdentifier(name)
+            ? context.symbols.valueSymbol(name)
+            : undefined;
+    };
+    const readerCall = (expression: ts.Expression): ts.Symbol | undefined => {
+        const read = context.unwrap(expression);
+        const reader =
+            ts.isCallExpression(read) && read.arguments.length === 0
+                ? symbolOf(read.expression)
+                : undefined;
+        return reader && (readers.has(reader) || constants.has(reader))
+            ? reader
+            : undefined;
+    };
+    /** Each identifier a variable statement of `kind` declares, to its initializer. */
+    const declared = (
+        statements: readonly ts.Statement[],
+        kind: "let" | "const",
+    ): Map<ts.Symbol, ts.Expression> | undefined => {
+        const found = new Map<ts.Symbol, ts.Expression>();
+        for (const statement of statements) {
+            if (!ts.isVariableStatement(statement)) return undefined;
+            for (const declaration of statement.declarationList.declarations) {
+                if (
+                    !ts.isIdentifier(declaration.name) ||
+                    variableKind(declaration) !== kind ||
+                    !declaration.initializer
+                )
+                    return undefined;
+                found.set(
+                    context.symbols.valueSymbol(declaration.name)!,
+                    declaration.initializer,
+                );
+            }
+        }
+        return found;
+    };
+    /** `left !== right`. */
+    const unequal = (
+        expression: ts.Expression,
+    ): readonly [ts.Expression, ts.Expression] | undefined => {
+        const test = context.unwrap(expression);
+        const operator =
+            ts.isBinaryExpression(test) &&
+            equalityOperator(test.operatorToken.kind);
+        return operator && !operator.loose && operator.negated
+            ? [test.left, test.right]
+            : undefined;
+    };
+    /** `if (test) …` without `else`: its test and the statements it runs. */
+    const guarded = (
+        statement: ts.Statement | undefined,
+    ):
+        | {
+              readonly test: ts.Expression;
+              readonly body: readonly ts.Statement[];
+          }
+        | undefined =>
+        statement && ts.isIfStatement(statement) && !statement.elseStatement
+            ? {
+                  test: statement.expression,
+                  body: ts.isBlock(statement.thenStatement)
+                      ? statement.thenStatement.statements
+                      : [statement.thenStatement],
+              }
+            : undefined;
+    /** `name = value`: the symbol assigned and the symbol it is given. */
+    const assignment = (
+        statement: ts.Statement,
+    ): readonly [ts.Symbol | undefined, ts.Symbol | undefined] | undefined => {
+        const [site] = ts.isExpressionStatement(statement)
+            ? writeSites(context.unwrap(statement.expression))
+            : [];
+        return site?.kind === "assign" && site.stored
+            ? [symbolOf(site.target), symbolOf(site.stored)]
+            : undefined;
+    };
+    /** `count++`, `++count` or `count += 1`. */
+    const counts = (statement: ts.Statement, count: ts.Symbol): boolean => {
+        const write = ts.isExpressionStatement(statement)
+            ? context.unwrap(statement.expression)
+            : undefined;
+        const [site] = write ? writeSites(write) : [];
+        if (!write || !site || symbolOf(site.target) !== count) return false;
+        if (isUpdateExpression(write)) return updateStep(write) === 1;
+        return (
+            site.kind === "compound" &&
+            ts.isBinaryExpression(write) &&
+            write.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken &&
+            ts.isNumericLiteral(write.right) &&
+            write.right.text === "1"
+        );
+    };
+    const lets = declared(state, "let");
+    if (!lets) return false;
+    const readerCount = readers.size + constants.size;
+    // The number each reader last gave: one `let` per reader.
+    const last = new Map<ts.Symbol, ts.Symbol>();
+    for (const [name, initializer] of lets) {
+        const reader = readerCall(initializer);
+        if (reader) last.set(name, reader);
+    }
     if (
-        !source ||
-        !source.includes(key) ||
-        !ts.isBinaryExpression(difference) ||
-        difference.operatorToken.kind !== ts.SyntaxKind.MinusToken ||
-        !ts.isIdentifier(difference.left) ||
-        context.symbols.valueSymbol(difference.left) !==
-            context.symbols.valueSymbol(parameter.name) ||
-        base(difference.right) !== source
+        last.size !== readerCount ||
+        new Set(last.values()).size !== readerCount ||
+        lets.size !== readerCount + 2
     )
-        return refuse();
-    return true;
+        return false;
+    // The setter: `if (value !== assigned) { assigned = value; count++; }`.
+    const assign =
+        set.statements.length === 1 ? guarded(set.statements[0]) : undefined;
+    const sides = assign && unequal(assign.test);
+    const given = context.symbols.valueSymbol(value);
+    const stored = sides
+        ? symbolOf(sides[0]) === given
+            ? symbolOf(sides[1])
+            : symbolOf(sides[1]) === given
+              ? symbolOf(sides[0])
+              : undefined
+        : undefined;
+    const count = [...lets.keys()].find(
+        (name) => name !== stored && !last.has(name),
+    );
+    if (
+        !assign ||
+        !stored ||
+        !count ||
+        !lets.has(stored) ||
+        last.has(stored) ||
+        assign.body.length !== 2 ||
+        !assign.body.some((statement) => counts(statement, count)) ||
+        !assign.body.some((statement) => {
+            const [target, source] = assignment(statement) ?? [];
+            return target === stored && source === given;
+        })
+    )
+        return false;
+    // Both start at one reader's first number, or at one literal.
+    const countStart = context.unwrap(lets.get(count)!);
+    const storedStart = context.unwrap(lets.get(stored)!);
+    const startSymbol = symbolOf(countStart);
+    if (
+        ts.isNumericLiteral(countStart)
+            ? !ts.isNumericLiteral(storedStart) ||
+              storedStart.text !== countStart.text
+            : !startSymbol ||
+              !last.has(startSymbol) ||
+              symbolOf(storedStart) !== startSymbol
+    )
+        return false;
+    // The getter: each reader read once, compared with the number it last
+    // gave, stored and counted on any difference, then the count.
+    const result = finalReturn(get);
+    const observe = guarded(get.statements.at(-2));
+    const reads = declared(get.statements.slice(0, -2), "const");
+    if (
+        !result?.expression ||
+        symbolOf(result.expression) !== count ||
+        !observe ||
+        !reads
+    )
+        return false;
+    const read = new Map<ts.Symbol, ts.Symbol>();
+    for (const [name, initializer] of reads) {
+        const reader = readerCall(initializer);
+        if (!reader) return false;
+        read.set(name, reader);
+    }
+    if (
+        new Set(read.values()).size !== readerCount ||
+        read.size !== readerCount
+    )
+        return false;
+    const compared = new Map<ts.Symbol, ts.Symbol>();
+    const compares = (expression: ts.Expression): boolean => {
+        const test = context.unwrap(expression);
+        if (truthinessSelection(test) === "||" && ts.isBinaryExpression(test))
+            return compares(test.left) && compares(test.right);
+        const pair = unequal(test);
+        const [left, right] = pair
+            ? [symbolOf(pair[0]), symbolOf(pair[1])]
+            : [];
+        const [previous, current] =
+            left && last.has(left) ? [left, right] : [right, left];
+        if (
+            !previous ||
+            !current ||
+            !last.has(previous) ||
+            compared.has(previous) ||
+            read.get(current) !== last.get(previous)
+        )
+            return false;
+        compared.set(previous, current);
+        return true;
+    };
+    if (!compares(observe.test) || compared.size !== readerCount) return false;
+    const updated = new Set<ts.Symbol>();
+    for (const statement of observe.body) {
+        if (counts(statement, count)) continue;
+        const [target, source] = assignment(statement) ?? [];
+        if (!target || !compared.has(target) || compared.get(target) !== source)
+            return false;
+        updated.add(target);
+    }
+    return (
+        updated.size === readerCount && observe.body.length === readerCount + 1
+    );
 }
 
 /** Whether a node is the target of an `Object.defineProperty` / `Object.defineProperties` call. */
@@ -1521,7 +1822,8 @@ function slotMapInstall(
  * ShaderMaterial view (`shaderMaterialViewTarget`): the program each of
  * its variants derives, chosen at run time from the view's own, then the
  * slot maps it is given, which become its slots
- * (`install_shader_view_slots`).
+ * (`install_shader_view_slots`). Definitions a conditional spread holds
+ * make two definition sets, the one its test selects applied at run time.
  */
 export function compileShaderMaterialViewDefinitions(
     context: ShaderMaterialViewContext & Pick<LoweringServices, "program">,
@@ -1529,6 +1831,47 @@ export function compileShaderMaterialViewDefinitions(
     target: ts.Identifier,
     defined: readonly ViewDefinition[],
 ): Value {
+    const apply = (holds?: boolean): ReadonlyMap<string, string> =>
+        applyViewDefinitions(
+            context,
+            call,
+            target,
+            defined.filter(
+                ({ condition }) => !condition || condition.holds === holds,
+            ),
+        );
+    const test = defined.find(({ condition }) => condition)?.condition?.test;
+    const condition = test && context.conditions.compileCondition(test);
+    const known = knownCondition(condition);
+    let programs: ReadonlyMap<string, string>;
+    if (!condition) programs = apply();
+    else if (known !== undefined) programs = apply(known);
+    else {
+        const taken = context.dataLowerer.compileArm(() => apply(true));
+        const skipped = context.dataLowerer.compileArm(() => apply(false));
+        context.emit({ kind: "open", code: `if (${condition}) {` });
+        for (const line of taken.lines) context.emit(`    ${line}`);
+        context.emit({ kind: "branch", code: "} else {" });
+        for (const line of skipped.lines) context.emit(`    ${line}`);
+        context.emit({ kind: "close", code: "}" });
+        programs = new Map([...taken.value, ...skipped.value]);
+    }
+    // Later uses read the programs every path through the statements up to
+    // this one's may leave.
+    recordViewDefinition(context, call, target, programs);
+    return { kind: "void", cpp: "" };
+}
+
+/**
+ * One definition set applied to a view: its programs derived, then its
+ * slot maps installed. The programs the view may draw after it.
+ */
+function applyViewDefinitions(
+    context: ShaderMaterialViewContext & Pick<LoweringServices, "program">,
+    call: ts.CallExpression,
+    target: ts.Identifier,
+    defined: readonly ViewDefinition[],
+): ReadonlyMap<string, string> {
     const redefinitions = viewRedefinitions(context, defined);
     const definitions = redefinitions.filter(
         ({ key }) => !Object.hasOwn(SLOT_MAPS, key),
@@ -1540,32 +1883,33 @@ export function compileShaderMaterialViewDefinitions(
             : [],
     );
     const installed = new Set(installs.map(({ slots }) => slots.list));
+    const view = context.bindings.lookupOptional(target)!;
+    let programs: ReadonlyMap<string, string>;
     if (definitions.length > 0)
-        deriveViewPrograms(context, call, target, definitions, installed);
+        programs = deriveViewPrograms(
+            context,
+            call,
+            target,
+            definitions,
+            installed,
+        );
     else {
-        const view = context.bindings.lookupOptional(target)!;
         const reach = definitionReach(context, call, target);
         if (!reach)
             context.fail(
                 call,
                 "A ShaderMaterial view's slot maps and native cache resets are defined before any other use of the view.",
             );
-        recordViewDefinition(
-            context,
-            call,
-            target,
-            programsThrough(
-                view.shaderMaterialView!,
-                reach.after,
-                view.shaderMaterialView!.declared,
-                reach.statement,
-            ),
+        programs = programsThrough(
+            view.shaderMaterialView!,
+            reach.after,
+            view.shaderMaterialView!.declared,
+            reach.statement,
         );
     }
-    const view = context.bindings.lookupOptional(target)!;
     const engine = context.requireEngine(view, call);
     if (installed.has("uniforms"))
-        for (const name of view.shaderMaterialView!.programs.keys())
+        for (const name of programs.keys())
             if (
                 context.sceneManifest.reachedShaderPrograms.find(
                     (program) => program.name === name,
@@ -1587,12 +1931,12 @@ export function compileShaderMaterialViewDefinitions(
             code: `{ std::vector<bbl::ShaderViewSlotEntry> ${entries}; for (const auto& ${entry} : ${cpp}) ${entries}.push_back(bbl::ShaderViewSlotEntry{${entry}.first, ${entry}.second.weak_identity(), ${entry}.second->${held}}); bbl::install_shader_view_slots(${engine}, ${view.cpp}, bbl::ShaderDeclarationList::${slots.list}, ${entries}); }`,
         });
     }
-    return { kind: "void", cpp: "" };
+    return programs;
 }
 
 /**
- * The programs a view's redefinitions derive, one per variant it may draw:
- * its binding's facts updated and `derive_shader_material_view` emitted.
+ * The programs a view's redefinitions derive, one per variant it may draw,
+ * with `derive_shader_material_view` emitted.
  * The lists slot maps of the same definition give the view (`installed`)
  * may declare other slots than its source.
  */
@@ -1602,7 +1946,7 @@ function deriveViewPrograms(
     target: ts.Identifier,
     definitions: readonly ViewRedefinition[],
     installed: ReadonlySet<SlotMap["list"]>,
-): void {
+): ReadonlyMap<string, string> {
     const view = context.bindings.lookupOptional(target)!;
     const facts = view.shaderMaterialView!;
     const reach = definitionReach(context, call, target);
@@ -1761,7 +2105,5 @@ function deriveViewPrograms(
         kind: "expression",
         code: `bbl::derive_shader_material_view(${engine}, ${view.cpp}, ${variant}, ${transmissive ? "true" : "false"});`,
     });
-    // Later uses read the programs every path through the statements up to
-    // this one's may leave.
-    recordViewDefinition(context, call, target, derived);
+    return derived;
 }

@@ -404,9 +404,15 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
   its sources, `attributes`, declaration lists and pipeline state; the view draws a program compiled per source variant and
   branch, selected at run time. Synchronous helpers without explicit returns may make these definitions through one
   unreassigned parameter used only for definitions; subsequent caller definitions read the helper's resulting programs.
-  Native revision descriptors use a private zero-initialized offset: their getter adds it to the source revision
-  (or `Math.max` of the source's UBO and uniform revisions), and their setter subtracts that source revision from
-  its assigned value. These descriptors and pre-use cache resets emit nothing: `_shaderDevice`/`_shaderBindings`
+  A `defineProperties` map may open with a spread of `test ? { descriptors } : {}` (either arm empty): both definition
+  sets compile, and the one the test selects applies at run time; other spreads refuse.
+  Native revision descriptors (`_uniformVersion`, `_resourceVersion`, `_uboVersion`) follow their source's revision in
+  one of two factory shapes. Additive: a private zero-initialized offset that the getter adds to the source revision
+  (or `Math.max` of the source's UBO and uniform revisions) and the setter sets to its value minus that revision.
+  Counting: private last-read numbers per reader (the source revision, optionally the source's uniform revision for
+  `_uboVersion` or a constant), the last assignment and a count; the getter counts a read unlike the last, the setter
+  an assignment unlike the last. The program's own reads and writes of these properties refuse. These descriptors
+  and pre-use cache resets emit nothing: `_shaderDevice`/`_shaderBindings`
   require `undefined`, `_shaderCustomUbo`/`_shaderCustomSpec`/`_shaderCustomData` require `null`, and
   `_shaderCustomVersion` requires `-1`. Other revision descriptors and cache-reset values refuse.
   A source of run-time variant may be any variant the program creates, as such a call's
