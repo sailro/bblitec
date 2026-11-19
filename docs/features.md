@@ -560,7 +560,10 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
 - A copy task's `ownsTargetTexture: true` takes a surface-sized target (rebuilt at each resize); a fixed one refuses
   at run time.
 - Render and effect render task `dispose()` releases owned targets (not the swapchain's); executing a disposed task refuses.
-  An effect task's `record`/`dispose` can be read, bound and replaced; the frame graph calls the replacements.
+  Effect task `record`/`dispose` replacements require a synchronous zero-argument arrow calling a preceding
+  `const original = task.record.bind(task)` (or `dispose`) on the same receiver; `try/finally` is supported.
+  Base `Task` storage checks the effect-task kind at runtime. Recording runs on graph build and canvas resize,
+  not on each execute; scene disposal calls the current dispose wrapper. Other method writes refuse.
 - An effect render task's `scissor` takes a run-time `NormalizedViewport` or null; the native task copies its lanes. A
   fresh object (a literal, or a call returning only literals or null) in a statement that only stores it always stores;
   any other value refuses where the program writes a lane of a record that type could hold.

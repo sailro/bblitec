@@ -448,6 +448,11 @@ export function asFeatures(names: readonly string[]): Feature[] {
  * same site, and its own implications follow in turn.
  */
 const featureImplications: Partial<Record<Feature, readonly Feature[]>> = {
+    "frame-graph:task-method-slots": [
+        "effect:wrapper",
+        "frame-graph:task-disposal",
+        "frame-graph:target-disposal",
+    ],
     // The seam's fetch runs over the native HTTP transport.
     "platform:web-platform": ["platform:http"],
     "mesh:thin-instances": ["engine:gpu-retirement"],

@@ -2937,6 +2937,8 @@ import ts from "typescript";
 import {
     isEffectTaskMethodName,
     reachEffectTaskMethod,
+    requireEffectTaskMethodOwner,
+    requireEffectTaskWrapper,
 } from "./effect-task-methods.js";
 import {
     argumentAt,
@@ -3207,17 +3209,20 @@ function emitTargetPropertyAssignment(
         });
         return true;
     }
-    if (
-        target.kind === "task" &&
-        target.effectTask &&
-        isEffectTaskMethodName(property)
-    ) {
+    if (target.kind === "task" && isEffectTaskMethodName(property)) {
         requireSimpleAssignment(
             context,
             expression,
             `EffectRenderTask.${property}`,
         );
-        reachEffectTaskMethod(context, property === "dispose", expression);
+        requireEffectTaskMethodOwner(context, target, expression);
+        requireEffectTaskWrapper(
+            context,
+            expression,
+            targetExpression,
+            property,
+        );
+        reachEffectTaskMethod(context, expression);
         const method = context.dataLowerer.compileForSink(expression.right, {
             kind: "function",
             parameters: [],

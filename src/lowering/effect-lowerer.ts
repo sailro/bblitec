@@ -20,6 +20,7 @@ import type { LoweredSource, LoweringContext } from "./context.js";
 import { recordAt } from "../compiler/record-access.js";
 import { lowerEffectWrapperDisposal } from "./effect-wrapper-disposal.js";
 import { lowerEffectTaskDisposal } from "./frame-graph-task-disposal.js";
+import { effectTaskRecordBody } from "./frame-graph-task-build.js";
 import {
     pinnedErrorCode,
     pinnedErrorCodeOf,
@@ -276,15 +277,16 @@ ${lanes.join("\n")}
  * replacement when there is one, and the pin's own method is the default a
  * replacement typically wraps (`const record = task.record.bind(task)`).
  */
-function lowerEffectTaskMethods(bindGroup: boolean, disposal: boolean): string {
+function lowerEffectTaskMethods(context: LoweringContext): string {
     const task = recordAt("engine.frame_tasks", "handle");
     return `
 // The pin's EffectRenderTask.record: it builds the wrapper's bind group and
 // restores the pipeline dispose cleared.
 static void record_effect_task_default(Engine& engine, TaskHandle handle) {
     FrameTaskRecord& task = ${task};
-${bindGroup ? "    require_effect_bind_group(engine, task.effect.effect);\n" : ""}\
-    task.disposed = false;
+${effectTaskRecordBody(context)
+    .map((line) => `    ${line}`)
+    .join("\n")}
 }
 
 js::Callback<void()> effect_task_method(Engine& engine, TaskHandle handle, bool dispose) {
@@ -295,11 +297,7 @@ js::Callback<void()> effect_task_method(Engine& engine, TaskHandle handle, bool 
     if (replaced) return replaced;
     Engine* owner = &engine;
     if (dispose)
-${
-    disposal
-        ? "        return js::Callback<void()>([owner, handle] { dispose_effect_render_task_default(*owner, handle); });"
-        : '        throw std::runtime_error("EffectRenderTask.dispose is not lowered here.");'
-}
+        return js::Callback<void()>([owner, handle] { dispose_effect_render_task_default(*owner, handle); });
     return js::Callback<void()>([owner, handle] { record_effect_task_default(*owner, handle); });
 }
 
@@ -311,13 +309,7 @@ void set_effect_task_method(Engine& engine, TaskHandle handle, bool dispose, js:
 }
 
 void record_effect_task(Engine& engine, TaskHandle handle) {
-    FrameTaskRecord& task = ${task};
-    if (task.record_override) {
-        // A copy: the replacement may replace itself while it runs.
-        const auto method = task.record_override;
-        method();
-        return;
-    }
+    if (run_frame_task_record_override(engine, handle)) return;
     record_effect_task_default(engine, handle);
 }
 `;
@@ -555,7 +547,7 @@ TaskHandle create_effect_render_task(
     task.effect = std::move(options);
     return append_frame_task(engine, std::move(task));
 }
-${taskScissor ? `\n${lowerEffectTaskScissor(this.context)}` : ""}${disposal || taskBuild ? lowerEffectWrapperDisposal(this.context, disposal) : ""}${taskDisposal ? lowerEffectTaskDisposal(this.context, taskMethodSlots) : ""}${taskMethodSlots ? lowerEffectTaskMethods(disposal || taskBuild, taskDisposal) : ""}
+${taskScissor ? `\n${lowerEffectTaskScissor(this.context)}` : ""}${disposal || taskBuild || taskMethodSlots ? lowerEffectWrapperDisposal(this.context, disposal) : ""}${taskDisposal || taskMethodSlots ? lowerEffectTaskDisposal(this.context, taskMethodSlots) : ""}${taskMethodSlots ? lowerEffectTaskMethods(this.context) : ""}
 } // namespace bbl
 `,
         };

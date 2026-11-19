@@ -7608,6 +7608,15 @@ inline Scene configure_scene_render_defaults(Scene scene, bool enabled, std::uin
            (!surface || scene.surface_canvas->value == surface->value);
 }
 
+/** Snapshot before dispatch: a program hook can replace itself or grow frame_tasks. */
+inline bool run_frame_task_record_override(Engine& engine, TaskHandle handle) {
+    const auto record = handle_at(engine.frame_tasks, handle).record_override;
+    if (!record)
+        return false;
+    record();
+    return true;
+}
+
 /**
  * `setSurfaceSize`'s `_resize` on the engine's own canvas: each scene
  * registered there rebuilds its frame graph, whose record of every task
@@ -7619,9 +7628,11 @@ inline void rebuild_canvas_task_targets(Engine& engine) {
         if (!scene || !scene_on_surface(*scene, std::nullopt))
             continue;
         for (const TaskHandle handle : scene->frame_passes()) {
-            const FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
-            if (task.record_state != FrameTaskRecordState::pending_build)
-                record_task_color_views(engine, task);
+            if (handle_at(engine.frame_tasks, handle).record_state ==
+                FrameTaskRecordState::pending_build)
+                continue;
+            run_frame_task_record_override(engine, handle);
+            record_task_color_views(engine, handle_at(engine.frame_tasks, handle));
         }
     }
 }

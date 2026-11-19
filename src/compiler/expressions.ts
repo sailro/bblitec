@@ -4105,8 +4105,11 @@ export class ExpressionLowerer {
                 this.context.symbols.valueSymbol(receiver)
         )
             return undefined;
-        const task = this.context.bindings.lookupOptional(owner);
-        if (task?.kind !== "task" || !task.effectTask) return undefined;
+        const task = this.context.dataLowerer.narrowOptional(
+            this.compileValue(owner),
+            owner,
+        );
+        if (task.kind !== "task") return undefined;
         return this.compileValue(method);
     }
 

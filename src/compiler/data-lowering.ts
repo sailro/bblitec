@@ -37,6 +37,7 @@ import {
 } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
+import { isTaskMethodWrite } from "./effect-task-methods.js";
 import { eventTargetCpp } from "./dom-targets.js";
 import { refuseUnreadable } from "./unreadable-values.js";
 import {
@@ -17266,6 +17267,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         expression: ts.BinaryExpression,
         asValue = false,
     ): Value {
+        if (isTaskMethodWrite(this.context, expression.left))
+            this.context.fail(
+                expression,
+                "Task method replacements require simple assignment.",
+            );
         const result = (value: Value): Value =>
             asValue
                 ? this.context.bindings.pinValueToTemporary(

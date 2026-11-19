@@ -39,6 +39,7 @@ import { voidReceiver } from "./undefined-values.js";
 import {
     isEffectTaskMethodName,
     reachEffectTaskMethod,
+    requireEffectTaskMethodOwner,
 } from "./effect-task-methods.js";
 import { doubleLiteral, snakeCase } from "../cpp-literals.js";
 import { CAMERA_LIMIT_PROPERTIES } from "./camera-setters.js";
@@ -5029,7 +5030,6 @@ export class PropertyAccessLowerer {
         }
         if (
             owner.kind === "task" &&
-            owner.effectTask &&
             isEffectTaskMethodName(expression.name.text)
         )
             return this.effectTaskMethod(owner, expression);
@@ -5091,7 +5091,8 @@ export class PropertyAccessLowerer {
         expression: ts.PropertyAccessExpression,
     ): Value {
         const dispose = expression.name.text === "dispose";
-        reachEffectTaskMethod(this.context, dispose, expression);
+        requireEffectTaskMethodOwner(this.context, owner, expression);
+        reachEffectTaskMethod(this.context, expression);
         return {
             kind: "data",
             cpp: `bbl::effect_task_method(${this.context.requireEngine(owner, expression)}, ${owner.cpp}, ${dispose})`,

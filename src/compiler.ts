@@ -367,7 +367,10 @@ import {
 } from "./compiler/syntax.js";
 import { CompileError, unlessRefused } from "./compiler/compile-error.js";
 import { packagedValueDomain } from "./compiler/asset-url-domain.js";
-import { isEffectTaskMethodName } from "./compiler/effect-task-methods.js";
+import {
+    isEffectTaskMethodName,
+    isTaskMethodWrite,
+} from "./compiler/effect-task-methods.js";
 import {
     ClosureCaptures,
     nativeCompanionKeys,
@@ -2933,20 +2936,15 @@ class Compiler implements LoweringServices {
         }
         // An effect task's `record` / `dispose` replaces the method its
         // frame graph calls; the read of either is a copy, not a slot.
-        if (
-            expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-            ts.isPropertyAccessExpression(left) &&
-            isEffectTaskMethodName(left.name.text) &&
-            this.probeEmission(
-                () => {
-                    const owner = this.compileValue(left.expression);
-                    return owner.kind === "task" && owner.effectTask
-                        ? true
-                        : undefined;
-                },
-                () => false,
+        if (isTaskMethodWrite(this, left)) {
+            if (
+                !ts.isPropertyAccessExpression(left) ||
+                !isEffectTaskMethodName(left.name.text)
             )
-        ) {
+                this.fail(
+                    expression,
+                    "Unsupported task method write; only record/dispose saved-bind wrappers are lowered.",
+                );
             emitPropertyAssignment(this, expression);
             return;
         }
