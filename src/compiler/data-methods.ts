@@ -3570,6 +3570,28 @@ function compileArrayPush(state: ArrayMethodState): Value {
                       argument,
                       "Array.push",
                   );
+                  // A static snapshot owns the value selected at push,
+                  // including creation calls and a mutable source handle
+                  // that is rebound later; the array stores that value as
+                  // it stores its elements.
+                  if (pushedHandleKind && staticElements) {
+                      const snapshot = { ...value };
+                      delete snapshot.nativeBinding;
+                      const pinned =
+                          lowerer.context.bindings.pinValueToTemporary(
+                              snapshot,
+                              "array_handle",
+                              argument,
+                          );
+                      preparedValues.push(
+                          lowerer.compileKnownValueForSink(
+                              pinned,
+                              dataType.element,
+                              argument,
+                          ),
+                      );
+                      return pinned;
+                  }
                   const cpp = lowerer.compileKnownValueForSink(
                       value,
                       dataType.element,
@@ -3596,21 +3618,7 @@ function compileArrayPush(state: ArrayMethodState): Value {
                       });
                   }
                   preparedValues.push(prepared);
-                  // A static snapshot owns the value selected at push, including
-                  // creation calls and a mutable source handle that is rebound later.
-                  if (!pushedHandleKind || !staticElements) return value;
-                  const snapshot = {
-                      ...value,
-                      ...(index < lastEffect ? { cpp: prepared } : {}),
-                  };
-                  delete snapshot.nativeBinding;
-                  const pinned = lowerer.context.bindings.pinValueToTemporary(
-                      snapshot,
-                      "array_handle",
-                      argument,
-                  );
-                  preparedValues[preparedValues.length - 1] = pinned.cpp;
-                  return pinned;
+                  return value;
               })
             : undefined;
     let added: number | undefined = 0;

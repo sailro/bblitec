@@ -6217,7 +6217,7 @@ export class UserFunctionLowerer {
                                 ),
                             )
                         )
-                            context.dataTypes.requireEngineParameterStorage(
+                            context.dataTypes.requireEngineOwnerStorage(
                                 signatureParameter(),
                             );
                         // A parameter that tells null from undefined needs

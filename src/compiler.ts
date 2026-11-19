@@ -11525,7 +11525,7 @@ class Compiler implements LoweringServices {
 
     public requireEngine(value: Value, node: ts.Node): string {
         if (!value.engineCpp) {
-            this.dataTypes.requireEngineParameterStorage(
+            this.dataTypes.requireEngineOwnerStorage(
                 value.engineOwnerParameter,
             );
             // Resources whose carriers disagree belong to the one

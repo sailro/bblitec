@@ -3689,10 +3689,15 @@ export class DataTypeRegistry {
             : type;
     }
 
-    public requireEngineParameterStorage(
-        declaration: ts.ParameterDeclaration | undefined,
+    /** A parameter or field whose resources need their engine stores it. */
+    public requireEngineOwnerStorage(
+        declaration: ts.Declaration | undefined,
     ): void {
-        if (declaration && !this.requiresEngineParameterStorage(declaration))
+        if (
+            declaration &&
+            isEngineOwnerStorageDeclaration(declaration) &&
+            !this.storage.engineOwners.has(declaration)
+        )
             this.requireEngineOwner(declaration);
     }
 

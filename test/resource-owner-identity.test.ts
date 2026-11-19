@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
+import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
@@ -218,4 +220,160 @@ test("an entry program compares an optional stored handle with a plain one by it
         void main();
     `);
     assert.match(cpp, /\.has_value\(\) && \(\*\w+\) == v_\w+_material\)/);
+});
+
+test("an array of elements stored in a record field stays the caller's one array", (t) => {
+    // `mapped` holds elements that keep their engine, so the field does,
+    // and the arrays the caller still changes keep them too: each tab's
+    // rows are the array the caller holds.
+    const source = `
+        interface Tab { readonly name: string; readonly rows: readonly HTMLElement[]; }
+        const tabs: Tab[] = [];
+        function keep(name: string, rows: HTMLElement[]): void {
+            if (rows.length === 0) return;
+            tabs.push({ name, rows });
+        }
+        const grown: HTMLElement[] = [];
+        grown.push(document.createElement("div"));
+        const listed: HTMLElement[] = [document.createElement("div")];
+        keep("grown", grown);
+        keep("listed", listed);
+        keep("mapped", listed.map((row) => row));
+        const added = document.createElement("div");
+        grown.push(added);
+        const replaced = listed[0]!;
+        listed[0] = document.createElement("div");
+        const [first, second, third] = tabs;
+        if (!first || !second || !third) throw new Error("stored tabs");
+        if (first.rows.length !== 2 || first.rows[1] !== added || first.rows[0] !== grown[0]) throw new Error("grown rows");
+        if (second.rows[0] !== listed[0] || second.rows[0] === replaced) throw new Error("listed rows");
+        if (third.rows.length !== 1 || third.rows[0] !== replaced) throw new Error("mapped rows");
+        globalThis.close();
+    `;
+    runInNewContext(
+        ts.transpileModule(source, {
+            compilerOptions: { target: ts.ScriptTarget.ESNext },
+        }).outputText,
+        {
+            document: { createElement: (tag: string) => ({ tag }) },
+            globalThis: { close: () => undefined },
+        },
+    );
+    const { cpp } = compileSource(source);
+    assert.match(
+        cpp,
+        /bbl::js::Array<std::pair<bbl::StoredEngine, bbl::UiElementHandle>> rows;/,
+    );
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) return t.skip("Native fixture compiler unavailable.");
+    runGeneratedProgram(
+        tools,
+        "resource-owner-identity/element-rows",
+        `
+        #define main generated_main
+        ${cpp}
+        #undef main
+        #include <cassert>
+        namespace bbl {
+            unsigned created = 0;
+            UiElementHandle ui_create_element(Engine& owner, std::string_view tag) {
+                assert(&owner == &pal::window_document_engine() && tag == "div");
+                return UiElementHandle{created++};
+            }
+        }
+        namespace bbl::pal {
+            Engine& window_document_engine() { static Engine host; return host; }
+            int run_window_application(WorkerEntry initialize, EngineOptions) {
+                const js::RealmScope scope;
+                EventLoop loop;
+                WorkerRealm realm(loop);
+                loop.run([&] { initialize(realm); });
+                return 0;
+            }
+        }
+        int main() { const int result = generated_main(); assert(bbl::created == 4); return result; }
+    `,
+        {
+            flags: [
+                "/DBBLITE_HAS_UI=1",
+                "/DBBLITE_WORKERS=1",
+                "/DBBLITE_OFFSCREEN_SURFACES=1",
+            ],
+            timeoutMs: 10000,
+            expectedOutput: "",
+        },
+    );
+    // A new array of meshes read from record fields, which keep their
+    // engine, is the array a callback's record receives even after it
+    // grows: its local holds the engine-less elements that record holds.
+    const meshes = `
+        import {createBox, type EngineContext, type Mesh} from "@babylonjs/lite";
+        interface Part { readonly mesh: Mesh; show(): void; }
+        function inspect(engine: EngineContext): number {
+            const listeners: ((ready: { meshes: Mesh[] }) => void)[] = [];
+            const held: Mesh[][] = [];
+            listeners.push((ready) => { held.push(ready.meshes); });
+            function part(size: number): Part {
+                const mesh = createBox(engine, { size });
+                return { mesh, show: () => { if (size < 0) console.log(mesh.name); } };
+            }
+            function finish(top: Part, bottom: Part): number {
+                top.show();
+                const meshes = [top.mesh, bottom.mesh];
+                for (const listener of listeners) listener({ meshes });
+                meshes.push(top.mesh);
+                if (held[0] !== meshes || held[0]!.length !== 3) throw new Error("one array");
+                return meshes.length;
+            }
+            return finish(part(1), part(2));
+        }
+        const factories: Array<typeof inspect> = [inspect];
+    `;
+    runInNewContext(
+        `${
+            ts.transpileModule(meshes, {
+                compilerOptions: {
+                    target: ts.ScriptTarget.ESNext,
+                    module: ts.ModuleKind.CommonJS,
+                },
+            }).outputText
+        }; if (factories[0](engine) !== 3) throw new Error("meshes");`,
+        {
+            exports: {},
+            require: () => ({ createBox: () => ({ name: "box" }) }),
+            engine: {},
+        },
+    );
+    const { cpp: meshCpp } = compileSource(meshes);
+    const factory =
+        /double (\w+)\(\[\[maybe_unused\]\] bblscene::(\w+)& \w+, \[\[maybe_unused\]\] bbl::StoredEngine \w+\);/.exec(
+            meshCpp,
+        );
+    assert.ok(factory, "mesh factory");
+    const [, name, environment] = factory;
+    runGeneratedProgram(
+        tools,
+        "resource-owner-identity/callback-meshes",
+        `
+        #define main generated_main
+        ${meshCpp}
+        #undef main
+        #include <cassert>
+        namespace bbl {
+            MeshHandle create_box(Engine& engine, BoxOptions) {
+                const auto generation = static_cast<std::uint32_t>(engine.meshes.size());
+                engine.meshes.emplace_back();
+                return {0, generation};
+            }
+        }
+        int main() {
+            const bbl::js::RealmScope realm;
+            auto engine = std::make_shared<bbl::Engine>();
+            bblscene::${environment} environment{};
+            assert(bblscene::${name}(environment, bbl::StoredEngine{engine}) == 3);
+            assert(engine->meshes.size() == 2);
+        }
+        `,
+        { expectedOutput: "" },
+    );
 });

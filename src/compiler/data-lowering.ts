@@ -298,6 +298,7 @@ import {
     propertyKey,
     unwrapExpression,
     valueConsumer,
+    type ValueConsumer,
     wrappedParent,
     isTypeAssertion,
     wrappersUnder,
@@ -3983,7 +3984,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 (actual?.kind === "handle" &&
                     actual.handle === declared.handle))
         )
-            this.context.dataTypes.requireEngineParameterStorage(
+            this.context.dataTypes.requireEngineOwnerStorage(
                 source.engineOwnerParameter,
             );
         if (
@@ -13073,16 +13074,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const at = outermostWrapper(node, { branches: true });
         const consumer = valueConsumer(at);
         switch (consumer.kind) {
-            case "property": {
-                const name = this.context.propertyName(consumer.name);
-                const field =
-                    name !== undefined
-                        ? contextualProperty(checker, consumer.literal, name)
-                        : undefined;
-                return field?.declarations?.length === 1
-                    ? field.declarations[0]
-                    : undefined;
-            }
+            case "property":
+                return this.literalFieldDeclaration(consumer);
             case "argument":
                 return calledDeclaration(checker, consumer.call)?.parameters[
                     consumer.index
@@ -13100,6 +13093,24 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             default:
                 return undefined;
         }
+    }
+
+    /** The one declaration of the field a literal property writes. */
+    private literalFieldDeclaration(
+        consumer: Extract<ValueConsumer, { kind: "property" }>,
+    ): ts.Declaration | undefined {
+        const name = this.context.propertyName(consumer.name);
+        const field =
+            name !== undefined
+                ? contextualProperty(
+                      this.context.checker,
+                      consumer.literal,
+                      name,
+                  )
+                : undefined;
+        return field?.declarations?.length === 1
+            ? field.declarations[0]
+            : undefined;
     }
 
     /** A guarded numeric tuple, including a document array copied by spread. */
@@ -13522,13 +13533,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
-     * An array binding assigned an array whose elements keep their engine
-     * beside the handle: the binding keeps them so too, one array for both.
-     * A const local holding a new array, read where an array of the
-     * engine-less handles is expected, holds those instead: its initializer
-     * converts each element while nothing else holds the array.
+     * An array stored where its handles keep or drop their engine, one
+     * array for both. Elements that keep their engine beside the handle: a
+     * binding assigned the array keeps them so too; a const local holding a
+     * new array, read where engine-less handles are expected, holds those
+     * instead (its initializer converts each element while nothing else
+     * holds the array); a record field a literal stores the array in keeps
+     * them, as a resource field keeps its resource's engine. Engine-less
+     * elements stored where their engine is kept: the local the array is
+     * read from keeps it too.
      */
     public requireArrayBindingElements(
+        value: Value,
         element: DataType,
         target: DataType,
         node: ts.Node,
@@ -13541,10 +13557,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             from.kind !== "handle" ||
             to.kind !== "handle" ||
             from.handle !== to.handle ||
-            !from.ownedEngine ||
-            to.ownedEngine
+            !from.ownedEngine === !to.ownedEngine
         )
             return;
+        if (!from.ownedEngine) {
+            const read = this.readLocal(value, node);
+            if (read)
+                throw new DynamicBindingStorageRequired(read, {
+                    elements: target,
+                });
+            return;
+        }
         const declaration = this.assignedBinding(node);
         if (declaration)
             throw new DynamicBindingStorageRequired(declaration, {
@@ -13555,9 +13578,37 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             throw new DynamicBindingStorageRequired(local, {
                 elements: target,
             });
+        const converted = this.convertedExpression(node);
+        const consumer =
+            converted &&
+            valueConsumer(outermostWrapper(converted, { branches: true }));
+        if (consumer?.kind === "property")
+            this.context.dataTypes.requireEngineOwnerStorage(
+                this.literalFieldDeclaration(consumer),
+            );
     }
 
-    /** The const local a converted expression reads, initialized with a new array, while it has no demanded storage. */
+    /** The initialized local a converted value reads (its identifier, or the live binding it is), while it has no demanded storage. */
+    public readLocal(
+        value: Value,
+        node: ts.Node,
+    ): ts.VariableDeclaration | undefined {
+        const converted = this.convertedExpression(node);
+        const expression = converted && unwrapExpression(converted);
+        const declaration =
+            (expression && ts.isIdentifier(expression)
+                ? initializedVariableDeclaration(
+                      this.context.checker,
+                      expression,
+                  )
+                : undefined) ??
+            this.context.bindings.variableDeclarationOf(value.cpp);
+        return declaration && !this.context.dynamicBindings.has(declaration)
+            ? declaration
+            : undefined;
+    }
+
+    /** The const local a converted expression reads, initialized with a new array, while it has no demanded storage or array storage its elements may refine. */
     private newArrayLocal(node: ts.Node): ts.VariableDeclaration | undefined {
         const converted = this.convertedExpression(node);
         const checker = this.context.checker;
@@ -13566,7 +13617,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             freshConstLocal(checker, converted, (initializer) =>
                 yieldsNewArray(checker, initializer),
             );
-        return declaration && !this.context.dynamicBindings.has(declaration)
+        return declaration &&
+            (!this.context.dynamicBindings.has(declaration) ||
+                this.context.dynamicBindings.get(declaration) === "array")
             ? declaration
             : undefined;
     }
@@ -21077,7 +21130,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     this.context.defaultEngine() !== undefined
                 )
                     continue;
-                this.context.dataTypes.requireEngineParameterStorage(
+                this.context.dataTypes.requireEngineOwnerStorage(
                     value?.engineOwnerParameter,
                 );
                 if (ts.isIdentifier(local)) {
@@ -21086,7 +21139,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         local,
                     )?.valueDeclaration;
                     if (declaration && ts.isParameter(declaration))
-                        this.context.dataTypes.requireEngineParameterStorage(
+                        this.context.dataTypes.requireEngineOwnerStorage(
                             declaration,
                         );
                     requireDynamicBindingStorage(this.context.checker, local, {
