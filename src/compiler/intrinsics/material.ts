@@ -1404,6 +1404,9 @@ function compileSetShaderStorageBuffer(
     );
     context.expectKind(buffer, "storage-buffer", argumentAt(call, 2));
     context.expectSameEngine(material, buffer, call);
+    // Both setters are defined with the shader-material family, which a
+    // material only known by its type has not reached through its creation.
+    context.reachFeature("material:shader", call);
     context.reachFeature("material:shader-storage", call);
     const dynamic = !material.shaderVariant || name.staticString === undefined;
     const slot = dynamic
