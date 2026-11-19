@@ -738,16 +738,62 @@ test("a call reading a run-time ShaderMaterial's fields before any creation take
             `inline std::uint32_t derived_shader_variant_${site[1]}(`,
         );
     };
-    // With no variant at all the call's own refusal stands.
+    // With no variant at all the call's own refusal stands, naming the
+    // variants it would compile once per.
     assert.throws(
         () => compileSource(unshadedSource(false)),
-        /'material\.samplerDecls' reads a ShaderMaterial's 'samplerDecls', which its shader variant decides; this material's variant is decided at run time\./,
+        /'material\.samplerDecls' reads a ShaderMaterial's 'samplerDecls', which its shader variant decides; this material's variant is decided at run time\. The call compiles once per outcome of the shader variants the program creates, and it creates none: target\.material as ShaderMaterial\./,
     );
     const compiled = compileSource(unshadedSource(true));
     const late = compiled.manifest.customShaderPrograms.findIndex(
         ({ name }) => name === "late",
     );
     assert.match(table(compiled), new RegExp(`case ${late}u: return 0u;`));
+});
+
+test("a method no call reaches that views a run-time ShaderMaterial and reads its vertex source refuses where the program creates no ShaderMaterial", () => {
+    const source = (creates: boolean): string => `${prelude}
+    import { createStandardMaterial } from "@babylonjs/lite";
+    import type { MaterialView, Mesh } from "@babylonjs/lite";
+    const geometries = new WeakMap<ShaderMaterial, { readonly source: string }>();
+    function view(source: ShaderMaterial): ShaderMaterial & MaterialView {
+        const derived = createMaterialView(source, { features: 0 }) as ShaderMaterial & MaterialView;
+        const vertexSource = geometries.get(source)?.source ?? source.vertexSource;
+        console.log(vertexSource.length);
+        return derived;
+    }
+    function createNormalSource(): { register(mesh: Mesh): void } {
+        const views = new Map<ShaderMaterial, ShaderMaterial & MaterialView>();
+        return {
+            register(mesh: Mesh): void {
+                if (!mesh.material) return;
+                const source = mesh.material as ShaderMaterial;
+                if (!views.has(source)) views.set(source, view(source));
+            },
+        };
+    }
+    function setup(normals: { register(mesh: Mesh): void }, mesh: Mesh): void {
+        const held = { normals };
+        if (Math.random() > 2) held.normals.register(mesh);
+    }
+    async function main(): Promise<void> {
+        const engine = await createEngine({});
+        const mesh = createMeshFromData(engine, "tri", new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]), new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]), new Uint32Array([0, 1, 2]));
+        mesh.material = createStandardMaterial();
+        addToScene(createSceneContext(engine), mesh);
+        ${creates ? `createShaderMaterial(${groundOptions});` : ""}
+        setup(createNormalSource(), mesh);
+    }
+    void main();
+`;
+    assert.throws(
+        () => compileSource(source(false)),
+        /input\.ts:\d+:\d+: 'source\.vertexSource' reads a ShaderMaterial's 'vertexSource', which its shader variant decides; this material's variant is decided at run time\. The call compiles once per outcome of the shader variants the program creates, and it creates none: source\./,
+    );
+    // A creation gives the call its arm.
+    assert.ok(
+        compileSource(source(true)).cpp.includes("derived_shader_variant_"),
+    );
 });
 
 test("a run-time ShaderMaterial split refuses past its arm bound", () => {

@@ -204,7 +204,11 @@ export function compileWithRuntimeCaseSplit(
         if (arms === 0)
             context.sceneManifest.shaderDerivations.refuseWithoutCreations(
                 () => {
-                    throw error;
+                    throw beyondSplit(
+                        error,
+                        selectors,
+                        "the shader variants the program creates, and it creates none",
+                    );
                 },
             );
         if (arms > MAX_ARMS)
@@ -279,9 +283,9 @@ function armRefused(
 }
 
 /**
- * The refusal of a call a split could not reach: its own text, then the
- * limit the run-time tests exceeded (`reach`) and the tests. A restart
- * stands as it is.
+ * The refusal of a call a split could not reach: its own text, then what
+ * its run-time tests compile once per (`reach`: past a limit, or no shader
+ * variant at all) and the tests. A restart stands as it is.
  */
 function beyondSplit(
     error: unknown,
