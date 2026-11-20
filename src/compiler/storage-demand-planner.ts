@@ -153,11 +153,49 @@ function independentGenericCall(
 }
 
 /**
+ * A binding's named storage demanded by its own initializer. Rolling back
+ * this declaration loses only its binding: evaluating the initializer
+ * runs no calls, accessors or writes. Its source/array storage does not
+ * carry a representation inferred at another use of the binding.
+ */
+function ownBindingDemand(
+    statement: ts.Statement | undefined,
+    request: StorageRequest,
+): boolean {
+    if (
+        !statement ||
+        !ts.isVariableStatement(statement) ||
+        statement.declarationList.declarations.length !== 1 ||
+        request.kind !== "dynamic" ||
+        (request.storage !== "source" && request.storage !== "array")
+    )
+        return false;
+    const declaration = statement.declarationList.declarations[0]!;
+    return (
+        declaration === request.declaration &&
+        ts.isIdentifier(declaration.name) &&
+        declaration.initializer !== undefined &&
+        !expressionMayRunCode(declaration.initializer) &&
+        // Spreads can invoke getters/iterators; computed keys can run coercion.
+        !someAnalysisNode(
+            declaration.initializer,
+            (node) =>
+                ts.isSpreadElement(node) ||
+                ts.isSpreadAssignment(node) ||
+                ts.isComputedPropertyName(node),
+            { functions: "skip", types: "skip" },
+        )
+    );
+}
+
+/**
  * Whether planning can go on past `statement` once its demand rolled it
  * back. A storage decision for a declaration (an absence tag, a tuple or
  * numeric array slot, string enum elements) holds whatever the statement
  * went on to do; an ownership transition (dynamic binding, shared record
- * storage) can arise during writes, so it ends discovery.
+ * storage) can arise during writes, so it ends discovery. A demand for
+ * the statement's own binding instead loses that declaration; a later
+ * read of it ends discovery through the lost-declaration check.
  */
 function independentDemand(
     context: StatementContext,
@@ -166,8 +204,9 @@ function independentDemand(
 ): boolean {
     if (error instanceof GenericFunctionStorageRequired)
         return independentGenericCall(context, statement, error);
+    if (error instanceof DynamicBindingStorageRequired)
+        return ownBindingDemand(statement, error.request);
     return !(
-        error instanceof DynamicBindingStorageRequired ||
         error instanceof ParameterObjectStorageRequired ||
         error instanceof NativeRecordStorageRequired ||
         error instanceof SharedClassStorageRequired
@@ -243,7 +282,8 @@ function rolledBackWrites(
  * whose storage their key and source types name (`demandsSourceStorage`).
  * Refusals and lost-binding reads end discovery. Past a rolled-back
  * statement, which may have met a demand first at its own site, a plan
- * collects only demands of a key (`demandsKeyOnly`).
+ * collects only demands of a key (`demandsKeyOnly`) or a statement's own
+ * binding with named storage (`ownBindingDemand`).
  */
 export class StorageDemandPlanner {
     /** @unjournaled Demands must survive the statements they roll back. */
@@ -400,7 +440,7 @@ export class StorageDemandPlanner {
         } catch (error) {
             if (!(error instanceof StorageDemand)) throw error;
             this.requireSourceStorage(error.requests);
-            this.requireStrictSite(error.requests);
+            this.requireStrictSite(error.requests, statement);
             for (const request of error.requests) this.collect(request);
             // An ownership change can reach what later statements read: the
             // plan ends.
@@ -437,8 +477,18 @@ export class StorageDemandPlanner {
     }
 
     /** Whether strict lowering would meet `requests` as this plan did. */
-    private metAtStrictSite(requests: readonly StorageRequest[]): boolean {
-        return !this.rolledBack || requests.every(demandsKeyOnly);
+    private metAtStrictSite(
+        requests: readonly StorageRequest[],
+        statement?: ts.Statement,
+    ): boolean {
+        return (
+            !this.rolledBack ||
+            requests.every(
+                (request) =>
+                    demandsKeyOnly(request) ||
+                    ownBindingDemand(statement, request),
+            )
+        );
     }
 
     /**
@@ -459,8 +509,11 @@ export class StorageDemandPlanner {
     }
 
     /** Ends a plan whose demands strict lowering could meet elsewhere first. */
-    private requireStrictSite(requests: readonly StorageRequest[]): void {
-        if (this.metAtStrictSite(requests)) return;
+    private requireStrictSite(
+        requests: readonly StorageRequest[],
+        statement?: ts.Statement,
+    ): void {
+        if (this.metAtStrictSite(requests, statement)) return;
         statistics.departed++;
         throw new PlanningStop(
             "a demand strict lowering could meet elsewhere first",

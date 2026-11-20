@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import ts from "typescript";
 import { compileSource, surveySource } from "../src/compiler.js";
@@ -381,6 +383,117 @@ test("a plan ends at a demand whose change later statements may read", () => {
         dependent: 0,
         writes: 1,
     });
+});
+
+test("one plan collects two independent module-const dynamic demands and stops at their read", () => {
+    const { checker, statements, context, declarationAt } = plannedStatements(`
+        export const KEG_PIVOT = [0.5, 0.5, 0.5] as const;
+        export const BEER_PIVOT = [0.5, 0, 0.5] as const;
+        const height = KEG_PIVOT[1];
+    `);
+    const planner = new StorageDemandPlanner(checker);
+    const before = storagePlanningStatistics();
+    let read = false;
+    planner.run(() => {
+        for (let index = 0; index < 2; index++)
+            attemptPlanned(planner, context, statements[index]!, () => {
+                throw new DynamicBindingStorageRequired(
+                    declarationAt(index),
+                    "array",
+                );
+            });
+        attemptPlanned(planner, context, statements[2]!, () => {
+            read = true;
+        });
+    });
+    assert.deepEqual(
+        planner.demands.map((request) =>
+            request.kind === "dynamic"
+                ? request.declaration.name.getText()
+                : request.kind,
+        ),
+        ["KEG_PIVOT", "BEER_PIVOT"],
+    );
+    assert.equal(read, false);
+    assert.equal(storagePlanningStatistics().dependent - before.dependent, 1);
+});
+
+test("independent literal bindings batch without changing generated storage", () => {
+    const directory = join(
+        process.cwd(),
+        "artifacts",
+        "storage-demand-planner",
+        "module-bindings",
+    );
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        join(directory, "pivots.ts"),
+        `
+        export const seed = { value: 0, increment() { this.value++; } };
+        export const first = { value: 1, increment() { this.value++; } };
+        export const second = { value: 2, increment() { this.value++; } };
+        export function mutate(): void {
+            seed.increment();
+            first.increment();
+            second.increment();
+        }
+        `,
+    );
+    const source = `
+        import { seed, first, second, mutate } from "./pivots";
+        async function main(): Promise<void> {
+            await Promise.resolve();
+            mutate();
+            const held = [seed, first, second];
+            if (held.indexOf(seed) !== 0 || held.indexOf(first) !== 1 || held.indexOf(second) !== 2) throw new Error("identity");
+            globalThis.close();
+        }
+        void main();
+    `;
+    const compile = () =>
+        compileSource(source, { fileName: join(directory, "entry.ts") });
+    const baseline = measured(false, compile);
+    const planned = measured(true, compile);
+    assert.equal(planned.result.cpp, baseline.result.cpp);
+    assert.deepEqual(planned.result.manifest, baseline.result.manifest);
+    assert.ok(
+        planned.constructions < baseline.constructions,
+        `planned ${planned.constructions}, strict ${baseline.constructions}`,
+    );
+});
+
+test("a dynamic demand for another binding or an effectful initializer ends discovery", () => {
+    for (const [source, statementIndex, declarationIndex, storage] of [
+        ["let value = []; value = [1]; const next = [];", 1, 0, "array"],
+        ["const value = build(); const next = [];", 0, 0, "source"],
+        ["const value = holder.value; const next = [];", 0, 0, "source"],
+        ["const value = { ...holder }; const next = [];", 0, 0, "source"],
+        ["const value = [...items]; const next = [];", 0, 0, "array"],
+        ["const value = { [key]: 1 }; const next = [];", 0, 0, "source"],
+    ] as const) {
+        const { checker, statements, context, declarationAt } =
+            plannedStatements(source);
+        const planner = new StorageDemandPlanner(checker);
+        let next = false;
+        const before = storagePlanningStatistics();
+        planner.run(() => {
+            attemptPlanned(
+                planner,
+                context,
+                statements[statementIndex]!,
+                () => {
+                    throw new DynamicBindingStorageRequired(
+                        declarationAt(declarationIndex),
+                        storage,
+                    );
+                },
+            );
+            next = true;
+        });
+        assert.equal(next, false, source);
+        assert.equal(planner.demands.length, 1, source);
+        assert.equal(storagePlanningStatistics().writes - before.writes, 1);
+    }
 });
 
 test("a plan ends at a destructured generic call's signature", () => {
