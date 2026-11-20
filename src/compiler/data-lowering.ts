@@ -9837,6 +9837,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 `Array.${method} expects a search value and an optional fromIndex.`,
             );
         }
+        const folded = this.foldedArraySearch(call, owner, method);
+        if (folded) return folded;
         if (
             element.kind === "handle" &&
             !element.ownedEngine &&
@@ -9947,6 +9949,92 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /** A raw homogeneous resource array can compare only within its proved engine. */
+    /**
+     * A search whose receiver's elements and search value generation holds
+     * as primitives, answered at generation: `includes` by SameValueZero
+     * (NaN finds NaN), `indexOf`/`lastIndexOf` by strict equality. A
+     * `fromIndex`, or any element or value generation does not hold, is the
+     * run time's.
+     */
+    private foldedArraySearch(
+        call: ts.CallExpression,
+        owner: Value,
+        method: "indexOf" | "includes" | "lastIndexOf",
+    ): Value | undefined {
+        if (call.arguments.length !== 1) return undefined;
+        const literalLanes = (): (string | number | boolean)[] | undefined => {
+            const callee = namedMember(this.context.checker, call.expression);
+            if (!callee) return undefined;
+            const resolved = this.context.unwrap(
+                this.context.resolveStaticExpression(callee.expression),
+            );
+            if (!ts.isArrayLiteralExpression(resolved)) return undefined;
+            const lanes: (string | number | boolean)[] = [];
+            for (const element of resolved.elements) {
+                if (
+                    ts.isSpreadElement(element) ||
+                    ts.isOmittedExpression(element)
+                )
+                    return undefined;
+                const lane = this.context.resolveStaticExpression(element);
+                if (ts.isStringLiteralLike(lane)) lanes.push(lane.text);
+                else if (ts.isNumericLiteral(lane))
+                    lanes.push(Number(lane.text));
+                else if (lane.kind === ts.SyntaxKind.TrueKeyword)
+                    lanes.push(true);
+                else if (lane.kind === ts.SyntaxKind.FalseKeyword)
+                    lanes.push(false);
+                else return undefined;
+            }
+            return lanes;
+        };
+        const elements =
+            (owner.staticElementsOwner ?? owner).staticElements ??
+            (owner.kind === "tuple" ? owner.tupleElements : undefined);
+        const primitive = (
+            value: Value,
+        ): string | number | boolean | undefined =>
+            value.staticString ?? value.staticNumber ?? value.staticBoolean;
+        const known = elements?.map(primitive);
+        const lanes =
+            known && known.every((lane) => lane !== undefined)
+                ? known
+                : literalLanes();
+        if (!lanes) return undefined;
+        const argument = argumentAt(call, 0);
+        return this.context.probeEmission((): Value | undefined => {
+            const needle = primitive(this.context.compileValue(argument));
+            if (needle === undefined) return undefined;
+            const same = (lane: unknown): boolean =>
+                lane === needle ||
+                (method === "includes" &&
+                    typeof lane === "number" &&
+                    typeof needle === "number" &&
+                    Number.isNaN(lane) &&
+                    Number.isNaN(needle));
+            if (method === "includes") {
+                const found = lanes.some(same);
+                return {
+                    kind: "boolean",
+                    cpp: found ? "true" : "false",
+                    staticBoolean: found,
+                    dataType: { kind: "boolean" },
+                };
+            }
+            let index = -1;
+            if (method === "indexOf") index = lanes.findIndex(same);
+            else
+                for (let at = lanes.length - 1; at >= 0 && index < 0; --at)
+                    if (same(lanes[at])) index = at;
+            return {
+                kind: "number",
+                cpp: `${index}.0`,
+                staticNumber: index,
+                dataType: { kind: "number" },
+            };
+        });
+    }
+
     private compileEngineHandleSearch(
         call: ts.CallExpression,
         owner: Value,

@@ -2721,6 +2721,20 @@ check(
 `,
 );
 
+// A search over elements generation holds answers at generation, with
+// JavaScript's comparisons: includes finds NaN (SameValueZero), indexOf
+// and lastIndexOf do not (strict equality); a predicate over it folds too.
+check(
+    "array-search-over-generation-known-elements",
+    `
+    const lanes = [1, NaN, 3, 1];
+    const names = ["world", "uTint"];
+    const kept = ["world", "view", "uTint"].filter((name) => names.includes(name));
+    if (!lanes.includes(NaN) || lanes.indexOf(NaN) !== -1 || lanes.lastIndexOf(1) !== 3 || lanes.indexOf(3) !== 2) throw new Error("search");
+    if (kept.length !== 2 || kept[1] !== "uTint" || ["a"].includes("b")) throw new Error("filter");
+`,
+);
+
 // Assertions retype an array without changing its identity, including
 // assertions to an unrelated type through an unknown parameter.
 for (const [name, asserted] of [

@@ -1780,6 +1780,24 @@ test("a descriptor stores a view's declaration list in the target property's typ
     }
 });
 
+test("a declaration list filtered by a search over generation-known names is known at generation", () => {
+    // The predicate's search answers at generation, so the filter folds
+    // over the source's declarations instead of reaching the run time.
+    for (const kept of [
+        'const names = ["world", "worldViewProjection", "uTint"]; const kept = tinted.uniformDecls.filter((d) => names.includes(d.name));',
+        'const kept = tinted.uniformDecls.filter((d) => ["world", "worldViewProjection", "uTint"].includes(d.name));',
+    ]) {
+        const source = sharedDefaultSource(`
+        const view = createMaterialView(tinted, { features: 0 }) as ShaderMaterial;
+        ${kept}
+        const decls = withDecl(kept, CARVE);
+        Object.defineProperties(view, { fragmentSource: { value: wgsl\`\${NORMAL}\`, configurable: true }, uniformDecls: { value: decls, configurable: true } });
+        draw(engine, view);
+        `);
+        assert.throws(() => compileSource(source), viewOwnSlotsRefusal, kept);
+    }
+});
+
 test("assertions out of unknown parameters retype only what their calls pass", () => {
     // Each helper's `unknown` parameter holds what its direct calls pass,
     // none of them the source material's arrays, so its assertion makes no
