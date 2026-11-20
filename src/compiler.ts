@@ -206,6 +206,7 @@ import {
     selectedStaticNumberValue,
     type StaticSelectionContext,
     staticNumberValue,
+    staticJsonValue,
     validateObjectProperties,
 } from "./compiler/option-helpers.js";
 import {
@@ -363,6 +364,7 @@ import {
     keysMayMatch,
     sameKeys,
     unwrapExpression,
+    notJson,
     type SupportedFunction,
 } from "./compiler/syntax.js";
 import { CompileError, unlessRefused } from "./compiler/compile-error.js";
@@ -4058,6 +4060,49 @@ class Compiler implements LoweringServices {
      * at generation (`ITEMS.map((item) => nameOf(item))`).
      */
     public staticListItems(expression: ts.Expression): StaticListItem[] {
+        const resolved = this.resolveListExpression(expression);
+        if (resolved !== this.unwrap(expression))
+            return this.staticListItems(resolved);
+        if (ts.isConditionalExpression(resolved)) {
+            const selected = this.probeEmission(() => {
+                const condition = this.resolveListExpression(
+                    resolved.condition,
+                );
+                const name = this.unwrap(resolved.condition);
+                const parameters =
+                    ts.isIdentifier(name) && condition !== name
+                        ? [
+                              {
+                                  name,
+                                  value: this.compileValue(condition),
+                                  compileTime: true,
+                              },
+                          ]
+                        : [];
+                // Keep the re-read condition's value in the selected arm too:
+                // a predicate there may capture the const side-table entry.
+                const within = <T>(read: () => T): T =>
+                    this.bindings.withBoundParameters(parameters, read);
+                const known = within(() =>
+                    knownCondition(
+                        this.conditions.compileCondition(resolved.condition),
+                    ),
+                );
+                if (known === undefined) return undefined;
+                return within(() =>
+                    this.staticListItems(
+                        known ? resolved.whenTrue : resolved.whenFalse,
+                    ),
+                ).map((item) => ({
+                    ...item,
+                    within: <T>(read: () => T): T =>
+                        within(() => item.within(read)),
+                }));
+            });
+            if (selected) return selected;
+        }
+        const filtered = this.filteredListItems(resolved);
+        if (filtered) return filtered;
         const projected = this.projectedStaticElements(expression);
         if (projected) return projected.map(unboundListItem);
         const literal = unlessRefused(() =>
@@ -4097,6 +4142,76 @@ class Compiler implements LoweringServices {
             if (value) refuseUnreadablePart(this, value, expression);
             throw error;
         }
+    }
+
+    /** List syntax may re-read an unwritten local under the current variant. */
+    private resolveListExpression(expression: ts.Expression): ts.Expression {
+        return this.evaluator.resolveStaticExpression(
+            expression,
+            undefined,
+            (declaration) =>
+                ts.isIdentifier(declaration.name) &&
+                !this.constArrayIsWritten(declaration.name),
+        );
+    }
+
+    private filteredListItems(
+        expression: ts.Expression,
+    ): StaticListItem[] | undefined {
+        if (
+            !ts.isCallExpression(expression) ||
+            expression.questionDotToken ||
+            expression.arguments.length !== 1
+        )
+            return undefined;
+        const member = namedMember(this.checker, expression.expression);
+        const callback = this.unwrap(argumentAt(expression, 0));
+        if (member?.name !== "filter" || !ts.isArrowFunction(callback))
+            return undefined;
+        return this.probeEmission(() => {
+            const items = this.staticListItems(member.expression);
+            const elements = items.map((item) =>
+                this.staticListItemValue(item),
+            );
+            const owner: Value = {
+                kind: "tuple",
+                cpp: "",
+                tupleElements: elements,
+            };
+            const selected: StaticListItem[] = [];
+            for (let index = 0; index < items.length; ++index) {
+                const matched = this.compilePredicateWithValues(
+                    callback,
+                    [
+                        elements[index]!,
+                        {
+                            kind: "number",
+                            cpp: `${index}.0`,
+                            staticNumber: index,
+                        },
+                        owner,
+                    ],
+                    expression,
+                );
+                if (matched.staticBoolean === undefined) return undefined;
+                if (matched.staticBoolean) selected.push(items[index]!);
+            }
+            return selected;
+        });
+    }
+
+    private staticListItemValue(item: StaticListItem): Value {
+        return item.within(() => {
+            const json = item.text ?? staticJsonValue(this, item.node);
+            return json === notJson
+                ? this.compileValue(item.node)
+                : jsonToValue(
+                      this,
+                      executedConstantJsonPolicy,
+                      json,
+                      item.node,
+                  );
+        });
     }
 
     /**
@@ -4149,7 +4264,15 @@ class Compiler implements LoweringServices {
             return undefined;
         const values = call.arguments.map((argument) =>
             this.bindings.pinValueToTemporary(
-                this.compileValue(argument),
+                this.probeEmission(() =>
+                    unlessRefused(() => ({
+                        kind: "tuple" as const,
+                        cpp: "",
+                        tupleElements: this.staticListItems(argument).map(
+                            (item) => this.staticListItemValue(item),
+                        ),
+                    })),
+                ) ?? this.compileValue(argument),
                 "list_argument",
                 argument,
             ),

@@ -885,6 +885,94 @@ test("a view reads creation-owned ShaderMaterial side-table entries per variant,
     assert.match(program(compiled, "cold-1").fragmentSource, /varying 0/);
 });
 
+const sideTableListSource = `${prelude}
+    import type { Mesh, ShaderUniformDecl } from "@babylonjs/lite";
+    const CARVE: ShaderUniformDecl = { name: "uCarve", type: "vec4<f32>" };
+    interface UniformSlot { decl: ShaderUniformDecl; value: Float32Array }
+    type UniformState = ShaderMaterial & { _uniformValues: Map<string, UniformSlot> };
+    function withDecl<T extends { name: string }>(decls: readonly T[], decl: T): T[] {
+        return decls.some((d) => d.name === decl.name) ? [...decls] : [...decls, decl];
+    }
+    interface Geometry { readonly source: string; readonly uniformNames: readonly string[] }
+    const geometries = new WeakMap<ShaderMaterial, Geometry>();
+    function declareGeometry(material: ShaderMaterial, geometry: Geometry): void {
+        if (geometries.has(material)) throw new Error("Geometry is already declared");
+        geometries.set(material, Object.freeze({ source: geometry.source, uniformNames: Object.freeze([...geometry.uniformNames]) }));
+    }
+    function geometryOf(material: ShaderMaterial): Geometry | undefined {
+        return geometries.get(material);
+    }
+    function tinted(name: string, geometry: boolean): ShaderMaterial {
+        const material = createShaderMaterial({ name, vertexSource: wgsl\`\${VERT}\`, fragmentSource: wgsl\`\${NORMAL + "\\n// " + name}\`, attributes: ["position"], uniforms: ["worldViewProjection", "world"] });
+        if (geometry) declareGeometry(material, { source: VERT + "\\n// geometry projection", uniformNames: ["world"] });
+        return material;
+    }
+    function depthView(source: ShaderMaterial): ShaderMaterial {
+        const view = createMaterialView(source, { features: 0 }) as ShaderMaterial;
+        const geometry = geometryOf(source);
+        const vertexSource = geometry?.source ?? source.vertexSource;
+        const kept = geometry ? source.uniformDecls.filter((decl) => geometry.uniformNames.includes(decl.name)) : source.uniformDecls;
+        const uniformDecls = withDecl(kept, CARVE);
+        const values = new Map<string, UniformSlot>((source as UniformState)._uniformValues);
+        values.set(CARVE.name, { decl: CARVE, value: new Float32Array(4) });
+        Object.defineProperties(view, {
+            vertexSource: { value: vertexSource, enumerable: true, configurable: true },
+            fragmentSource: { value: wgsl\`\${NORMAL}\`, enumerable: true, configurable: true },
+            uniformDecls: { value: uniformDecls, enumerable: true, configurable: true },
+            _uniformValues: { value: values, enumerable: true, configurable: true },
+        });
+        return view;
+    }
+    async function main(): Promise<void> {
+        const engine = await createEngine({});
+        const mesh = createMeshFromData(engine, "tri", new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]), new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]), new Uint32Array([0, 1, 2]));
+        const registry = { add(target: Mesh): ShaderMaterial { return depthView(target.material as ShaderMaterial); } };
+        mesh.material = tinted("warm", true);
+        draw(engine, registry.add(mesh));
+        mesh.material = tinted("cold", false);
+        draw(engine, registry.add(mesh));
+    }
+    void main();
+`;
+
+test("a view filters const-local declaration lists through side-table facts per variant", () => {
+    const compiled = compileSource(sideTableListSource);
+    assert.deepEqual(program(compiled, "warm-1").uniforms, [
+        "world",
+        "uCarve:vec4<f32>",
+    ]);
+    assert.deepEqual(program(compiled, "cold-1").uniforms, [
+        "worldViewProjection",
+        "world",
+        "uCarve:vec4<f32>",
+    ]);
+    assert.match(
+        program(compiled, "warm-1").vertexSource,
+        /geometry projection/,
+    );
+    assert.equal(
+        program(compiled, "cold-1").vertexSource,
+        program(compiled, "cold").vertexSource,
+    );
+});
+
+test("view declaration-list locals retain runtime predicates and writes", () => {
+    for (const source of [
+        sideTableListSource.replace(
+            "geometry.uniformNames.includes(decl.name)",
+            "Math.random() > 0.5",
+        ),
+        sideTableListSource.replace(
+            "const uniformDecls = withDecl(kept, CARVE);",
+            "let uniformDecls = withDecl(kept, CARVE); if (Math.random() > 0.5) uniformDecls = [];",
+        ),
+    ])
+        assert.throws(
+            () => compileSource(source),
+            /A ShaderMaterial view's 'uniformDecls' compiles into its program at generation; this value is decided at run time/,
+        );
+});
+
 test("a view's search of its source's declarations folds per source variant", () => {
     const compiled = compileSource(`${prelude}
     import type { Mesh } from "@babylonjs/lite";

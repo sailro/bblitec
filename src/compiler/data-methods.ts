@@ -891,6 +891,15 @@ export function compileDataMethodCall(
         return compileWeakRefMethod(lowerer, call, dynamicOwner, method);
     if (
         dynamicOwner?.kind === "tuple" &&
+        (method === "includes" ||
+            method === "indexOf" ||
+            method === "lastIndexOf")
+    ) {
+        const folded = lowerer.foldedArraySearch(call, dynamicOwner, method);
+        if (folded) return folded;
+    }
+    if (
+        dynamicOwner?.kind === "tuple" &&
         lowerer.prefersRuntimeTupleIteration(ownerExpression, call.arguments[0])
     ) {
         // An answer that holds no element (`some`, `every`, `findIndex`)

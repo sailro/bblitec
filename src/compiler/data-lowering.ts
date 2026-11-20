@@ -9956,7 +9956,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * `fromIndex`, or any element or value generation does not hold, is the
      * run time's.
      */
-    private foldedArraySearch(
+    public foldedArraySearch(
         call: ts.CallExpression,
         owner: Value,
         method: "indexOf" | "includes" | "lastIndexOf",

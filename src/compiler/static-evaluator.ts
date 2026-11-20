@@ -1744,15 +1744,21 @@ export class StaticEvaluator {
      * can hand back distinct symbol instances for a declaration name and a
      * use of it, and a map keyed by identity then misses.
      *
-     * Deliberately narrow, on three counts:
+     * Ordinary resolution is deliberately narrow:
      *   - `const` only, so no later assignment reseated the binding.
      *   - an object literal only. Resolution hands the INITIALIZER to the
      *     use site, so a `const n = expensive()` would move the call and
      *     two use sites would run it twice; a literal has no such body.
      *   - and only one nothing writes through; see `isWrittenThrough`.
+     * A generation-only list reader may supply its read-only proof to
+     * admit other local initializers under its current bindings. Ordinary
+     * value lowering must not move those calls to their use sites.
      */
     private constLiteralInitializer(
         symbol: ts.Symbol,
+        localInitializerIsReadOnly?: (
+            declaration: ts.VariableDeclaration,
+        ) => boolean,
     ): ts.Expression | undefined {
         const declarations = symbol.declarations ?? [];
         if (declarations.length !== 1) {
@@ -1779,13 +1785,14 @@ export class StaticEvaluator {
             return undefined;
         }
         const initializer = declaration.initializer;
-        // The object-literal test comes FIRST on purpose: it settles all
-        // but a handful of candidates, and the scan behind it walks a whole
-        // function body. Measured over the corpus, the scan runs four times.
+        // Ordinary resolution checks the literal shape before scanning a
+        // body for writes; generation-only readers supply their own proof.
         if (
             !initializer ||
-            !ts.isObjectLiteralExpression(initializer) ||
-            this.isWrittenThrough(declaration)
+            (localInitializerIsReadOnly
+                ? !localInitializerIsReadOnly(declaration)
+                : !ts.isObjectLiteralExpression(initializer) ||
+                  this.isWrittenThrough(declaration))
         ) {
             return undefined;
         }
@@ -1893,6 +1900,9 @@ export class StaticEvaluator {
     public resolveStaticExpression(
         expression: ts.Expression,
         resolving: ReadonlySet<ts.Symbol> = new EmissionSet(),
+        localInitializerIsReadOnly?: (
+            declaration: ts.VariableDeclaration,
+        ) => boolean,
     ): ts.Expression {
         const unwrapped = this.unwrap(expression);
         if (
@@ -1905,7 +1915,11 @@ export class StaticEvaluator {
             // number then fails as that position, naming what it needed.
             const resolved = this.tryResolveNullish(unwrapped, true);
             if (resolved) {
-                return this.resolveStaticExpression(resolved, resolving);
+                return this.resolveStaticExpression(
+                    resolved,
+                    resolving,
+                    localInitializerIsReadOnly,
+                );
             }
             return unwrapped;
         }
@@ -1918,7 +1932,7 @@ export class StaticEvaluator {
         }
         const initializer =
             this.staticConstants.get(symbol) ??
-            this.constLiteralInitializer(symbol);
+            this.constLiteralInitializer(symbol, localInitializerIsReadOnly);
         if (!initializer) {
             return unwrapped;
         }
@@ -1931,6 +1945,7 @@ export class StaticEvaluator {
         return this.resolveStaticExpression(
             initializer,
             new EmissionSet([...resolving, symbol]),
+            localInitializerIsReadOnly,
         );
     }
 
