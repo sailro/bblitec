@@ -18,6 +18,7 @@
 #include <memory>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <vector>
 #if BBLITE_HAS_PICKING
 #include <bblite/upstream/picking_math.hpp>
@@ -355,6 +356,15 @@ struct PickMeshCandidate {
 #endif
 };
 
+/** The instances, and so the ids, a candidate's draw covers: its thin rows, or one. */
+inline std::uint32_t pick_candidate_instances([[maybe_unused]] const PickMeshCandidate& candidate) {
+#if BBLITE_GPU_INSTANCING
+    return candidate.thin ? candidate.instance_count : 1u;
+#else
+    return 1u;
+#endif
+}
+
 /**
  * The render-plan walk both pick passes share: which meshes are drawn, in
  * which order, under which id, and with which world matrix.
@@ -477,11 +487,7 @@ collect_pick_mesh_candidates(const Engine& engine, [[maybe_unused]] const Scene&
         candidate.uniforms.world = upstream::mesh_world_matrix(engine, pick_mesh);
         candidate.uniforms.pick_id = next_id;
         candidates.push_back(candidate);
-        const std::uint32_t id_count =
-#if BBLITE_GPU_INSTANCING
-            candidate.thin ? candidate.instance_count :
-#endif
-                           1u;
+        const std::uint32_t id_count = pick_candidate_instances(candidate);
         ranges.push_back({next_id, PickedNodeKind::mesh, handle.value, id_count, handle.generation,
 #if BBLITE_GPU_INSTANCING
                           candidate.thin
@@ -497,7 +503,8 @@ collect_pick_mesh_candidates(const Engine& engine, [[maybe_unused]] const Scene&
 /**
  * One candidate's `discard` draw: the composed rule it draws through, -1
  * for the default pipeline, which of the rule's pipelines it draws through
- * (`pick_discard_stem`), and its storage entries' bytes in binding order.
+ * (`pick_discard_stem`), and its storage entries' bytes in binding order,
+ * each padded to `createMappedBuffer`'s size: at least 4 bytes, 4-aligned.
  */
 struct PickDiscardDraw {
     int variant = -1;
@@ -536,12 +543,6 @@ inline const char* pick_discard_stem(const upstream::PickDiscardVariant& variant
 }
 
 /**
- * The interleaved vertex lane a rule's `vertexData` attribute reads
- * (`getPickVertexDataBinding`): its byte offset in `GpuVertex`.
- */
-std::uint32_t pick_vertex_data_offset(std::string_view attribute);
-
-/**
  * Whether a mesh's source supplied a rule's `vertexData` attribute: the pin
  * draws one that did not through the pipeline without it
  * (`getPickVertexDataBinding` answers null).
@@ -567,9 +568,15 @@ pick_discard_vertex_data(const upstream::PickDiscardVariant& variant, std::size_
     if (variant.vertex_data_components == 0 ||
         (pipeline != pick_discard_regular && pipeline != pick_discard_detailed))
         return std::nullopt;
+    // The interleaved vertex lane the attribute reads (`getPickVertexDataBinding`).
+    const PinnedVertexInput lane = pinned_vertex_input(variant.vertex_data);
+    if (!lane.mapped || lane.stream != VertexInputStream::vertex)
+        throw std::runtime_error("A pick discard rule reads vertex data '" +
+                                 std::string(variant.vertex_data) +
+                                 "', which no vertex lane carries.");
     return PickVertexDataAttribute{variant.vertex_data_location,
                                    static_cast<std::uint32_t>(variant.vertex_data_components),
-                                   pick_vertex_data_offset(variant.vertex_data)};
+                                   static_cast<std::uint32_t>(lane.offset)};
 }
 #endif
 
@@ -588,11 +595,6 @@ std::vector<PickDiscardDraw> prepare_pick_discard(const Engine& engine,
                                                   std::vector<PickRange>& ranges,
                                                   const Engine::PickOptions* options,
                                                   bool detailed);
-
-/** `createMappedBuffer`'s size for a storage entry: at least 4 bytes, 4-aligned. */
-inline std::size_t pick_discard_buffer_size(std::size_t bytes) {
-    return (std::max<std::size_t>(bytes, 4) + 3) & ~std::size_t{3};
-}
 
 #if BBLITE_HAS_DETAILED_PICKING
 /**

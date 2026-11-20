@@ -563,9 +563,12 @@ function runPickCollector(name: string, body: string, discard?: string): void {
             struct RenderPlan { std::vector<Item> items; const auto& scene_items() const { return items; } };
             ${cppFunction(renderer, "bool pick_candidate(const MeshRecord& mesh) {")}
             std::array<float,16> mesh_world_matrix(const Engine&, const MeshRecord&) { return {}; }
+            struct PinnedInstanceAttribute { std::string_view buffer_group; std::uint32_t offset; };
+            constexpr const PinnedInstanceAttribute* pinned_instance_attribute(std::string_view) { return nullptr; }
         }
         namespace bbl::pal {
             ${["struct PickMeshUniforms {", "struct PickRange {", "struct PickMeshCandidate {"].map((signature) => cppFunction(source, signature) + ";").join("\n")}
+            ${cppFunction(source, "inline std::uint32_t pick_candidate_instances(")}
             ${cppFunction(source.slice(source.lastIndexOf(activeCount)), activeCount)}
             ${cppFunction(source, "inline const Engine::PickIgnore* pick_ignore_entry(")}
             ${cppFunction(source, "inline std::array<std::uint32_t, 2> pick_ignored_range(")}
@@ -579,7 +582,11 @@ function runPickCollector(name: string, body: string, discard?: string): void {
                     : [
                           "inline const char* pick_discard_stem(",
                           "struct GpuVertex {",
-                          "std::uint32_t pick_vertex_data_offset(std::string_view attribute) {",
+                          "enum class VertexInputStream : std::uint32_t {",
+                          "inline constexpr std::string_view vertex_stream_group(",
+                          "enum class VertexInputLane {",
+                          "struct PinnedVertexInput {",
+                          "PinnedVertexInput pinned_vertex_input(",
                           "bool pick_vertex_data_present(const Engine& engine, const MeshRecord& mesh, std::string_view attribute) {",
                           "struct PickVertexDataAttribute {",
                           "inline std::optional<PickVertexDataAttribute> pick_discard_vertex_data(",
@@ -587,11 +594,13 @@ function runPickCollector(name: string, body: string, discard?: string): void {
                           .map(
                               (signature) =>
                                   cppFunction(source, signature) +
-                                  (signature.startsWith("struct ") ? ";" : ""),
+                                  (signature.startsWith("struct ") ||
+                                  signature.startsWith("enum ")
+                                      ? ";"
+                                      : ""),
                           )
                           .join("\n")
             }
-            ${cppFunction(source, "inline std::size_t pick_discard_buffer_size(")}
             ${cppFunction(source, "std::vector<PickDiscardDraw> prepare_pick_discard(")}
         }
         int main() {
@@ -710,9 +719,10 @@ test(
             // The first null entry draws the mesh through the default
             // pipeline, unasked of the rest.
             auto draws = bbl::pal::prepare_pick_discard(engine, plan, candidates, ranges, &options, false);
+            // Each entry is padded to createMappedBuffer's size: at least 4 bytes, 4-aligned.
             assert(draws.size() == 2 && draws[0].variant == 0 && draws[0].pipeline == 0 && draws[0].storage.size() == 2 &&
-                   draws[0].storage[0].size() == 5 && draws[1].variant == -1 && draws[1].storage.empty() && tail == 1);
-            assert(bbl::pal::pick_discard_buffer_size(0) == 4 && bbl::pal::pick_discard_buffer_size(5) == 8);
+                   draws[0].storage[0] == std::vector<std::uint8_t>({1, 1, 1, 1, 1, 0, 0, 0}) &&
+                   draws[0].storage[1].size() == 4 && draws[1].variant == -1 && draws[1].storage.empty() && tail == 1);
             const auto refuses = [&](bool detailed, const char* message) {
                 try { bbl::pal::prepare_pick_discard(engine, plan, candidates, ranges, &options, detailed); }
                 catch (const std::runtime_error& error) {

@@ -613,7 +613,7 @@ SharedGeometryIdentity shared_geometry_identity(const std::vector<GpuVertex>& ve
     return {vertices.size(), indices.size(), hash};
 }
 
-#if BBLITE_PINNED_MATERIALS
+#if BBLITE_PINNED_MATERIALS || BBLITE_PICK_DISCARD
 PinnedVertexInput pinned_vertex_input(std::string_view name) {
     const auto at = [](VertexInputLane lane, std::size_t offset) {
         return PinnedVertexInput{
@@ -2031,21 +2031,6 @@ int pick_vat_projection(const MeshRecord& mesh, bool thin) {
 
 #if BBLITE_HAS_PBR_RENDERER && BBLITE_HAS_PICKING
 #if BBLITE_PICK_DISCARD
-std::uint32_t pick_vertex_data_offset(std::string_view attribute) {
-    if (attribute == "normal")
-        return static_cast<std::uint32_t>(offsetof(GpuVertex, normal));
-    if (attribute == "uv")
-        return static_cast<std::uint32_t>(offsetof(GpuVertex, uv));
-    if (attribute == "uv2")
-        return static_cast<std::uint32_t>(offsetof(GpuVertex, uv2));
-    if (attribute == "tangent")
-        return static_cast<std::uint32_t>(offsetof(GpuVertex, tangent));
-    if (attribute == "color")
-        return static_cast<std::uint32_t>(offsetof(GpuVertex, color));
-    throw std::runtime_error("A pick discard rule reads vertex data '" + std::string(attribute) +
-                             "', which no vertex lane carries.");
-}
-
 bool pick_vertex_data_present(const Engine& engine, const MeshRecord& mesh,
                               std::string_view attribute) {
     const auto& geometry = engine.geometries.at(mesh.geometry);
@@ -2117,6 +2102,8 @@ prepare_pick_discard([[maybe_unused]] const Engine& engine,
                 admitted = false;
                 break;
             }
+            // `createMappedBuffer`'s size: at least 4 bytes, 4-aligned.
+            bytes->resize((std::max<std::size_t>(bytes->size(), 4) + 3) & ~std::size_t{3}, 0);
             draw.storage.push_back(std::move(*bytes));
         }
         if (!admitted) {

@@ -1175,24 +1175,21 @@ struct GpuState : SdlGpuDevice {
     std::array<std::array<PickDeformProgram, 2>, upstream::pick_deform_variants.size()>
         pick_deform_programs{};
 #endif
-#if BBLITE_VAT_PICKING
-    /** One advanced module per VAT arm, both stages read by name. */
-    struct PickVatProgram {
+#if BBLITE_VAT_PICKING || BBLITE_PICK_DISCARD
+    /** A pick module whose stages are both read by name. */
+    struct PickStageProgram {
         SDL_GPUGraphicsPipeline* pipeline = nullptr;
         PinnedStageSlots vertex_slots{};
         PinnedStageSlots fragment_slots{};
     };
-    std::array<PickVatProgram, upstream::pick_vat_variants.size()> pick_vat_programs{};
+#endif
+#if BBLITE_VAT_PICKING
+    /** One advanced module per VAT arm. */
+    std::array<PickStageProgram, upstream::pick_vat_variants.size()> pick_vat_programs{};
 #endif
 #if BBLITE_PICK_DISCARD
-    /** A composed `discard` rule's module per pipeline (regular, thin,
-     *  detailed), both stages read by name. */
-    struct PickDiscardProgram {
-        SDL_GPUGraphicsPipeline* pipeline = nullptr;
-        PinnedStageSlots vertex_slots{};
-        PinnedStageSlots fragment_slots{};
-    };
-    std::array<std::array<PickDiscardProgram, pick_discard_pipelines>,
+    /** A composed `discard` rule's module per pipeline (regular, thin, detailed). */
+    std::array<std::array<PickStageProgram, pick_discard_pipelines>,
                upstream::pick_discard_variants.size()>
         pick_discard_programs{};
 #endif
@@ -2198,9 +2195,8 @@ struct PreparedSdlPostProcessPass {
     std::size_t child = 0;
     SDL_GPUGraphicsPipeline* pipeline = nullptr;
     SDL_GPUColorTargetInfo target{}, present_target{};
-    SDL_GPUViewport viewport{};
-    SDL_Rect scissor{};
-    bool has_viewport = false, presents = false;
+    std::optional<PixelViewport> viewport{};
+    bool presents = false;
     bool vertex_uniforms = false, fragment_uniforms = false;
     std::array<SDL_GPUTextureSamplerBinding, max_post_process_textures> textures{};
     Uint32 texture_count = 0;
@@ -2287,25 +2283,9 @@ prepare_post_process_pass(GpuState& state, Engine& engine, TaskHandle handle,
     pass_target.load_op = pass.clear ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
     pass_target.clear_color = SDL_FColor{0.0f, 0.0f, 0.0f, 0.0f};
     pass_target.store_op = SDL_GPU_STOREOP_STORE;
-    prepared.has_viewport = pass.has_viewport;
-    if (pass.has_viewport) {
-        const PixelViewport rectangle =
+    if (pass.has_viewport)
+        prepared.viewport =
             upstream::resolve_post_process_viewport(pass.viewport, output_width, output_height);
-        prepared.viewport = SDL_GPUViewport{
-            static_cast<float>(rectangle.x),
-            static_cast<float>(rectangle.y),
-            static_cast<float>(rectangle.width),
-            static_cast<float>(rectangle.height),
-            0.0f,
-            1.0f,
-        };
-        prepared.scissor = SDL_Rect{
-            rectangle.x,
-            rectangle.y,
-            rectangle.width,
-            rectangle.height,
-        };
-    }
     // The pin binds one sampler for every texture the
     // stage reads; this backend pairs each with its own
     // texture, so the pair repeats the same sampler.
@@ -2366,8 +2346,7 @@ struct PreparedSdlCopyPass {
     /** Null for the draw-less resolve pass. */
     SDL_GPUGraphicsPipeline* pipeline = nullptr;
     SDL_GPUTextureSamplerBinding source{};
-    std::optional<SDL_GPUViewport> viewport{};
-    std::optional<SDL_Rect> scissor{};
+    std::optional<PixelViewport> viewport{};
     std::optional<SDL_GPUBlitInfo> present{};
     /** What the frame's capture reads after the copy, when the copy changes it. */
     SDL_GPUTexture* capture = nullptr;
@@ -2386,10 +2365,7 @@ inline void encode_sdl_copy_pass(SDL_GPUCommandBuffer* command, const PreparedSd
     SdlRenderPass pass{SDL_BeginGPURenderPass(command, &copy.target, 1, nullptr)};
     if (copy.pipeline) {
         SDL_BindGPUGraphicsPipeline(pass, copy.pipeline);
-        if (copy.viewport)
-            SDL_SetGPUViewport(pass, &*copy.viewport);
-        if (copy.scissor)
-            SDL_SetGPUScissor(pass, &*copy.scissor);
+        set_pass_viewport(pass, copy.viewport);
         SDL_BindGPUFragmentSamplers(pass, 0, &copy.source, 1);
         count_gpu_draw(SDL_DrawGPUPrimitives, pass, 3, 1, 0, 0);
     }
@@ -2399,6 +2375,19 @@ inline void encode_sdl_copy_pass(SDL_GPUCommandBuffer* command, const PreparedSd
     if (copy.capture)
         capture_texture = copy.capture;
 }
+
+#if BBLITE_HAS_TAA
+inline void encode_sdl_gpu_prepared_scene(SDL_GPUCommandBuffer* command,
+                                          const PreparedSdlScenePass& scene) {
+    SdlRenderPass pass{SDL_BeginGPURenderPass(command, scene.target ? &*scene.target : nullptr,
+                                              scene.target ? 1u : 0u,
+                                              scene.depth ? &*scene.depth : nullptr)};
+    set_pass_viewport(pass, scene.viewport);
+    for (const auto& draw : scene.draws)
+        encode_sdl_gpu_prepared_draw(command, pass, draw);
+    pass.end();
+}
+#endif
 
 #if BBLITE_HAS_SCREEN_SPACE
 /** Builds the entry `screen_space_program` below found missing. */

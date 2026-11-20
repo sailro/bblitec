@@ -194,6 +194,7 @@ ${cppFunction(synchronize, "inline bool rebuild_render_plan_meshes(")}
 ${["struct PickMeshUniforms", "struct PickRange", "struct PickMeshCandidate"].map((signature) => cppRecord(picking, signature)).join("\n")}
 ${cppFunction(picking, "inline const Engine::PickIgnore* pick_ignore_entry(")}
 ${cppFunction(picking, "inline std::array<std::uint32_t, 2> pick_ignored_range(")}
+${cppFunction(picking, "inline std::uint32_t pick_candidate_instances(")}
 template<class HasGeometry>
 ${cppFunction(picking, "inline std::vector<PickMeshCandidate> collect_pick_mesh_candidates(")}
 }

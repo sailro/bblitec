@@ -3241,21 +3241,9 @@ public:
                                     if (depth)
                                         prepared.depth = *depth;
                                     prepared.depth_copy = depth_copy;
-                                    if (const std::optional<PixelViewport> rectangle =
-                                            upstream::pass_camera_viewport(
-                                                task_camera, static_cast<double>(target.width),
-                                                static_cast<double>(target.height))) {
-                                        prepared.viewport =
-                                            SDL_GPUViewport{static_cast<float>(rectangle->x),
-                                                            static_cast<float>(rectangle->y),
-                                                            static_cast<float>(rectangle->width),
-                                                            static_cast<float>(rectangle->height),
-                                                            0.0f,
-                                                            1.0f};
-                                        prepared.scissor =
-                                            SDL_Rect{rectangle->x, rectangle->y, rectangle->width,
-                                                     rectangle->height};
-                                    }
+                                    prepared.viewport = upstream::pass_camera_viewport(
+                                        task_camera, static_cast<double>(target.width),
+                                        static_cast<double>(target.height));
                                     upstream::sort_transparent_draws(
                                         handle_at(task_draw_lists, handle).transparent, engine,
                                         task_camera);
@@ -3903,16 +3891,7 @@ public:
                                     graph_layer == 0 ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
                                 prepared.target.store_op = SDL_GPU_STOREOP_STORE;
                                 prepared.pipeline = state.blit_pipeline;
-                                prepared.viewport =
-                                    SDL_GPUViewport{static_cast<float>(surface_pane->x),
-                                                    static_cast<float>(surface_pane->y),
-                                                    static_cast<float>(surface_pane->width),
-                                                    static_cast<float>(surface_pane->height),
-                                                    0.0f,
-                                                    1.0f};
-                                prepared.scissor =
-                                    SDL_Rect{surface_pane->x, surface_pane->y, surface_pane->width,
-                                             surface_pane->height};
+                                prepared.viewport = surface_pane;
                                 if (whole_frame)
                                     prepared.capture = state.color;
                             } else {
@@ -3954,22 +3933,8 @@ public:
                                         engine, state.render_targets, copy.target, target_user);
                                     const NormalizedViewport normalized_viewport =
                                         force_full_viewport ? NormalizedViewport{} : copy.viewport;
-                                    const PixelViewport pixel_viewport =
-                                        upstream::resolve_copy_viewport(
-                                            normalized_viewport, target.width, target.height);
-                                    prepared.viewport =
-                                        SDL_GPUViewport{static_cast<float>(pixel_viewport.x),
-                                                        static_cast<float>(pixel_viewport.y),
-                                                        static_cast<float>(pixel_viewport.width),
-                                                        static_cast<float>(pixel_viewport.height),
-                                                        0.0f,
-                                                        1.0f};
-                                    prepared.scissor = SDL_Rect{
-                                        pixel_viewport.x,
-                                        pixel_viewport.y,
-                                        pixel_viewport.width,
-                                        pixel_viewport.height,
-                                    };
+                                    prepared.viewport = upstream::resolve_copy_viewport(
+                                        normalized_viewport, target.width, target.height);
 #else
                                 throw std::runtime_error(
                                     "Viewport copy requires geometry-output support.");

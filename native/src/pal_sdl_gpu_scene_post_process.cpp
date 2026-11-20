@@ -65,10 +65,7 @@ void encode_post_process_pass(GpuState& state, SDL_GPUCommandBuffer* command,
     }
     SdlRenderPass post_pass{SDL_BeginGPURenderPass(command, &prepared.target, 1, nullptr)};
     SDL_BindGPUGraphicsPipeline(post_pass, prepared.pipeline);
-    if (prepared.has_viewport) {
-        SDL_SetGPUViewport(post_pass, &prepared.viewport);
-        SDL_SetGPUScissor(post_pass, &prepared.scissor);
-    }
+    set_pass_viewport(post_pass, prepared.viewport);
     if (prepared.texture_count != 0) {
         SDL_BindGPUFragmentSamplers(post_pass, 0, prepared.textures.data(), prepared.texture_count);
     }

@@ -186,6 +186,19 @@ WGPURenderPipeline create_dawn_pick_cloud_pipeline(WGPUDevice device,
 #endif
 
 #if (BBLITE_HAS_DAWN && BBLITE_HAS_PBR_RENDERER) && (BBLITE_HAS_PBR_RENDERER && BBLITE_HAS_PICKING)
+namespace {
+// The candidate's interleaved stream and 32-bit indices, drawn once per
+// instance it covers, under whichever pick pipeline and groups are bound.
+void draw_pick_candidate(WGPURenderPassEncoder pass, const DawnMesh& mesh,
+                         const PickMeshCandidate& candidate) {
+    wgpuRenderPassEncoderSetVertexBuffer(pass, 0, mesh.vertices, 0, WGPU_WHOLE_SIZE);
+    wgpuRenderPassEncoderSetIndexBuffer(pass, mesh.indices, WGPUIndexFormat_Uint32, 0,
+                                        WGPU_WHOLE_SIZE);
+    count_gpu_draw(wgpuRenderPassEncoderDrawIndexed, pass, mesh.index_count,
+                   pick_candidate_instances(candidate), 0, 0, 0);
+}
+} // namespace
+
 PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::RenderPlan& root_plan,
                             const std::vector<upstream::RenderPlan>& overlay_plans,
                             const std::vector<std::shared_ptr<Scene>>& active_registered_scenes,
@@ -482,10 +495,8 @@ PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::Re
         const auto& program = state.pick_discard_programs[variant_index][draw.pipeline];
         const std::size_t first = discard_storage.size();
         for (const std::vector<std::uint8_t>& bytes : draw.storage) {
-            std::vector<std::uint8_t> padded(pick_discard_buffer_size(bytes.size()), 0);
-            std::copy(bytes.begin(), bytes.end(), padded.begin());
             discard_storage.emplace_back(
-                create_buffer(state, WGPUBufferUsage_Storage, padded.data(), padded.size()));
+                create_buffer(state, WGPUBufferUsage_Storage, bytes.data(), bytes.size()));
         }
         discard_groups[slot] = DawnBindGroup{create_dawn_reflected_group(
             state.device, program.layout, program.stages(), 2,
@@ -655,16 +666,7 @@ PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::Re
 #endif
                 wgpuRenderPassEncoderSetBindGroup(pass, 1, state.pick_mesh_group, 1, &offset);
             wgpuRenderPassEncoderSetBindGroup(pass, 2, discard_groups[index].get(), 0, nullptr);
-            wgpuRenderPassEncoderSetVertexBuffer(pass, 0, mesh.vertices, 0, WGPU_WHOLE_SIZE);
-            wgpuRenderPassEncoderSetIndexBuffer(pass, mesh.indices, WGPUIndexFormat_Uint32, 0,
-                                                WGPU_WHOLE_SIZE);
-            const std::uint32_t instances =
-#if BBLITE_GPU_INSTANCING
-                candidates[index].thin ? candidates[index].instance_count :
-#endif
-                                       1u;
-            count_gpu_draw(wgpuRenderPassEncoderDrawIndexed, pass, mesh.index_count, instances, 0,
-                           0, 0);
+            draw_pick_candidate(pass, mesh, candidates[index]);
             program_bound = true;
             continue;
         }
@@ -721,16 +723,7 @@ PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::Re
                 wgpuRenderPassEncoderSetBindGroup(pass, 1, state.pick_mesh_group, 1, &offset);
             wgpuRenderPassEncoderSetBindGroup(pass, 2, program.empty_group, 0, nullptr);
             wgpuRenderPassEncoderSetBindGroup(pass, 3, vat_groups[index], 0, nullptr);
-            wgpuRenderPassEncoderSetVertexBuffer(pass, 0, mesh.vertices, 0, WGPU_WHOLE_SIZE);
-            wgpuRenderPassEncoderSetIndexBuffer(pass, mesh.indices, WGPUIndexFormat_Uint32, 0,
-                                                WGPU_WHOLE_SIZE);
-            const std::uint32_t instances =
-#if BBLITE_GPU_INSTANCING
-                candidates[index].thin ? candidates[index].instance_count :
-#endif
-                                       1u;
-            count_gpu_draw(wgpuRenderPassEncoderDrawIndexed, pass, mesh.index_count, instances, 0,
-                           0, 0);
+            draw_pick_candidate(pass, mesh, candidates[index]);
             program_bound = true;
             continue;
         }
@@ -758,11 +751,7 @@ PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::Re
             wgpuRenderPassEncoderSetPipeline(pass, state.pick_thin_pipeline);
             wgpuRenderPassEncoderSetBindGroup(pass, 0, state.pick_scene_group, 0, nullptr);
             wgpuRenderPassEncoderSetBindGroup(pass, 1, mesh.thin_pick_group, 1, &offset);
-            wgpuRenderPassEncoderSetVertexBuffer(pass, 0, mesh.vertices, 0, WGPU_WHOLE_SIZE);
-            wgpuRenderPassEncoderSetIndexBuffer(pass, mesh.indices, WGPUIndexFormat_Uint32, 0,
-                                                WGPU_WHOLE_SIZE);
-            count_gpu_draw(wgpuRenderPassEncoderDrawIndexed, pass, mesh.index_count,
-                           candidates[index].instance_count, 0, 0, 0);
+            draw_pick_candidate(pass, mesh, candidates[index]);
             regular_pick_pipeline_bound = false;
             continue;
         }
@@ -844,10 +833,7 @@ PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::Re
         }
 #endif
         wgpuRenderPassEncoderSetBindGroup(pass, 1, state.pick_mesh_group, 1, &offset);
-        wgpuRenderPassEncoderSetVertexBuffer(pass, 0, mesh.vertices, 0, WGPU_WHOLE_SIZE);
-        wgpuRenderPassEncoderSetIndexBuffer(pass, mesh.indices, WGPUIndexFormat_Uint32, 0,
-                                            WGPU_WHOLE_SIZE);
-        count_gpu_draw(wgpuRenderPassEncoderDrawIndexed, pass, mesh.index_count, 1, 0, 0, 0);
+        draw_pick_candidate(pass, mesh, candidates[index]);
     }
 #if BBLITE_HAS_SPLATS
     for (const DawnSplatPass& splat : state.splat_passes) {
