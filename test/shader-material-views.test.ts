@@ -1780,6 +1780,29 @@ test("a descriptor stores a view's declaration list in the target property's typ
     }
 });
 
+test("assertions out of unknown parameters retype only what their calls pass", () => {
+    // Each helper's `unknown` parameter holds what its direct calls pass,
+    // none of them the source material's arrays, so its assertion makes no
+    // array of the view's declarations reachable elsewhere.
+    const source = sharedDefaultSource(`
+        const a: readonly number[] = [1, 2];
+        const b: readonly number[] = [3, 4];
+        mesh.position.x = a === b ? 1 : 2;
+        mesh.position.y = Object.keys(record({ lane: 1 })).length + generic<number>(2) + named({ tag: "x" }).tag.length;
+        const view = createMaterialView(tinted, { features: 0 }) as ShaderMaterial;
+        const decls = withDecl(withDecl(tinted.uniformDecls, CARVE), { name: "uWater", type: "f32" });
+        Object.defineProperties(view, { fragmentSource: { value: wgsl\`\${NORMAL}\`, configurable: true }, uniformDecls: { value: decls, configurable: true } });
+        draw(engine, view);
+        `).replace(
+        "async function main",
+        `function record(value: unknown): Record<string, unknown> { return value as Record<string, unknown>; }
+    function generic<T>(value: unknown): T { return value as T; }
+    function named(value: unknown): { tag: string } { return value as { tag: string }; }
+    async function main`,
+    );
+    assert.throws(() => compileSource(source), viewOwnSlotsRefusal);
+});
+
 test("a ShaderMaterial view's declarations a helper adds a module constant declaration to are known at generation", () => {
     // The helper's read-only parameter keeps the constant's fields and own
     // keys while the helper stores it in the list.

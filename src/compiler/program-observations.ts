@@ -138,8 +138,11 @@ export interface NamedRead {
  *   and `structuredClone`;
  * - widened arrays: the element types of mutable arrays read where a
  *   mutable array of another element type is expected, and that type;
- * - assertions: the types `as`/`<T>` retype a value to, whether the
- *   operand was untyped (an assertion to `any` or `unknown` retypes nothing
+ * - assertions: the types `as`/`<T>` retype a value to, the types of the
+ *   values reaching the assertion (the operand's own, through `x as
+ *   unknown as T`; an untyped parameter of a function the program only
+ *   calls directly holds what its calls pass, `heldTypes`), whether one of
+ *   those is untyped (an assertion to `any` or `unknown` retypes nothing
  *   the open holders of the index do not already count), and whether it
  *   named no shape (untyped, or the `object` a `typeof` test leaves of it);
  * - property reads: each property name read as a value rather than called
@@ -172,6 +175,8 @@ export interface ProgramObservations {
     readonly enumerations: ReadonlySet<ts.Type>;
     readonly assertions: readonly {
         readonly asserted: ts.Type;
+        /** The types of the values that reach the assertion. */
+        readonly from: readonly ts.Type[];
         readonly open: boolean;
         readonly shapeless: boolean;
     }[];
@@ -380,6 +385,7 @@ function observe(program: ts.Program): ProgramObservations {
     const enumerations = new Set<ts.Type>();
     const assertions: {
         asserted: ts.Type;
+        from: readonly ts.Type[];
         open: boolean;
         shapeless: boolean;
     }[] = [];
@@ -745,12 +751,21 @@ function observe(program: ts.Program): ProgramObservations {
                 (asserted.flags & ts.TypeFlags.Never) === 0
             ) {
                 const from = typeOf(operand);
+                // An untyped parameter of a function the program only calls
+                // directly holds what its calls pass (`heldTypes`): the
+                // assertion retypes those, open only where one is untyped.
+                const reaching = untyped(from)
+                    ? heldTypes(program, checker, operand)
+                    : [from];
                 assertions.push({
                     asserted,
-                    open: untyped(from),
-                    shapeless:
-                        untyped(from) ||
-                        (from.flags & ts.TypeFlags.NonPrimitive) !== 0,
+                    from: reaching,
+                    open: reaching.some(untyped),
+                    shapeless: reaching.some(
+                        (type) =>
+                            untyped(type) ||
+                            (type.flags & ts.TypeFlags.NonPrimitive) !== 0,
+                    ),
                 });
             }
         }

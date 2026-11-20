@@ -139,15 +139,11 @@ export function recordCopyObservation(
     // other. Only the copy can be told apart by identity or enumeration,
     // and it flows only where its target type flows.
     const either = [source, target];
-    // An assertion can retype the copy as a subtype of its target, or as
-    // anything once it went through `any` or `unknown`.
+    // An assertion can retype the copy (`assertionRetypes`).
     const copyTypes = [
         target,
         ...observations.assertions
-            .filter(
-                ({ asserted, open }) =>
-                    open || checker.isTypeAssignableTo(asserted, target),
-            )
+            .filter((assertion) => assertionRetypes(checker, assertion, target))
             .map(({ asserted }) => asserted),
     ];
     const keptWrite = (write: ObservedWrite): boolean =>
@@ -914,14 +910,16 @@ function observedArrayWrites(
                       )
                     : assignable(own, sourceElement)),
         ) ||
-        observations.assertions.some(({ asserted, open }) => {
+        observations.assertions.some(({ asserted, open, from }) => {
             const shape = arrayShape(checker, asserted);
             const wide =
                 shape?.mutable && !shape.tuple ? shape.element : undefined;
             return (
                 wide !== undefined &&
                 assignable(wide, element) &&
-                (open || assignable(sourceElement, wide))
+                (open ||
+                    assignable(sourceElement, wide) ||
+                    from.some((type) => assignable(source, type)))
             );
         });
     const targetShape = arrayShape(checker, target);
@@ -994,6 +992,24 @@ function arrayIdentityObservation(
     return answer ?? undefined;
 }
 
+/**
+ * Whether an assertion can retype a copy of `copy` type: one through
+ * `any` or `unknown` retypes anything, one to a subtype of `copy`
+ * narrows it, and one a value of `copy` type reaches (`from`) hands it
+ * on as the asserted type, related or not.
+ */
+function assertionRetypes(
+    checker: ts.TypeChecker,
+    assertion: ProgramObservations["assertions"][number],
+    copy: ts.Type,
+): boolean {
+    return (
+        assertion.open ||
+        checker.isTypeAssignableTo(assertion.asserted, copy) ||
+        assertion.from.some((from) => checker.isTypeAssignableTo(copy, from))
+    );
+}
+
 function observedArrayIdentity(
     context: RecordObservationContext,
     target: ts.Type,
@@ -1003,10 +1019,7 @@ function observedArrayIdentity(
     const copyTypes = [
         target,
         ...observations.assertions
-            .filter(
-                ({ asserted, open }) =>
-                    open || checker.isTypeAssignableTo(asserted, target),
-            )
+            .filter((assertion) => assertionRetypes(checker, assertion, target))
             .map(({ asserted }) => asserted),
     ];
     if (
