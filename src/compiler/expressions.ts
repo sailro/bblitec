@@ -1551,11 +1551,7 @@ export class ExpressionLowerer {
                 // one: the native array raises that demand joined with its
                 // later members' (`storeLiteralMember`); whatever else it
                 // meets, the demand stands.
-                try {
-                    native();
-                } catch (error) {
-                    if (!(error instanceof CompileError)) throw error;
-                }
+                unlessRefused(native);
                 throw stopped;
             }
             const pins = this.context.evaluationOrder.operandsToPin(
@@ -2861,30 +2857,29 @@ export class ExpressionLowerer {
         const pins = this.context.evaluationOrder.operandsToPin(
             literal.elements,
         );
-        const pinned = (value: Value, element: ts.Expression): Value =>
+        const pinned = new Set(
+            literal.elements.filter((_, index) => pins[index]),
+        );
+        const pin = (value: Value, element: ts.Expression): Value =>
             pinOperand(this.context, value, element, "array_member");
-        const lanes: Value[] = [];
-        for (const [index, element] of literal.elements.entries()) {
-            if (!ts.isSpreadElement(element)) {
+        const lanes = this.context.dataLowerer.spreadLaneValues(
+            literal.elements,
+            (element) => {
                 const value = this.laneValue(element);
-                lanes.push(
-                    pins[index]
-                        ? pinned(value, element)
-                        : this.builtLane(value, element),
-                );
-                continue;
+                return pinned.has(element)
+                    ? pin(value, element)
+                    : this.builtLane(value, element);
+            },
+            undefined,
+            (lane, spread) => (pinned.has(spread) ? pin(lane, spread) : lane),
+        );
+        return (
+            lanes && {
+                kind: "tuple",
+                cpp: "",
+                tupleElements: lanes.map(({ value }) => value),
             }
-            const iterated = this.context.dataLowerer.iteratedElements(
-                this.context.dataLowerer.tupleSpreadValue(element.expression),
-            );
-            if (!iterated || !("lanes" in iterated)) return undefined;
-            lanes.push(
-                ...(pins[index]
-                    ? iterated.lanes.map((lane) => pinned(lane, element))
-                    : iterated.lanes),
-            );
-        }
-        return { kind: "tuple", cpp: "", tupleElements: lanes };
+        );
     }
 
     /** A spread array literal stored natively as `dataType`. */
@@ -5372,12 +5367,7 @@ export class ExpressionLowerer {
             // answer the search.
             const first = predicates.findIndex(({ known }) => known !== false);
             if (first < 0 || predicates[first]!.known === true)
-                return {
-                    kind: "boolean",
-                    cpp: first < 0 ? "false" : "true",
-                    staticBoolean: first >= 0,
-                    dataType: { kind: "boolean" },
-                };
+                return booleanValue(String(first >= 0));
             return {
                 kind: "boolean",
                 cpp: predicates.map(({ cpp }) => cpp).join(" || "),
@@ -6187,16 +6177,12 @@ export class ExpressionLowerer {
                 ),
         );
         const values = this.context.probeEmission(
-            () => {
-                try {
-                    return present.map((arm) =>
+            () =>
+                unlessRefused(() =>
+                    present.map((arm) =>
                         this.inRuntimeControlFlow(() => this.compileValue(arm)),
-                    );
-                } catch (error) {
-                    if (error instanceof CompileError) return undefined;
-                    throw error;
-                }
-            },
+                    ),
+                ),
             () => false,
         );
         if (
@@ -8487,11 +8473,9 @@ export class ExpressionLowerer {
                           tupleElements: Array.from(matched, (capture) =>
                               capture === undefined
                                   ? undefinedValue()
-                                  : {
-                                        kind: "string",
-                                        cpp: this.context.cppString(capture),
-                                        staticString: capture,
-                                    },
+                                  : staticStringValue(capture, (text) =>
+                                        this.context.cppString(text),
+                                    ),
                           ),
                       };
             }

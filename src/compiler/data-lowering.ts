@@ -237,6 +237,7 @@ import {
     soleMemberIndex,
 } from "./data-types.js";
 import {
+    booleanValue,
     commonResourceValue,
     runtimeMeshValue,
     withCommonResourceMetadata,
@@ -9948,7 +9949,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         };
     }
 
-    /** A raw homogeneous resource array can compare only within its proved engine. */
     /**
      * A search whose receiver's elements and search value generation holds
      * as primitives, answered at generation: `includes` by SameValueZero
@@ -10005,27 +10005,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return this.context.probeEmission((): Value | undefined => {
             const needle = primitive(this.context.compileValue(argument));
             if (needle === undefined) return undefined;
-            const same = (lane: unknown): boolean =>
-                lane === needle ||
-                (method === "includes" &&
-                    typeof lane === "number" &&
-                    typeof needle === "number" &&
-                    Number.isNaN(lane) &&
-                    Number.isNaN(needle));
-            if (method === "includes") {
-                const found = lanes.some(same);
-                return {
-                    kind: "boolean",
-                    cpp: found ? "true" : "false",
-                    staticBoolean: found,
-                    dataType: { kind: "boolean" },
-                };
-            }
-            let index = -1;
-            if (method === "indexOf") index = lanes.findIndex(same);
-            else
-                for (let at = lanes.length - 1; at >= 0 && index < 0; --at)
-                    if (same(lanes[at])) index = at;
+            // The lanes are primitives: JavaScript's own search is the fold.
+            if (method === "includes")
+                return booleanValue(String(lanes.includes(needle)));
+            const index = lanes[method](needle);
             return {
                 kind: "number",
                 cpp: `${index}.0`,
@@ -10035,6 +10018,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         });
     }
 
+    /** A raw homogeneous resource array can compare only within its proved engine. */
     private compileEngineHandleSearch(
         call: ts.CallExpression,
         owner: Value,
@@ -13258,27 +13242,56 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * (`spreadTupleLanes`, a native tuple's already read), any other
      * element the value `read` gives it, and a compile-time tuple's lane
      * the value `readLane` gives it. Any other spread refuses with
-     * `refusal`.
+     * `refusal`; without one, only compile-time tuples spread, and the
+     * values are undefined at the first spread of any other value.
      */
     public spreadLaneValues(
         elements: readonly ts.Expression[],
         read: (element: ts.Expression) => Value,
         refusal: string,
+        readLane?: (lane: Value, spread: ts.SpreadElement) => Value,
+    ): { value: Value; node: ts.Expression }[];
+    public spreadLaneValues(
+        elements: readonly ts.Expression[],
+        read: (element: ts.Expression) => Value,
+        refusal: undefined,
+        readLane?: (lane: Value, spread: ts.SpreadElement) => Value,
+    ): { value: Value; node: ts.Expression }[] | undefined;
+    public spreadLaneValues(
+        elements: readonly ts.Expression[],
+        read: (element: ts.Expression) => Value,
+        refusal: string | undefined,
         readLane: (lane: Value, spread: ts.SpreadElement) => Value = (lane) =>
             lane,
-    ): { value: Value; node: ts.Expression }[] {
-        return elements.flatMap((element) => {
-            if (!ts.isSpreadElement(element))
-                return [{ value: read(element), node: element }];
+    ): { value: Value; node: ts.Expression }[] | undefined {
+        const values: { value: Value; node: ts.Expression }[] = [];
+        for (const element of elements) {
+            if (!ts.isSpreadElement(element)) {
+                values.push({ value: read(element), node: element });
+                continue;
+            }
             const spread = this.tupleSpreadValue(element.expression);
-            const lanes =
-                this.spreadTupleLanes(spread, element) ??
-                this.context.fail(element, refusal);
-            return lanes.map((lane) => ({
-                value: spread.kind === "tuple" ? readLane(lane, element) : lane,
-                node: element,
-            }));
-        });
+            let lanes: readonly Value[] | undefined;
+            if (refusal !== undefined)
+                lanes =
+                    this.spreadTupleLanes(spread, element) ??
+                    this.context.fail(element, refusal);
+            else {
+                const iterated = this.iteratedElements(spread);
+                if (!iterated || !("lanes" in iterated)) return undefined;
+                lanes = iterated.lanes;
+            }
+            values.push(
+                ...lanes.map((lane) => ({
+                    value:
+                        spread.kind === "tuple"
+                            ? readLane(lane, element)
+                            : lane,
+                    node: element,
+                })),
+            );
+        }
+        return values;
     }
 
     public spanLikeForSink(

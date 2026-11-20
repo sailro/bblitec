@@ -139,13 +139,7 @@ export function recordCopyObservation(
     // other. Only the copy can be told apart by identity or enumeration,
     // and it flows only where its target type flows.
     const either = [source, target];
-    // An assertion can retype the copy (`assertionRetypes`).
-    const copyTypes = [
-        target,
-        ...observations.assertions
-            .filter((assertion) => assertionRetypes(checker, assertion, target))
-            .map(({ asserted }) => asserted),
-    ];
+    const copies = copyTypes(checker, observations, target);
     const keptWrite = (write: ObservedWrite): boolean =>
         write.property === undefined || fields.includes(write.property);
     if (call) {
@@ -177,7 +171,7 @@ export function recordCopyObservation(
     const answer = observed(
         observations,
         (type) => holds(type, either),
-        (type) => holds(type, copyTypes),
+        (type) => holds(type, copies),
         keptWrite,
         carries,
         view,
@@ -1010,22 +1004,31 @@ function assertionRetypes(
     );
 }
 
+/** The types a copy of `target` type has: its own and each an assertion retypes it to. */
+function copyTypes(
+    checker: ts.TypeChecker,
+    observations: ProgramObservations,
+    target: ts.Type,
+): ts.Type[] {
+    return [
+        target,
+        ...observations.assertions
+            .filter((assertion) => assertionRetypes(checker, assertion, target))
+            .map(({ asserted }) => asserted),
+    ];
+}
+
 function observedArrayIdentity(
     context: RecordObservationContext,
     target: ts.Type,
 ): string | undefined {
     const observations = programObservations(context.program);
     const { checker } = context;
-    const copyTypes = [
-        target,
-        ...observations.assertions
-            .filter((assertion) => assertionRetypes(checker, assertion, target))
-            .map(({ asserted }) => asserted),
-    ];
+    const copies = copyTypes(checker, observations, target);
     if (
         [...observations.identities].some((type) =>
-            holdsArray(context, type, copyTypes, (element) =>
-                copyTypes.some((copy) => {
+            holdsArray(context, type, copies, (element) =>
+                copies.some((copy) => {
                     const own = arrayElementType(checker, copy);
                     return (
                         own === undefined ||
@@ -1124,7 +1127,7 @@ function identityUses(
     const array = checker.isArrayLikeType(
         checker.getTypeAtLocation(declaration.name),
     );
-    const { reads, follow } = objectReads(context);
+    const { reads, follow, add } = objectReads(context);
     follow(declaration.name);
     let reason: string | undefined;
     for (let index = 0; index < reads.length && !reason; index++) {
@@ -1162,8 +1165,7 @@ function identityUses(
             else if (array) reason = storedIdentity(context, use);
         } else if (array && !onlyReads(use, parent)) {
             const member = handedMemberReads(context, use);
-            if (member)
-                reads.push(...member.filter((read) => !reads.includes(read)));
+            if (member) add(member);
             else reason = storedIdentity(context, use);
         }
     }
@@ -1174,27 +1176,34 @@ function identityUses(
 
 /**
  * The expressions that read an object, as a walk over them finds more:
- * `follow` adds the references of a name that holds it, once per name; the
- * walk adds the reads of a member a callee was handed it as.
+ * `follow` adds the references of a name that holds it, once per name;
+ * `add` adds the reads of a member a callee was handed it as, once each.
  */
 function objectReads(context: RecordObservationContext): {
-    readonly reads: ts.Expression[];
+    readonly reads: readonly ts.Expression[];
     readonly follow: (name: ts.BindingName) => void;
+    readonly add: (more: readonly ts.Expression[]) => void;
 } {
     const followed = new Set<ts.Symbol>();
     const reads: ts.Expression[] = [];
+    const queued = new Set<ts.Expression>();
+    const add = (more: readonly ts.Expression[]): void => {
+        for (const read of more)
+            if (!queued.has(read)) {
+                queued.add(read);
+                reads.push(read);
+            }
+    };
     const follow = (name: ts.BindingName): void => {
         const symbol = ts.isIdentifier(name)
             ? declaredSymbol(context.checker, name)
             : undefined;
         if (symbol && !followed.has(symbol)) {
             followed.add(symbol);
-            reads.push(
-                ...bindingReferences(context.program, context.checker, symbol),
-            );
+            add(bindingReferences(context.program, context.checker, symbol));
         }
     };
-    return { reads, follow };
+    return { reads, follow, add };
 }
 
 /** @unjournaled Pure functions of the checked program, kept across replays. */
@@ -1232,7 +1241,7 @@ export function rebuiltObjectObservation(
                 ),
         );
     let reason = nested ? "a literal it creates holds another" : undefined;
-    const { reads, follow } = objectReads(context);
+    const { reads, follow, add } = objectReads(context);
     follow(declaration.name);
     for (let index = 0; index < reads.length && !reason; index++) {
         const use = flowingUse(reads[index]!);
@@ -1287,10 +1296,7 @@ export function rebuiltObjectObservation(
             case "element": {
                 if (engineTakesArgument(checker, use)) break;
                 const member = handedMemberReads(context, use);
-                if (member)
-                    reads.push(
-                        ...member.filter((read) => !reads.includes(read)),
-                    );
+                if (member) add(member);
                 else reason = "the program keeps it";
                 break;
             }

@@ -75,6 +75,7 @@ import {
 import type { DataLowerer } from "./data-lowering.js";
 import { compileJsonMemberCall, isJsonValue } from "./json-bridge.js";
 import {
+    booleanValue,
     commonResourceValue,
     presenceCpp,
     presenceFlagCpp,
@@ -652,14 +653,8 @@ function foldTuplePredicate(
             if (
                 (method === "some" && matched.staticBoolean) ||
                 (method === "every" && !matched.staticBoolean)
-            ) {
-                return {
-                    kind: "boolean",
-                    cpp: matched.staticBoolean ? "true" : "false",
-                    staticBoolean: matched.staticBoolean,
-                    dataType: { kind: "boolean" },
-                };
-            }
+            )
+                return booleanValue(String(matched.staticBoolean));
         }
         if (method === "filter")
             return {
@@ -675,13 +670,7 @@ function foldTuplePredicate(
                 staticNumber: -1,
                 dataType: { kind: "number" },
             };
-        const result = method === "every";
-        return {
-            kind: "boolean",
-            cpp: result ? "true" : "false",
-            staticBoolean: result,
-            dataType: { kind: "boolean" },
-        };
+        return booleanValue(String(method === "every"));
     });
 }
 

@@ -782,7 +782,9 @@ test("replay storage lays out its records and bindings in an order of the progra
         records: storage
             .orderedRecords()
             .map((demand) => declared(demand.type)),
-        joins: storage.orderedJoins().map((join) => declared(join.source)),
+        joins: storage
+            .orderedJoins(storage.orderedRecords())
+            .map((join) => declared(join.source)),
         bindings: storage
             .sourceOrderedDynamicBindings()
             .map(([declaration]) => declaration.name.getText()),

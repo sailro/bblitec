@@ -1648,7 +1648,10 @@ class Compiler implements LoweringServices {
         // order the attempts before this one met the demands in.
         const records = this.replayStorage.orderedRecords();
         this.dataTypes.prepareRecordComponents(
-            recordComponents(this.checker, this.replayStorage.orderedJoins()),
+            recordComponents(
+                this.checker,
+                this.replayStorage.orderedJoins(records),
+            ),
             records,
             this.program,
         );
@@ -6797,8 +6800,11 @@ class Compiler implements LoweringServices {
         return ts.isCallExpression(call) &&
             !call.questionDotToken &&
             moduleLevelCallee(this.checker, call.expression) &&
-            call.arguments.every((argument) =>
-                this.rereadsAlike(argument, identifier),
+            // The answer at the read only relaxes the cached one.
+            call.arguments.every(
+                (argument) =>
+                    this.rereadsAlike(argument) ||
+                    this.rereadsAlike(argument, identifier),
             )
             ? { declaration, call }
             : undefined;

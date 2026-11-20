@@ -7,7 +7,7 @@ import {
     selectionArms,
     variableKind,
 } from "../syntax.js";
-import { staticBooleanOf } from "../values/model.js";
+import { knownCondition, staticBooleanOf } from "../values/model.js";
 import { dataTypesEqual, handleCppType, type DataType } from "../data-types.js";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
@@ -58,6 +58,7 @@ export interface PickingIntrinsicContext
             | "bindings"
             | "dataLowerer"
             | "objectProperties"
+            | "objectProperty"
             | "expectObjectLiteral"
             | "evaluationOrder"
             | "captureEmittedLines"
@@ -482,20 +483,7 @@ function pickIgnoreEntries(
             ignore,
             "pickAsync's `ignore` is lowered as the pin's `PickIgnore | readonly PickIgnore[]`.",
         );
-    const declared = context.checker.getContextualType(options);
-    const member =
-        declared &&
-        context.checker.getPropertyOfType(
-            context.checker.getNonNullableType(declared),
-            "ignore",
-        );
-    if (!member) return refuse();
-    const type = context.dataTypes.fromTsType(
-        context.checker.getNonNullableType(
-            context.checker.getTypeOfSymbol(member),
-        ),
-        ignore,
-    );
+    const type = pickOptionType(context, options, "ignore", ignore);
     if (type?.kind !== "union" || type.members.length !== 2) return refuse();
     const list = type.members.findIndex((arm) => arm.kind === "vector");
     const entry = type.members[1 - list];
@@ -505,37 +493,17 @@ function pickIgnoreEntries(
         !dataTypesEqual(type.members[list]!, { kind: "vector", element: entry })
     )
         return refuse();
-    // A member's present value: absent where its slot is empty.
-    const read = (struct: string, owner: string, name: string) => {
-        const field = context.dataTypes
-            .structFields(struct, ignore)
-            .find((candidate) => candidate.sourceName === name);
-        if (
-            !field ||
-            field.type.kind === "tagged" ||
-            field.type.kind === "json"
-        )
-            return refuse();
-        const cpp = `${owner}${context.dataTypes.memberAccess(struct)}${field.name}`;
-        const optional =
-            field.type.kind === "optional" ? field.type : undefined;
-        return {
-            present: context.dataTypes.slotPresentCpp(field.type, cpp),
-            cpp: optional ? optionalValueCpp(cpp) : cpp,
-            type: optional?.inner ?? field.type,
-        };
-    };
-    const number = (field: ReturnType<typeof read>): string =>
+    const read = (struct: string, owner: string, name: string): HeldSlot =>
+        structMember(context, struct, owner, name, ignore) ?? refuse();
+    const number = (field: HeldSlot): string =>
         field.type.kind === "number" ? field.cpp : refuse();
-    const lane = (
-        field: ReturnType<typeof read>,
-        cppType: string,
-        cpp: string,
-    ): string =>
-        `${field.present ?? "true"} ? std::optional<${cppType}>{${cppType}{${cpp}}} : std::nullopt`;
+    const lane = (field: HeldSlot, cppType: string, cpp: string): string =>
+        `${field.present} ? std::optional<${cppType}>{${cppType}{${cpp}}} : std::nullopt`;
     const field = read(entry.name, "ignore", "mesh");
     const mesh = context.dataLowerer.leafValue(field.cpp, field.type);
-    if (field.present !== undefined || mesh.kind !== "mesh") return refuse();
+    // Every entry names its mesh: no slot of it can be empty.
+    if (knownCondition(field.present) !== true || mesh.kind !== "mesh")
+        return refuse();
     const index = read(entry.name, "ignore", "thinInstanceIndex");
     const range = read(entry.name, "ignore", "thinInstanceRange");
     const lanes = range.type.kind === "struct" ? range.type.name : refuse();
@@ -583,51 +551,12 @@ function pickDiscard(
             discard,
             "pickAsync's `discard` is lowered as the pin's `PickDiscardRule`.",
         );
-    const declared = context.checker.getContextualType(options);
-    const member =
-        declared &&
-        context.checker.getPropertyOfType(
-            context.checker.getNonNullableType(declared),
-            "discard",
-        );
-    if (!member) return refuse();
-    const type = context.dataTypes.fromTsType(
-        context.checker.getNonNullableType(
-            context.checker.getTypeOfSymbol(member),
-        ),
-        discard,
-    );
+    const type = pickOptionType(context, options, "discard", discard);
     if (type?.kind !== "struct") return refuse();
     for (const rule of foldPickDiscardRules(context, discard))
         context.sceneManifest.recordPickDiscardRule(rule, discard);
-    // A member's storage and the tests that it holds a value, through each
-    // optional and tagged slot it is stored in.
-    const read = (struct: string, owner: string, name: string) => {
-        const field = context.dataTypes
-            .structFields(struct, discard)
-            .find((candidate) => candidate.sourceName === name);
-        if (!field) return refuse();
-        return held(
-            `${owner}${context.dataTypes.memberAccess(struct)}${field.name}`,
-            field.type,
-        );
-    };
-    const held = (cpp: string, slot: DataType) => {
-        const present: string[] = [];
-        let type = slot;
-        for (;;) {
-            if (type.kind === "tagged") {
-                present.push(`${cpp}.defined()`);
-                cpp = `${cpp}.value()`;
-                type = type.inner;
-            } else if (type.kind === "optional") {
-                present.push(optionalPresentCpp(cpp));
-                cpp = optionalValueCpp(cpp);
-                type = type.inner;
-            } else
-                return { present: present.join(" && ") || "true", cpp, type };
-        }
-    };
+    const read = (struct: string, owner: string, name: string): HeldSlot =>
+        structMember(context, struct, owner, name, discard) ?? refuse();
     const text = (owner: string, struct: string, name: string) => {
         const member = read(struct, owner, name);
         return member.type.kind === "string" ? member : refuse();
@@ -654,7 +583,7 @@ function pickDiscard(
         !data.type.result
     )
         return refuse();
-    const view = held("result", data.type.result);
+    const view = heldSlot(context, "result", data.type.result);
     if (view.type.kind !== "bufferview") return refuse();
     // An undefined rule is none (`pickAsyncImpl`: `options?.discard ?? null`).
     const absent = typeMayHoldNullish(context.checker, discard, "undefined");
@@ -676,6 +605,83 @@ function pickDiscard(
         `const auto bytes = bbl::storage_buffer_bytes(${view.cpp}); ` +
         `return std::vector<std::uint8_t>(bytes.begin(), bytes.end()); }}); ` +
         `return discard; }()`
+    );
+}
+
+/** The data type the pin declares for `pickAsync`'s option `name`, past its absence. */
+function pickOptionType(
+    context: PickingIntrinsicContext,
+    options: ts.Expression,
+    name: string,
+    node: ts.Expression,
+): DataType | undefined {
+    const declared = context.checker.getContextualType(options);
+    const member =
+        declared &&
+        context.checker.getPropertyOfType(
+            context.checker.getNonNullableType(declared),
+            name,
+        );
+    return (
+        member &&
+        context.dataTypes.fromTsType(
+            context.checker.getNonNullableType(
+                context.checker.getTypeOfSymbol(member),
+            ),
+            node,
+        )
+    );
+}
+
+/**
+ * A value's storage and the test that it holds one (`slotPresentCpp` of
+ * each slot it is stored in): `true` where no slot of it can be empty.
+ */
+interface HeldSlot {
+    readonly present: string;
+    readonly cpp: string;
+    readonly type: DataType;
+}
+
+/** The slot `cpp` of `slot` type, through each optional and tagged slot it is stored in. */
+function heldSlot(
+    context: PickingIntrinsicContext,
+    cpp: string,
+    slot: DataType,
+): HeldSlot {
+    const present: string[] = [];
+    let type = slot;
+    for (;;) {
+        const test = context.dataTypes.slotPresentCpp(type, cpp);
+        if (test) present.push(test);
+        if (type.kind === "tagged") {
+            cpp = `${cpp}.value()`;
+            type = type.inner;
+        } else if (type.kind === "optional") {
+            cpp = optionalValueCpp(cpp);
+            type = type.inner;
+        } else return { present: present.join(" && ") || "true", cpp, type };
+    }
+}
+
+/** Member `name` of the struct `owner` holds (`heldSlot`); undefined where it has none. */
+function structMember(
+    context: PickingIntrinsicContext,
+    struct: string,
+    owner: string,
+    name: string,
+    node: ts.Node,
+): HeldSlot | undefined {
+    const field = context.dataTypes
+        .structFields(struct, node)
+        .find((candidate) => candidate.sourceName === name);
+    return (
+        field &&
+        heldSlot(
+            context,
+            `${owner}${context.dataTypes.memberAccess(struct)}${field.name}`,
+            field.type,
+        )
     );
 }
 
@@ -747,11 +753,11 @@ function literalPickDiscardRule(
     context: PickingIntrinsicContext,
     literal: ts.Expression,
 ): PickDiscardRuleManifest {
-    const members = staticObjectMembers(context, literal);
+    const member = ruleMembers(context, literal);
     const optional = (name: string): ts.Expression | undefined => {
-        const member = members.get(name);
-        return member && !isNullishLiteral(context.checker, member)
-            ? member
+        const value = member(name);
+        return value && !isNullishLiteral(context.checker, value)
+            ? value
             : undefined;
     };
     const text = (name: string): string | undefined => {
@@ -766,10 +772,10 @@ function literalPickDiscardRule(
         vertexData: text("vertexData"),
         storage: (list ? staticArrayElements(context, list) : []).map(
             (element) => {
-                const entry = staticObjectMembers(context, element);
-                const name = entry.get("name");
-                const type = entry.get("type");
-                const vertex = entry.get("vertex");
+                const entry = ruleMembers(context, element);
+                const name = entry("name");
+                const type = entry("type");
+                const vertex = entry("vertex");
                 if (!name || !type)
                     return context.fail(
                         element,
@@ -880,46 +886,20 @@ function staticRuleText(
 }
 
 /**
- * An object literal's members through the constants and calls that resolve
- * to it, its spreads read in order so a later member replaces an earlier
- * one. A method is a member whose value this fold does not read.
+ * The reader of a rule literal's members (`objectProperty`), the literal
+ * resolved through the constants and calls that hold it (`ruleLiteral`).
  */
-function staticObjectMembers(
+function ruleMembers(
     context: PickingIntrinsicContext,
     expression: ts.Expression,
-): Map<string, ts.Expression | undefined> {
+): (name: string) => ts.Expression | undefined {
     const literal = ruleLiteral(context, expression);
     if (!ts.isObjectLiteralExpression(literal))
         return context.fail(
             expression,
             "A pickAsync `discard` rule folds at generation to an object literal: its WGSL and storage layout select the composed pick shaders.",
         );
-    const members = new Map<string, ts.Expression | undefined>();
-    for (const property of literal.properties) {
-        if (ts.isSpreadAssignment(property)) {
-            for (const [name, value] of staticObjectMembers(
-                context,
-                property.expression,
-            ))
-                members.set(name, value);
-            continue;
-        }
-        const name = property.name && context.propertyName(property.name);
-        if (!name)
-            return context.fail(
-                property,
-                "A pickAsync `discard` rule's members have generation-known names.",
-            );
-        members.set(
-            name,
-            ts.isPropertyAssignment(property)
-                ? property.initializer
-                : ts.isShorthandPropertyAssignment(property)
-                  ? property.name
-                  : undefined,
-        );
-    }
-    return members;
+    return (name) => context.objectProperty(literal, name);
 }
 
 /**

@@ -395,16 +395,20 @@ export class ReplayStorage {
      * whatever order the attempts that met them took them in.
      */
     public orderedRecords(): readonly NativeRecordStorageDemand[] {
+        const spelled = typeSpeller(this.checker);
         return [...this.records.values()].sort((left, right) =>
-            recordOrder(this.checker, left, right),
+            recordOrder(spelled, left, right),
         );
     }
 
-    /** The joins of {@link orderedRecords}, each record's in `joinOrder`. */
-    public orderedJoins(): readonly RecordJoin[] {
-        return this.orderedRecords().flatMap((demand) =>
+    /** The joins of `records` ({@link orderedRecords}), each record's in `joinOrder`. */
+    public orderedJoins(
+        records: readonly NativeRecordStorageDemand[],
+    ): readonly RecordJoin[] {
+        const spelled = typeSpeller(this.checker);
+        return records.flatMap((demand) =>
             [...(demand.joins ?? [])].sort((left, right) =>
-                joinOrder(this.checker, left, right),
+                joinOrder(spelled, left, right),
             ),
         );
     }
@@ -505,14 +509,26 @@ function typeDeclaration(type: ts.Type): ts.Node | undefined {
     );
 }
 
-/** Orders two record types by declaration, then as the checker spells them. */
+/** The checker's spelling of a type, spelled once per type for one sort. */
+function typeSpeller(checker: ts.TypeChecker): (type: ts.Type) => string {
+    const spellings = new Map<ts.Type, string>();
+    return (type) => {
+        let spelling = spellings.get(type);
+        if (spelling === undefined) {
+            spelling = checker.typeToString(type);
+            spellings.set(type, spelling);
+        }
+        return spelling;
+    };
+}
+
+/** Orders two record types by declaration, then as `spelled` spells them. */
 function typeOrder(
-    checker: ts.TypeChecker,
+    spelled: (type: ts.Type) => string,
     left: ts.Type,
     right: ts.Type,
 ): number {
     if (left === right) return 0;
-    const spelled = (type: ts.Type) => checker.typeToString(type);
     return (
         sourceOrder(typeDeclaration(left), typeDeclaration(right)) ||
         compareText(spelled(left), spelled(right))
@@ -540,7 +556,7 @@ function recordSite(
  * without them; then by the site the source spells first, then by type.
  */
 function recordOrder(
-    checker: ts.TypeChecker,
+    spelled: (type: ts.Type) => string,
     left: NativeRecordStorageDemand,
     right: NativeRecordStorageDemand,
 ): number {
@@ -548,7 +564,7 @@ function recordOrder(
         Number(instantiated(left)) - Number(instantiated(right)) ||
         Number(!left.stored) - Number(!right.stored) ||
         sourceOrder(left.node, right.node) ||
-        typeOrder(checker, left.type, right.type)
+        typeOrder(spelled, left.type, right.type)
     );
 }
 
@@ -559,13 +575,13 @@ function instantiated(demand: NativeRecordStorageDemand): boolean {
 
 /** Orders joins by source type, then target type, then kind. */
 function joinOrder(
-    checker: ts.TypeChecker,
+    spelled: (type: ts.Type) => string,
     left: RecordJoin,
     right: RecordJoin,
 ): number {
     return (
-        typeOrder(checker, left.source, right.source) ||
-        typeOrder(checker, left.target, right.target) ||
+        typeOrder(spelled, left.source, right.source) ||
+        typeOrder(spelled, left.target, right.target) ||
         compareText(left.kind, right.kind)
     );
 }
