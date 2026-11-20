@@ -5,6 +5,9 @@
  * order; and its `attributes`, the names its `attributes` option lists.
  * The native material record's shader variant holds the same names, so a
  * walk over one of them runs over those names.
+ * Where generation holds the list of each variant the material may be
+ * (`holdsShaderMaterialField`), a walk or search reads that plain data
+ * instead, and folds where it can.
  */
 import ts from "typescript";
 import { bindingReferences } from "./binding-references.js";
@@ -20,6 +23,7 @@ import {
     nativeListSearch,
     shaderMaterialField,
 } from "./shader-derivations.js";
+import { holdsShaderMaterialField } from "./shader-material-views.js";
 import { declaredSymbol, type NamedMember } from "./symbols.js";
 import { writeSiteOf } from "./syntax.js";
 import { booleanValue, type Value } from "./types.js";
@@ -35,8 +39,10 @@ type ShaderDeclarationContext = Pick<
     | "expectArgumentCount"
     | "expectKind"
     | "compileValue"
+    | "keptEmission"
     | "requireEngine"
     | "reachFeature"
+    | "sceneManifest"
     | "emit"
     | "increaseIndent"
     | "decreaseIndent"
@@ -51,18 +57,37 @@ interface ShaderDeclarationWalk {
     readonly entry: ElementFields;
 }
 
-/** The list `<material>.<list>` names, when the expression is one. */
+/** A native declaration list read: the list, and its material compiled. */
+interface NativeDeclarationList {
+    readonly list: ts.PropertyAccessExpression;
+    readonly material: Value;
+}
+
+/**
+ * The native list `<material>.<list>` names, with its material compiled:
+ * undefined for any other expression, and where generation holds the
+ * list's plain data (`holdsShaderMaterialField`), which the read then takes.
+ */
 function declarationList(
-    context: Pick<ShaderDeclarationContext, "unwrap" | "checker">,
+    context: ShaderDeclarationContext,
     expression: ts.Expression,
-): ts.PropertyAccessExpression | undefined {
+): NativeDeclarationList | undefined {
     const list = context.unwrap(expression);
-    return ts.isPropertyAccessExpression(list) &&
-        !ts.isOptionalChain(list) &&
-        shaderMaterialField(list.name.text)?.nativeList &&
-        isShaderMaterialType(context.checker.getTypeAtLocation(list.expression))
-        ? list
-        : undefined;
+    if (
+        !ts.isPropertyAccessExpression(list) ||
+        ts.isOptionalChain(list) ||
+        !shaderMaterialField(list.name.text)?.nativeList ||
+        !isShaderMaterialType(
+            context.checker.getTypeAtLocation(list.expression),
+        )
+    )
+        return undefined;
+    let held = false;
+    const material = context.keptEmission(
+        () => context.compileValue(list.expression),
+        (value) => !(held = holdsShaderMaterialField(context, value, list)),
+    );
+    return held ? undefined : { list, material };
 }
 
 /** The native list `list` reads. */
@@ -74,8 +99,8 @@ function nativeList(list: ts.PropertyAccessExpression) {
 function listNames(
     context: ShaderDeclarationContext,
     list: ts.PropertyAccessExpression,
+    material: Value,
 ): { readonly cpp: string; readonly engine: string } {
-    const material = context.compileValue(list.expression);
     context.expectKind(material, "material", list.expression);
     const engine = context.requireEngine(material, list.expression);
     context.reachFeature("material:shader", list);
@@ -98,8 +123,16 @@ export function shaderDeclarationWalk(
     expression: ts.Expression,
     entry: ts.Identifier,
 ): ShaderDeclarationWalk | undefined {
-    const list = declarationList(context, expression);
-    if (!list) return undefined;
+    const read = declarationList(context, expression);
+    return read && declarationWalk(context, read, entry);
+}
+
+/** The walk over the native list `list` of `material`, as `shaderDeclarationWalk`. */
+function declarationWalk(
+    context: ShaderDeclarationContext,
+    { list, material }: NativeDeclarationList,
+    entry: ts.Identifier,
+): ShaderDeclarationWalk {
     const names = nativeList(list).names === true;
     const symbol = declaredSymbol(context.checker, entry);
     for (const site of symbol && !names
@@ -117,7 +150,7 @@ export function shaderDeclarationWalk(
                 `A ShaderMaterial's ${list.name.text} entry is read only through its name.`,
             );
     }
-    const { cpp, engine } = listNames(context, list);
+    const { cpp, engine } = listNames(context, list, material);
     return {
         target: {
             property: list.name.text,
@@ -151,13 +184,18 @@ export function compileShaderDeclarationSearch(
     call: ts.CallExpression,
     member: NamedMember,
 ): Value | undefined {
-    const list = declarationList(context, member.expression);
-    if (!list || !nativeListSearch(list.name.text, member.name))
+    const list = context.unwrap(member.expression);
+    if (
+        !ts.isPropertyAccessExpression(list) ||
+        !nativeListSearch(list.name.text, member.name)
+    )
         return undefined;
+    const read = declarationList(context, member.expression);
+    if (!read) return undefined;
     if (member.name === "includes") {
         context.expectArgumentCount(call, 1, 1);
         // The list is read before its argument, as JavaScript reads them.
-        const names = listNames(context, list).cpp;
+        const names = listNames(context, read.list, read.material).cpp;
         const name = context.dataLowerer.compileForSink(call.arguments[0]!, {
             kind: "string",
         });
@@ -165,11 +203,11 @@ export function compileShaderDeclarationSearch(
         return booleanValue(`bbl::js::array_includes(${names}, ${name})`);
     }
     const predicate = searchPredicate(context, call, "some");
-    const walk = shaderDeclarationWalk(
+    const walk = declarationWalk(
         context,
-        member.expression,
+        read,
         predicate.parameters[0]!.name as ts.Identifier,
-    )!;
+    );
     return booleanValue(
         emitCollectionSearch(context, walk.target, predicate, true, walk.entry)
             .found,

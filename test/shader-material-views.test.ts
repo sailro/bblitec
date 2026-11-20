@@ -885,6 +885,46 @@ test("a view reads creation-owned ShaderMaterial side-table entries per variant,
     assert.match(program(compiled, "cold-1").fragmentSource, /varying 0/);
 });
 
+test("a view's search of its source's declarations folds per source variant", () => {
+    const compiled = compileSource(`${prelude}
+    import type { Mesh } from "@babylonjs/lite";
+    const CLIP = "clip";
+    function tinted(name: string, clip: boolean): ShaderMaterial {
+        return createShaderMaterial({ name, vertexSource: wgsl\`\${VERT}\`, fragmentSource: wgsl\`\${surface("vec3<f32>(1.0)")}\`, attributes: ["position"], uniforms: ["worldViewProjection", "world"], storageBuffers: clip ? [{ name: CLIP, type: "array<vec4<f32>>" }] : [] });
+    }
+    function clipView(source: ShaderMaterial): ShaderMaterial {
+        const view = createMaterialView(source, { features: 0 }) as ShaderMaterial;
+        const clip = source.storageBufferDecls.some((decl) => decl.name === CLIP);
+        const match = clip ? /@location\\((\\d+)\\)\\s*vWorldPos/.exec(source.vertexSource) : null;
+        const location = match ? Number(match[1]) : -1;
+        Object.defineProperties(view, {
+            fragmentSource: { value: NORMAL + "\\n// clip " + String(clip) + " " + location, enumerable: true, configurable: true },
+        });
+        return view;
+    }
+    async function main(): Promise<void> {
+        const engine = await createEngine({});
+        const mesh = createMeshFromData(engine, "tri", new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]), new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]), new Uint32Array([0, 1, 2]));
+        const registry = { add(target: Mesh): ShaderMaterial { return clipView(target.material as ShaderMaterial); } };
+        mesh.material = tinted("clipped", true);
+        draw(engine, registry.add(mesh));
+        mesh.material = tinted("open", false);
+        draw(engine, registry.add(mesh));
+    }
+    void main();
+`);
+    assert.match(
+        program(compiled, "clipped-1").fragmentSource,
+        /\/\/ clip true 0$/,
+    );
+    assert.match(
+        program(compiled, "open-1").fragmentSource,
+        /\/\/ clip false -1$/,
+    );
+    // Generation searched each variant's list; no native search remains.
+    assert.doesNotMatch(compiled.cpp, /shader_declaration_names/);
+});
+
 test("ShaderMaterial side tables refuse escaping maps, late stores, deletion and second stores", () => {
     const cases: readonly [string, string, RegExp][] = [
         [

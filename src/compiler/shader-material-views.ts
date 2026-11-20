@@ -348,41 +348,64 @@ function spelled(node: ts.Node): string {
  * gives, as plain data that may hold run-time leaves (`RuntimeLeaf`), or a
  * refusal naming why generation does not hold it.
  */
+function variantsFieldReading(
+    context: Pick<ShaderMaterialViewContext, "sceneManifest">,
+    variants: readonly string[],
+    field: string,
+    node: ts.Node,
+): { readonly data: unknown } | string {
+    let found: unknown;
+    for (const variant of variants) {
+        const creations =
+            context.sceneManifest.shaderDerivations.creationsOf(variant);
+        if (creations.length === 0)
+            return `'${spelled(node)}' reads a ShaderMaterial's '${field}'; the options shader variant '${variant}' was created from are not generation's.`;
+        for (const facts of creations) {
+            const read = pinnedShaderMaterialField(facts, field);
+            if (typeof read === "string")
+                return `'${spelled(node)}' reads a ShaderMaterial's '${field}', which generation does not hold for shader variant '${variant}': ${read}.`;
+            const data = "json" in read ? read.json : read.partial;
+            if (
+                found !== undefined &&
+                JSON.stringify(found) !== JSON.stringify(data)
+            )
+                return `'${spelled(node)}' reads a ShaderMaterial's '${field}', which differs between the materials it may be; the run time decides which.`;
+            found = data;
+        }
+    }
+    return { data: found };
+}
+
+/** `variantsFieldReading`'s plain data, refusing where generation does not hold it. */
 function variantsField(
     context: Pick<ShaderMaterialViewContext, "fail" | "sceneManifest">,
     variants: readonly string[],
     field: string,
     node: ts.Node,
 ): unknown {
-    let found: unknown;
-    for (const variant of variants) {
-        const creations =
-            context.sceneManifest.shaderDerivations.creationsOf(variant);
-        if (creations.length === 0)
-            context.fail(
-                node,
-                `'${spelled(node)}' reads a ShaderMaterial's '${field}'; the options shader variant '${variant}' was created from are not generation's.`,
-            );
-        for (const facts of creations) {
-            const read = pinnedShaderMaterialField(facts, field);
-            if (typeof read === "string")
-                context.fail(
-                    node,
-                    `'${spelled(node)}' reads a ShaderMaterial's '${field}', which generation does not hold for shader variant '${variant}': ${read}.`,
-                );
-            const data = "json" in read ? read.json : read.partial;
-            if (
-                found !== undefined &&
-                JSON.stringify(found) !== JSON.stringify(data)
-            )
-                context.fail(
-                    node,
-                    `'${spelled(node)}' reads a ShaderMaterial's '${field}', which differs between the materials it may be; the run time decides which.`,
-                );
-            found = data;
-        }
-    }
-    return found;
+    const reading = variantsFieldReading(context, variants, field, node);
+    return typeof reading === "string"
+        ? context.fail(node, reading)
+        : reading.data;
+}
+
+/**
+ * Whether generation holds `<material>.<field>` (`node`) as plain data:
+ * the material's variants are known and each was created from options the
+ * field reads at generation (`readShaderMaterialFact` reads it then).
+ */
+export function holdsShaderMaterialField(
+    context: Pick<ShaderMaterialViewContext, "sceneManifest">,
+    material: Value,
+    node: ts.PropertyAccessExpression,
+): boolean {
+    const variants = shaderVariantsOf(material);
+    return (
+        shaderMaterialField(node.name.text)?.built === true &&
+        variants !== undefined &&
+        typeof variantsFieldReading(context, variants, node.name.text, node) !==
+            "string"
+    );
 }
 
 /**

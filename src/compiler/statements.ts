@@ -196,6 +196,7 @@ interface StatementLoweringContext extends Pick<
     | "registerNativeConstBinding"
     | "captureHoistedLines"
     | "probeEmission"
+    | "keptEmission"
     | "allocateTemporaryCppName"
     | "declarations"
     | "varBindings"
