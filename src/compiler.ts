@@ -1170,6 +1170,8 @@ class Compiler implements LoweringServices {
     @journaled public accessor imageDecodeReached = false;
     @journaled public accessor jsRandomReached = false;
     @journaled private accessor audioSessionReached = false;
+    /** Whether this attempt reached the shader-creation ledger (`reachShaderCreations`). */
+    @journaled private accessor shaderCreationsReached = false;
     /**
      * The bounded canvas-owning functions this compilation executed at
      * generation, by name. It is the fidelity adaptation's reach test: the
@@ -5519,6 +5521,13 @@ class Compiler implements LoweringServices {
             : undefined;
     }
 
+    public reachShaderCreations(): void {
+        if (this.shaderCreationsReached) return;
+        for (const entry of this.options.shaderCreations ?? [])
+            reachLedgerProgram(this, entry);
+        this.shaderCreationsReached = true;
+    }
+
     /**
      * A shader stage's generation-time text, each run-time number a builder
      * formats into it read from a material uniform.
@@ -5533,11 +5542,6 @@ class Compiler implements LoweringServices {
      * formatted text denotes. A stage that is a function literal's call
      * reads the numbers it formats from known arguments from uniforms too.
      */
-    public reachShaderCreations(): void {
-        for (const entry of this.options.shaderCreations ?? [])
-            reachLedgerProgram(this, entry);
-    }
-
     public compileShaderSource(
         expression: ts.Expression,
         stage: ShaderStage,

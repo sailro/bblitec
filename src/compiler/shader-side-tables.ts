@@ -12,7 +12,10 @@ import {
 } from "./symbols.js";
 import {
     argumentForParameter,
+    branchPath,
     functionKind,
+    hasExportModifier,
+    isModuleConstDeclaration,
     isSupportedFunction,
     outermostWrapper,
     ownParameters,
@@ -51,8 +54,20 @@ export interface ShaderSideTable {
 
 type Context = Pick<LoweringServices, "program" | "checker" | "symbols">;
 
+/** What evaluates a store's registration tests where generation reaches them. */
+type ConditionContext = Pick<LoweringServices, "conditions" | "probeEmission">;
+
 /** @unjournaled A proof over the checked program, independent of lowering. */
 const tables = new WeakMap<ts.Symbol, ShaderSideTable>();
+
+/** @unjournaled A proof over the checked program, independent of lowering. */
+const creationStores = new WeakMap<
+    ts.Program,
+    ReadonlyMap<
+        ts.CallExpression,
+        readonly { readonly table: ShaderSideTable; readonly store: Store }[]
+    >
+>();
 
 /** The calls of a map binding, when no reference aliases it or extracts a method. */
 export function directMapCalls(
@@ -94,19 +109,12 @@ function privateSideTableSets(
     map: ts.Symbol,
 ): readonly ts.CallExpression[] | string {
     const declaration = map.valueDeclaration;
-    if (
-        !declaration ||
-        !ts.isVariableDeclaration(declaration) ||
-        variableKind(declaration) !== "const" ||
-        !ts.isVariableStatement(declaration.parent.parent) ||
-        !ts.isSourceFile(declaration.parent.parent.parent)
-    )
+    if (!isModuleConstDeclaration(declaration))
         return "the map is not a module-private const";
     const file = declaration.getSourceFile();
     const module = declaredSymbol(context.checker, file);
     if (
-        (ts.getCombinedModifierFlags(declaration) & ts.ModifierFlags.Export) !==
-            0 ||
+        hasExportModifier(declaration.parent.parent) ||
         (module &&
             context.checker
                 .getExportsOfModule(module)
@@ -122,10 +130,8 @@ function privateSideTableSets(
                 ))
     )
         return "the map escapes its module through an export";
-    const initial =
-        declaration.initializer && unwrapExpression(declaration.initializer);
+    const initial = unwrapExpression(declaration.initializer);
     if (
-        !initial ||
         !ts.isNewExpression(initial) ||
         !["Map", "WeakMap"].includes(
             libraryGlobal(context.checker, initial.expression) ?? "",
@@ -202,37 +208,25 @@ export function shaderSideTable(
         if (!fn || enclosingFunction(held) !== fn)
             return "a set is outside the function that creates its material";
         const next = new Set([...visiting, held]);
-        const tests = [...conditions];
         const use = outermostWrapper(site);
-        for (let node: ts.Node = use; node !== fn; node = node.parent) {
-            if (
-                node === use ||
-                ts.isBlock(node) ||
-                ts.isExpressionStatement(node)
-            )
-                continue;
-            if (ts.isIterationStatement(node, false))
-                return "a set may run more than once for a material (registration is in a loop)";
-            if (!ts.isIfStatement(node))
-                return "registration is not a straight-line statement or an if branch";
-            const then = ts.findAncestor(
-                site,
-                (ancestor) => ancestor === node.thenStatement,
-            );
-            const otherwise =
-                node.elseStatement &&
-                ts.findAncestor(
-                    site,
-                    (ancestor) => ancestor === node.elseStatement,
-                );
-            if (!then && !otherwise)
-                return "registration runs inside a condition rather than its branch";
-            if (!ts.findAncestor(held, (ancestor) => ancestor === node))
-                tests.push({
-                    test: node.expression,
-                    holds: then !== undefined,
-                });
-        }
+        const path = branchPath(
+            ts.isExpressionStatement(use.parent) ? use.parent : use,
+            (node) => node.parent === fn,
+        );
+        if ("blocked" in path)
+            return ts.isIterationStatement(path.blocked, false)
+                ? "a set may run more than once for a material (registration is in a loop)"
+                : ts.isIfStatement(path.blocked)
+                  ? "registration runs inside a condition rather than its branch"
+                  : "registration is not a straight-line statement or an if branch";
+        const tests = [
+            ...conditions,
+            ...path.flatMap(({ statement, holds }) =>
+                ts.findAncestor(held, (ancestor) => ancestor === statement)
+                    ? []
+                    : [{ test: statement.expression, holds }],
+            ),
+        ];
         if (ts.isParameter(held)) {
             if (functionKind(fn) !== "plain")
                 return "a registration helper must run synchronously";
@@ -306,10 +300,46 @@ export function shaderSideTable(
  * facts therefore cannot silently masquerade as a missing entry.
  */
 export function creationSideTables(
-    context: Context & Pick<LoweringServices, "conditions" | "probeEmission">,
+    context: Context & ConditionContext,
     creation: ts.CallExpression,
 ): Map<ts.Symbol, ShaderSideTableFact> {
     const facts = new EmissionMap<ts.Symbol, ShaderSideTableFact>();
+    for (const { table, store } of storesByCreation(context).get(creation) ??
+        []) {
+        const outcomes = store.conditions.map((condition) =>
+            storeCondition(context, condition),
+        );
+        facts.set(
+            table.map,
+            outcomes.includes(false)
+                ? { absent: true }
+                : {
+                      refusal:
+                          "the creation's side-table set has not supplied a generation-evaluable value",
+                  },
+        );
+    }
+    return facts;
+}
+
+/**
+ * The stores of the program's proved side tables keyed by ShaderMaterial,
+ * by the creation each registers, each table in the order of its first
+ * `set`.
+ */
+function storesByCreation(
+    context: Context,
+): ReadonlyMap<
+    ts.CallExpression,
+    readonly { readonly table: ShaderSideTable; readonly store: Store }[]
+> {
+    const known = creationStores.get(context.program);
+    if (known) return known;
+    const stores = new Map<
+        ts.CallExpression,
+        { readonly table: ShaderSideTable; readonly store: Store }[]
+    >();
+    const seen = new Set<ts.Symbol>();
     for (const { node, object } of programObservations(
         context.program,
     ).memberCalls.get("set") ?? []) {
@@ -325,32 +355,80 @@ export function creationSideTables(
         )
             continue;
         const table = shaderSideTable(context, object);
-        if (!table || table.refusal || facts.has(table.map)) continue;
-        const store = table.stores.find((store) => store.creation === creation);
-        if (!store) continue;
-        const outcomes = store.conditions.map(({ test, holds }) => {
-            const known = context.probeEmission(
-                () =>
-                    unlessRefused(() =>
-                        knownCondition(
-                            context.conditions.compileCondition(test),
-                        ),
-                    ),
-                () => false,
-            );
-            return known === undefined ? undefined : known === holds;
-        });
-        facts.set(
-            table.map,
-            outcomes.includes(false)
-                ? { absent: true }
-                : {
-                      refusal:
-                          "the creation's side-table set has not supplied a generation-evaluable value",
-                  },
-        );
+        if (!table || table.refusal || seen.has(table.map)) continue;
+        seen.add(table.map);
+        for (const store of table.stores) {
+            const held = stores.get(store.creation);
+            if (held) held.push({ table, store });
+            else stores.set(store.creation, [{ table, store }]);
+        }
     }
-    return facts;
+    creationStores.set(context.program, stores);
+    return stores;
+}
+
+/**
+ * Whether a registration test holds as its store's path needs, where
+ * generation knows it for this variant; undefined where the run time
+ * decides it.
+ */
+function storeCondition(
+    context: ConditionContext,
+    { test, holds }: Store["conditions"][number],
+): boolean | undefined {
+    const known = context.probeEmission(
+        () =>
+            unlessRefused(() =>
+                knownCondition(context.conditions.compileCondition(test)),
+            ),
+        () => false,
+    );
+    return known === undefined ? undefined : known === holds;
+}
+
+/**
+ * The fact a reached store call `set` of a proved side table supplies for
+ * its key's creation `creation`: the value `stored` reads after the
+ * registration's tests, or why generation does not hold it.
+ */
+export function sideTableStoreFact(
+    context: ConditionContext,
+    table: ShaderSideTable,
+    creation: ts.CallExpression | undefined,
+    set: ts.Node,
+    stored: () => {
+        readonly json: unknown;
+        /** What the program may write of the stored value. */
+        readonly written: string | undefined;
+    },
+): ShaderSideTableFact {
+    const store = table.stores.find(
+        (store) => store.set === set && store.creation === creation,
+    );
+    const knownTests =
+        store &&
+        store.conditions.every(
+            (condition) => storeCondition(context, condition) !== undefined,
+        );
+    const { json, written } = stored();
+    return !store
+        ? {
+              refusal:
+                  "the set does not belong to this material's creation site",
+          }
+        : !knownTests
+          ? {
+                refusal:
+                    "a registration condition is decided at run time for this variant",
+            }
+          : written
+            ? { refusal: `the program may write ${written}` }
+            : json === undefined
+              ? {
+                    refusal:
+                        "the stored value is not generation-evaluable for this variant",
+                }
+              : { value: json };
 }
 
 /** Read-only validation and other private side-table declarations do not expose the key. */

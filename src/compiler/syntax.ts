@@ -430,6 +430,36 @@ export function outermostWrapper(
     return current;
 }
 
+/** An `if` statement a path up from a statement crosses, and its branch there. */
+export interface PathBranch {
+    readonly statement: ts.IfStatement;
+    /** The path runs through the `then` branch. */
+    readonly holds: boolean;
+}
+
+/**
+ * The `if` branches from `node` up to the first ancestor-or-self `top`
+ * accepts, innermost first, when only blocks and `if` branches hold it
+ * there; otherwise the node that blocks the path: a loop, another
+ * statement, or an `if` whose test holds it.
+ */
+export function branchPath(
+    node: ts.Node,
+    top: (node: ts.Node) => boolean,
+): readonly PathBranch[] | { readonly blocked: ts.Node } {
+    const path: PathBranch[] = [];
+    for (let current = node; !top(current); current = current.parent) {
+        const parent = current.parent;
+        if (ts.isIfStatement(parent) && parent.expression !== current)
+            path.push({
+                statement: parent,
+                holds: parent.thenStatement === current,
+            });
+        else if (!ts.isBlock(parent)) return { blocked: parent };
+    }
+    return path;
+}
+
 function climbsOperand(
     parent: ts.Node,
     operand: ts.Node,

@@ -53,6 +53,7 @@ import {
     arrayShape,
     callSignatures,
     holdsOnly,
+    isTypeReference,
     presentMembers,
 } from "./type-facts.js";
 import type { CompiledShaderMaterialOptions } from "./shader-material.js";
@@ -60,7 +61,6 @@ import type { ShaderStage } from "../shader-ir.js";
 import type { CompiledShaderProgram, Value } from "./types.js";
 import {
     absenceOf,
-    knownCondition,
     shaderVariantsOf,
     undefinedValue,
     valueForKind,
@@ -68,6 +68,7 @@ import {
 import {
     directMapCalls,
     shaderSideTable,
+    sideTableStoreFact,
     type ShaderSideTableFact,
 } from "./shader-side-tables.js";
 import { programObservations } from "./program-observations.js";
@@ -83,6 +84,9 @@ export type RecordFact =
     | { readonly partial: unknown }
     | "undefined"
     | "runtime";
+
+/** The known-data arm of a record fact: plain data, whole or with run-time leaves. */
+export type DataFact = Exclude<RecordFact, "undefined" | "runtime">;
 
 /**
  * A leaf of a declaration list's plain data only the run time holds: a
@@ -137,6 +141,11 @@ export function holdsRuntimeLeaf(json: unknown): boolean {
         json !== null &&
         Object.values(json).some(holdsRuntimeLeaf)
     );
+}
+
+/** Plain data as a fact: partial where it holds a run-time leaf (`holdsRuntimeLeaf`). */
+export function dataFact(data: unknown): DataFact {
+    return holdsRuntimeLeaf(data) ? { partial: data } : { json: data };
 }
 
 /** The refusal of the first `UnreadableLeaf` a fact holds. */
@@ -704,7 +713,7 @@ function mapCopiedMembers(
             ),
         );
     });
-    return holdsRuntimeLeaf(items) ? { partial: items } : { json: items };
+    return dataFact(items);
 }
 
 /**
@@ -850,13 +859,7 @@ export function keepsShaderCreations(
 const shaderMaterialModule = "src/material/shader/shader-material.ts";
 
 /** @unjournaled Pure functions of facts nothing writes once recorded. */
-const pinnedFields = new WeakMap<
-    RecordFacts,
-    Map<
-        string,
-        { readonly json: unknown } | { readonly partial: unknown } | string
-    >
->();
+const pinnedFields = new WeakMap<RecordFacts, Map<string, DataFact | string>>();
 
 /**
  * A field of the ShaderMaterial the pin's `createShaderMaterial` builds
@@ -868,7 +871,7 @@ const pinnedFields = new WeakMap<
 export function pinnedShaderMaterialField(
     facts: RecordFacts,
     field: string,
-): { readonly json: unknown } | { readonly partial: unknown } | string {
+): DataFact | string {
     let fields = pinnedFields.get(facts);
     if (!fields) {
         fields = new Map();
@@ -886,11 +889,7 @@ export function pinnedShaderMaterialField(
     const options: Record<string, unknown> = {};
     /** The copied members holding run-time leaves, by item index. */
     let copied: ReadonlyMap<number, unknown> = new Map();
-    let result:
-        | { readonly json: unknown }
-        | { readonly partial: unknown }
-        | string
-        | undefined;
+    let result: DataFact | string | undefined;
     for (const key of read) {
         const fact = facts.get(key);
         if (fact === undefined || fact === "undefined") continue;
@@ -938,9 +937,7 @@ export function pinnedShaderMaterialField(
                 );
             Reflect.set(item, key, member);
         }
-        result = holdsRuntimeLeaf(value)
-            ? { partial: copyPlainData(value) }
-            : { json: JSON.parse(JSON.stringify(value)) as unknown };
+        result = dataFact(copyPlainData(value));
     }
     fields.set(field, result);
     return result;
@@ -1130,7 +1127,7 @@ function listFact(
             ),
         );
         if (items.includes(notJson)) return "runtime";
-        return holdsRuntimeLeaf(items) ? { partial: items } : { json: items };
+        return dataFact(items);
     });
 }
 
@@ -1337,52 +1334,22 @@ export function recordShaderRecipeStore(
         const table = shaderSideTable(context, receiver);
         if (table && !table.refusal) {
             const creation = key.shaderCreation;
-            const store = table.stores.find(
-                (store) =>
-                    store.set === node && store.creation === creation.site,
-            );
-            const knownTests =
-                store &&
-                store.conditions.every(
-                    ({ test }) =>
-                        context.probeEmission(
-                            () =>
-                                unlessRefused(() =>
-                                    knownCondition(
-                                        context.conditions.compileCondition(
-                                            test,
-                                        ),
-                                    ),
-                                ),
-                            () => false,
-                        ) !== undefined,
-                );
-            const json = context.staticLiteralData(value, stored);
-            const type = mapTypeArguments(context.checker, receiver)?.[1];
-            const written =
-                type && json !== undefined
-                    ? writtenFact(context, type, json, true)
-                    : undefined;
             creation.sideTables!.set(
                 table.map,
-                !store
-                    ? {
-                          refusal:
-                              "the set does not belong to this material's creation site",
-                      }
-                    : !knownTests
-                      ? {
-                            refusal:
-                                "a registration condition is decided at run time for this variant",
-                        }
-                      : written
-                        ? { refusal: `the program may write ${written}` }
-                        : json === undefined
-                          ? {
-                                refusal:
-                                    "the stored value is not generation-evaluable for this variant",
-                            }
-                          : { value: json },
+                sideTableStoreFact(context, table, creation.site, node, () => {
+                    const json = context.staticLiteralData(value, stored);
+                    const type = mapTypeArguments(
+                        context.checker,
+                        receiver,
+                    )?.[1];
+                    return {
+                        json,
+                        written:
+                            type && json !== undefined
+                                ? writtenFact(context, type, json, new Set())
+                                : undefined,
+                    };
+                }),
             );
         }
     }
@@ -1488,10 +1455,7 @@ function mapTypeArguments(
     const type = checker.getNonNullableType(
         checker.getTypeAtLocation(receiver),
     );
-    return (type.flags & ts.TypeFlags.Object) !== 0 &&
-        ((type as ts.ObjectType).objectFlags & ts.ObjectFlags.Reference) !== 0
-        ? checker.getTypeArguments(type as ts.TypeReference)
-        : undefined;
+    return isTypeReference(type) ? checker.getTypeArguments(type) : undefined;
 }
 
 /**
@@ -1562,7 +1526,8 @@ export function materialKeyedMapRead(
  * property of a record type declaring it, a key of a map type holding keys,
  * or the elements of an array the record does not declare readonly (only
  * an assertion makes a readonly one writable). Side-table data also checks
- * observed identities: a generation copy cannot stand for such an object.
+ * observed identities, once per type (`identities` holds the types checked):
+ * a generation copy cannot stand for such an object.
  */
 function writtenFact(
     context: Pick<
@@ -1571,19 +1536,21 @@ function writtenFact(
     >,
     type: ts.Type,
     json: unknown,
-    identities = false,
+    identities?: Set<ts.Type>,
 ): string | undefined {
     if (json === null || typeof json !== "object") return undefined;
     const { checker } = context;
-    if (
-        identities &&
-        sourceTypeHasObservedIdentity(
-            checker,
-            type,
-            programObservations(context.program).identities,
+    if (identities && !identities.has(type)) {
+        identities.add(type);
+        if (
+            sourceTypeHasObservedIdentity(
+                checker,
+                type,
+                programObservations(context.program).identities,
+            )
         )
-    )
-        return `or observe the identity of ${checker.typeToString(type)}`;
+            return `or observe the identity of ${checker.typeToString(type)}`;
+    }
     for (const member of presentMembers(type)) {
         if (Array.isArray(json)) {
             if (!checker.isArrayType(member) && !checker.isTupleType(member))

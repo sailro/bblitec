@@ -442,7 +442,8 @@ export interface LoweringServices {
     ): ShaderSourceText;
     /**
      * Registers the programs a previous compile attempt's
-     * `createShaderMaterial` calls created (`reachLedgerProgram`).
+     * `createShaderMaterial` calls created (`reachLedgerProgram`), once
+     * per attempt; a rolled-back probe's registration does not count.
      */
     reachShaderCreations(): void;
     resolveStaticExpression(

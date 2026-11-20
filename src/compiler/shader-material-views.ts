@@ -25,6 +25,7 @@ import { jsonToValue } from "./json-value.js";
 import type { LoweringServices } from "./lowering-services.js";
 import {
     compileVariantProgram,
+    dataFact,
     effectFreeOptions,
     factsRecord,
     fieldsReadingOthers,
@@ -68,7 +69,9 @@ import {
     functionKind,
     functionOfDeclaration,
     isUpdateExpression,
+    branchPath,
     outermostWrapper,
+    soleReturnedExpression,
     statementsBeside,
     truthinessSelection,
     unwrapExpression,
@@ -159,8 +162,6 @@ export interface ViewDefinitionCondition {
 interface SlotMap {
     readonly declarations:
         "uniformDecls" | "samplerDecls" | "storageBufferDecls";
-    /** The native `ShaderDeclarationList`. */
-    readonly list: "uniforms" | "samplers" | "storage_buffers";
     /** The entry member holding the slot's value or resource, and its data type. */
     readonly held: "value" | "current";
     readonly heldType: DataType;
@@ -169,13 +170,11 @@ interface SlotMap {
 const SLOT_MAPS: Readonly<Record<string, SlotMap>> = {
     _uniformValues: {
         declarations: "uniformDecls",
-        list: "uniforms",
         held: "value",
         heldType: { kind: "f32array" },
     },
     _textureSlots: {
         declarations: "samplerDecls",
-        list: "samplers",
         held: "current",
         heldType: {
             kind: "optional",
@@ -184,7 +183,6 @@ const SLOT_MAPS: Readonly<Record<string, SlotMap>> = {
     },
     _storageBufferSlots: {
         declarations: "storageBufferDecls",
-        list: "storage_buffers",
         held: "current",
         heldType: {
             kind: "optional",
@@ -192,6 +190,11 @@ const SLOT_MAPS: Readonly<Record<string, SlotMap>> = {
         },
     },
 };
+
+/** The native `ShaderDeclarationList` of a slot map's declarations. */
+function nativeList(slots: SlotMap): string {
+    return shaderMaterialField(slots.declarations)!.nativeList!.cpp;
+}
 
 /** A slot map's entry record as the program types it. */
 interface SlotEntryType {
@@ -306,7 +309,7 @@ function readSlotMap(
     context.reachFeature("material:shader-slot-maps", expression);
     const map = context.allocateTemporaryCppName("shader_slots");
     context.emit(`${context.dataTypes.cppType(type.map)} ${map}{};`);
-    const list = `bbl::ShaderDeclarationList::${slots.list}`;
+    const list = nativeList(slots);
     items.forEach((item: unknown, index) => {
         const name = String(Reflect.get(Object(item), "name"));
         const declCpp = decl
@@ -317,9 +320,9 @@ function readSlotMap(
               )
             : undefined;
         const heldCpp =
-            slots.list === "uniforms"
+            slots.declarations === "uniformDecls"
                 ? `bbl::shader_slot_uniform_value(${material.engine}, ${material.cpp}, ${context.cppString(name)}, ${context.cppString(String(Reflect.get(Object(item), "type")))}, ${typeComponents(String(Reflect.get(Object(item), "type")))}u)`
-                : `bbl::${slots.list === "samplers" ? "shader_slot_texture" : "shader_slot_storage_buffer"}(${material.engine}, ${material.cpp}, ${index}u)`;
+                : `bbl::${slots.declarations === "samplerDecls" ? "shader_slot_texture" : "shader_slot_storage_buffer"}(${material.engine}, ${material.cpp}, ${index}u)`;
         const entry = context.allocateTemporaryCppName("shader_slot");
         const parts = type.fields.map((field) =>
             context.dataTypes.structFieldInitializerCpp(
@@ -328,7 +331,7 @@ function readSlotMap(
             ),
         );
         const register =
-            slots.list === "uniforms"
+            slots.declarations === "uniformDecls"
                 ? ""
                 : ` bbl::register_shader_slot_read(${material.engine}, ${material.cpp}, ${list}, ${index}u, ${entry}.weak_identity());`;
         context.emit(
@@ -882,13 +885,7 @@ export function nativeShaderViewRevision(
             functionKind(callback) !== "plain"
         )
             return undefined;
-        const body = callback.body;
-        const value = ts.isBlock(body)
-            ? body.statements.length === 1 &&
-              ts.isReturnStatement(body.statements[0]!)
-                ? body.statements[0].expression
-                : undefined
-            : body;
+        const value = soleReturnedExpression(callback.body);
         return value && context.unwrap(value);
     };
     const callbackField = (expression: ts.Expression): string | undefined => {
@@ -1313,6 +1310,12 @@ function definesOn(checker: ts.TypeChecker, node: ts.Node): boolean {
     );
 }
 
+/** The statements after a view's declaration, and a definition's statement among them. */
+interface DefinitionReach {
+    readonly after: readonly ts.Statement[];
+    readonly statement: ts.ExpressionStatement;
+}
+
 /**
  * The view's declaration and a definition's statement, when the statement
  * runs where the declaration does: after the view's `const` declaration,
@@ -1327,12 +1330,7 @@ function definitionReach(
         Pick<LoweringServices, "program">,
     call: ts.CallExpression,
     view: ts.Identifier,
-):
-    | {
-          readonly after: readonly ts.Statement[];
-          readonly statement: ts.ExpressionStatement;
-      }
-    | undefined {
+): DefinitionReach | undefined {
     const statement = call.parent;
     const symbol = context.symbols.valueSymbol(view);
     const declaration = symbol?.valueDeclaration;
@@ -1356,19 +1354,13 @@ function definitionReach(
         !ts.isExpressionStatement(statement) ||
         unwrapExpression(statement.expression) !== call ||
         !after ||
-        !optionsBinding(context, view)
+        !optionsBinding(context, view) ||
+        "blocked" in
+            branchPath(statement, (node) =>
+                after.some((sibling) => sibling === node),
+            )
     )
         return undefined;
-    let node: ts.Node = statement;
-    while (!after.some((sibling) => sibling === node)) {
-        const parent = node.parent;
-        if (
-            !ts.isBlock(parent) &&
-            !(ts.isIfStatement(parent) && parent.expression !== node)
-        )
-            return undefined;
-        node = parent;
-    }
     // Until then the view is only redefined, so the programs it may draw
     // are the ones its definitions derived. A reference on another branch
     // of an `if` holding the statement does not run before it.
@@ -1467,10 +1459,10 @@ function recordViewDefinition(
     call: ts.CallExpression,
     target: ts.Identifier,
     derived: ReadonlyMap<string, string>,
+    reach: DefinitionReach | undefined,
 ): void {
     const view = context.bindings.lookupOptional(target)!;
     const facts = view.shaderMaterialView!;
-    const reach = definitionReach(context, call, target);
     if (!reach)
         context.fail(
             call,
@@ -1518,6 +1510,7 @@ export function shaderViewCall(
         parameter: ts.Identifier;
         initial: ShaderMaterialView;
         statements: readonly ts.Statement[];
+        reach: DefinitionReach | undefined;
     }> = [];
     const arguments_ = values.map((value, index) => {
         if (!value.shaderMaterialView || !ts.isCallExpression(call))
@@ -1569,6 +1562,7 @@ export function shaderViewCall(
             parameter,
             initial,
             statements: body.statements,
+            reach,
         });
         const updated = withShaderVariants(value, [...programs.keys()]);
         writable(updated).shaderMaterialView = initial;
@@ -1578,7 +1572,7 @@ export function shaderViewCall(
         values: arguments_,
         capture: () => {
             const updates = entries.flatMap(
-                ({ target, parameter, initial, statements }) => {
+                ({ target, parameter, initial, statements, reach }) => {
                     const facts =
                         context.bindings.lookupOptional(
                             parameter,
@@ -1623,6 +1617,7 @@ export function shaderViewCall(
                     return [
                         {
                             target,
+                            reach,
                             programs: programsThrough(
                                 facts,
                                 statements,
@@ -1634,8 +1629,14 @@ export function shaderViewCall(
             );
             return () => {
                 if (!ts.isCallExpression(call)) return;
-                for (const { target, programs } of updates)
-                    recordViewDefinition(context, call, target, programs);
+                for (const { target, reach, programs } of updates)
+                    recordViewDefinition(
+                        context,
+                        call,
+                        target,
+                        programs,
+                        reach,
+                    );
             };
         },
     };
@@ -1751,7 +1752,7 @@ function redefinedListFact(
         () => false,
     );
     if (data === undefined) return "runtime";
-    return holdsRuntimeLeaf(data) ? { partial: data } : { json: data };
+    return dataFact(data);
 }
 
 /**
@@ -1799,13 +1800,13 @@ function viewOptions(
  */
 function slotLayout(
     program: CompiledShaderProgram,
-    installed: ReadonlySet<SlotMap["list"]>,
+    installed: ReadonlySet<SlotMap["declarations"]>,
 ): string {
     return JSON.stringify([
-        installed.has("uniforms") ? [] : program.uniforms,
-        installed.has("samplers") ? [] : program.samplerDeclarations,
+        installed.has("uniformDecls") ? [] : program.uniforms,
+        installed.has("samplerDecls") ? [] : program.samplerDeclarations,
         program.externalTextures ?? [],
-        installed.has("storage_buffers") ? [] : program.storageBuffers,
+        installed.has("storageBufferDecls") ? [] : program.storageBuffers,
     ]);
 }
 
@@ -1857,6 +1858,7 @@ export function compileShaderMaterialViewDefinitions(
     target: ts.Identifier,
     defined: readonly ViewDefinition[],
 ): Value {
+    const reach = definitionReach(context, call, target);
     const apply = (holds?: boolean): ReadonlyMap<string, string> =>
         applyViewDefinitions(
             context,
@@ -1865,6 +1867,7 @@ export function compileShaderMaterialViewDefinitions(
             defined.filter(
                 ({ condition }) => !condition || condition.holds === holds,
             ),
+            reach,
         );
     const test = defined.find(({ condition }) => condition)?.condition?.test;
     const condition = test && context.conditions.compileCondition(test);
@@ -1884,7 +1887,7 @@ export function compileShaderMaterialViewDefinitions(
     }
     // Later uses read the programs every path through the statements up to
     // this one's may leave.
-    recordViewDefinition(context, call, target, programs);
+    recordViewDefinition(context, call, target, programs, reach);
     return { kind: "void", cpp: "" };
 }
 
@@ -1897,6 +1900,7 @@ function applyViewDefinitions(
     call: ts.CallExpression,
     target: ts.Identifier,
     defined: readonly ViewDefinition[],
+    reach: DefinitionReach | undefined,
 ): ReadonlyMap<string, string> {
     const redefinitions = viewRedefinitions(context, defined);
     const definitions = redefinitions.filter(
@@ -1908,7 +1912,7 @@ function applyViewDefinitions(
             ? [slotMapInstall(context, SLOT_MAPS[key]!, value)]
             : [],
     );
-    const installed = new Set(installs.map(({ slots }) => slots.list));
+    const installed = new Set(installs.map(({ slots }) => slots.declarations));
     const view = context.bindings.lookupOptional(target)!;
     let programs: ReadonlyMap<string, string>;
     if (definitions.length > 0)
@@ -1918,9 +1922,9 @@ function applyViewDefinitions(
             target,
             definitions,
             installed,
+            reach,
         );
     else {
-        const reach = definitionReach(context, call, target);
         if (!reach)
             context.fail(
                 call,
@@ -1934,7 +1938,7 @@ function applyViewDefinitions(
         );
     }
     const engine = context.requireEngine(view, call);
-    if (installed.has("uniforms"))
+    if (installed.has("uniformDecls"))
         for (const name of programs.keys())
             if (
                 context.sceneManifest.reachedShaderPrograms.find(
@@ -1954,7 +1958,7 @@ function applyViewDefinitions(
         const entry = context.allocateTemporaryCppName("shader_slot_entry");
         context.emit({
             kind: "expression",
-            code: `{ std::vector<bbl::ShaderViewSlotEntry> ${entries}; for (const auto& ${entry} : ${cpp}) ${entries}.push_back(bbl::ShaderViewSlotEntry{${entry}.first, ${entry}.second.weak_identity(), ${entry}.second->${held}}); bbl::install_shader_view_slots(${engine}, ${view.cpp}, bbl::ShaderDeclarationList::${slots.list}, ${entries}); }`,
+            code: `{ std::vector<bbl::ShaderViewSlotEntry> ${entries}; for (const auto& ${entry} : ${cpp}) ${entries}.push_back(bbl::ShaderViewSlotEntry{${entry}.first, ${entry}.second.weak_identity(), ${entry}.second->${held}}); bbl::install_shader_view_slots(${engine}, ${view.cpp}, ${nativeList(slots)}, ${entries}); }`,
         });
     }
     return programs;
@@ -1971,11 +1975,11 @@ function deriveViewPrograms(
     call: ts.CallExpression,
     target: ts.Identifier,
     definitions: readonly ViewRedefinition[],
-    installed: ReadonlySet<SlotMap["list"]>,
+    installed: ReadonlySet<SlotMap["declarations"]>,
+    reach: DefinitionReach | undefined,
 ): ReadonlyMap<string, string> {
     const view = context.bindings.lookupOptional(target)!;
     const facts = view.shaderMaterialView!;
-    const reach = definitionReach(context, call, target);
     if (!reach)
         context.fail(
             call,
@@ -2026,20 +2030,37 @@ function deriveViewPrograms(
                     definitions.map(({ key, value }): [string, RecordFact] => {
                         // Required-text probes discard their emission, but the
                         // variant dependency must survive: a later creation of
-                        // this same variant may supply a different entry.
+                        // this same variant may supply a different entry. The
+                        // first read generation does not hold names a refusal.
+                        let refused:
+                            | {
+                                  readonly read: ts.CallExpression;
+                                  readonly refusal: string;
+                              }
+                            | undefined;
                         materialKeyedMapRead(
                             context,
                             value,
-                            (_read, receiver) => {
+                            (read, receiver) => {
                                 const table = shaderSideTable(
                                     context,
                                     receiver,
                                 );
-                                if (table && !table.refusal)
-                                    context.sceneManifest.shaderDerivations.readSideTable(
-                                        table.map,
-                                        variant,
-                                    );
+                                const fact =
+                                    table && !table.refusal
+                                        ? context.sceneManifest.shaderDerivations.readSideTable(
+                                              table.map,
+                                              variant,
+                                          )
+                                        : undefined;
+                                const refusal = !table
+                                    ? "the map is not named by a module-private const"
+                                    : (table.refusal ??
+                                      (fact && "refusal" in fact
+                                          ? fact.refusal
+                                          : undefined));
+                                if (refusal !== undefined)
+                                    refused ??= { read, refusal };
                                 return false;
                             },
                         );
@@ -2055,41 +2076,12 @@ function deriveViewPrograms(
                                 `'${spelled(value)}' gives a ShaderMaterial view's '${key}' a '${String(field.copies)}' of '${String(Reflect.get(item, "name"))}' the run time decides; a view's program takes none, so generation keeps none to read.`,
                         );
                         const program = viewProgramFact(field.option, fact);
-                        if (runTimeFact(program)) {
-                            let refusal: string | undefined;
-                            const read = materialKeyedMapRead(
-                                context,
-                                value,
-                                (_read, receiver) => {
-                                    const table = shaderSideTable(
-                                        context,
-                                        receiver,
-                                    );
-                                    if (!table) {
-                                        refusal =
-                                            "the map is not named by a module-private const";
-                                        return true;
-                                    }
-                                    refusal = table.refusal;
-                                    if (refusal) return true;
-                                    const fact =
-                                        context.sceneManifest.shaderDerivations.readSideTable(
-                                            table.map,
-                                            variant,
-                                        );
-                                    if ("refusal" in fact) {
-                                        refusal = fact.refusal;
-                                        return true;
-                                    }
-                                    return false;
-                                },
-                            );
+                        if (runTimeFact(program))
                             context.fail(
                                 value,
                                 unreadableFactRefusal(program) ??
-                                    `A ShaderMaterial view's '${key}' compiles into its program at generation; ${read ? `it reads '${spelled(read)}' (${sceneRelativeSourceLabel(read)}), an entry of a map keyed by ShaderMaterial, which generation does not hold${refusal ? `: ${refusal}` : ""}` : "this value is decided at run time"}.`,
+                                    `A ShaderMaterial view's '${key}' compiles into its program at generation; ${refused ? `it reads '${spelled(refused.read)}' (${sceneRelativeSourceLabel(refused.read)}), an entry of a map keyed by ShaderMaterial, which generation does not hold: ${refused.refusal}` : "this value is decided at run time"}.`,
                             );
-                        }
                         return [field.option, fact];
                     }),
                 ),
