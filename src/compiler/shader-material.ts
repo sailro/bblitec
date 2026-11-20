@@ -1010,6 +1010,11 @@ export function reachLedgerProgram(
     entry: ShaderCreationLedger[number],
 ): string {
     const { name } = reachShaderProgram(context, entry.program);
+    if (entry.sideTables)
+        context.sceneManifest.shaderDerivations.seedSideTables(
+            name,
+            entry.sideTables,
+        );
     for (const facts of entry.creations)
         context.sceneManifest.shaderDerivations.recordCreation(
             name,

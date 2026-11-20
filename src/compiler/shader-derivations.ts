@@ -15,7 +15,6 @@
 // from them (`pinnedShaderMaterialField`).
 import ts from "typescript";
 import { doubleLiteral } from "../cpp-literals.js";
-import { bindingReferences } from "./binding-references.js";
 import { constInitializer } from "./browser-erasure.js";
 import { unlessRefused } from "./compile-error.js";
 import {
@@ -59,7 +58,20 @@ import {
 import type { CompiledShaderMaterialOptions } from "./shader-material.js";
 import type { ShaderStage } from "../shader-ir.js";
 import type { CompiledShaderProgram, Value } from "./types.js";
-import { absenceOf, undefinedValue, valueForKind } from "./values/model.js";
+import {
+    absenceOf,
+    knownCondition,
+    shaderVariantsOf,
+    undefinedValue,
+    valueForKind,
+} from "./values/model.js";
+import {
+    directMapCalls,
+    shaderSideTable,
+    type ShaderSideTableFact,
+} from "./shader-side-tables.js";
+import { programObservations } from "./program-observations.js";
+import { sourceTypeHasObservedIdentity } from "./storage-demand-index.js";
 
 /**
  * One own key of a record: plain data generation knows, plain data some of
@@ -170,6 +182,9 @@ export interface ShaderCreation {
     readonly options: RecordFacts;
     /** The binding that named the options object, in the scope that read it. */
     readonly binding?: { readonly symbol: ts.Symbol; readonly scope: object };
+    /** The creation expression, and its per-material immutable side-table facts. */
+    readonly site?: ts.CallExpression;
+    readonly sideTables?: Map<ts.Symbol, ShaderSideTableFact>;
 }
 
 /** A `get` of a recipe map: the map, and the material key as spelled there. */
@@ -191,13 +206,17 @@ interface RecipeStore {
 }
 
 /**
- * The programs `createShaderMaterial` created in a compile attempt, with the
- * options each was read from: what the next attempt's run-time variant
- * splits take as the whole program's creations.
+ * The programs `createShaderMaterial` created in a compile attempt, with
+ * their options and side-table facts: what the next attempt's run-time
+ * variant splits take as the whole program's creations.
  */
 export type ShaderCreationLedger = readonly {
     readonly program: CompiledShaderProgram;
     readonly creations: readonly (readonly [string, RecordFact])[][];
+    readonly sideTables?: readonly (readonly [
+        ts.Symbol,
+        ShaderSideTableFact,
+    ])[];
 }[];
 
 /**
@@ -259,11 +278,66 @@ export const recipeFactPolicy: JsonValuePolicy = {
 };
 
 /**
- * The recipe stores and derivations generation compiled, by map. A store
- * compiled after a derivation of its map refuses: the derivation's variant
- * table is closed by then.
+ * Creation-owned side-table facts and recipe stores, by material and map.
+ * Side-table read snapshots join the creation ledger when later creations
+ * change them. A recipe store compiled after a derivation of its map
+ * refuses: the recipe derivation's variant table is closed by then.
  */
 export class ShaderDerivationRecorder {
+    private readonly materials = emissionArray<{
+        readonly variant: string;
+        readonly creation: ShaderCreation;
+    }>();
+    private readonly sideTableSeeds = new EmissionMap<
+        string,
+        ReadonlyMap<ts.Symbol, ShaderSideTableFact>
+    >();
+    private readonly sideTableReads = new EmissionMap<
+        ts.Symbol,
+        ReadonlyMap<string, ShaderSideTableFact>
+    >();
+
+    public recordMaterial(variant: string, creation: ShaderCreation): void {
+        this.materials.push({ variant, creation });
+    }
+
+    public seedSideTables(
+        variant: string,
+        facts: readonly (readonly [ts.Symbol, ShaderSideTableFact])[],
+    ): void {
+        this.sideTableSeeds.set(variant, new Map(facts));
+    }
+
+    private materialSideTable(
+        map: ts.Symbol,
+        variant: string,
+    ): ShaderSideTableFact {
+        const facts = this.materials
+            .filter((material) => material.variant === variant)
+            .map(
+                ({ creation }) =>
+                    creation.sideTables?.get(map) ?? { absent: true as const },
+            );
+        const first = facts[0] ?? { absent: true as const };
+        return facts.some(
+            (fact) => JSON.stringify(fact) !== JSON.stringify(first),
+        )
+            ? {
+                  refusal: `materials of shader variant '${variant}' have different side-table entries (including absence)`,
+              }
+            : first;
+    }
+
+    public readSideTable(map: ts.Symbol, variant: string): ShaderSideTableFact {
+        const fact =
+            this.sideTableSeeds.get(variant)?.get(map) ??
+            this.materialSideTable(map, variant);
+        this.sideTableReads.set(
+            map,
+            new Map([...(this.sideTableReads.get(map) ?? []), [variant, fact]]),
+        );
+        return fact;
+    }
     private readonly stores = new EmissionMap<
         ts.Symbol,
         readonly RecipeStore[]
@@ -350,7 +424,16 @@ export class ShaderDerivationRecorder {
         programs: readonly CompiledShaderProgram[],
     ): ShaderCreationLedger | undefined {
         const created = this.createdVariants();
+        const changedSideTables = [...this.sideTableReads].some(
+            ([map, variants]) =>
+                [...variants].some(
+                    ([variant, read]) =>
+                        JSON.stringify(read) !==
+                        JSON.stringify(this.materialSideTable(map, variant)),
+                ),
+        );
         if (
+            !changedSideTables &&
             !this.splits.some((split) =>
                 created.some((variant) => !split.has(variant)),
             )
@@ -359,6 +442,10 @@ export class ShaderDerivationRecorder {
         return created.map((variant) => ({
             program: programs.find((program) => program.name === variant)!,
             creations: this.creationsOf(variant).map((facts) => [...facts]),
+            sideTables: [...this.sideTableReads.keys()].map((map) => [
+                map,
+                this.materialSideTable(map, variant),
+            ]),
         }));
     }
 
@@ -1130,19 +1217,12 @@ function recipeMap(
         return undefined;
     let aliasFree = aliasFreeMaps.get(symbol);
     if (aliasFree === undefined) {
-        aliasFree = bindingReferences(
-            context.program,
-            context.checker,
-            symbol,
-        ).every((reference) => {
-            const access = outermostWrapper(reference).parent;
-            return (
-                ts.isPropertyAccessExpression(access) &&
-                ["get", "set", "has", "delete"].includes(access.name.text) &&
-                ts.isCallExpression(access.parent) &&
-                access.parent.expression === access
-            );
-        });
+        aliasFree =
+            directMapCalls(context, symbol)?.every((call) =>
+                ["get", "set", "has", "delete"].includes(
+                    namedMember(context.checker, call.expression)!.name,
+                ),
+            ) === true;
         aliasFreeMaps.set(symbol, aliasFree);
     }
     return aliasFree ? symbol : undefined;
@@ -1159,16 +1239,51 @@ type RecipeLookupContext = Pick<
 >;
 
 /**
- * A map's `get` (`read`): a recipe map's carries the map and the material
- * it was keyed by (`shaderRecipeLookup`).
+ * A map's `get` (`read`): a proved side table supplies its creation's facts;
+ * otherwise the native read remains. A recipe map's native read carries
+ * the map and material it was keyed by (`shaderRecipeLookup`).
  */
 export function readShaderRecipe(
-    context: RecipeLookupContext,
+    context: RecipeLookupContext &
+        Pick<ShaderDerivationContext, "cppString" | "fail" | "sceneManifest">,
     receiver: ts.Expression,
     key: Value,
     keyNode: ts.Expression,
     read: () => Value,
 ): Value {
+    const variants = shaderVariantsOf(key);
+    const variant = variants?.length === 1 ? variants[0] : undefined;
+    if (
+        key.kind === "material" &&
+        variant !== undefined &&
+        context.sceneManifest.shaderDerivations.creationsOf(variant).length > 0
+    ) {
+        const table = shaderSideTable(context, receiver);
+        if (table && !table.refusal) {
+            // A view has its own identity; registrations only accept actual
+            // createShaderMaterial results, not their views.
+            if (key.shaderMaterialView) return undefinedValue();
+            const fact = key.shaderCreation?.sideTables
+                ? (key.shaderCreation.sideTables.get(table.map) ?? {
+                      absent: true as const,
+                  })
+                : context.sceneManifest.shaderDerivations.readSideTable(
+                      table.map,
+                      variant,
+                  );
+            // A native get remains valid when generation cannot hold its
+            // entry. A required-generation consumer reports the missing proof.
+            if (!("refusal" in fact))
+                return "absent" in fact
+                    ? undefinedValue()
+                    : jsonToValue(
+                          context,
+                          recipeFactPolicy,
+                          fact.value,
+                          keyNode,
+                      );
+        }
+    }
     const lookup = shaderRecipeLookup(context, receiver, key, keyNode);
     const value = read();
     return lookup
@@ -1203,19 +1318,74 @@ function shaderRecipeLookup(
 }
 
 /**
- * Records a recipe map's `set`: the key's variant, the member holding the
- * options its material was created from, and the record's other members.
+ * Records a creation-owned side-table value when proved, and a recipe
+ * map's `set`: the key's variant, the member holding the options its
+ * material was created from, and the record's other members.
  * A store whose options are not provably the key's creation options, or
  * whose records the program may change, makes the map's recipes unknown.
  */
 export function recordShaderRecipeStore(
-    context: RecipeStoreContext,
+    context: RecipeStoreContext &
+        Pick<LoweringServices, "conditions" | "probeEmission">,
     receiver: ts.Expression,
     key: Value,
     stored: ts.Expression,
     value: Value,
     node: ts.Node,
 ): void {
+    if (key.kind === "material" && key.shaderCreation?.sideTables) {
+        const table = shaderSideTable(context, receiver);
+        if (table && !table.refusal) {
+            const creation = key.shaderCreation;
+            const store = table.stores.find(
+                (store) =>
+                    store.set === node && store.creation === creation.site,
+            );
+            const knownTests =
+                store &&
+                store.conditions.every(
+                    ({ test }) =>
+                        context.probeEmission(
+                            () =>
+                                unlessRefused(() =>
+                                    knownCondition(
+                                        context.conditions.compileCondition(
+                                            test,
+                                        ),
+                                    ),
+                                ),
+                            () => false,
+                        ) !== undefined,
+                );
+            const json = context.staticLiteralData(value, stored);
+            const type = mapTypeArguments(context.checker, receiver)?.[1];
+            const written =
+                type && json !== undefined
+                    ? writtenFact(context, type, json, true)
+                    : undefined;
+            creation.sideTables!.set(
+                table.map,
+                !store
+                    ? {
+                          refusal:
+                              "the set does not belong to this material's creation site",
+                      }
+                    : !knownTests
+                      ? {
+                            refusal:
+                                "a registration condition is decided at run time for this variant",
+                        }
+                      : written
+                        ? { refusal: `the program may write ${written}` }
+                        : json === undefined
+                          ? {
+                                refusal:
+                                    "the stored value is not generation-evaluable for this variant",
+                            }
+                          : { value: json },
+            );
+        }
+    }
     if (key.kind !== "material" || !derivesShaderMaterials(context)) return;
     const map = recipeMap(context, receiver);
     if (!map) return;
@@ -1328,13 +1498,16 @@ function mapTypeArguments(
  * The first library `get` of a map keyed by ShaderMaterial whose entry
  * `expression` reads: among its operands, through the initializers of the
  * `const` bindings it names and the returns of the source functions it
- * calls. Generation holds no entry of such a map (a recipe map's `get`
- * carries only its lookup, `readShaderRecipe`), so a value reading one is
- * the run time's.
+ * calls. `include` can exclude entries the current variant's side-table
+ * facts already supply; their reads are not the cause of a refusal.
  */
 export function materialKeyedMapRead(
     context: Pick<ShaderDerivationContext, "checker" | "symbols" | "unwrap">,
     expression: ts.Expression,
+    include: (
+        read: ts.CallExpression,
+        receiver: ts.Expression,
+    ) => boolean = () => true,
 ): ts.CallExpression | undefined {
     const { checker } = context;
     const visited = new Set<ts.Node>();
@@ -1357,7 +1530,12 @@ export function materialKeyedMapRead(
                 calledOrigin(checker, node) === "default-lib"
                     ? mapTypeArguments(checker, callee.expression)?.[0]
                     : undefined;
-            if (key && isShaderMaterialType(key)) return node;
+            if (
+                key &&
+                isShaderMaterialType(key) &&
+                include(node, callee!.expression)
+            )
+                return node;
             const fn = calledFunction(checker, node);
             if (fn?.body && !visited.has(fn)) {
                 visited.add(fn);
@@ -1383,7 +1561,8 @@ export function materialKeyedMapRead(
  * holds (`json`, read as `type`), or undefined when nothing can: a named
  * property of a record type declaring it, a key of a map type holding keys,
  * or the elements of an array the record does not declare readonly (only
- * an assertion makes a readonly one writable).
+ * an assertion makes a readonly one writable). Side-table data also checks
+ * observed identities: a generation copy cannot stand for such an object.
  */
 function writtenFact(
     context: Pick<
@@ -1392,9 +1571,19 @@ function writtenFact(
     >,
     type: ts.Type,
     json: unknown,
+    identities = false,
 ): string | undefined {
     if (json === null || typeof json !== "object") return undefined;
     const { checker } = context;
+    if (
+        identities &&
+        sourceTypeHasObservedIdentity(
+            checker,
+            type,
+            programObservations(context.program).identities,
+        )
+    )
+        return `or observe the identity of ${checker.typeToString(type)}`;
     for (const member of presentMembers(type)) {
         if (Array.isArray(json)) {
             if (!checker.isArrayType(member) && !checker.isTupleType(member))
@@ -1411,7 +1600,8 @@ function writtenFact(
                 const element = checker.isTupleType(member)
                     ? elements[index]
                     : elements[0];
-                const nested = element && writtenFact(context, element, item);
+                const nested =
+                    element && writtenFact(context, element, item, identities);
                 if (nested) return nested;
             }
             continue;
@@ -1433,7 +1623,12 @@ function writtenFact(
             )
                 return `keys of ${checker.typeToString(member)}`;
             for (const item of Object.values(record)) {
-                const nested = writtenFact(context, index.type, item);
+                const nested = writtenFact(
+                    context,
+                    index.type,
+                    item,
+                    identities,
+                );
                 if (nested) return nested;
             }
             continue;
@@ -1446,6 +1641,7 @@ function writtenFact(
                 context,
                 checker.getTypeOfSymbol(property),
                 record[property.name],
+                identities,
             );
             if (nested) return nested;
         }

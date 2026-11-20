@@ -831,11 +831,7 @@ test("a view refuses redefinitions generation cannot derive a program from", () 
         assert.throws(() => compileSource(view(statement, source)), refusal);
 });
 
-test("a view's redefinition reading an entry of a ShaderMaterial-keyed map refuses, naming the map read", () => {
-    // A side table each material's creation declares once: generation holds
-    // the stores, not which entry a material of a variant finds.
-    const compiled = (): ReturnType<typeof compileSource> =>
-        compileSource(`${prelude}
+const sideTableSource = `${prelude}
     import type { Mesh } from "@babylonjs/lite";
     interface Geometry { readonly source: string }
     const geometries = new WeakMap<ShaderMaterial, Geometry>();
@@ -846,18 +842,20 @@ test("a view's redefinition reading an entry of a ShaderMaterial-keyed map refus
     function geometryOf(material: ShaderMaterial): Geometry | undefined {
         return geometries.get(material);
     }
-    function tinted(name: string, tint: string): ShaderMaterial {
+    function tinted(name: string, tint: string, geometry: boolean): ShaderMaterial {
         const material = createShaderMaterial({ name, vertexSource: wgsl\`\${VERT}\`, fragmentSource: wgsl\`\${surface(tint)}\`, attributes: ["position"], uniforms: ["worldViewProjection", "world"] });
-        declareGeometry(material, { source: VERT });
+        if (geometry) declareGeometry(material, { source: VERT + "\\n// geometry projection" });
         return material;
     }
     function depthView(source: ShaderMaterial): ShaderMaterial {
         const view = createMaterialView(source, { features: 0 }) as ShaderMaterial;
         const geometry = geometryOf(source);
         const vertexSource = geometry?.source ?? source.vertexSource;
+        const location = /@location\\((\\d+)\\)\\s*vWorldPos/.exec(vertexSource);
+        const fragmentSource = NORMAL + "\\n// varying " + (location ? Number(location[1]) : -1);
         Object.defineProperties(view, {
             vertexSource: { value: vertexSource, enumerable: true, configurable: true },
-            fragmentSource: { value: wgsl\`\${NORMAL}\`, enumerable: true, configurable: true },
+            fragmentSource: { value: wgsl\`\${fragmentSource}\`, enumerable: true, configurable: true },
         });
         return view;
     }
@@ -865,16 +863,230 @@ test("a view's redefinition reading an entry of a ShaderMaterial-keyed map refus
         const engine = await createEngine({});
         const mesh = createMeshFromData(engine, "tri", new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]), new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]), new Uint32Array([0, 1, 2]));
         const registry = { add(target: Mesh): ShaderMaterial { return depthView(target.material as ShaderMaterial); } };
-        mesh.material = tinted("warm", "vec3<f32>(1.0, 0.5, 0.0)");
+        mesh.material = tinted("warm", "vec3<f32>(1.0, 0.5, 0.0)", true);
         draw(engine, registry.add(mesh));
-        mesh.material = tinted("cold", "vec3<f32>(0.0, 0.5, 1.0)");
+        mesh.material = tinted("cold", "vec3<f32>(0.0, 0.5, 1.0)", false);
         draw(engine, registry.add(mesh));
     }
     void main();
+`;
+
+test("a view reads creation-owned ShaderMaterial side-table entries per variant, including absence", () => {
+    const compiled = compileSource(sideTableSource);
+    assert.match(
+        program(compiled, "warm-1").vertexSource,
+        /geometry projection/,
+    );
+    assert.equal(
+        program(compiled, "cold-1").vertexSource,
+        program(compiled, "cold").vertexSource,
+    );
+    assert.match(program(compiled, "warm-1").fragmentSource, /varying 0/);
+    assert.match(program(compiled, "cold-1").fragmentSource, /varying 0/);
+});
+
+test("ShaderMaterial side tables refuse escaping maps, late stores, deletion and second stores", () => {
+    const cases: readonly [string, string, RegExp][] = [
+        [
+            "const geometries = new WeakMap<ShaderMaterial, Geometry>();",
+            "const geometries = new WeakMap<ShaderMaterial, Geometry>(); const escaped = geometries;",
+            /the map escapes: every reference must be a direct get, has or set call/,
+        ],
+        [
+            "draw(engine, registry.add(mesh));",
+            "declareGeometry(mesh.material as ShaderMaterial, { source: VERT }); draw(engine, registry.add(mesh));",
+            /a set is outside the creation site/,
+        ],
+        [
+            "return geometries.get(material);",
+            "geometries.delete(material); return geometries.get(material);",
+            /the map calls 'delete'; entries must never be deleted, cleared or overwritten/,
+        ],
+        [
+            "if (geometry) declareGeometry(material, { source: VERT",
+            "declareGeometry(material, { source: VERT }); if (geometry) declareGeometry(material, { source: VERT",
+            /a material creation has a second set/,
+        ],
+    ];
+    for (const [from, to, refusal] of cases)
+        assert.throws(
+            () => compileSource(sideTableSource.replace(from, to)),
+            refusal,
+        );
+});
+
+test("ShaderMaterial side-table facts refuse runtime values, conditional registration and inconsistent creations", () => {
+    const cases: readonly [string, string, RegExp][] = [
+        [
+            'source: VERT + "\\n// geometry projection"',
+            "source: VERT + String(Math.random())",
+            /stored value is not generation-evaluable/,
+        ],
+        [
+            "if (geometry) declareGeometry",
+            "if (Math.random() > 0.5) declareGeometry",
+            /registration condition is decided at run time/,
+        ],
+        [
+            'tinted("cold", "vec3<f32>(0.0, 0.5, 1.0)", false)',
+            'tinted("warm", "vec3<f32>(1.0, 0.5, 0.0)", false)',
+            /materials of shader variant 'warm' have different side-table entries \(including absence\)/,
+        ],
+        [
+            "const geometries = new WeakMap<ShaderMaterial, Geometry>();",
+            "const geometries = new WeakMap<ShaderMaterial, Geometry>(); export { geometries };",
+            /map escapes its module through an export/,
+        ],
+    ];
+    for (const [from, to, refusal] of cases)
+        assert.throws(
+            () => compileSource(sideTableSource.replace(from, to)),
+            refusal,
+        );
+});
+
+test("a private Map side table without a guard has one store per creation and folds unmatched captures", () => {
+    const source = sideTableSource
+        .replace(
+            "new WeakMap<ShaderMaterial, Geometry>()",
+            "new Map<ShaderMaterial, Geometry>()",
+        )
+        .replace(
+            'if (geometries.has(material)) throw new Error("Geometry is already declared");',
+            "",
+        )
+        .replace(
+            "/@location\\((\\d+)\\)\\s*vWorldPos/",
+            "/@location\\((\\d+)\\)\\s*missingVarying/",
+        );
+    const compiled = compileSource(source);
+    assert.match(program(compiled, "warm-1").fragmentSource, /varying -1/);
+    assert.match(program(compiled, "cold-1").fragmentSource, /varying -1/);
+});
+
+test("ShaderMaterial registrations refuse hidden control flow, early completion and escaped keys", () => {
+    const cases: readonly [string, string, RegExp][] = [
+        [
+            "if (geometry) declareGeometry",
+            "geometry && declareGeometry",
+            /registration is not a straight-line statement or an if branch/,
+        ],
+        [
+            "geometries.set(material",
+            "if (Math.random() > 0.5) return; geometries.set(material",
+            /a registration helper can return before its set/,
+        ],
+        [
+            "if (geometry) declareGeometry",
+            "escaped = material; if (geometry) declareGeometry",
+            /the material escapes before its side-table entry is set/,
+        ],
+    ];
+    for (const [from, to, refusal] of cases)
+        assert.throws(
+            () =>
+                compileSource(
+                    sideTableSource
+                        .replace(
+                            "interface Geometry",
+                            "let escaped: ShaderMaterial | undefined; interface Geometry",
+                        )
+                        .replace(from, to),
+                ),
+            refusal,
+        );
+});
+
+test("ordinary native ShaderMaterial map reads need no generation creation ledger", () => {
+    const compiled = compileSource(`${prelude}
+    const labels = new WeakMap<ShaderMaterial, { readonly text: string }>();
+    async function main(): Promise<void> {
+        const engine = await createEngine({});
+        const material = createShaderMaterial(${groundOptions});
+        labels.set(material, { text: "registered" });
+        console.log(labels.get(material)?.text ?? "missing");
+        draw(engine, material);
+    }
+    void main();
 `);
+    assert.match(compiled.cpp, /\.get\(/);
+});
+
+test("side-table reads inside discarded view probes still check later creations of the same variant", () => {
+    const source = sideTableSource
+        .replace(
+            "new WeakMap<ShaderMaterial, Geometry>()",
+            "new Map<ShaderMaterial, Geometry>()",
+        )
+        .replace(
+            /function depthView[\s\S]*?(?= {4}async function main)/,
+            `function depthView(source: ShaderMaterial): ShaderMaterial {
+        const view = createMaterialView(source, { features: 0 }) as ShaderMaterial;
+        Object.defineProperties(view, {
+            vertexSource: { value: wgsl\`\${geometries.get(source)!.source}\` },
+            fragmentSource: { value: NORMAL },
+        });
+        return view;
+    }
+`,
+        )
+        .replace(
+            'tinted("cold", "vec3<f32>(0.0, 0.5, 1.0)", false)',
+            'tinted("warm", "vec3<f32>(1.0, 0.5, 0.0)", false)',
+        );
     assert.throws(
-        compiled,
-        /A ShaderMaterial view's 'vertexSource' compiles into its program at generation; it reads 'geometries\.get\(material\)' \(input\.ts:\d+:\d+\), an entry of a map keyed by ShaderMaterial, which generation does not hold\./,
+        () => compileSource(source),
+        /materials of shader variant 'warm' have different side-table entries \(including absence\)/,
+    );
+});
+
+test("creation-owned side-table view programs select the derived variant natively", (t) => {
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native compiler required.");
+        return;
+    }
+    const { compiled, cpp } = compileShaderMaterialFixture(sideTableSource);
+    const views = new FactoryLowerer(
+        new LoweringContext(),
+    ).lowerNoColorMaterialViews(false, false, false, false, true).source;
+    const id = (name: string): number =>
+        compiled.manifest.customShaderPrograms.findIndex(
+            (candidate) => candidate.name === name,
+        );
+    for (const name of ["warm-1", "cold-1"])
+        assert.match(
+            compiled.cpp,
+            new RegExp(
+                `bbl::derive_shader_material_view\\([^;]*, ${id(name)}u, false\\)`,
+            ),
+        );
+    runGeneratedProgram(
+        native,
+        "shader-material-views/side-tables",
+        `
+${cpp}
+#include <cstdio>
+namespace bbl {
+namespace {
+${cppFunction(views, "MaterialHandle create_no_color_material_view(")}
+}
+${cppFunction(views, "MaterialHandle create_shader_material_view(")}
+${cppFunction(views, "void derive_shader_material_view(")}
+${cppFunction(views, "std::uint32_t shader_material_view_variant(")}
+}
+int main() {
+    bbl::Engine engine;
+    for (const std::uint32_t source : {${id("warm")}u, ${id("cold")}u}) {
+        const auto material = bbl::create_shader_material(engine, source);
+        const auto view = bbl::create_shader_material_view(engine, material);
+        bbl::derive_shader_material_view(engine, view, source == ${id("warm")}u ? ${id("warm-1")}u : ${id("cold-1")}u, false);
+        const auto& record = bbl::handle_at(engine.materials, view);
+        std::printf("%s ", std::string(bbl::upstream::shader_variant_info(record.shader_variant).name).c_str());
+    }
+}
+`,
+        { expectedOutput: "warm-1 cold-1 " },
     );
 });
 

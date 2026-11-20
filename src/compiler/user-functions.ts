@@ -9,6 +9,7 @@ import {
     withNativeMetadata,
 } from "./types.js";
 import { armSpecializesCall, fixedByCaseSplit } from "./runtime-case-split.js";
+import { materialKeyedMapRead } from "./shader-derivations.js";
 import { metadataFieldsForKind } from "./values/metadata.js";
 import { isJsonValue } from "./json-bridge.js";
 import { activeSurvey } from "./survey.js";
@@ -2685,6 +2686,16 @@ export class UserFunctionLowerer {
         argumentValues: readonly Value[],
         pinArguments: boolean,
     ): Value | undefined {
+        // A side-table read specializes with the material's creation variant;
+        // a shared native return would drop that entry's generation facts.
+        if (
+            ts.isCallExpression(call) &&
+            argumentValues.some(
+                (value) => value.sceneShaderVariant !== undefined,
+            ) &&
+            materialKeyedMapRead(context, call)
+        )
+            return undefined;
         if (
             argumentValues.some(
                 (value) =>

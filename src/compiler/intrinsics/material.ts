@@ -1,4 +1,5 @@
 import { texture2DFromRecord } from "../data-sinks/resources.js";
+import { creationSideTables } from "../shader-side-tables.js";
 import { isPbrMaterialValue } from "../values/model.js";
 import {
     compileCreateExternalTexture,
@@ -1276,6 +1277,19 @@ function compileShaderMaterialCreation(
         const variant =
             context.intrinsicOptions.compileShaderMaterialOptions(options);
         const binding = optionsBinding(context, argumentAt(call, 0));
+        const shaderCreation = variant.creation
+            ? {
+                  options: variant.creation,
+                  ...(binding ? { binding } : {}),
+                  site: call,
+                  sideTables: creationSideTables(context, call),
+              }
+            : undefined;
+        if (shaderCreation)
+            context.sceneManifest.shaderDerivations.recordMaterial(
+                variant.name,
+                shaderCreation,
+            );
         if (variant.creation)
             context.sceneManifest.shaderDerivations.recordCreation(
                 variant.name,
@@ -1295,12 +1309,9 @@ function compileShaderMaterialCreation(
                 : {}),
             facts: {
                 ...shaderVariantFacts([variant.name]),
-                ...(variant.creation
+                ...(shaderCreation
                     ? {
-                          shaderCreation: {
-                              options: variant.creation,
-                              ...(binding ? { binding } : {}),
-                          },
+                          shaderCreation,
                       }
                     : {}),
             },

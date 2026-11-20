@@ -91,6 +91,7 @@ import {
 } from "./values/model.js";
 import { unlessRefused } from "./compile-error.js";
 import { sceneRelativeSourceLabel } from "../source-location.js";
+import { shaderSideTable } from "./shader-side-tables.js";
 
 /** A `createMaterialView` over a ShaderMaterial. */
 export interface ShaderMaterialView {
@@ -1988,7 +1989,7 @@ function deriveViewPrograms(
     const source = facts.source;
     const compileRedefinitions = (variant: string): RecordFacts =>
         context.bindings.withBoundParameters(
-            facts.sourceName && current.size > 1
+            facts.sourceName
                 ? [
                       {
                           name: facts.sourceName,
@@ -2000,6 +2001,25 @@ function deriveViewPrograms(
             () =>
                 new Map(
                     definitions.map(({ key, value }): [string, RecordFact] => {
+                        // Required-text probes discard their emission, but the
+                        // variant dependency must survive: a later creation of
+                        // this same variant may supply a different entry.
+                        materialKeyedMapRead(
+                            context,
+                            value,
+                            (_read, receiver) => {
+                                const table = shaderSideTable(
+                                    context,
+                                    receiver,
+                                );
+                                if (table && !table.refusal)
+                                    context.sceneManifest.shaderDerivations.readSideTable(
+                                        table.map,
+                                        variant,
+                                    );
+                                return false;
+                            },
+                        );
                         const field = shaderMaterialField(key)!;
                         const fact = viewDefinitionFact(
                             field.option,
@@ -2013,11 +2033,38 @@ function deriveViewPrograms(
                         );
                         const program = viewProgramFact(field.option, fact);
                         if (runTimeFact(program)) {
-                            const read = materialKeyedMapRead(context, value);
+                            let refusal: string | undefined;
+                            const read = materialKeyedMapRead(
+                                context,
+                                value,
+                                (_read, receiver) => {
+                                    const table = shaderSideTable(
+                                        context,
+                                        receiver,
+                                    );
+                                    if (!table) {
+                                        refusal =
+                                            "the map is not named by a module-private const";
+                                        return true;
+                                    }
+                                    refusal = table.refusal;
+                                    if (refusal) return true;
+                                    const fact =
+                                        context.sceneManifest.shaderDerivations.readSideTable(
+                                            table.map,
+                                            variant,
+                                        );
+                                    if ("refusal" in fact) {
+                                        refusal = fact.refusal;
+                                        return true;
+                                    }
+                                    return false;
+                                },
+                            );
                             context.fail(
                                 value,
                                 unreadableFactRefusal(program) ??
-                                    `A ShaderMaterial view's '${key}' compiles into its program at generation; ${read ? `it reads '${spelled(read)}' (${sceneRelativeSourceLabel(read)}), an entry of a map keyed by ShaderMaterial, which generation does not hold` : "this value is decided at run time"}.`,
+                                    `A ShaderMaterial view's '${key}' compiles into its program at generation; ${read ? `it reads '${spelled(read)}' (${sceneRelativeSourceLabel(read)}), an entry of a map keyed by ShaderMaterial, which generation does not hold${refusal ? `: ${refusal}` : ""}` : "this value is decided at run time"}.`,
                             );
                         }
                         return [field.option, fact];

@@ -394,6 +394,11 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
   the program's `createShaderMaterial` calls create, later ones included, and takes at run time the arm its
   argument's variant selects through a generated table; a variant outside the table throws. Compiled before any
   creation, it takes the arms of the later ones; where the program creates none, it refuses.
+  A module-private `const Map`/`WeakMap` keyed by ShaderMaterial can supply generation-known entries per variant.
+  Every reference must call `get`, `has` or `set`; each material has one store at its creation site before escaping,
+  directly or through a helper whose calls are all direct. Registration conditions and stored data must be known
+  for the variant, with no later writes or observed identity of the stored data. Variants without a store read
+  `undefined`; different entries for creations of one variant, escaping maps, late or repeated stores and deletion refuse.
   A typed uniform declaration of a system matrix (`mat4x4<f32>`, no default) is that system uniform.
   `createShaderNoColorMaterialView` shares source uniforms and resource bindings; it and `createStandardNoColorMaterialView`
   may run in a loop of run-time passes. `createMaterialView(source, { features: 0 })` over a ShaderMaterial shares

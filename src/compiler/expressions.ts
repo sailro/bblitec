@@ -8465,21 +8465,37 @@ export class ExpressionLowerer {
                 argumentAt(call, 0),
             );
             this.context.reachJsData();
+            // A literal creates a fresh RegExp on each evaluation, so folding
+            // it cannot lose a stored expression's lastIndex mutation.
+            if (
+                ts.isRegularExpressionLiteral(regexpExpression) &&
+                inputValue.staticString !== undefined
+            ) {
+                const { pattern, flags } =
+                    regularExpressionParts(regexpExpression)!;
+                const matched = new RegExp(pattern, flags).exec(
+                    inputValue.staticString,
+                );
+                this.context.emitDiscardedValue(inputValue);
+                if (memberName === "test")
+                    return booleanValue(String(matched !== null));
+                return matched === null
+                    ? nullValue()
+                    : {
+                          kind: "tuple",
+                          cpp: "",
+                          tupleElements: Array.from(matched, (capture) =>
+                              capture === undefined
+                                  ? undefinedValue()
+                                  : {
+                                        kind: "string",
+                                        cpp: this.context.cppString(capture),
+                                        staticString: capture,
+                                    },
+                          ),
+                      };
+            }
             if (memberName === "test") {
-                // A literal creates a fresh RegExp on each evaluation, so folding
-                // it cannot lose a stored expression's lastIndex mutation.
-                if (
-                    ts.isRegularExpressionLiteral(regexpExpression) &&
-                    inputValue.staticString !== undefined
-                ) {
-                    const { pattern, flags } =
-                        regularExpressionParts(regexpExpression)!;
-                    const matched = new RegExp(pattern, flags).test(
-                        inputValue.staticString,
-                    );
-                    this.context.emitDiscardedValue(inputValue);
-                    return booleanValue(String(matched));
-                }
                 return {
                     kind: "boolean",
                     cpp: `${owner.cpp}.test(${input})`,
