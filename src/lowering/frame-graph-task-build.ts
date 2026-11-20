@@ -142,6 +142,7 @@ export function lowerFrameGraphTaskBuild(
     `,
         "Render task record",
     );
+    const disposedRecord = pinnedErrorCode(context, renderRecord);
     const [, recordCall, initialize] = statements;
     // A program callback may append a task and reallocate the task vector.
     const recorded = taskMethodSlots
@@ -167,7 +168,7 @@ export function lowerFrameGraphTaskBuild(
                 return [
                     `${indent}if (task.kind == FrameTaskKind::render) {`,
                     `${indent}    if ${taskDisposedCpp("task", true)}`,
-                    `${indent}        throw std::runtime_error("RenderTask has been disposed.");`,
+                    `${indent}        throw std::runtime_error("#${disposedRecord}");`,
                     // Registration records each queued task once; a
                     // recorded task's next draw-list build re-records it.
                     `${indent}    if (task.record_state != FrameTaskRecordState::recorded) record_render_task(scene, task);`,

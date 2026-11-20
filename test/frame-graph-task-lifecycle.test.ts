@@ -337,7 +337,7 @@ int main() {
         out += std::string(out.empty() ? "" : "|") + name + ":" + released + ":" + std::to_string(record.render_meshes.size()) + ":" +
                refusal([&] { add_render_task_mesh(engine, handle, {0}, {0}, false); }) + ":" +
                // The record's first statement (build_frame_graph_task).
-               refusal([&] { if (record.disposed) throw std::runtime_error("RenderTask has been disposed."); });
+               refusal([&] { if (record.disposed) throw std::runtime_error("#167"); });
     }
     std::cout << out;
 }

@@ -130,7 +130,7 @@ int main(int argc, char** argv) {
                 require(std::string(error.what()) == "GS vertex count mismatch",
                         "count diagnostic");
             if (length == 0u)
-                require(std::string(error.what()) == "splat buffer is empty", "empty diagnostic");
+                require(std::string(error.what()) == "#335", "empty diagnostic");
         }
         require(caught, "invalid update accepted");
         require(mesh.data_version == 2 && mesh.splats_data->data() == replacement.data(),

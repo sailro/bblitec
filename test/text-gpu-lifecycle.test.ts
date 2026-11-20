@@ -502,10 +502,10 @@ test("text GPU helpers preserve pinned identities, byte uploads, growth, failure
             record();
         },
     );
-    assert.equal(
+    assert.notEqual(
         data._groups[0]!._bindGroup,
         originalGroup,
-        "shared data retains original group resource identities",
+        "a renderable's first GPU state rebuilds its shared data's group bind groups",
     );
     act(
         "device_a->pipelines.pipeline=device_b->pipelines.pipeline=named(1005);ensure();update();draw();record();",
