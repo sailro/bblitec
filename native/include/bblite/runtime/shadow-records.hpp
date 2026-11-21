@@ -101,17 +101,17 @@ struct CsmStaticCacheState {
 
 struct ShadowMaterialSnapshot {
     MaterialHandle view;
-    std::uint64_t generation;
-    std::uint32_t features;
-    bool active;
+    std::uint64_t generation{};
+    std::uint32_t features{};
+    bool active{};
 };
 
 /** The inputs of a retained no-color caster packet. */
 struct ShadowCasterSnapshot {
     MaterialHandle material;
     MaterialHandle view;
-    std::uint64_t renderable_generation;
-    std::uint64_t view_generation;
+    std::uint64_t renderable_generation{};
+    std::uint64_t view_generation{};
     bool operator==(const ShadowCasterSnapshot&) const = default;
 };
 

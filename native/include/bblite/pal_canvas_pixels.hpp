@@ -610,6 +610,8 @@ inline CanvasImageData compose_canvas_image_data(const UiElementRecord::CanvasSt
         if (std::abs(determinant) < 1e-12)
             continue;
         const auto bounds = canvas_draw_bounds(draw);
+        if (!bounds)
+            continue;
         // Pixels whose centres the quad covers, as the UI compositor rasterizes it.
         const auto [first_row, end_row] =
             axis_pixels(std::floor(bounds->top), std::ceil(bounds->bottom), top, bottom);
