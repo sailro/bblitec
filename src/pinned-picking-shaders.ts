@@ -21,6 +21,9 @@ import {
     importPinnedModule,
     importPinnedModuleWithExports,
 } from "./pinned-shader-composer.js";
+import { stringLiteral } from "./cpp-literals.js";
+import { contentKey } from "./content-key.js";
+import type { PickDiscardRuleManifest } from "./compiler/types.js";
 
 /** The pinned module that builds the mesh half. */
 const meshShaderModule = "picking/picking-shader.js";
@@ -34,7 +37,7 @@ const billboardPipelineModule = "picking/billboard-pick-pipeline.js";
 interface MeshShaderExports {
     pickingShaderSource(options?: {
         discardWgsl?: string;
-        storage?: readonly unknown[];
+        storage?: readonly { name: string; type: string }[];
         _vertexProjection?: unknown;
     }): string;
 }
@@ -65,9 +68,15 @@ interface PickingVertexProjectionShader {
     regularBody: string;
 }
 
+/** What the pin's pick shader builders read of a `PickDiscardRule`. */
+interface PickDiscardShaderRule {
+    wgsl: string;
+    storage: readonly { name: string; type: string }[];
+}
+
 interface DetailedPipelineExports {
     shader(
-        rule: null,
+        rule: PickDiscardShaderRule | null,
         projection: PickingVertexProjectionShader | null,
     ): string;
 }
@@ -310,9 +319,9 @@ interface AdvancedVariantExports {
     pickingShaderVariantSource(
         thinInstance: boolean,
         options: {
-            discardWgsl: undefined;
-            worldAdjustWgsl: undefined;
-            storage: undefined;
+            discardWgsl: string | undefined;
+            worldAdjustWgsl: string | undefined;
+            storage: readonly { name: string; type: string }[] | undefined;
             vertexDataComponents: number;
             exposeVertexData: boolean;
             detailed: boolean;
@@ -424,6 +433,232 @@ struct PickVatVariant {
 };
 inline constexpr std::array<PickVatVariant, ${variants.length}> pick_vat_variants{{
 ${variants.map((variant, index) => `    {${variant.thin}, ${variant.instanceStorage}, "picking-vat-${index}.vert", "picking-vat-${index}.frag"},`).join("\n")}
+}};
+}
+`;
+}
+
+/** One composed `discard` rule and the module each pick pipeline it reaches draws. */
+export interface PickDiscardShader {
+    rule: PickDiscardRuleManifest;
+    /** Whether the rule takes the advanced pipeline for every candidate. */
+    advanced: boolean;
+    /**
+     * The components of the rule's `vertexData` attribute and the location
+     * the vertex stage reads it at (`vertexDataLayout`), 0 without one.
+     */
+    vertexDataComponents: number;
+    vertexDataLocation: number;
+    /** The regular mesh module: `picking-pipeline.ts`'s, or the advanced one's. */
+    regular: string;
+    /** The advanced thin-instance module, where thin instances pick. */
+    thin?: string;
+    /** The detailed mesh module, where a pick is detailed. */
+    detailed?: string;
+    /** The regular and detailed modules for a mesh without the `vertexData` attribute. */
+    regularBare?: string;
+    detailedBare?: string;
+}
+
+/** A composed rule's pick pipelines, in the order both PALs index them. */
+export const pickDiscardPipelines = [
+    "regular",
+    "thin",
+    "detailed",
+    "regularBare",
+    "detailedBare",
+] as const;
+
+interface AdvancedPipelineExports {
+    vertexDataLayout(
+        attribute: string,
+        interleave: undefined,
+    ): {
+        components: number;
+        layout: { attributes: readonly { shaderLocation: number }[] };
+    };
+}
+
+/**
+ * Each rule's modules from the pin's own builders, called with the options
+ * its pipelines pass. A rule with a world adjustment, vertex data or
+ * vertex-visible storage takes the advanced pipeline for every candidate
+ * (`needsAdvancedPipeline`): its regular and detailed modules are
+ * `createPipeline`'s, with the attribute's components where the mesh has
+ * it (`getPickingRegularPipeline`) and none where it does not. Any other
+ * rule's are `getPickingPipelineSet(engine, rule)`'s of the regular and
+ * detailed modules. The thin-instance module is the advanced pipeline's
+ * `thinInstancePipeline` either way.
+ */
+export async function composePickDiscardShaders(
+    rules: readonly PickDiscardRuleManifest[],
+    options: { thin: boolean; detailed: boolean },
+): Promise<PickDiscardShader[]> {
+    if (rules.length === 0) return [];
+    const basic = await importPinnedModule<MeshShaderExports>(meshShaderModule);
+    const advanced = await importPinnedModule<AdvancedVariantExports>(
+        advancedMeshShaderModule,
+    );
+    const pipeline =
+        await importPinnedModuleWithExports<AdvancedPipelineExports>(
+            "picking/picking-advanced-pipeline.js",
+            ["vertexDataLayout"],
+        );
+    const detailedModule = options.detailed
+        ? await importPinnedModuleWithExports<DetailedPipelineExports>(
+              detailedPipelineModule,
+              ["shader"],
+          )
+        : undefined;
+    return rules.map((rule) => {
+        const variant = (
+            thinInstance: boolean,
+            vertexDataComponents: number,
+            detailed: boolean,
+        ): string =>
+            advanced.pickingShaderVariantSource(thinInstance, {
+                discardWgsl: rule.wgsl,
+                worldAdjustWgsl: rule.worldAdjustWgsl,
+                storage: rule.storage,
+                vertexDataComponents,
+                exposeVertexData: rule.vertexData !== undefined,
+                detailed,
+                _vertexProjection: undefined,
+            });
+        const layout =
+            rule.vertexData === undefined
+                ? undefined
+                : pipeline.vertexDataLayout(rule.vertexData, undefined);
+        const components = layout?.components ?? 0;
+        const thin = options.thin ? { thin: variant(true, 0, false) } : {};
+        if (
+            rule.worldAdjustWgsl === undefined &&
+            rule.vertexData === undefined &&
+            !rule.storage.some((entry) => entry.vertex)
+        )
+            return {
+                rule,
+                advanced: false,
+                vertexDataComponents: 0,
+                vertexDataLocation: 0,
+                regular: basic.pickingShaderSource({
+                    discardWgsl: rule.wgsl,
+                    storage: rule.storage,
+                }),
+                ...thin,
+                ...(detailedModule
+                    ? { detailed: detailedModule.shader(rule, null) }
+                    : {}),
+            };
+        return {
+            rule,
+            advanced: true,
+            vertexDataComponents: components,
+            vertexDataLocation:
+                layout?.layout.attributes[0]?.shaderLocation ?? 0,
+            regular: variant(false, components, false),
+            ...thin,
+            ...(options.detailed
+                ? { detailed: variant(false, components, true) }
+                : {}),
+            ...(components > 0
+                ? {
+                      regularBare: variant(false, 0, false),
+                      ...(options.detailed
+                          ? { detailedBare: variant(false, 0, true) }
+                          : {}),
+                  }
+                : {}),
+        };
+    });
+}
+
+/** The deployed stem of a composed rule's module for one pipeline. */
+export function pickDiscardStem(
+    index: number,
+    pipeline: (typeof pickDiscardPipelines)[number],
+): string {
+    const suffix = pipeline.replace(
+        /[A-Z]/g,
+        (letter) => `-${letter.toLowerCase()}`,
+    );
+    return `picking-discard-${index}${pipeline === "regular" ? "" : `-${suffix}`}`;
+}
+
+/**
+ * The content key (`contentKey`) of what a rule's modules splice: its WGSL,
+ * its world adjustment (empty where absent), then each storage entry's name
+ * and type, each text ended by a NUL. The native pick frames the rule it is
+ * handed the same way (`prepare_pick_discard`).
+ */
+export function pickDiscardContentKey(rule: PickDiscardRuleManifest): string {
+    return contentKey(
+        new TextEncoder().encode(
+            [
+                rule.wgsl,
+                rule.worldAdjustWgsl ?? "",
+                ...rule.storage.flatMap((entry) => [entry.name, entry.type]),
+            ]
+                .map((text) => `${text}\0`)
+                .join(""),
+        ),
+    );
+}
+
+/**
+ * The composed rules in the order both PALs select them by key: the
+ * members the pin's pipeline cache keys on (`ruleKey`), the content key of
+ * what their modules splice and each pipeline's deployed stem.
+ */
+export function pickDiscardHeader(
+    variants: readonly PickDiscardShader[],
+): string {
+    const stems = (variant: PickDiscardShader, index: number): string =>
+        pickDiscardPipelines
+            .map((pipeline) =>
+                variant[pipeline] === undefined
+                    ? "nullptr"
+                    : JSON.stringify(pickDiscardStem(index, pipeline)),
+            )
+            .join(", ");
+    return `#pragma once
+#include <array>
+#include <cstddef>
+#include <cstdint>
+namespace bbl::upstream {
+struct PickDiscardVariant {
+    const char* key;
+    /** The rule's \`vertexData\`, or nullptr, its components and location (\`vertexDataLayout\`). */
+    const char* vertex_data;
+    std::size_t vertex_data_components;
+    std::uint32_t vertex_data_location;
+    bool world_adjust;
+    /** Each storage entry's stage in declaration order: \`v\` vertex-visible, \`f\` fragment-only. */
+    const char* stages;
+    std::size_t storage_count;
+    /** Each storage entry's WGSL variable, which binds it at group 2 in declaration order. */
+    const char* const* storage_names;
+    /** \`content_key\` of the WGSL, world adjustment and storage layout the modules splice. */
+    const char* content;
+    /** Each pipeline's stem in \`pickDiscardPipelines\` order, null where not composed. */
+    std::array<const char*, ${pickDiscardPipelines.length}> stems;
+};
+${variants
+    .map((variant, index) =>
+        variant.rule.storage.length === 0
+            ? ""
+            : `inline constexpr std::array<const char*, ${variant.rule.storage.length}> pick_discard_storage_${index}{${variant.rule.storage.map((entry) => stringLiteral(entry.name)).join(", ")}};
+`,
+    )
+    .join(
+        "",
+    )}inline constexpr std::array<PickDiscardVariant, ${variants.length}> pick_discard_variants{{
+${variants
+    .map(
+        (variant, index) =>
+            `    {${stringLiteral(variant.rule.key)}, ${variant.rule.vertexData === undefined ? "nullptr" : stringLiteral(variant.rule.vertexData)}, ${variant.vertexDataComponents}, ${variant.vertexDataLocation}, ${variant.rule.worldAdjustWgsl !== undefined}, "${variant.rule.storage.map((entry) => (entry.vertex ? "v" : "f")).join("")}", ${variant.rule.storage.length}, ${variant.rule.storage.length === 0 ? "nullptr" : `pick_discard_storage_${index}.data()`}, ${stringLiteral(pickDiscardContentKey(variant.rule))}, {${stems(variant, index)}}},`,
+    )
+    .join("\n")}
 }};
 }
 `;

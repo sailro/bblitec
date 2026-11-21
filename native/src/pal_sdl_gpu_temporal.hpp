@@ -2,7 +2,6 @@
 
 #include <bblite/runtime.hpp>
 #include <SDL3/SDL_gpu.h>
-#include "pal_sdl_gpu_commands.hpp"
 #include "pal_sdl_gpu_indexed_draw.hpp"
 #include "pal_sdl_gpu_writes.hpp"
 
@@ -71,10 +70,12 @@ struct PreparedSdlDraw {
 };
 
 struct PreparedSdlScenePass {
-    SDL_GPUColorTargetInfo target{};
+    /** Absent for a depth-only pass. */
+    std::optional<SDL_GPUColorTargetInfo> target{};
     std::optional<SDL_GPUDepthStencilTargetInfo> depth{};
-    std::optional<SDL_GPUViewport> viewport{};
-    std::optional<SDL_Rect> scissor{};
+    /** The R32 copy a depth-only pass refreshes after it (`encode_metal_depth_copy`). */
+    SDL_GPUTexture* depth_copy = nullptr;
+    std::optional<PixelViewport> viewport{};
     std::vector<PreparedSdlDraw> draws{};
 };
 
@@ -107,19 +108,6 @@ inline void encode_sdl_gpu_prepared_draw(SDL_GPUCommandBuffer* command, SDL_GPUR
                              static_cast<Uint32>(draw.vertex_buffers.size()));
     SDL_BindGPUIndexBuffer(pass, &draw.indices, SDL_GPU_INDEXELEMENTSIZE_32BIT);
     encode_sdl_gpu_indexed_draw(pass, draw.index_count, draw.instance_count, draw.indirect_args);
-}
-
-inline void encode_sdl_gpu_prepared_scene(SDL_GPUCommandBuffer* command,
-                                          const PreparedSdlScenePass& scene) {
-    SdlRenderPass pass{
-        SDL_BeginGPURenderPass(command, &scene.target, 1, scene.depth ? &*scene.depth : nullptr)};
-    if (scene.viewport)
-        SDL_SetGPUViewport(pass, &*scene.viewport);
-    if (scene.scissor)
-        SDL_SetGPUScissor(pass, &*scene.scissor);
-    for (const auto& draw : scene.draws)
-        encode_sdl_gpu_prepared_draw(command, pass, draw);
-    pass.end();
 }
 
 } // namespace bbl::pal

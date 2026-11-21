@@ -178,6 +178,14 @@ WGPUTextureView shadow_map_view(DawnState& state, const Engine& engine,
     return map.depth_sampled_view;
 }
 
+DawnCsmReceiverBinding csm_receiver_binding(DawnState& state, const Engine& engine,
+                                            ShadowGeneratorHandle generator) {
+    if (generator.value >= engine.shadow_generators.size())
+        pal::refuse_invalid_frame_handle("A CSM receiver texture has an invalid generator.");
+    ensure_shadow_samplers(state);
+    return {shadow_map_view(state, engine, generator), state.shadow_comparison_sampler};
+}
+
 std::vector<ShadowGeneratorHandle> shadow_generators_in_light_order(const Scene& scene,
                                                                     const Engine& engine) {
     // One entry per scene light, so a row's light slot indexes it directly.

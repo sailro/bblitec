@@ -20,6 +20,7 @@ import type { LoweredSource, LoweringContext } from "./context.js";
 import { recordAt } from "../compiler/record-access.js";
 import { lowerEffectWrapperDisposal } from "./effect-wrapper-disposal.js";
 import { lowerEffectTaskDisposal } from "./frame-graph-task-disposal.js";
+import { effectTaskRecordBody } from "./frame-graph-task-build.js";
 import {
     pinnedErrorCode,
     pinnedErrorCodeOf,
@@ -276,15 +277,16 @@ ${lanes.join("\n")}
  * replacement when there is one, and the pin's own method is the default a
  * replacement typically wraps (`const record = task.record.bind(task)`).
  */
-function lowerEffectTaskMethods(bindGroup: boolean, disposal: boolean): string {
+function lowerEffectTaskMethods(context: LoweringContext): string {
     const task = recordAt("engine.frame_tasks", "handle");
     return `
 // The pin's EffectRenderTask.record: it builds the wrapper's bind group and
 // restores the pipeline dispose cleared.
 static void record_effect_task_default(Engine& engine, TaskHandle handle) {
     FrameTaskRecord& task = ${task};
-${bindGroup ? "    require_effect_bind_group(engine, task.effect.effect);\n" : ""}\
-    task.disposed = false;
+${effectTaskRecordBody(context)
+    .map((line) => `    ${line}`)
+    .join("\n")}
 }
 
 js::Callback<void()> effect_task_method(Engine& engine, TaskHandle handle, bool dispose) {
@@ -295,11 +297,7 @@ js::Callback<void()> effect_task_method(Engine& engine, TaskHandle handle, bool 
     if (replaced) return replaced;
     Engine* owner = &engine;
     if (dispose)
-${
-    disposal
-        ? "        return js::Callback<void()>([owner, handle] { dispose_effect_render_task_default(*owner, handle); });"
-        : '        throw std::runtime_error("EffectRenderTask.dispose is not lowered here.");'
-}
+        return js::Callback<void()>([owner, handle] { dispose_effect_render_task_default(*owner, handle); });
     return js::Callback<void()>([owner, handle] { record_effect_task_default(*owner, handle); });
 }
 
@@ -311,13 +309,7 @@ void set_effect_task_method(Engine& engine, TaskHandle handle, bool dispose, js:
 }
 
 void record_effect_task(Engine& engine, TaskHandle handle) {
-    FrameTaskRecord& task = ${task};
-    if (task.record_override) {
-        // A copy: the replacement may replace itself while it runs.
-        const auto method = task.record_override;
-        method();
-        return;
-    }
+    if (run_frame_task_record_override(engine, handle)) return;
     record_effect_task_default(engine, handle);
 }
 `;
@@ -372,6 +364,7 @@ export class EffectLowerer {
             header: "",
             source: `// ${this.provenance()}
 #include <bblite/runtime.hpp>
+#include <bblite/features/shadows_csm.hpp>
 #include <bblite/upstream/effect_variants.hpp>
 
 #include <stdexcept>
@@ -401,6 +394,7 @@ EffectWrapperHandle create_effect_wrapper(
         slot.name = std::string(binding.name);
         slot.binding = binding.binding;
         slot.depth_texture = binding.depth_texture;
+        slot.view_dimension = binding.view_dimension;
         wrapper.textures.push_back(std::move(slot));
     }
     engine.effect_wrappers.push_back(std::move(wrapper));
@@ -440,6 +434,14 @@ void set_effect_uniforms(
 }
 
 ${this.lowerTextureSlotLookup()}
+// The layout's view dimension: \`"3d"\` exactly for a Texture3D, whose view is
+// \`dimension: "3d"\`, and \`"2d-array"\` exactly for a CSM receiver texture.
+static void require_effect_view_dimension(const EffectTextureSlot& slot,
+                                          EffectViewDimension dimension) {
+    if (slot.view_dimension != dimension)
+        throw std::runtime_error("Effect texture view dimension does not match its binding layout.");
+}
+
 // setEffectTexture: the slot findTextureSlot matches, by name or binding.
 void set_effect_texture(
     Engine& engine,
@@ -450,9 +452,11 @@ void set_effect_texture(
         find_effect_texture_slot(${recordAt("engine.effect_wrappers", "effect")}, key);
     if (slot.depth_texture)
         throw std::runtime_error("Effect depth bindings require a depth texture.");
+    require_effect_view_dimension(slot, EffectViewDimension::texture_2d);
     slot.texture = texture;
     slot.pixels_texture.reset();
     slot.render_texture.reset();
+    slot.csm_texture.reset();
     slot.set = true;
 }
 
@@ -465,8 +469,11 @@ void set_effect_texture(
         find_effect_texture_slot(${recordAt("engine.effect_wrappers", "effect")}, key);
     if (slot.depth_texture)
         throw std::runtime_error("Effect depth bindings require a depth texture.");
+    require_effect_view_dimension(slot, texture.depth ? EffectViewDimension::texture_3d
+                                                      : EffectViewDimension::texture_2d);
     slot.pixels_texture = std::move(texture);
     slot.render_texture.reset();
+    slot.csm_texture.reset();
     slot.set = true;
 }
 
@@ -497,10 +504,33 @@ void set_effect_texture(
         throw std::runtime_error("setEffectTexture requires a render-target texture.");
     if (texture.depth_only != slot.depth_texture)
         throw std::runtime_error("Effect texture sample type does not match its binding layout.");
+    require_effect_view_dimension(slot, EffectViewDimension::texture_2d);
     slot.render_texture = texture;
     slot.pixels_texture.reset();
+    slot.csm_texture.reset();
     slot.set = true;
 }
+
+#if BBLITE_SHADOWS_CSM
+// A CSM receiver texture: the generator's depth array (\`dimension: "2d-array"\`)
+// with its comparison sampler, which the pass binds when the scene records it.
+void set_effect_csm_texture(
+    Engine& engine,
+    EffectWrapperHandle effect,
+    const EffectBindingKey& key,
+    ShadowGeneratorHandle generator) {
+    EffectTextureSlot& slot =
+        find_effect_texture_slot(${recordAt("engine.effect_wrappers", "effect")}, key);
+    require_csm_receiver_generator(engine, generator);
+    if (!slot.depth_texture)
+        throw std::runtime_error("Effect texture sample type does not match its binding layout.");
+    require_effect_view_dimension(slot, EffectViewDimension::texture_2d_array);
+    slot.csm_texture = generator;
+    slot.pixels_texture.reset();
+    slot.render_texture.reset();
+    slot.set = true;
+}
+#endif
 
 EffectRendererHandle create_effect_renderer(
     Engine& engine,
@@ -544,7 +574,7 @@ TaskHandle create_effect_render_task(
     task.effect = std::move(options);
     return append_frame_task(engine, std::move(task));
 }
-${taskScissor ? `\n${lowerEffectTaskScissor(this.context)}` : ""}${disposal || taskBuild ? lowerEffectWrapperDisposal(this.context, disposal) : ""}${taskDisposal ? lowerEffectTaskDisposal(this.context, taskMethodSlots) : ""}${taskMethodSlots ? lowerEffectTaskMethods(disposal || taskBuild, taskDisposal) : ""}
+${taskScissor ? `\n${lowerEffectTaskScissor(this.context)}` : ""}${disposal || taskBuild || taskMethodSlots ? lowerEffectWrapperDisposal(this.context, disposal) : ""}${taskDisposal || taskMethodSlots ? lowerEffectTaskDisposal(this.context, taskMethodSlots) : ""}${taskMethodSlots ? lowerEffectTaskMethods(this.context) : ""}
 } // namespace bbl
 `,
         };

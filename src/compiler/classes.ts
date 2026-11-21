@@ -74,6 +74,7 @@ import {
 } from "./function-specializations.js";
 import {
     type ClassMemberTable,
+    type InstanceProperty,
     classAccessors,
     classChain,
     classChainInstanceProperties,
@@ -139,6 +140,13 @@ export function storeClassField(
         kind: "expression",
         code: `${field.storedEngineCpp ?? storage.cpp} = ${stored};`,
     });
+}
+
+/** A hoisted field value as a refusal names it: a record by its class and keys. */
+function hoistedFieldText(value: Value): string {
+    if (!value.recordProperties) return `${value.kind} ${value.cpp}`;
+    const keys = Object.keys(value.recordProperties).join(", ");
+    return `${value.kind} ${value.classDeclaration?.name?.text ?? ""}{${keys}}`;
 }
 
 /** The `super(...)` call a constructor statement consists of. */
@@ -1621,13 +1629,18 @@ export class ClassLowerer {
                     throw new ClassFieldPresenceRequired(member);
             }
             if (!first || !sameCompiledValue(first, value)) {
+                // Constructions binding different instances of a local class.
+                const member = properties.find(
+                    (property) => property.name.text === name,
+                );
+                if (member) this.requireFieldClass(member);
                 this.context.fail(
                     node,
                     `Field '${name}' of shared class '${className}' is not the ` +
                         "same at every construction, so a method inlined on a " +
                         `stored instance could not name it ` +
-                        `(${first?.kind ?? "unbound"} ${first?.cpp ?? ""} then ` +
-                        `${value.kind} ${value.cpp}).`,
+                        `(${first ? hoistedFieldText(first) : "unbound"} then ` +
+                        `${hoistedFieldText(value)}).`,
                 );
             }
         }
@@ -1750,6 +1763,28 @@ export class ClassLowerer {
         );
     }
 
+    /**
+     * A field that holds an instance of a local class and that the layout
+     * cannot hoist stores that class, so the field is a slot.
+     */
+    private requireFieldClass(member: InstanceProperty): void {
+        const fieldClass = classInstanceDeclaration(
+            this.context.checker.getNonNullableType(
+                this.context.checker.getTypeAtLocation(member),
+            ),
+        );
+        if (
+            fieldClass &&
+            !fieldClass.getSourceFile().isDeclarationFile &&
+            !propertyNeverObserved(
+                this.context.program,
+                this.context.checker,
+                member.name.text,
+            )
+        )
+            this.context.dataTypes.requireSharedClass(fieldClass);
+    }
+
     /** The record a stored receiver reads as `declaration`, over the slots it names. */
     private receiverRecord(
         receiver: Value,
@@ -1777,23 +1812,8 @@ export class ClassLowerer {
             }
             const hoistedValue = hoisted?.get(source);
             if (hoistedValue === undefined) {
-                // A field no construction has bound yet holds an instance of
-                // a local class: that class is stored, so the field is a slot.
-                const fieldClass = classInstanceDeclaration(
-                    this.context.checker.getNonNullableType(
-                        this.context.checker.getTypeAtLocation(member),
-                    ),
-                );
-                if (
-                    fieldClass &&
-                    !fieldClass.getSourceFile().isDeclarationFile &&
-                    !propertyNeverObserved(
-                        this.context.program,
-                        this.context.checker,
-                        source,
-                    )
-                )
-                    this.context.dataTypes.requireSharedClass(fieldClass);
+                // A field no construction has bound yet.
+                this.requireFieldClass(member);
                 continue;
             }
             const presence = this.context.dataTypes.classFieldPresenceSlot(

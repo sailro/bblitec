@@ -9,11 +9,13 @@ import {
     withNativeMetadata,
 } from "./types.js";
 import { armSpecializesCall, fixedByCaseSplit } from "./runtime-case-split.js";
+import { materialKeyedMapRead } from "./shader-derivations.js";
 import { metadataFieldsForKind } from "./values/metadata.js";
 import { isJsonValue } from "./json-bridge.js";
 import { activeSurvey } from "./survey.js";
 import { emptyStorage } from "./empty-storage.js";
 import { onlyDirectCalls } from "./written-holders.js";
+import { shaderViewCall } from "./shader-material-views.js";
 import {
     someAnalysisNode,
     forEachAnalysisNode,
@@ -30,6 +32,8 @@ import {
 } from "./binding-rebinds.js";
 import {
     absenceOf,
+    hasScalarFacts,
+    holdsUnreadable,
     knownCondition,
     ownKeysKnown,
     presenceFlagCpp,
@@ -53,6 +57,7 @@ import {
     unionMembers,
     boundedTupleElements,
     fixedTupleElements,
+    arrayElementType,
 } from "./type-facts.js";
 import {
     requireAbsenceTag,
@@ -183,6 +188,8 @@ import { returnsOnlyConstructedEvents } from "./uninitialized-handle.js";
 export interface CallbackInvocationOptions {
     coroutine?: true;
     frameDriven?: true;
+    /** The arguments have no native storage: the body runs inline, never shared. */
+    inline?: true;
     generator?: DataType<"iterator">;
     /** A concrete collection sink can retain its mapper's declared result model. */
     resultType?: DataType;
@@ -1623,6 +1630,7 @@ export interface UserFunctionContext
             | "asyncActivations"
             | "withOwnedCallbackBody"
             | "checker"
+            | "symbols"
             | "program"
             | "dataTypes"
             | "dataLowerer"
@@ -2678,11 +2686,22 @@ export class UserFunctionLowerer {
         argumentValues: readonly Value[],
         pinArguments: boolean,
     ): Value | undefined {
+        // A side-table read specializes with the material's creation variant;
+        // a shared native return would drop that entry's generation facts.
+        if (
+            ts.isCallExpression(call) &&
+            argumentValues.some(
+                (value) => value.sceneShaderVariant !== undefined,
+            ) &&
+            materialKeyedMapRead(context, call)
+        )
+            return undefined;
         if (
             argumentValues.some(
                 (value) =>
                     (value.staticJson !== undefined &&
                         (value.kind === "record" || value.kind === "tuple")) ||
+                    holdsUnreadable(value) ||
                     value.browserValue?.kind === "search-params" ||
                     (value.browserValue?.kind === "object" &&
                         value.browserValue.moduleUrl === true),
@@ -5771,7 +5790,10 @@ export class UserFunctionLowerer {
                         true,
                         false,
                     )
-                  : body?.coroutine || body?.frameDriven || body?.generator
+                  : body?.coroutine ||
+                      body?.frameDriven ||
+                      body?.generator ||
+                      body?.inline
                     ? undefined
                     : this.trySharedCall(
                           context,
@@ -6206,7 +6228,7 @@ export class UserFunctionLowerer {
                                 ),
                             )
                         )
-                            context.dataTypes.requireEngineParameterStorage(
+                            context.dataTypes.requireEngineOwnerStorage(
                                 signatureParameter(),
                             );
                         // A parameter that tells null from undefined needs
@@ -6900,6 +6922,13 @@ export class UserFunctionLowerer {
             );
         }
         const site = !this.activeCallSites.has(callNode);
+        const views = shaderViewCall(
+            context,
+            callNode,
+            ir.declaration.parameters,
+            arguments_,
+        );
+        let failed = false;
         this.active.add(ir.declaration);
         this.activeCallSites.add(callNode);
         const enclosingInvocation = this.invocations.get(ir.declaration);
@@ -6912,7 +6941,7 @@ export class UserFunctionLowerer {
             });
         try {
             if (!body?.generator)
-                this.bindCallParameters(context, ir, arguments_, callNode);
+                this.bindCallParameters(context, ir, views.values, callNode);
             if (body?.generator) {
                 context.beginNativeFunctionBody(undefined, false, {
                     generator: body.generator,
@@ -7084,13 +7113,25 @@ export class UserFunctionLowerer {
                 body?.resultType,
                 captureReturn,
             );
+        } catch (error) {
+            failed = true;
+            throw error;
         } finally {
-            context.bindings.popScope();
-            if (site) this.activeCallSites.delete(callNode);
-            if (outermost) this.active.delete(ir.declaration);
-            if (enclosingInvocation)
-                this.invocations.set(ir.declaration, enclosingInvocation);
-            else this.invocations.delete(ir.declaration);
+            try {
+                let rebind: (() => void) | undefined;
+                try {
+                    if (!failed) rebind = views.capture();
+                } finally {
+                    context.bindings.popScope();
+                }
+                rebind?.();
+            } finally {
+                if (site) this.activeCallSites.delete(callNode);
+                if (outermost) this.active.delete(ir.declaration);
+                if (enclosingInvocation)
+                    this.invocations.set(ir.declaration, enclosingInvocation);
+                else this.invocations.delete(ir.declaration);
+            }
         }
     }
 
@@ -7497,6 +7538,8 @@ export class UserFunctionLowerer {
             }
         }
         const label = `return_${ir.name}`;
+        // The type the caller holds the result as.
+        const declared = settled ?? resultType;
         const unchangedFields = this.freshReturnReadOnlyFields(
             context,
             ir,
@@ -7516,6 +7559,8 @@ export class UserFunctionLowerer {
                       undefined,
                       (path) =>
                           path.length === 1 && unchangedFields.has(path[0]!),
+                      false,
+                      declared,
                   )
                 : ir.returnNeedsSnapshot
                   ? // The snapshot is the call's own result.
@@ -7529,9 +7574,44 @@ export class UserFunctionLowerer {
                         returned,
                         label,
                         expression,
+                        this.unwrittenElementFields(context, ir, returned),
+                        declared,
                     )),
             requiresExplicitDiscard: true,
         };
+    }
+
+    /**
+     * The fields a returned tuple's records keep: a scalar field the
+     * call's element type declares, which no write in the program replaces
+     * (`recordFieldIsWritten`), keeps its value wherever the record goes.
+     */
+    private unwrittenElementFields(
+        context: UserFunctionContext,
+        ir: UserFunctionIr,
+        value: Value,
+    ): ((path: readonly string[], member: Value) => boolean) | undefined {
+        if (
+            value.kind !== "tuple" ||
+            !value.tupleElements?.some((element) => element.kind === "record")
+        )
+            return undefined;
+        const invocation = this.invocations.get(ir.declaration)?.call;
+        const element =
+            invocation &&
+            arrayElementType(
+                context.checker,
+                context.checker.getTypeAtLocation(invocation),
+            );
+        if (!element) return undefined;
+        const declared = context.checker.getNonNullableType(element);
+        return (path, member) =>
+            path.length === 1 &&
+            hasScalarFacts(member) &&
+            !member.parameterBinding &&
+            context.checker.getPropertyOfType(declared, path[0]!) !==
+                undefined &&
+            !recordFieldIsWritten(context, element, path[0]!);
     }
 
     /** Fresh argument records keep scalar facts across a read-only consumer. */

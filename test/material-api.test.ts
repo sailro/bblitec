@@ -139,9 +139,9 @@ ${lowerShaderUniformApi(new LoweringContext())}
 ${cppFunction(new FactoryLowerer(new LoweringContext()).lowerShaderMaterialFactory().source, "void set_shader_uniform_values(")}
 }
 int main(){bbl::Engine engine;engine.materials.emplace_back();auto state=std::make_shared<bbl::ShaderUniformState>();engine.materials[0].shader_uniforms=state;
-state->slots.push_back({"before","vec2<f32>",0,bbl::js::F32Array(std::vector<float>{99,99}),0});
-state->slots.push_back({"matrix","mat4x4<f32>",2,bbl::js::F32Array(16),0});
-state->slots.push_back({"after","vec2<f32>",18,bbl::js::F32Array(std::vector<float>{99,99}),0});
+state->slots.push_back({"before","vec2<f32>",0,bbl::js::F32Array(std::vector<float>{99,99})});
+state->slots.push_back({"matrix","mat4x4<f32>",2,bbl::js::F32Array(16)});
+state->slots.push_back({"after","vec2<f32>",18,bbl::js::F32Array(std::vector<float>{99,99})});
 auto values=state->slots[1].value;
 for(std::size_t i=0;i<16;++i)values.store(i,i%2?-0.0f:0.0f);
 const std::array<float,16> input{${Array.from(values, (value) => (Object.is(value, -0) ? "-0.0f" : `static_cast<float>(${value})`)).join(",")}};
@@ -326,7 +326,8 @@ test("a PBR material's doubleSided reads its own property: a glTF material's, na
 });
 
 test("a loop over a run-time selection creates a shader or standard material's no-color view per pass", () => {
-    const { cpp } = compileSource(`import {createEngine,createShaderMaterial,createShaderNoColorMaterialView,createStandardMaterial,createStandardNoColorMaterialView,type Material,type ShaderMaterial,type StandardMaterial} from "@babylonjs/lite";
+    const { cpp } =
+        compileSource(`import {createEngine,createShaderMaterial,createShaderNoColorMaterialView,createStandardMaterial,createStandardNoColorMaterialView,type Material,type ShaderMaterial,type StandardMaterial} from "@babylonjs/lite";
 async function main(){
 await createEngine({});
 const shader=createShaderMaterial({

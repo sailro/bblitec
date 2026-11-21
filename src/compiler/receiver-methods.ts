@@ -62,12 +62,26 @@ const collectionWritingMethods: ReadonlySet<string> = new EmissionSet([
     "set",
 ]);
 
-/** The keyed collections whose writers `collectionWritingMethods` names. */
-const KEYED_COLLECTIONS: ReadonlySet<string> = new Set([
+/**
+ * The library's keyed collections and their read-only views, whose writers
+ * `collectionWritingMethods` names.
+ */
+export const KEYED_COLLECTIONS: ReadonlySet<string> = new Set([
     "Map",
+    "ReadonlyMap",
     "Set",
+    "ReadonlySet",
     "WeakMap",
     "WeakSet",
+]);
+
+/** Keyed collection methods whose first argument is a key, found by identity. */
+export const keyedCollectionKeyMethods: ReadonlySet<string> = new Set([
+    "add",
+    "delete",
+    "get",
+    "has",
+    "set",
 ]);
 
 /** Typed array methods that change the array in place. */

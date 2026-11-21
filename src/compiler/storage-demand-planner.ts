@@ -24,6 +24,7 @@ import { SharedClassStorageRequired } from "./shared-class-storage.js";
 import { StorageDemand } from "./storage-demand.js";
 import {
     demandsKeyOnly,
+    demandsSourceStorage,
     ReplayStorage,
     type StorageRequest,
 } from "./replay-storage.js";
@@ -84,7 +85,9 @@ class PlanningWrite extends Error {}
 /**
  * Raises `demand` at a site lowering can go on past (a record join stored
  * as a copy, a resource stored without its engine owner, a parameter's
- * record copied): a planning attempt records it there and goes on.
+ * record copied): a planning attempt records it there and goes on. Past
+ * such a site lowering stores what it stored before the demand, so a later
+ * demand that follows from this one is met by the next attempt.
  */
 export function demandOrPlan(demand: StorageDemand): void {
     if (!active) throw demand;
@@ -150,11 +153,49 @@ function independentGenericCall(
 }
 
 /**
+ * A binding's named storage demanded by its own initializer. Rolling back
+ * this declaration loses only its binding: evaluating the initializer
+ * runs no calls, accessors or writes. Its source/array storage does not
+ * carry a representation inferred at another use of the binding.
+ */
+function ownBindingDemand(
+    statement: ts.Statement | undefined,
+    request: StorageRequest,
+): boolean {
+    if (
+        !statement ||
+        !ts.isVariableStatement(statement) ||
+        statement.declarationList.declarations.length !== 1 ||
+        request.kind !== "dynamic" ||
+        (request.storage !== "source" && request.storage !== "array")
+    )
+        return false;
+    const declaration = statement.declarationList.declarations[0]!;
+    return (
+        declaration === request.declaration &&
+        ts.isIdentifier(declaration.name) &&
+        declaration.initializer !== undefined &&
+        !expressionMayRunCode(declaration.initializer) &&
+        // Spreads can invoke getters/iterators; computed keys can run coercion.
+        !someAnalysisNode(
+            declaration.initializer,
+            (node) =>
+                ts.isSpreadElement(node) ||
+                ts.isSpreadAssignment(node) ||
+                ts.isComputedPropertyName(node),
+            { functions: "skip", types: "skip" },
+        )
+    );
+}
+
+/**
  * Whether planning can go on past `statement` once its demand rolled it
  * back. A storage decision for a declaration (an absence tag, a tuple or
  * numeric array slot, string enum elements) holds whatever the statement
  * went on to do; an ownership transition (dynamic binding, shared record
- * storage) can arise during writes, so it ends discovery.
+ * storage) can arise during writes, so it ends discovery. A demand for
+ * the statement's own binding instead loses that declaration; a later
+ * read of it ends discovery through the lost-declaration check.
  */
 function independentDemand(
     context: StatementContext,
@@ -163,8 +204,9 @@ function independentDemand(
 ): boolean {
     if (error instanceof GenericFunctionStorageRequired)
         return independentGenericCall(context, statement, error);
+    if (error instanceof DynamicBindingStorageRequired)
+        return ownBindingDemand(statement, error.request);
     return !(
-        error instanceof DynamicBindingStorageRequired ||
         error instanceof ParameterObjectStorageRequired ||
         error instanceof NativeRecordStorageRequired ||
         error instanceof SharedClassStorageRequired
@@ -236,10 +278,12 @@ function rolledBackWrites(
  * Its compiler reads frozen seed demands; new demands are applied only to a fresh
  * compiler. A demand rolls back its statement, whose written names are
  * lost to later statements, except one lowering goes on past
- * (`demandOrPlan`), after which the plan collects demands of its kind and
- * demands of a key. Refusals and lost-binding reads end discovery. Past a
- * rolled-back statement, which may have met a demand first at its own
- * site, a plan collects only demands of a key (`demandsKeyOnly`).
+ * (`demandOrPlan`), after which the plan collects demands of every kind
+ * whose storage their key and source types name (`demandsSourceStorage`).
+ * Refusals and lost-binding reads end discovery. Past a rolled-back
+ * statement, which may have met a demand first at its own site, a plan
+ * collects only demands of a key (`demandsKeyOnly`) or a statement's own
+ * binding with named storage (`ownBindingDemand`).
  */
 export class StorageDemandPlanner {
     /** @unjournaled Demands must survive the statements they roll back. */
@@ -268,19 +312,24 @@ export class StorageDemandPlanner {
     /** @unjournaled Whether a statement was rolled back: later demands may differ from strict lowering's. */
     private rolledBack = false;
     /**
-     * @unjournaled The kind of demand lowering went on without
-     * (`demandOrPlan`): a later demand of this attempt may follow from it,
-     * so only that kind is collected, and demands of a key
-     * (`demandsKeyOnly`), which add no storage a compile lays out in the
-     * order it took it.
+     * @unjournaled Whether lowering went on past a demand (`demandOrPlan`):
+     * later values hold the storage the attempt began with there, so a
+     * later demand carrying storage its site lowered may differ from strict
+     * lowering's (`demandsSourceStorage`).
      */
-    private wentOn?: StorageRequest["kind"];
+    private wentOn = false;
+    /** @unjournaled The statements this plan began lowering (`beginActivation`). */
+    private statements = 0;
+    /** @unjournaled `statements` when the plan collected its first demand. */
+    private firstDemandAt?: number;
+    /** @unjournaled `statements` when the plan collected its latest demand. */
+    private lastDemandAt = 0;
     /**
-     * @unjournaled Whether the plan collected a demand of a key past one of
-     * another kind: a demand following from it may come before a later one
-     * of `wentOn`'s kind, so that kind no longer goes on.
+     * @unjournaled Whether the plan ended at its statement bound
+     * (`beginActivation`): a scope that recovers from the stop goes on
+     * lowering, and nothing it meets is collected.
      */
-    private pastKind = false;
+    private bounded = false;
 
     public constructor(checker: ts.TypeChecker) {
         this.collected = new ReplayStorage(checker);
@@ -288,17 +337,10 @@ export class StorageDemandPlanner {
 
     /** A demand lowering goes on without (`demandOrPlan`). */
     public planDemand(request: StorageRequest): void {
-        if (
-            this.wentOn !== undefined &&
-            !demandsKeyOnly(request) &&
-            (this.pastKind || this.wentOn !== request.kind)
-        )
-            throw new PlanningWrite(
-                `a demand of kind ${request.kind} after lowering went on past one of kind ${this.wentOn}`,
-            );
+        this.requireSourceStorage([request]);
         this.requireStrictSite([request]);
-        this.collectPast([request]);
-        this.wentOn ??= request.kind;
+        this.wentOn = true;
+        this.collect(request);
     }
 
     /**
@@ -320,10 +362,10 @@ export class StorageDemandPlanner {
             return work();
         } catch (error) {
             if (error instanceof StorageDemand) {
-                if (this.wentOn && !error.requests.every(demandsKeyOnly))
-                    return undefined;
-                if (this.metAtStrictSite(error.requests))
-                    this.collectPast(error.requests);
+                if (!this.fromSourceStorage(error.requests))
+                    statistics.writes++;
+                else if (this.metAtStrictSite(error.requests))
+                    for (const request of error.requests) this.collect(request);
                 else statistics.departed++;
             } else if (error instanceof CompileError) statistics.refused++;
             else if (error instanceof PlanningDependency)
@@ -397,12 +439,9 @@ export class StorageDemandPlanner {
             context.transaction(lower);
         } catch (error) {
             if (!(error instanceof StorageDemand)) throw error;
-            if (this.wentOn && !error.requests.every(demandsKeyOnly))
-                throw new PlanningWrite(
-                    `a statement's demand after lowering went on past one of kind ${this.wentOn}`,
-                );
-            this.requireStrictSite(error.requests);
-            this.collectPast(error.requests);
+            this.requireSourceStorage(error.requests);
+            this.requireStrictSite(error.requests, statement);
+            for (const request of error.requests) this.collect(request);
             // An ownership change can reach what later statements read: the
             // plan ends.
             if (!independentDemand(context, statement, error))
@@ -438,13 +477,43 @@ export class StorageDemandPlanner {
     }
 
     /** Whether strict lowering would meet `requests` as this plan did. */
-    private metAtStrictSite(requests: readonly StorageRequest[]): boolean {
-        return !this.rolledBack || requests.every(demandsKeyOnly);
+    private metAtStrictSite(
+        requests: readonly StorageRequest[],
+        statement?: ts.Statement,
+    ): boolean {
+        return (
+            !this.rolledBack ||
+            requests.every(
+                (request) =>
+                    demandsKeyOnly(request) ||
+                    ownBindingDemand(statement, request),
+            )
+        );
+    }
+
+    /**
+     * Whether strict lowering would ask for the storage `requests` ask for:
+     * before lowering went on past a demand, or where their key and source
+     * types name it (`demandsSourceStorage`).
+     */
+    private fromSourceStorage(requests: readonly StorageRequest[]): boolean {
+        return !this.wentOn || requests.every(demandsSourceStorage);
+    }
+
+    /** Ends a plan, uncollected, at demands whose storage its copies may have changed. */
+    private requireSourceStorage(requests: readonly StorageRequest[]): void {
+        if (this.fromSourceStorage(requests)) return;
+        throw new PlanningWrite(
+            "a demand carrying storage lowered past a demand lowering went on without",
+        );
     }
 
     /** Ends a plan whose demands strict lowering could meet elsewhere first. */
-    private requireStrictSite(requests: readonly StorageRequest[]): void {
-        if (this.metAtStrictSite(requests)) return;
+    private requireStrictSite(
+        requests: readonly StorageRequest[],
+        statement?: ts.Statement,
+    ): void {
+        if (this.metAtStrictSite(requests, statement)) return;
         statistics.departed++;
         throw new PlanningStop(
             "a demand strict lowering could meet elsewhere first",
@@ -515,8 +584,22 @@ export class StorageDemandPlanner {
      * A function body's first statement begins an activation, whose locals
      * are not the ones an earlier activation's rollback lost. Every
      * statement lowered while the plan runs is noted, recovered or not.
+     * Past a demand lowering went on without, a plan ends once it lowered,
+     * since its latest demand, as many statements as before its first: a
+     * demand that follows from one it met (a join chain's next link) only
+     * the next attempt meets, and lowering on to the end for it would cost
+     * the whole program.
      */
     public beginActivation(statement: ts.Statement): void {
+        this.statements++;
+        this.bounded ||=
+            this.wentOn &&
+            this.firstDemandAt !== undefined &&
+            this.statements - this.lastDemandAt > this.firstDemandAt;
+        if (this.bounded)
+            throw new PlanningStop(
+                "as many statements past its latest demand as before its first",
+            );
         const body = statement.parent;
         if (
             !ts.isBlock(body) ||
@@ -532,17 +615,10 @@ export class StorageDemandPlanner {
         this.lostLocals.delete(body);
     }
 
-    /** Collects `requests`, noting one of a key past a demand of another kind (`pastKind`). */
-    private collectPast(requests: readonly StorageRequest[]): void {
-        for (const request of requests) {
-            if (this.wentOn !== undefined && request.kind !== this.wentOn)
-                this.pastKind = true;
-            this.collect(request);
-        }
-    }
-
     private collect(request: StorageRequest): void {
-        if (!this.collected.add(request)) return;
+        if (this.bounded || !this.collected.add(request)) return;
+        this.firstDemandAt ??= this.statements;
+        this.lastDemandAt = this.statements;
         this.demands.push(request);
         statistics.collected++;
     }

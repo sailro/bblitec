@@ -292,18 +292,24 @@ int main() {
     assert(entries.empty() && g.caster_snapshots.empty() && !g.caster_material_views.at(2).active);
     g.caster_meshes = {{0}}; refresh();
     assert(queued == 8 && e.materials.size() == 4 && g.caster_material_views.at(2).active);
+    // A later override write takes effect at the next refresh: material 0
+    // now casts through itself.
+    const auto through_chain = entries[0].material;
+    e.materials[0].shadow_caster_material = {}; e.materials[0].standard_material = true; refresh();
+    assert(queued == 9 && entries.size() == 1 && entries[0].material != through_chain && g.caster_material_views.contains(0));
+    e.materials[0].shadow_caster_material = {1};
     // ESM keys its rebuild on array identity, not packet changes or equal elements.
     e.shadow_generators.resize(2); e.frame_tasks.resize(2);
     auto& esm = e.shadow_generators[1]; esm.filter = ShadowFilter::esm_directional; esm.caster_tasks = {{1}};
     const auto supply = [&] { set_shadow_task_caster_meshes(e, {1}, {{0}, {0}}); };
     supply();
-    assert(queued == 10 && e.frame_tasks[1].render_meshes.size() == 2);
+    assert(queued == 11 && e.frame_tasks[1].render_meshes.size() == 2);
     const auto* leases = esm.caster_names.data();
     ++e.meshes[0].renderable_generation;
     refresh_shadow_task_meshes(e, {1}, false);
-    assert(queued == 10);
+    assert(queued == 11);
     supply();
-    assert(queued == 12 && esm.caster_list_version == 2 && esm.caster_names.data() == leases);
+    assert(queued == 13 && esm.caster_list_version == 2 && esm.caster_names.data() == leases);
     assert(e.frame_tasks[1].render_meshes.size() == 2);
 }
 `,
@@ -601,4 +607,33 @@ test("still refuses forceRefreshEveryFrame on the PCF SPOT factory", () => {
             // options label; the offending name is in the source span.
             /A PCF spotlight shadow generator options/.test(error.message),
     );
+});
+
+test("a shadow caster override written after registration takes the setter's path", () => {
+    const compiled = compileSource(`
+    import { addToScene, createDirectionalLight, createEngine, createPcfDirectionalShadowGenerator, createSceneContext, createShaderMaterial, createSphere, registerScene, setShadowTaskCasterMeshes, startEngine, wgsl } from "@babylonjs/lite";
+    const VERT = \`struct VOut { @builtin(position) position: vec4<f32> };
+@vertex fn mainVertex(input: VertexInput) -> VOut { var o: VOut; o.position = shaderSystem.worldViewProjection * vec4<f32>(input.position, 1.0); return o; }\`;
+    const FRAG = \`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+    async function main(): Promise<void> {
+        const engine = await createEngine({});
+        const scene = createSceneContext(engine);
+        const light = createDirectionalLight([-1, -2, -1], 1);
+        addToScene(scene, light);
+        const material = createShaderMaterial({ name: "body", vertexSource: wgsl\`\${VERT}\`, fragmentSource: wgsl\`\${FRAG}\`, attributes: ["position"], uniforms: ["worldViewProjection"] });
+        const caster = createShaderMaterial({ name: "caster", vertexSource: wgsl\`\${VERT}\`, fragmentSource: wgsl\`\${FRAG}\`, attributes: ["position"], uniforms: ["worldViewProjection"] });
+        const sphere = createSphere(engine, { diameter: 1 });
+        sphere.material = material;
+        addToScene(scene, sphere);
+        setShadowTaskCasterMeshes(createPcfDirectionalShadowGenerator(engine, light, {}), [sphere]);
+        await registerScene(scene);
+        startEngine(engine);
+        setTimeout(() => {
+            (material as unknown as { _shadowCasterMaterial?: unknown })._shadowCasterMaterial = caster;
+        }, 100);
+    }
+    void main();
+`);
+    // The write runs in the timer; each frame's caster refresh follows it.
+    assert.match(compiled.cpp, /bbl::set_shadow_caster_material\(/);
 });

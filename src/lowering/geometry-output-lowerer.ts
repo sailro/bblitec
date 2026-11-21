@@ -8,6 +8,7 @@ import { lowerRenderTaskDisposal } from "./frame-graph-task-disposal.js";
 import { assertGeometryTaskSync } from "./geometry-task-sync.js";
 import { recordAt } from "../compiler/record-access.js";
 import { shaderUniformPublication } from "./shader-uniforms.js";
+import { pinnedErrorCode } from "./pinned-error.js";
 
 /** The reached task features a scene's task records lower with; each defaults to off. */
 export interface TaskRecordOptions {
@@ -235,6 +236,8 @@ export class GeometryOutputLowerer {
             );
         const { declaration: createRenderTask } =
             this.context.functionDeclaration(renderModule, "queueMesh");
+        // A disposed task's queueMesh throws the pin's code.
+        const disposedQueue = pinnedErrorCode(this.context, createRenderTask);
         if (
             !hasNullishFallback(
                 createRenderTask,
@@ -501,7 +504,7 @@ void add_render_task_mesh(
     if (record.render_mesh_refresh) {
         add_refreshed_render_task_mesh(engine, record, mesh, material, material_override);
     } else if (material.value != invalid_handle) {
-${taskDisposal ? '        // queueMesh: a disposed task throws.\n        if (record.disposed) throw std::runtime_error("RenderTask has been disposed.");\n' : ""}\
+${taskDisposal ? `        // queueMesh: a disposed task throws.\n        if (record.disposed) throw std::runtime_error("#${disposedQueue}");\n` : ""}\
         RenderTaskMesh entry{mesh, material};
         const bool recorded = record.record_state == FrameTaskRecordState::recorded;
         if (recorded) initialize_render_task_shader_material(engine, record, entry);

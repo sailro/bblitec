@@ -188,7 +188,9 @@ test("executes pinned geometry delegation while preserving ordinary graphs and l
     );
     await assert.rejects(
         () => composeNodeMaterial(graph, "scene149-default"),
-        /no emitter registered for block "GeometryTextureOutputBlock"/,
+        (error: Error & { lite?: readonly unknown[] }) =>
+            error.message === "#479" &&
+            error.lite?.[0] === "GeometryTextureOutputBlock",
     );
 
     const ordinary = await executeModuleGraph({
@@ -215,7 +217,9 @@ test("executes pinned geometry delegation while preserving ordinary graphs and l
                 "missing-emitter",
                 options,
             ),
-        /no emitter registered for block "MissingEmitterBlock"/,
+        (error: Error & { lite?: readonly unknown[] }) =>
+            error.message === "#479" &&
+            error.lite?.[0] === "MissingEmitterBlock",
     );
     const local = await composeNodeMaterial(graph, "scene149-local", {
         ...options,

@@ -1,3 +1,5 @@
+import { ShaderCreationsRequired } from "./compiler/shader-derivations.js";
+import { reachLedgerProgram } from "./compiler/shader-material.js";
 import { DeferredCapabilities } from "./compiler/deferred-capabilities.js";
 import { thinInstanceOwnershipFailure } from "./thin-instance-admission.js";
 import { lowerThinInstanceUploadBody } from "./compiler/thin-instance-upload.js";
@@ -69,6 +71,7 @@ import ts from "typescript";
 import {
     absenceOf,
     knownCondition,
+    knownOwnKeys,
     staticBooleanOf,
     staticKeyOf,
     undefinedValue,
@@ -203,10 +206,12 @@ import {
     selectedStaticNumberValue,
     type StaticSelectionContext,
     staticNumberValue,
+    staticJsonValue,
     validateObjectProperties,
 } from "./compiler/option-helpers.js";
 import {
     executeApplicationFunction,
+    holdsEngineValue,
     runApplicationFunction,
     type ExecutedFunctionContext,
     type ExecutedScalar,
@@ -359,11 +364,15 @@ import {
     keysMayMatch,
     sameKeys,
     unwrapExpression,
+    notJson,
     type SupportedFunction,
 } from "./compiler/syntax.js";
 import { CompileError, unlessRefused } from "./compiler/compile-error.js";
 import { packagedValueDomain } from "./compiler/asset-url-domain.js";
-import { isEffectTaskMethodName } from "./compiler/effect-task-methods.js";
+import {
+    isEffectTaskMethodName,
+    isTaskMethodWrite,
+} from "./compiler/effect-task-methods.js";
 import {
     ClosureCaptures,
     nativeCompanionKeys,
@@ -387,6 +396,7 @@ import {
     type ResourceLoop,
 } from "./compiler/resource-loops.js";
 import { StaticExpansionBudget } from "./compiler/static-expansion.js";
+import { compileWithRuntimeCaseSplit } from "./compiler/runtime-case-split.js";
 import type {
     CollectionCardinality,
     CollectionSite,
@@ -402,6 +412,7 @@ import type {
     ValueKind,
 } from "./compiler/types.js";
 import { isCompileTimeOnlyValue } from "./compiler/types.js";
+import { refuseUnreadablePart } from "./compiler/unreadable-values.js";
 import { ClassLowerer } from "./compiler/classes.js";
 import { ClassHierarchy } from "./compiler/class-members.js";
 import { EvaluationOrder } from "./compiler/evaluation-order.js";
@@ -712,14 +723,16 @@ function compileSourceApplication(
 
 /**
  * The replays a compile applies before its next attempt: a storage demand,
- * a lazy module's activation, runtime query state, pending activations.
+ * a lazy module's activation, runtime query state, pending activations,
+ * the whole program's shader material creations.
  */
 function isReplay(error: unknown): error is Error {
     return (
         error instanceof StorageDemand ||
         error instanceof ModuleActivationRequired ||
         error instanceof RuntimeSearchParamsRequired ||
-        error instanceof PendingActivationsRequired
+        error instanceof PendingActivationsRequired ||
+        error instanceof ShaderCreationsRequired
     );
 }
 
@@ -811,6 +824,10 @@ function lowerSourceApplication(
             if (error instanceof ModuleActivationRequired) {
                 if (lazyModules.has(error.file)) return false;
                 lazyModules.add(error.file);
+                return true;
+            }
+            if (error instanceof ShaderCreationsRequired) {
+                resolved.shaderCreations = error.ledger;
                 return true;
             }
             if (error instanceof StorageDemand) {
@@ -1153,6 +1170,8 @@ class Compiler implements LoweringServices {
     @journaled public accessor imageDecodeReached = false;
     @journaled public accessor jsRandomReached = false;
     @journaled private accessor audioSessionReached = false;
+    /** Whether this attempt reached the shader-creation ledger (`reachShaderCreations`). */
+    @journaled private accessor shaderCreationsReached = false;
     /**
      * The bounded canvas-owning functions this compilation executed at
      * generation, by name. It is the fidelity adaptation's reach test: the
@@ -1318,7 +1337,6 @@ class Compiler implements LoweringServices {
         ts.VariableDeclaration,
         DynamicBindingStorage | undefined
     >;
-    private readonly ownedRecords: Readonly<ReplayStorage["records"]>;
     private readonly replayStorage: ReplayStorage;
     public readonly absenceTags: ReadonlySet<ts.Declaration>;
     public readonly thrownValueKinds: ReadonlySet<"string">;
@@ -1335,7 +1353,6 @@ class Compiler implements LoweringServices {
     ) {
         this.replayStorage = storage;
         this.dynamicBindings = storage.dynamicBindings;
-        this.ownedRecords = storage.records;
         this.absenceTags = storage.absenceTags;
         this.thrownValueKinds = storage.thrownValueKinds;
         this.tupleArraySlots = storage.tupleArraySlots;
@@ -1466,6 +1483,11 @@ class Compiler implements LoweringServices {
         if (!this.options.pageStartup?.length) this.emitNativeHostUi();
         this.finalizeSceneRegistration();
         this.admissions.enforceDeferredAdmissions();
+        const ledger = this.sceneManifest.shaderDerivations.splitLedger(
+            this.sceneManifest.reachedShaderPrograms,
+        );
+        if (ledger) throw new ShaderCreationsRequired(ledger);
+        this.sceneManifest.shaderDerivations.refuseUncreated();
         const particles = this.sceneManifest.reachedNodeParticles;
         if (
             particles.nativeProvider &&
@@ -1622,22 +1644,26 @@ class Compiler implements LoweringServices {
      * a shared pointer that requires `record->field`.
      */
     private predeclareStoredObjectReferences(): void {
+        // In an order of the program: the layout is the program's, not the
+        // order the attempts before this one met the demands in.
+        const records = this.replayStorage.orderedRecords();
         this.dataTypes.prepareRecordComponents(
             recordComponents(
                 this.checker,
-                [...this.ownedRecords.values()].flatMap(
-                    (demand) => demand.joins ?? [],
-                ),
+                this.replayStorage.orderedJoins(records),
             ),
-            this.ownedRecords.values(),
+            records,
             this.program,
         );
-        for (const demand of this.ownedRecords.values())
+        for (const demand of records)
             if (!demand.document)
                 refusingRecordDemand(demand, () =>
                     this.dataTypes.predeclareOwnedRecord(demand),
                 );
-        for (const [declaration, storage] of this.dynamicBindings)
+        for (const [
+            declaration,
+            storage,
+        ] of this.replayStorage.sourceOrderedDynamicBindings())
             this.predeclaring(declaration, () => {
                 const source = this.checker.getTypeAtLocation(declaration.name);
                 // A record of methods has a type only as the storage it takes:
@@ -2917,20 +2943,15 @@ class Compiler implements LoweringServices {
         }
         // An effect task's `record` / `dispose` replaces the method its
         // frame graph calls; the read of either is a copy, not a slot.
-        if (
-            expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-            ts.isPropertyAccessExpression(left) &&
-            isEffectTaskMethodName(left.name.text) &&
-            this.probeEmission(
-                () => {
-                    const owner = this.compileValue(left.expression);
-                    return owner.kind === "task" && owner.effectTask
-                        ? true
-                        : undefined;
-                },
-                () => false,
+        if (isTaskMethodWrite(this, left)) {
+            if (
+                !ts.isPropertyAccessExpression(left) ||
+                !isEffectTaskMethodName(left.name.text)
             )
-        ) {
+                this.fail(
+                    expression,
+                    "Unsupported task method write; only record/dispose saved-bind wrappers are lowered.",
+                );
             emitPropertyAssignment(this, expression);
             return;
         }
@@ -3711,7 +3732,12 @@ class Compiler implements LoweringServices {
             runtimeProfileConstructionIntrinsics.has(importedName) &&
             this.isRuntimeResourceConstruction();
         const mark = this.sceneManifest.compositionMark();
-        const value = compileRegisteredIntrinsic(this, importedName, call);
+        const value = compileWithRuntimeCaseSplit(
+            this,
+            call,
+            () => compileRegisteredIntrinsic(this, importedName, call),
+            "held-text",
+        );
         if (
             value &&
             [
@@ -4039,6 +4065,49 @@ class Compiler implements LoweringServices {
      * at generation (`ITEMS.map((item) => nameOf(item))`).
      */
     public staticListItems(expression: ts.Expression): StaticListItem[] {
+        const resolved = this.resolveListExpression(expression);
+        if (resolved !== this.unwrap(expression))
+            return this.staticListItems(resolved);
+        if (ts.isConditionalExpression(resolved)) {
+            const selected = this.probeEmission(() => {
+                const condition = this.resolveListExpression(
+                    resolved.condition,
+                );
+                const name = this.unwrap(resolved.condition);
+                const parameters =
+                    ts.isIdentifier(name) && condition !== name
+                        ? [
+                              {
+                                  name,
+                                  value: this.compileValue(condition),
+                                  compileTime: true,
+                              },
+                          ]
+                        : [];
+                // Keep the re-read condition's value in the selected arm too:
+                // a predicate there may capture the const side-table entry.
+                const within = <T>(read: () => T): T =>
+                    this.bindings.withBoundParameters(parameters, read);
+                const known = within(() =>
+                    knownCondition(
+                        this.conditions.compileCondition(resolved.condition),
+                    ),
+                );
+                if (known === undefined) return undefined;
+                return within(() =>
+                    this.staticListItems(
+                        known ? resolved.whenTrue : resolved.whenFalse,
+                    ),
+                ).map((item) => ({
+                    ...item,
+                    within: <T>(read: () => T): T =>
+                        within(() => item.within(read)),
+                }));
+            });
+            if (selected) return selected;
+        }
+        const filtered = this.filteredListItems(resolved);
+        if (filtered) return filtered;
         const projected = this.projectedStaticElements(expression);
         if (projected) return projected.map(unboundListItem);
         const literal = unlessRefused(() =>
@@ -4058,7 +4127,96 @@ class Compiler implements LoweringServices {
             }));
         const returned = this.returnedListItems(expression);
         if (returned) return returned;
-        return this.expectStaticArrayElements(expression).map(unboundListItem);
+        try {
+            return this.expectStaticArrayElements(expression).map(
+                unboundListItem,
+            );
+        } catch (error) {
+            // The reader reads every item: a list holding a part
+            // generation cannot read refuses with it.
+            const value =
+                error instanceof CompileError
+                    ? this.probeEmission(
+                          () =>
+                              unlessRefused(() =>
+                                  this.compileValue(expression),
+                              ),
+                          () => false,
+                      )
+                    : undefined;
+            if (value) refuseUnreadablePart(this, value, expression);
+            throw error;
+        }
+    }
+
+    /** List syntax may re-read an unwritten local under the current variant. */
+    private resolveListExpression(expression: ts.Expression): ts.Expression {
+        return this.evaluator.resolveStaticExpression(
+            expression,
+            undefined,
+            (declaration) =>
+                ts.isIdentifier(declaration.name) &&
+                !this.constArrayIsWritten(declaration.name),
+        );
+    }
+
+    private filteredListItems(
+        expression: ts.Expression,
+    ): StaticListItem[] | undefined {
+        if (
+            !ts.isCallExpression(expression) ||
+            expression.questionDotToken ||
+            expression.arguments.length !== 1
+        )
+            return undefined;
+        const member = namedMember(this.checker, expression.expression);
+        const callback = this.unwrap(argumentAt(expression, 0));
+        if (member?.name !== "filter" || !ts.isArrowFunction(callback))
+            return undefined;
+        return this.probeEmission(() => {
+            const items = this.staticListItems(member.expression);
+            const elements = items.map((item) =>
+                this.staticListItemValue(item),
+            );
+            const owner: Value = {
+                kind: "tuple",
+                cpp: "",
+                tupleElements: elements,
+            };
+            const selected: StaticListItem[] = [];
+            for (let index = 0; index < items.length; ++index) {
+                const matched = this.compilePredicateWithValues(
+                    callback,
+                    [
+                        elements[index]!,
+                        {
+                            kind: "number",
+                            cpp: `${index}.0`,
+                            staticNumber: index,
+                        },
+                        owner,
+                    ],
+                    expression,
+                );
+                if (matched.staticBoolean === undefined) return undefined;
+                if (matched.staticBoolean) selected.push(items[index]!);
+            }
+            return selected;
+        });
+    }
+
+    private staticListItemValue(item: StaticListItem): Value {
+        return item.within(() => {
+            const json = item.text ?? staticJsonValue(this, item.node);
+            return json === notJson
+                ? this.compileValue(item.node)
+                : jsonToValue(
+                      this,
+                      executedConstantJsonPolicy,
+                      json,
+                      item.node,
+                  );
+        });
     }
 
     /**
@@ -4111,7 +4269,15 @@ class Compiler implements LoweringServices {
             return undefined;
         const values = call.arguments.map((argument) =>
             this.bindings.pinValueToTemporary(
-                this.compileValue(argument),
+                this.probeEmission(() =>
+                    unlessRefused(() => ({
+                        kind: "tuple" as const,
+                        cpp: "",
+                        tupleElements: this.staticListItems(argument).map(
+                            (item) => this.staticListItemValue(item),
+                        ),
+                    })),
+                ) ?? this.compileValue(argument),
                 "list_argument",
                 argument,
             ),
@@ -4457,17 +4623,8 @@ class Compiler implements LoweringServices {
             bound.kind === "data" &&
             bound.dataType?.kind === "struct"
         ) {
-            const struct = bound.dataType.name;
-            return bound.recordOwnKeys ||
-                this.dataTypes.ownKeysDecided(struct, node)
-                ? this.memberLiteral(
-                      node,
-                      bound.recordOwnKeys ??
-                          this.dataTypes
-                              .structFields(struct, node, "accessors")
-                              .map((field) => field.sourceName),
-                  )
-                : undefined;
+            const keys = knownOwnKeys(this, bound, node);
+            return keys ? this.memberLiteral(node, keys) : undefined;
         }
         const properties = bound.recordProperties;
         const keys =
@@ -5090,8 +5247,10 @@ class Compiler implements LoweringServices {
     ): Value {
         this.expectArgumentCount(call, 1, 2);
         let canvasArgument = "";
+        let engineCanvas: Value | undefined;
         if (this.options.workers) {
             const canvas = this.compileValue(argumentAt(call, 0));
+            engineCanvas = canvas;
             if (
                 canvas.kind !== "offscreen-canvas" &&
                 canvas.kind !== "ui-element"
@@ -5262,6 +5421,7 @@ class Compiler implements LoweringServices {
             [...this.ui.nativeHostUiTags().values()].includes("canvas")
         ) {
             const canvas = this.compileValue(argumentAt(call, 0));
+            engineCanvas = canvas;
             if (canvas.kind === "ui-element") {
                 if (canvas.uiTag !== "canvas")
                     this.fail(
@@ -5299,12 +5459,15 @@ class Compiler implements LoweringServices {
         if (floatingOrigin) {
             this.reachFeature("renderer:floating-origin", call);
         }
+        const engineIdentity = Symbol();
+        if (engineCanvas)
+            writable(engineCanvas).canvasEngineIdentity = engineIdentity;
         return {
             kind: "engine",
             cpp: engineCpp,
             engineCpp,
             // The default-engine spelling and every alias are one engine.
-            engineIdentity: Symbol(),
+            engineIdentity,
             ...(this.options.workers ? { ownedEngineCpp: cppName } : {}),
             msaaSamples,
             ...(surfaceCanvas ? { surfaceCanvas: true as const } : {}),
@@ -5359,6 +5522,13 @@ class Compiler implements LoweringServices {
         return only && ts.isReturnStatement(only) && only.expression
             ? this.unwrap(only.expression)
             : undefined;
+    }
+
+    public reachShaderCreations(): void {
+        if (this.shaderCreationsReached) return;
+        for (const entry of this.options.shaderCreations ?? [])
+            reachLedgerProgram(this, entry);
+        this.shaderCreationsReached = true;
     }
 
     /**
@@ -6410,6 +6580,25 @@ class Compiler implements LoweringServices {
         return result;
     }
 
+    public runModelCall(
+        call: ts.CallExpression,
+        label: string,
+    ): ExecutedResult {
+        return runApplicationFunction(
+            this.generationRunContext(
+                (identifier) => this.staticScalar(identifier),
+                {
+                    model: true,
+                    opaque: (identifier) =>
+                        holdsEngineValue(this.checker, identifier),
+                },
+            ),
+            call,
+            [],
+            label,
+        );
+    }
+
     public runCallOverHeldData(
         call: ts.CallExpression,
         held: (identifier: ts.Identifier) => ExecutedArgument | undefined,
@@ -6433,7 +6622,12 @@ class Compiler implements LoweringServices {
         foldEnclosing: ExecutedFunctionContext["foldEnclosing"],
         more: Pick<
             ExecutedFunctionContext,
-            "writtenThrough" | "pinnedStandIn" | "standInText" | "unreadNumbers"
+            | "writtenThrough"
+            | "pinnedStandIn"
+            | "standInText"
+            | "unreadNumbers"
+            | "model"
+            | "opaque"
         >,
     ): ExecutedFunctionContext {
         return {
@@ -6606,7 +6800,12 @@ class Compiler implements LoweringServices {
         return ts.isCallExpression(call) &&
             !call.questionDotToken &&
             moduleLevelCallee(this.checker, call.expression) &&
-            call.arguments.every((argument) => this.rereadsAlike(argument))
+            // The answer at the read only relaxes the cached one.
+            call.arguments.every(
+                (argument) =>
+                    this.rereadsAlike(argument) ||
+                    this.rereadsAlike(argument, identifier),
+            )
             ? { declaration, call }
             : undefined;
     }
@@ -6628,7 +6827,7 @@ class Compiler implements LoweringServices {
      * declaration's (`rerunCallInitializer`) and nothing writes through the
      * binding.
      */
-    private settledCallInitializer(
+    public settledCallInitializer(
         identifier: ts.Identifier,
     ): ts.CallExpression | undefined {
         const initializer = this.rerunCallInitializer(identifier);
@@ -6650,16 +6849,31 @@ class Compiler implements LoweringServices {
             : undefined;
     }
 
-    public staticLiteralData(value: Value, expression: ts.Expression): unknown {
-        return this.currentStaticLiteral(value, expression);
+    public staticLiteralData(
+        value: Value,
+        expression: ts.Expression,
+        leaf?: (part: Value) => unknown,
+    ): unknown {
+        return this.currentStaticLiteral(
+            value,
+            expression,
+            undefined,
+            undefined,
+            leaf,
+        );
     }
 
-    /** Read complete current snapshots through the ordinary property ownership rules. */
+    /**
+     * Read complete current snapshots through the ordinary property
+     * ownership rules; `leaf` reads a part as the plain data it answers,
+     * where it answers any.
+     */
     private currentStaticLiteral(
         carried: Value,
         expression: ts.Expression,
         active: ReadonlySet<Value> = new Set(),
         projectedTypes: ReadonlySet<string> = new Set(),
+        leaf?: (part: Value) => unknown,
     ): unknown {
         if (
             carried.parameterBinding ||
@@ -6667,6 +6881,8 @@ class Compiler implements LoweringServices {
             !this.bindings.recordPropertiesAreCurrent(carried)
         )
             return undefined;
+        const read = leaf?.(carried);
+        if (read !== undefined) return read;
         const scalar =
             carried.staticString ??
             carried.staticNumber ??
@@ -6693,6 +6909,7 @@ class Compiler implements LoweringServices {
                     ),
                     nested,
                     projectedTypes,
+                    leaf,
                 ),
             );
             return values.every((value) => value !== undefined)
@@ -6765,6 +6982,7 @@ class Compiler implements LoweringServices {
                 access,
                 nested,
                 nestedTypes,
+                leaf,
             );
             if (value === undefined) return undefined;
             entries.push([field.sourceName, value]);
@@ -6814,10 +7032,10 @@ class Compiler implements LoweringServices {
      * Whether a later re-read of an expression sees what its first
      * evaluation saw: a call in it returns a literal, and its names are
      * functions, consts nothing writes through, or parameter members their
-     * function only reads.
+     * function only reads (up to `atRead`, when supplied).
      */
-    private rereadsAlike(expression: ts.Expression): boolean {
-        const known = this.rereadAlike.get(expression);
+    private rereadsAlike(expression: ts.Expression, atRead?: ts.Node): boolean {
+        const known = atRead ? undefined : this.rereadAlike.get(expression);
         if (known !== undefined) return known;
         const stableName = (name: ts.Identifier): boolean => {
             const named = this.symbols.valueSymbol(name)?.valueDeclaration;
@@ -6847,6 +7065,7 @@ class Compiler implements LoweringServices {
                     this.checker,
                     named.parent,
                     binding,
+                    atRead,
                 );
                 return (
                     !written.has("") &&
@@ -6875,7 +7094,7 @@ class Compiler implements LoweringServices {
             return !ts.forEachChild(node, (child) => !stable(child));
         };
         const alike = stable(expression);
-        this.rereadAlike.set(expression, alike);
+        if (!atRead) this.rereadAlike.set(expression, alike);
         return alike;
     }
 
@@ -6954,6 +7173,10 @@ class Compiler implements LoweringServices {
                     [],
                     `Module constant '${constant.name.text}'`,
                 );
+            // A static reader reads all it resolves: a part generation
+            // cannot read refuses there.
+            if (value === undefined)
+                refuseUnreadablePart(this, carried, expression);
         } else if (
             ts.isCallExpression(resolved) &&
             !resolved.questionDotToken
@@ -11435,7 +11658,7 @@ class Compiler implements LoweringServices {
 
     public requireEngine(value: Value, node: ts.Node): string {
         if (!value.engineCpp) {
-            this.dataTypes.requireEngineParameterStorage(
+            this.dataTypes.requireEngineOwnerStorage(
                 value.engineOwnerParameter,
             );
             // Resources whose carriers disagree belong to the one

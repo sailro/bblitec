@@ -46,6 +46,33 @@ test("the last writer decides a key; a later spread or run-time key may", () => 
     assert.equal(objectProperty(literal("({ a: 1, ...dyn })"), "a"), undefined);
 });
 
+test("a later spread of literals none of which writes a key leaves its writer", () => {
+    assert.equal(decides("({ a: 1, ...(c ? { b: 2 } : {}) })", "a"), "a: 1");
+    assert.equal(
+        decides("({ a: 1, ...(c && { b: 2 }), ...null })", "a"),
+        "a: 1",
+    );
+    assert.equal(
+        objectProperty(
+            literal("({ a: x, ...(c ? { b: 2 } : {}) })"),
+            "a",
+        )?.getText(),
+        "x",
+    );
+    assert.equal(decides("({ ...(c ? { b: 2 } : {}) })", "a"), "absent");
+    // A literal arm writing the key, or any other operand, still may.
+    assert.equal(decides("({ a: 1, ...(c ? { a: 2 } : {}) })", "a"), "unknown");
+    assert.equal(
+        decides("({ a: 1, ...(c ? { ...dyn } : {}) })", "a"),
+        "unknown",
+    );
+    assert.equal(
+        decides("({ a: 1, ...(c ? { [k]: 2 } : {}) })", "a"),
+        "unknown",
+    );
+    assert.equal(decides("({ a: 1, ...(c ? base : {}) })", "a"), "unknown");
+});
+
 /** The texts a key can take through literal spreads, and whether one is always written. */
 function values(source: string, key: string): string {
     const found = literalPropertyValues(literal(source), key);

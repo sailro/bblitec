@@ -1,4 +1,4 @@
-import { writable } from "../emission-transaction.js";
+import { EmissionSet, writable } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
@@ -40,6 +40,12 @@ export interface SceneIntrinsicContext
             | "compileSceneRegistration"
             | "fail"
         > {}
+
+/** A dispose callback joins the scene's native list (`bbl::on_scene_dispose`); a
+ * repeated registration allocates no generation-owned composition row. */
+export const runtimeOnlySceneIntrinsics: ReadonlySet<string> = new EmissionSet([
+    "onSceneDispose",
+]);
 
 export function compileSceneIntrinsic(
     context: SceneIntrinsicContext,

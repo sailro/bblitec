@@ -47,7 +47,7 @@ import {
     variableKind,
     hasDeclareModifier,
 } from "./syntax.js";
-import { typeCanCarryReference } from "./type-facts.js";
+import { typeCanCarryReference, unionMembers } from "./type-facts.js";
 import { writesThroughTrackedRoot } from "./user-functions.js";
 import { writtenOnlyInDeadFunctions } from "./string-domain.js";
 import { pinnedModuleBinding } from "../lowering/pinned-shader-builders.js";
@@ -105,6 +105,20 @@ export interface ExecutedFunctionContext {
      * not know: each lane, a key path into that argument, reads as an
      * accessor that throws `message`.
      */
+    /**
+     * A model run: module state starts as its declarations initialize it and
+     * the run's writes to it stay its own, so the run describes the
+     * program's first evaluation of the target rather than every one; the
+     * caller checks what it reads against the program's own values. Each of
+     * the pin's functions it reaches runs as an opaque call (`opaqueValue`).
+     */
+    readonly model?: boolean;
+    /**
+     * Whether a binding a model run's target closes over holds an engine or
+     * platform value (`holdsEngineValue`), which the run binds to an opaque
+     * value instead of evaluating it.
+     */
+    opaque?(identifier: ts.Identifier): boolean;
     readonly unreadNumbers?: ReadonlyMap<
         number,
         {
@@ -143,6 +157,8 @@ interface FilePart {
     index: number;
     statements: Set<ts.Statement>;
     imports: Map<string, ImportSource>;
+    /** The module-scope bindings a model run holds opaque instead of running. */
+    opaque: Set<string>;
 }
 
 /**
@@ -232,6 +248,7 @@ export function runApplicationFunction(
         const executed: unknown = Reflect.apply(build, undefined, [
             {
                 pinned: program.bindings.pinned,
+                opaque: program.bindings.opaque,
                 enclosing: Object.fromEntries(
                     Object.entries(program.bindings.enclosing).map(
                         ([name, value]) => [name, inRealm(value)],
@@ -383,6 +400,20 @@ function moduleScopeStatement(
     return undefined;
 }
 
+/** Whether `statement` declares `declaration` alone, as one name a file scope can bind. */
+function soleBinding(
+    statement: ts.Statement,
+    declaration: ts.Declaration,
+): boolean {
+    return (
+        ts.isVariableStatement(statement) &&
+        statement.declarationList.declarations.length === 1 &&
+        statement.declarationList.declarations[0] === declaration &&
+        ts.isVariableDeclaration(declaration) &&
+        ts.isIdentifier(declaration.name)
+    );
+}
+
 /** The names a closure statement binds in its file's scope. */
 function declaredNames(statement: ts.Statement): string[] {
     return statementDeclaredNames(statement).map((name) => name.text);
@@ -398,6 +429,10 @@ class ExecutedClosure {
         string,
         { declaration: ts.Declaration; value: ExecutedArgument }
     >();
+    /** @unjournaled Scratch of one execution's analysis, discarded with it. */
+    private readonly opaque = new Map<string, ts.Declaration>();
+    /** @unjournaled Scratch of one execution's analysis, discarded with it. */
+    private readonly opaquePinned = new Set<string>();
     /** @unjournaled Scratch of one execution's analysis, discarded with it. */
     private readonly queue: Array<{ root: ts.Node; file: ts.SourceFile }> = [];
     /**
@@ -418,6 +453,7 @@ class ExecutedClosure {
         javascript: string;
         bindings: {
             pinned: Record<string, unknown>;
+            opaque: Record<string, unknown>;
             enclosing: Record<string, ExecutedArgument>;
         };
     } {
@@ -435,6 +471,11 @@ class ExecutedClosure {
         const pinned: Record<string, unknown> = {};
         const enclosing: Record<string, ExecutedArgument> = {};
         for (const [name, { value }] of this.enclosing) enclosing[name] = value;
+        const opaque: Record<string, unknown> = {};
+        for (const name of this.opaque.keys()) opaque[name] = opaqueValue(name);
+        for (const part of this.parts.values())
+            for (const name of part.opaque)
+                opaque[`${part.index}:${name}`] = opaqueValue(name);
         const files: string[] = [];
         for (const [file, part] of this.parts) {
             const prologue: string[] = [];
@@ -442,7 +483,9 @@ class ExecutedClosure {
                 if (source.kind === "pinned") {
                     pinned[source.name] =
                         this.context.pinnedStandIn?.(source.name) ??
-                        pinnedExport(source.name);
+                        (this.opaquePinned.has(source.name)
+                            ? opaqueValue(source.name)
+                            : pinnedExport(source.name));
                     prologue.push(
                         `const ${local} = __bblBindings.pinned[${JSON.stringify(source.name)}];`,
                     );
@@ -453,21 +496,40 @@ class ExecutedClosure {
                     );
                 }
             }
+            for (const name of part.opaque)
+                prologue.push(
+                    `const ${name} = __bblBindings.opaque[${JSON.stringify(`${part.index}:${name}`)}];`,
+                );
             const statements = [...part.statements].sort(
                 (left, right) => left.pos - right.pos,
             );
-            const names = statements.flatMap(declaredNames);
+            const names = [
+                ...part.opaque,
+                ...statements.flatMap(declaredNames),
+            ];
             const body = statements.map((statement) =>
                 this.statementText(statement),
             );
             if (file === targetFile && !targetStatement) {
-                const bound = [...this.enclosing.keys()];
-                body.push(
-                    `const __bblTarget = ((${bound.join(", ")}) => (${this.targetExpression()}))(${bound
-                        .map(
-                            (name) =>
+                const bound = [
+                    ...[...this.enclosing.keys()].map(
+                        (name) =>
+                            [
+                                name,
                                 `__bblBindings.enclosing[${JSON.stringify(name)}]`,
-                        )
+                            ] as const,
+                    ),
+                    ...[...this.opaque.keys()].map(
+                        (name) =>
+                            [
+                                name,
+                                `__bblBindings.opaque[${JSON.stringify(name)}]`,
+                            ] as const,
+                    ),
+                ];
+                body.push(
+                    `const __bblTarget = ((${bound.map(([name]) => name).join(", ")}) => (${this.targetExpression()}))(${bound
+                        .map(([, value]) => value)
                         .join(", ")});`,
                 );
                 names.push("__bblTarget");
@@ -496,7 +558,7 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
                 source,
                 `${targetFile.fileName}.executed.ts`,
             ),
-            bindings: { pinned, enclosing },
+            bindings: { pinned, opaque, enclosing },
         };
     }
 
@@ -537,6 +599,7 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
                 index: this.parts.size,
                 statements: new Set(),
                 imports: new Map(),
+                opaque: new Set(),
             };
             this.parts.set(file, part);
         }
@@ -556,6 +619,7 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
             );
         }
         if (
+            !this.context.model &&
             ts.isVariableStatement(statement) &&
             variableKind(statement.declarationList) !== "const" &&
             // A `let` only never-run functions assign keeps its initializer.
@@ -579,7 +643,11 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
                 `${this.label} reads a module-scope 'let' or 'var', which the scene may reassign after generation ran it.`,
             );
         }
-        if (ts.isVariableStatement(statement) && this.context.writtenThrough)
+        if (
+            !this.context.model &&
+            ts.isVariableStatement(statement) &&
+            this.context.writtenThrough
+        )
             for (const name of statementDeclaredNames(statement))
                 if (
                     typeCanCarryReference(
@@ -619,6 +687,7 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
                     );
                 }
                 if (
+                    !this.context.model &&
                     writesThroughTrackedRoot(
                         node,
                         (expression) => {
@@ -708,6 +777,14 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
         );
     }
 
+    /** Whether a model run binds the name to an opaque value (`opaque`). */
+    private opaqueBinding(identifier: ts.Identifier): boolean {
+        return (
+            this.context.model === true &&
+            this.context.opaque?.(identifier) === true
+        );
+    }
+
     private resolve(
         identifier: ts.Identifier,
         root: ts.Node,
@@ -758,6 +835,7 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
             );
         }
         if (contains(root, declaration)) return;
+        const opaque = this.opaqueBinding(identifier);
         const statement = moduleScopeStatement(declaration);
         if (statement) {
             if (statement.getSourceFile() !== file) {
@@ -766,7 +844,19 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
                     `${this.label} reads '${identifier.text}' from another module without importing it.`,
                 );
             }
-            this.include(statement);
+            if (opaque && soleBinding(statement, declaration))
+                this.part(file).opaque.add(identifier.text);
+            else this.include(statement);
+            return;
+        }
+        if (isTargetWalk && opaque) {
+            const known = this.opaque.get(identifier.text);
+            if (known && known !== declaration)
+                this.context.fail(
+                    identifier,
+                    `${this.label} closes over two bindings named '${identifier.text}'.`,
+                );
+            this.opaque.set(identifier.text, declaration);
             return;
         }
         if (!isTargetWalk) {
@@ -805,6 +895,14 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
         const pinned = this.symbols.babylonImportName(identifier);
         if (pinned !== undefined) {
             if (
+                this.context.model &&
+                !pinnedTags.has(pinned) &&
+                aliasTarget(this.context.checker, symbol).declarations?.some(
+                    ts.isFunctionDeclaration,
+                )
+            )
+                this.opaquePinned.add(pinned);
+            else if (
                 !pinnedTags.has(pinned) &&
                 this.context.pinnedStandIn?.(pinned) === undefined
             ) {
@@ -843,8 +941,13 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
                 `${this.label} imports '${identifier.text}' without a named module-scope binding.`,
             );
         }
-        this.part(sibling);
-        this.include(statement);
+        const siblingPart = this.part(sibling);
+        if (
+            this.opaqueBinding(identifier) &&
+            soleBinding(statement, declaration)
+        )
+            siblingPart.opaque.add(name.text);
+        else this.include(statement);
         part.imports.set(identifier.text, {
             kind: "sibling",
             file: sibling,
@@ -926,6 +1029,54 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
             `${this.label} is a ${syntaxKindName(target.kind)}, which generation does not execute alone.`,
         );
     }
+}
+
+/**
+ * A value a model run holds only the identity of: an engine or platform
+ * binding, or what one of the pin's functions returns. Calling or
+ * constructing one returns another; reading, writing, enumerating or
+ * converting one throws, naming it.
+ */
+function opaqueValue(name: string): unknown {
+    const refuse = (use: string): never => {
+        throw new Error(
+            `it ${use} '${name}', an engine value generation does not run`,
+        );
+    };
+    return new Proxy(function opaque() {}, {
+        get: (_target, key) => refuse(`reads '${String(key)}' of`),
+        set: (_target, key) => refuse(`writes '${String(key)}' of`),
+        has: () => refuse("tests a member of"),
+        deleteProperty: () => refuse("deletes a member of"),
+        defineProperty: () => refuse("defines a member of"),
+        ownKeys: () => refuse("enumerates"),
+        getOwnPropertyDescriptor: () => refuse("inspects"),
+        getPrototypeOf: () => refuse("inspects"),
+        setPrototypeOf: () => refuse("changes"),
+        apply: () => opaqueValue(`${name}()`),
+        construct: () => opaqueValue(`new ${name}`) as object,
+    });
+}
+
+/**
+ * Whether every value a name's type admits is an object the engine or the
+ * host platform declares (a context, a mesh, a canvas): what a model run
+ * holds opaque.
+ */
+export function holdsEngineValue(
+    checker: ts.TypeChecker,
+    identifier: ts.Identifier,
+): boolean {
+    const type = checker.getNonNullableType(
+        checker.getTypeAtLocation(identifier),
+    );
+    const members = unionMembers(type);
+    return members.every((member) => {
+        const declaration = (member.aliasSymbol ?? member.getSymbol())
+            ?.declarations?.[0];
+        const origin = declaration && declarationOrigin(declaration);
+        return origin === "babylon" || origin === "dom" || origin === "webgpu";
+    });
 }
 
 /** A pinned public export, loaded from the packaged module that declares it. */

@@ -613,7 +613,7 @@ SharedGeometryIdentity shared_geometry_identity(const std::vector<GpuVertex>& ve
     return {vertices.size(), indices.size(), hash};
 }
 
-#if BBLITE_PINNED_MATERIALS
+#if BBLITE_PINNED_MATERIALS || BBLITE_PICK_DISCARD
 PinnedVertexInput pinned_vertex_input(std::string_view name) {
     const auto at = [](VertexInputLane lane, std::size_t offset) {
         return PinnedVertexInput{
@@ -1841,22 +1841,29 @@ upstream::NodeMeshUniforms node_mesh_block(const Scene& scene, const Engine& eng
 // Picking (pal_gpu_picking.hpp)
 
 #if BBLITE_HAS_PICKING
-PickingInfo resolve_pick_result(const std::vector<PickRange>& ranges, std::uint32_t pick_id) {
+const PickRange* pick_range(const std::vector<PickRange>& ranges, std::uint32_t pick_id) {
     if (pick_id == 0)
-        return PickingInfo{};
+        return nullptr;
     for (const PickRange& range : ranges) {
-        if (pick_id < range.id || pick_id - range.id >= range.count) {
-            continue;
-        }
-        PickingInfo info;
-        info.hit = true;
-        info.picked_kind = range.kind;
-        info.picked_index = range.index;
-        info.state->picked_generation = range.generation;
-        info.picked_range_offset = pick_id - range.id;
-        return info;
+        if (pick_id >= range.id && pick_id - range.id < range.count)
+            return &range;
     }
     throw std::runtime_error("GPU pick read an id no candidate was drawn under.");
+}
+
+PickingInfo resolve_pick_result(const std::vector<PickRange>& ranges, std::uint32_t pick_id) {
+    const PickRange* range = pick_range(ranges, pick_id);
+    if (!range)
+        return PickingInfo{};
+    PickingInfo info;
+    info.hit = true;
+    info.picked_kind = range->kind;
+    info.picked_index = range->index;
+    info.state->picked_generation = range->generation;
+    info.picked_range_offset = pick_id - range->id;
+    if (range->thin)
+        info.thin_instance_index = static_cast<double>(info.picked_range_offset);
+    return info;
 }
 #endif
 
@@ -2023,6 +2030,121 @@ int pick_vat_projection(const MeshRecord& mesh, bool thin) {
 #endif
 
 #if BBLITE_HAS_PBR_RENDERER && BBLITE_HAS_PICKING
+#if BBLITE_PICK_DISCARD
+bool pick_vertex_data_present(const Engine& engine, const MeshRecord& mesh,
+                              std::string_view attribute) {
+    const auto& geometry = engine.geometries.at(mesh.geometry);
+    if (attribute == "normal")
+        return true;
+    if (attribute == "uv")
+        return geometry.has_uvs;
+    if (attribute == "tangent")
+        return geometry.has_tangents;
+    if (attribute == "color")
+        return geometry.has_vertex_colors;
+    throw std::runtime_error("A pick discard rule reads vertex data '" + std::string(attribute) +
+                             "', whose presence a mesh does not record.");
+}
+#endif
+
+std::vector<PickDiscardDraw>
+prepare_pick_discard([[maybe_unused]] const Engine& engine,
+                     [[maybe_unused]] const upstream::RenderPlan& render_plan,
+                     [[maybe_unused]] const std::vector<PickMeshCandidate>& candidates,
+                     [[maybe_unused]] std::vector<PickRange>& ranges,
+                     const Engine::PickOptions* options, [[maybe_unused]] bool detailed) {
+    std::vector<PickDiscardDraw> draws;
+    if (!options || !options->discard)
+        return draws;
+    const Engine::PickDiscard& rule = *options->discard;
+#if BBLITE_PICK_DISCARD
+    // `getPickingPipelineSet` keys the rule's pipelines on these members.
+    const auto found = std::find_if(
+        upstream::pick_discard_variants.begin(), upstream::pick_discard_variants.end(),
+        [&](const upstream::PickDiscardVariant& variant) { return rule.key == variant.key; });
+    if (found == upstream::pick_discard_variants.end())
+        throw std::runtime_error("pickAsync's discard rule '" + rule.key +
+                                 "' was not composed at generation.");
+    const upstream::PickDiscardVariant& variant = *found;
+    // The rule as composed: what the modules splice, framed as generation
+    // framed it (`pickDiscardContentKey`), and the members the layout reads.
+    std::vector<std::uint8_t> content;
+    const auto frame = [&content](std::string_view text) {
+        content.insert(content.end(), text.begin(), text.end());
+        content.push_back(0);
+    };
+    frame(rule.wgsl);
+    frame(rule.world_adjust_wgsl.value_or(""));
+    for (const Engine::PickDiscardStorage& entry : rule.storage) {
+        frame(entry.name);
+        frame(entry.type);
+    }
+    const std::string_view stages = variant.stages;
+    bool same = content_key(content) == variant.content &&
+                rule.vertex_data.has_value() == (variant.vertex_data != nullptr) &&
+                (!rule.vertex_data || *rule.vertex_data == variant.vertex_data) &&
+                rule.world_adjust_wgsl.has_value() == variant.world_adjust &&
+                rule.storage.size() == variant.storage_count;
+    for (std::size_t entry = 0; same && entry < rule.storage.size(); ++entry)
+        same = rule.storage[entry].vertex == (stages[entry] == 'v');
+    if (!same)
+        throw std::runtime_error("pickAsync's discard rule '" + rule.key +
+                                 "' is not the rule generation composed under that key.");
+    const int index = static_cast<int>(found - upstream::pick_discard_variants.begin());
+    draws.resize(candidates.size());
+    for (std::size_t slot = 0; slot < candidates.size(); ++slot) {
+        PickDiscardDraw& draw = draws[slot];
+        bool admitted = true;
+        for (const Engine::PickDiscardStorage& entry : rule.storage) {
+            std::optional<std::vector<std::uint8_t>> bytes =
+                entry.data(render_plan.items[candidates[slot].item_index].mesh);
+            if (!bytes) {
+                admitted = false;
+                break;
+            }
+            // `createMappedBuffer`'s size: at least 4 bytes, 4-aligned.
+            bytes->resize((std::max<std::size_t>(bytes->size(), 4) + 3) & ~std::size_t{3}, 0);
+            draw.storage.push_back(std::move(*bytes));
+        }
+        if (!admitted) {
+            draw.storage.clear();
+            continue;
+        }
+        [[maybe_unused]] const PickMeshCandidate& candidate = candidates[slot];
+#if BBLITE_DEFORM_PICKING
+        if (candidate.deform >= 0)
+            throw std::runtime_error(
+                "A pick discard rule over a deforming candidate is not composed.");
+#endif
+#if BBLITE_VAT_PICKING
+        if (candidate.vat >= 0)
+            throw std::runtime_error("A pick discard rule over a VAT candidate is not composed.");
+#endif
+        const MeshHandle mesh = render_plan.items[candidate.item_index].mesh;
+        // A mesh without the attribute draws through the rule pipeline
+        // without it (`getPickingRegularPipeline` with no vertex data).
+        const bool bare =
+            variant.vertex_data &&
+            !pick_vertex_data_present(engine, handle_at(engine.meshes, mesh), variant.vertex_data);
+        draw.pipeline =
+#if BBLITE_GPU_INSTANCING
+            candidate.thin ? pick_discard_thin :
+#endif
+            detailed ? (bare ? pick_discard_detailed_bare : pick_discard_detailed)
+                     : (bare ? pick_discard_regular_bare : pick_discard_regular);
+        if (!pick_discard_stem(variant, draw.pipeline))
+            throw std::runtime_error("pickAsync's discard rule '" + rule.key +
+                                     "' was not composed for this candidate's pipeline.");
+        draw.variant = index;
+        ranges.at(slot).world_adjusted = variant.world_adjust;
+    }
+#else
+    throw std::runtime_error("pickAsync's discard rule '" + rule.key +
+                             "' was not composed at generation.");
+#endif
+    return draws;
+}
+
 std::optional<std::size_t> picker_scene_index(const Engine& engine, GpuPickerHandle picker,
                                               const std::vector<std::shared_ptr<Scene>>& scenes) {
     if (picker.value >= engine.gpu_pickers.size())
@@ -2094,10 +2216,14 @@ PickingInfo resolve_gpu_pick([[maybe_unused]] const Engine& engine, const PickRe
                           pointer.w, pointer.h, readback.depth);
 #if BBLITE_HAS_DETAILED_PICKING
     if (request.detailed) {
-        finish_detailed_pick(engine, info, readback.detail, pointer.view_projection,
-                             pointer.sample_x, pointer.sample_y, pointer.w, pointer.h);
+        PickDetailReadback detail = readback.detail;
+        const PickRange* range = pick_range(ranges, readback.pick_id);
+        detail.world_adjusted = range && range->world_adjusted;
+        finish_detailed_pick(engine, info, detail, pointer.view_projection, pointer.sample_x,
+                             pointer.sample_y, pointer.w, pointer.h);
     }
 #endif
+    info.distance = picked_distance(*request.camera, info);
     return info;
 }
 #endif

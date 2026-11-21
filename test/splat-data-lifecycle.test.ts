@@ -305,7 +305,7 @@ async function pinnedLifecycle(output: string): Promise<void> {
     );
     for (const [length, message] of [
         [96, "GS vertex count mismatch"],
-        [0, "splat buffer is empty"],
+        [0, "#335"],
         [65, "multiple of 4"],
     ] as const) {
         events.length = 0;

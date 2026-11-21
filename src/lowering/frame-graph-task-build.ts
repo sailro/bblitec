@@ -8,6 +8,30 @@ const graphModule = "src/frame-graph/frame-graph.ts";
 const baseModule = "src/frame-graph/render-task-base.ts";
 const effectModule = "src/effect/effect-renderer.ts";
 
+/** One owner for the effect record's bind-group validation and pipeline state. */
+export function effectTaskRecordBody(
+    context: LoweringContext,
+): readonly string[] {
+    const record = context.propertyFunction(
+        effectModule,
+        "createEffectRenderTask",
+        "record",
+        { unique: true },
+    ).declaration;
+    context.assertStatementShapes(
+        record.body,
+        record.body.statements,
+        `buildRenderTarget(rt, eng);
+        task._pipeline = getEffectPipeline(effect, task._targetSignature);
+        task._bindGroup = getEffectBindGroup(effect);`,
+        "Effect render task record",
+    );
+    return [
+        "require_effect_bind_group(engine, task.effect.effect);",
+        "task.disposed = false;",
+    ];
+}
+
 /**
  * The task kinds `buildFrameGraphTask` records beside render and copy
  * tasks, each where the program reaches it: the record its `record()`
@@ -19,17 +43,16 @@ const effectModule = "src/effect/effect-renderer.ts";
 const RECORDED_TASK_KINDS = {
     effect: {
         name: "task.effect.name",
-        record: (methodSlots: boolean): readonly string[] =>
+        record: (
+            context: LoweringContext,
+            methodSlots: boolean,
+        ): readonly string[] =>
             methodSlots
                 ? [
                       // `task.record()`: one scene code put there, else the pin's.
                       "record_effect_task(engine, handle);",
                   ]
-                : [
-                      "require_effect_bind_group(engine, task.effect.effect);",
-                      // The record restores the pipeline dispose cleared.
-                      "task.disposed = false;",
-                  ],
+                : effectTaskRecordBody(context),
     },
     ssao: {
         name: "task.ssao.name",
@@ -119,25 +142,12 @@ export function lowerFrameGraphTaskBuild(
     `,
         "Render task record",
     );
-    if (kinds.includes("effect")) {
-        const effectRecord = context.propertyFunction(
-            effectModule,
-            "createEffectRenderTask",
-            "record",
-            { unique: true },
-        ).declaration;
-        context.assertStatementShapes(
-            effectRecord.body,
-            effectRecord.body.statements,
-            `
-            buildRenderTarget(rt, eng);
-            task._pipeline = getEffectPipeline(effect, task._targetSignature);
-            task._bindGroup = getEffectBindGroup(effect);
-        `,
-            "Effect render task record",
-        );
-    }
+    const disposedRecord = pinnedErrorCode(context, renderRecord);
     const [, recordCall, initialize] = statements;
+    // A program callback may append a task and reallocate the task vector.
+    const recorded = taskMethodSlots
+        ? recordAt("engine.frame_tasks", "handle")
+        : "task";
     const body = lowerPinnedBody(file, statements, {
         bindings: new Map(),
         calls: new Map(),
@@ -158,14 +168,14 @@ export function lowerFrameGraphTaskBuild(
                 return [
                     `${indent}if (task.kind == FrameTaskKind::render) {`,
                     `${indent}    if ${taskDisposedCpp("task", true)}`,
-                    `${indent}        throw std::runtime_error("RenderTask has been disposed.");`,
+                    `${indent}        throw std::runtime_error("#${disposedRecord}");`,
                     // Registration records each queued task once; a
                     // recorded task's next draw-list build re-records it.
                     `${indent}    if (task.record_state != FrameTaskRecordState::recorded) record_render_task(scene, task);`,
                     ...kinds.flatMap((kind) => [
                         `${indent}} else if (task.kind == FrameTaskKind::${kind}) {`,
                         ...RECORDED_TASK_KINDS[kind]
-                            .record(taskMethodSlots)
+                            .record(context, taskMethodSlots)
                             .map((line) => `${indent}    ${line}`),
                     ]),
                     `${indent}} else if (task.kind != FrameTaskKind::copy) {`,
@@ -174,10 +184,12 @@ export function lowerFrameGraphTaskBuild(
                 ];
             if (node === initialize)
                 return [
-                    `${indent}task.record_state = FrameTaskRecordState::recorded;`,
+                    `${indent}${recorded}.record_state = FrameTaskRecordState::recorded;`,
                     `${indent}++engine.draw_list_epoch;`,
                     ...(colorViewState
-                        ? [`${indent}record_task_color_views(engine, task);`]
+                        ? [
+                              `${indent}record_task_color_views(engine, ${recorded});`,
+                          ]
                         : []),
                 ];
             return undefined;

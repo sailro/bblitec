@@ -82,21 +82,26 @@ void upload_material_slot_texture(DawnState& state, DawnSampledTexture& sampled,
     sampled.sampler = create_texture_sampler(state.device, data.sampler);
 }
 
-void upload_shader_material_textures(DawnState& state, const MaterialRecord& material,
+void upload_shader_material_textures(DawnState& state, const Engine& engine,
+                                     const MaterialRecord& material,
                                      DawnSharedShaderMaterialTextures& textures) {
-    for (std::size_t slot = 0; slot < material.shader_textures.size(); ++slot) {
+    // A view's table spans its variant's samplers.
+    const std::size_t slots = material.shader_view_slots
+                                  ? material.shader_view_slots->samplers.size()
+                                  : material.shader_textures.size();
+    for (std::size_t slot = 0; slot < slots; ++slot) {
         DawnSampledTexture& sampled = textures.textures.emplace_back();
-        if (slot < material.shader_render_textures.size() && material.shader_render_textures[slot])
+        const auto owner = shader_slot_owner(engine, material, ShaderDeclarationList::samplers,
+                                             static_cast<std::uint32_t>(slot));
+        if (owner.slot >= owner.material.shader_textures.size() ||
+            shader_slot_binds_per_draw(owner.material, owner.slot))
             continue;
-#if BBLITE_SHADOWS_CSM
-        if (slot < material.shader_csm_textures.size() &&
-            material.shader_csm_textures[slot].value != invalid_handle)
-            continue;
-#endif
-        upload_material_slot_texture(state, sampled, material.shader_textures[slot].data,
+        upload_material_slot_texture(state, sampled,
+                                     owner.material.shader_textures[owner.slot].data,
                                      &textures.image_leases);
     }
-    textures.texture_version = material.shader_texture_version;
+    textures.texture_version =
+        shader_slot_version(engine, material, &MaterialRecord::shader_texture_version);
 }
 
 DawnSharedShaderMaterialTextures&
@@ -106,8 +111,7 @@ ensure_shader_material_textures(DawnState& state, const Engine& engine, Material
         return *existing;
     auto created = std::make_unique<DawnSharedShaderMaterialTextures>();
     created->material = material;
-    upload_shader_material_textures(
-        state, shader_resource_material(engine, handle_at(engine.materials, material)), *created);
+    upload_shader_material_textures(state, engine, handle_at(engine.materials, material), *created);
     state.shared_shader_material_textures.push_back(std::move(created));
     return *state.shared_shader_material_textures.back();
 }
@@ -115,12 +119,13 @@ ensure_shader_material_textures(DawnState& state, const Engine& engine, Material
 void refresh_shader_material_textures(DawnState& state, const Engine& engine) {
     bool changed = false;
     for (const auto& textures : state.shared_shader_material_textures) {
-        const auto* view = handle_find(engine.materials, textures->material);
-        const auto* material = view ? &shader_resource_material(engine, *view) : nullptr;
-        if (!material || textures->texture_version == material->shader_texture_version)
+        const auto* material = handle_find(engine.materials, textures->material);
+        if (!material ||
+            textures->texture_version ==
+                shader_slot_version(engine, *material, &MaterialRecord::shader_texture_version))
             continue;
         DawnSharedShaderMaterialTextures replacement;
-        upload_shader_material_textures(state, *material, replacement);
+        upload_shader_material_textures(state, engine, *material, replacement);
         state.release_shader_bindings(textures->material);
         textures->textures.swap(replacement.textures);
         textures->image_leases.swap(replacement.image_leases);
@@ -263,8 +268,7 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
     if (material_handle.value >= engine.materials.size()) {
         pal::refuse_invalid_frame_handle("Shader draw has an invalid material.");
     }
-    const MaterialRecord& material =
-        shader_resource_material(engine, handle_at(engine.materials, material_handle));
+    const MaterialRecord& material = handle_at(engine.materials, material_handle);
     const upstream::ShaderVariantInfo& info = upstream::shader_variant_info(variant);
     const bool shared_scene_matrix =
         info.vertex.present && block_is_shared_scene_matrix(info.vertex);
@@ -277,10 +281,14 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
     // rebuilds the groups that named the old one.
     std::vector<WGPUTextureView>& render_views = state.shader_render_views;
     std::vector<WGPUSampler>& render_samplers = state.shader_render_samplers;
-    render_views.assign(material.shader_render_textures.size(), nullptr);
+    render_views.assign(info.samplers.size(), nullptr);
     render_samplers.assign(render_views.size(), nullptr);
     for (std::size_t slot = 0; slot < render_views.size(); ++slot) {
-        if (const auto& reference = material.shader_render_textures[slot]) {
+        const auto owner = shader_slot_owner(engine, material, ShaderDeclarationList::samplers,
+                                             static_cast<std::uint32_t>(slot));
+        if (owner.slot >= owner.material.shader_render_textures.size())
+            continue;
+        if (const auto& reference = owner.material.shader_render_textures[owner.slot]) {
 #if BBLITE_RENDER_TASK_TRANSMISSION
             if (reference->source == RenderTextureSource::transmission_color ||
                 reference->source == RenderTextureSource::transmission_depth) {
@@ -315,7 +323,8 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
             (!info.fragment.present || existing->second.material) &&
             existing->second.render_views == render_views &&
             existing->second.render_samplers == render_samplers &&
-            existing->second.resource_version == material.shader_resource_version)
+            existing->second.resource_version ==
+                shader_slot_version(engine, material, &MaterialRecord::shader_resource_version))
             return existing->second;
         bindings = std::move(existing->second);
         mesh.shader_bindings.erase(existing);
@@ -328,13 +337,16 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
         shader_group_layout(state, variant, 0), shader_group_layout(state, variant, 1),
         shader_group_layout(state, variant, 2), shader_group_layout(state, variant, 3)};
     const auto storage_buffer = [&](std::size_t declared_slot) {
-        if (declared_slot >= material.shader_storage_buffers.size()) {
+        const auto owner =
+            shader_slot_owner(engine, material, ShaderDeclarationList::storage_buffers,
+                              static_cast<std::uint32_t>(declared_slot));
+        if (owner.slot >= owner.material.shader_storage_buffers.size()) {
             dawn_error((std::string("Shader material storage binding count is "
                                     "stale for '") +
                         info.name + "'.")
                            .c_str());
         }
-        const StorageBufferHandle handle = material.shader_storage_buffers[declared_slot];
+        const StorageBufferHandle handle = owner.material.shader_storage_buffers[owner.slot];
         if (handle.value < state.shader_storage_buffers.size() &&
             handle_at(state.shader_storage_buffers, handle).lost &&
             engine.assert_storage_buffer_handle)
@@ -381,17 +393,16 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
         WGPUTextureView view = nullptr;
         WGPUSampler sampler = nullptr;
 #if BBLITE_SHADOWS_CSM
-        const bool csm = slot < material.shader_csm_textures.size() &&
-                         material.shader_csm_textures[slot].value != invalid_handle;
+        const auto owner = shader_slot_owner(engine, material, ShaderDeclarationList::samplers,
+                                             static_cast<std::uint32_t>(slot));
+        const bool csm = owner.slot < owner.material.shader_csm_textures.size() &&
+                         owner.material.shader_csm_textures[owner.slot].value != invalid_handle;
         if (csm) {
 #if BBLITE_SHADOW_RECEIVERS
-            const ShadowGeneratorHandle generator = material.shader_csm_textures[slot];
-            if (generator.value >= engine.shadow_generators.size()) {
-                pal::refuse_invalid_frame_handle("Shader CSM receiver has an invalid generator.");
-            }
-            ensure_shadow_samplers(state);
-            view = shadow_map_view(state, engine, generator);
-            sampler = state.shadow_comparison_sampler;
+            const DawnCsmReceiverBinding csm_binding =
+                csm_receiver_binding(state, engine, owner.material.shader_csm_textures[owner.slot]);
+            view = csm_binding.view;
+            sampler = csm_binding.sampler;
 #else
             dawn_error("Shader CSM texture in a build with no receiver.");
 #endif
@@ -467,7 +478,8 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
     }
     bindings.render_views = render_views;
     bindings.render_samplers = render_samplers;
-    bindings.resource_version = material.shader_resource_version;
+    bindings.resource_version =
+        shader_slot_version(engine, material, &MaterialRecord::shader_resource_version);
     return mesh.shader_bindings.emplace(key, std::move(bindings)).first->second;
 }
 #endif

@@ -52,8 +52,11 @@ struct EffectResources {
     std::vector<SDL_GPUTextureSamplerBinding> textures;
     EffectTextureImages<OwnedSdlTexture> texture_images;
     std::unique_ptr<GpuBufferUploadBatch> pixel_uploads;
-    /** Positions in `textures` a render target fills at record time, by binding number. */
-    std::vector<std::pair<std::size_t, std::uint32_t>> render_textures;
+    /**
+     * Positions in `textures` a render target or a CSM receiver texture fills
+     * at record time, by binding number.
+     */
+    std::vector<std::pair<std::size_t, std::uint32_t>> per_draw_textures;
     /** `textures` with those positions filled, rewritten in place at each record. */
     mutable std::vector<SDL_GPUTextureSamplerBinding> bound_textures;
     /**
@@ -72,15 +75,20 @@ inline void release_effect_resources(SDL_GPUDevice*, EffectResources&) noexcept;
 using EffectPass = OwnedGpuRecord<EffectResources, std::remove_pointer_t<SDL_GPUDevice*>,
                                   release_effect_resources>;
 
-/** Upload factory pixels or the already-rounded texel of a solid texture. */
+/** Upload factory pixels (2D or 3D) or the already-rounded texel of a solid texture. */
 inline OwnedSdlTexture upload_effect_image(SDL_GPUDevice* device, const EffectTextureSlot& slot) {
     if (slot.pixels_texture) {
         const auto& texture = *slot.pixels_texture;
+        const SDL_GPUTextureFormat format = texture.srgb ? SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB
+                                                         : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+        if (texture.depth)
+            return OwnedSdlTexture{upload_3d_texture(device, texture.rgba.data(),
+                                                     texture.rgba.size(), texture.width,
+                                                     texture.height, *texture.depth, format,
+                                                     "SDL_CreateGPUTexture effect 3D pixels"),
+                                   {device}};
         return OwnedSdlTexture{upload_2d_texture(device, texture.rgba.data(), texture.rgba.size(),
-                                                 texture.width, texture.height,
-                                                 texture.srgb
-                                                     ? SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB
-                                                     : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+                                                 texture.width, texture.height, format,
                                                  "SDL_CreateGPUTexture effect pixels"),
                                {device}};
     }
@@ -166,10 +174,11 @@ inline EffectPass create_effect_pass(SDL_GPUDevice* device, const Engine& engine
         const auto image = pass.texture_images.add(
             engine, slot, pass.textures.size(),
             [&](const EffectTextureSlot& current) { return upload_effect_image(device, current); });
-        pass.textures.push_back({image ? image->get() : nullptr,
-                                 create_texture_sampler(device, effect_slot_sampler(engine, slot))});
-        if (slot.render_texture)
-            pass.render_textures.emplace_back(pass.textures.size() - 1, slot.binding);
+        pass.textures.push_back(
+            {image ? image->get() : nullptr,
+             create_texture_sampler(device, effect_slot_sampler(engine, slot))});
+        if (effect_slot_binds_per_draw(slot))
+            pass.per_draw_textures.emplace_back(pass.textures.size() - 1, slot.binding);
     }
     return pass;
 }
@@ -200,10 +209,10 @@ inline void upload_effect_pixels(SDL_GPUDevice* device, const Engine& engine, Ef
             const auto sampler = create_texture_sampler(device, effect_slot_sampler(engine, slot));
             SDL_ReleaseGPUSampler(device, binding.sampler);
             binding = {image ? image->get() : nullptr, sampler};
-            std::erase_if(pass.render_textures,
+            std::erase_if(pass.per_draw_textures,
                           [&](const auto& entry) { return entry.first == position; });
-            if (slot.render_texture)
-                pass.render_textures.emplace_back(position, slot.binding);
+            if (effect_slot_binds_per_draw(slot))
+                pass.per_draw_textures.emplace_back(position, slot.binding);
         });
     pass.texture_images.upload_writes([&](OwnedSdlTexture& image,
                                           std::span<const std::uint8_t> texels,
@@ -219,12 +228,19 @@ inline void upload_effect_pixels(SDL_GPUDevice* device, const Engine& engine, Ef
 
 /** A frame graph's render-target texture for an effect binding. */
 using EffectRenderTextureSource = std::function<SDL_GPUTexture*(const RenderTextureRef&)>;
+/**
+ * A scene's CSM receiver texture (`getCsmReceiverTexture`) for an effect
+ * binding: its depth array with its own comparison sampler, which the pin
+ * binds to the sampler naming it (`textureSlot.texture.sampler`).
+ */
+using EffectCsmTextureSource = std::function<SDL_GPUTextureSamplerBinding(ShadowGeneratorHandle)>;
 
 /** `_record`: the pin's own three-vertex draw, into an already-open pass. */
 inline void record_effect_pass(SDL_GPUCommandBuffer* command, SDL_GPURenderPass* render_pass,
                                const Engine& engine, const EffectPass& pass,
                                EffectWrapperHandle handle,
-                               const EffectRenderTextureSource& render_texture = {}) {
+                               const EffectRenderTextureSource& render_texture = {},
+                               const EffectCsmTextureSource& csm_texture = {}) {
     SDL_BindGPUGraphicsPipeline(render_pass, pass.pipeline.get());
     const EffectWrapperRecord& wrapper = handle_at(engine.effect_wrappers, handle);
     if (pass.has_uniform_block && !wrapper.uniform_values.empty()) {
@@ -235,22 +251,29 @@ inline void record_effect_pass(SDL_GPUCommandBuffer* command, SDL_GPURenderPass*
                            wrapper.uniform_values.size() * sizeof(float));
     }
     if (!pass.textures.empty()) {
-        // The bind group reads each render target's current texture, so a
-        // rebuilt target (resize) is what the next draw samples.
+        // The bind group reads each render target's and shadow map's current
+        // texture, so a rebuilt one (resize) is what the next draw samples.
         const std::vector<SDL_GPUTextureSamplerBinding>* textures = &pass.textures;
-        if (!pass.render_textures.empty()) {
+        if (!pass.per_draw_textures.empty()) {
             pass.bound_textures = pass.textures;
             textures = &pass.bound_textures;
         }
-        for (const auto& [index, binding] : pass.render_textures) {
-            if (!render_texture)
-                throw std::runtime_error(
-                    "An effect renderer samples render-target textures only in a frame graph.");
+        for (const auto& [index, binding] : pass.per_draw_textures) {
             const EffectTextureSlot& slot = effect_texture_slot(wrapper, binding);
-            if (!slot.render_texture)
+            if (slot.render_texture) {
+                if (!render_texture)
+                    throw std::runtime_error(
+                        "An effect renderer samples render-target textures only in a frame graph.");
+                pass.bound_textures[index].texture = render_texture(*slot.render_texture);
+            } else if (slot.csm_texture) {
+                if (!csm_texture)
+                    throw std::runtime_error("An effect renderer samples a CSM receiver texture "
+                                             "only in a scene's frame graph.");
+                pass.bound_textures[index] = csm_texture(*slot.csm_texture);
+            } else {
                 throw std::runtime_error(
                     "An effect binding changed texture kind after its first draw.");
-            pass.bound_textures[index].texture = render_texture(*slot.render_texture);
+            }
         }
         SDL_BindGPUFragmentSamplers(render_pass, 0, textures->data(),
                                     static_cast<Uint32>(textures->size()));
@@ -266,12 +289,14 @@ inline void record_effect_task_pass(SDL_GPUCommandBuffer* command, SDL_GPURender
                                     const Engine& engine, const EffectPass& pass,
                                     const FrameTaskRecord& task, std::uint32_t target_width,
                                     std::uint32_t target_height,
-                                    const EffectRenderTextureSource& render_texture) {
+                                    const EffectRenderTextureSource& render_texture,
+                                    const EffectCsmTextureSource& csm_texture = {}) {
     const EffectTaskDraw draw = effect_task_draw(task, target_width, target_height);
     if (!draw.draws)
         return;
     set_pass_scissor(render_pass, draw.scissor);
-    record_effect_pass(command, render_pass, engine, pass, task.effect.effect, render_texture);
+    record_effect_pass(command, render_pass, engine, pass, task.effect.effect, render_texture,
+                       csm_texture);
 }
 
 } // namespace bbl::pal

@@ -2,9 +2,14 @@ import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { engineArgumentWritten } from "./parameter-effects.js";
 import { constObjectLiteral, yieldsNewArray } from "./fresh-records.js";
-import { writtenHolders } from "./written-holders.js";
+import { heldTypes, openHolder, writtenHolders } from "./written-holders.js";
+import {
+    KEYED_COLLECTIONS,
+    keyedCollectionKeyMethods,
+} from "./receiver-methods.js";
 import {
     declarationOrigin,
+    declarationInDefaultLibrary,
     declaredSymbol,
     libraryGlobal,
     nullishComparison,
@@ -21,6 +26,7 @@ import {
     writeSites,
     writeSiteOf,
     accessKey,
+    directCallOf,
     isProtoSetter,
     patternSlots,
     equalityOperator,
@@ -117,17 +123,26 @@ export interface NamedRead {
  *   `length` writes, deletions, the mutating methods);
  * - identities: operands of `===`/`!==` and `Object.is` when both can be
  *   objects; operands of `==`/`!=` other than nullish literals, `switch`
- *   subjects, `includes`/`indexOf`/
- *   `lastIndexOf` arguments, and the key or target types of constructed
- *   Map, Set, WeakMap, WeakSet, WeakRef and FinalizationRegistry values;
+ *   subjects, `includes`/`indexOf`/`lastIndexOf` arguments; the keys given
+ *   to keyed collections (`add`/`delete`/`get`/`has`/`set` arguments,
+ *   WeakRef and FinalizationRegistry targets): the record type a closed
+ *   key type stores them as, and the objects that reach them, a parameter
+ *   of a function the program only calls directly as what its calls pass
+ *   (`heldTypes`); and the whole key type of a collection constructed with
+ *   entries, or whose keys the program does not see given: one handed
+ *   where no keyed collection type is declared or to code the program does
+ *   not hold, or whose key method is read other than as a direct callee;
  * - enumerations: `Object.keys`/`values`/`entries`/`getOwnPropertyNames`/
  *   `getOwnPropertyDescriptors`/`hasOwn`, `Object.assign` sources, object
  *   spreads and rests, `for...in`, `in`, `hasOwnProperty`, `JSON.stringify`
  *   and `structuredClone`;
  * - widened arrays: the element types of mutable arrays read where a
  *   mutable array of another element type is expected, and that type;
- * - assertions: the types `as`/`<T>` retype a value to, whether the
- *   operand was untyped (an assertion to `any` or `unknown` retypes nothing
+ * - assertions: the types `as`/`<T>` retype a value to, the types of the
+ *   values reaching the assertion (the operand's own, through `x as
+ *   unknown as T`; an untyped parameter of a function the program only
+ *   calls directly holds what its calls pass, `heldTypes`), whether one of
+ *   those is untyped (an assertion to `any` or `unknown` retypes nothing
  *   the open holders of the index do not already count), and whether it
  *   named no shape (untyped, or the `object` a `typeof` test leaves of it);
  * - property reads: each property name read as a value rather than called
@@ -160,6 +175,8 @@ export interface ProgramObservations {
     readonly enumerations: ReadonlySet<ts.Type>;
     readonly assertions: readonly {
         readonly asserted: ts.Type;
+        /** The types of the values that reach the assertion. */
+        readonly from: readonly ts.Type[];
         readonly open: boolean;
         readonly shapeless: boolean;
     }[];
@@ -226,13 +243,6 @@ const ENUMERATING_STATICS = new Set([
     "getOwnPropertyDescriptors",
     "getOwnPropertyDescriptor",
     "hasOwn",
-]);
-const KEYED_COLLECTIONS = new Set([
-    "Map",
-    "Set",
-    "WeakMap",
-    "WeakSet",
-    "WeakRef",
 ]);
 const MUTATING_ARRAY_METHODS = new Set([
     "push",
@@ -375,6 +385,7 @@ function observe(program: ts.Program): ProgramObservations {
     const enumerations = new Set<ts.Type>();
     const assertions: {
         asserted: ts.Type;
+        from: readonly ts.Type[];
         open: boolean;
         shapeless: boolean;
     }[] = [];
@@ -503,6 +514,40 @@ function observe(program: ts.Program): ProgramObservations {
         if (objectLike(type)) {
             addIdentity(type, node);
             addIdentity(type, node.parent);
+        }
+    };
+    // A key is compared by identity with the objects that reach it, read
+    // through parameters as written objects are (`heldTypes`), and with
+    // the record it is stored as where the collection declares one; a
+    // spread key may be any object.
+    const keyed = (key: ts.Expression): void => {
+        if (ts.isSpreadElement(key))
+            return addIdentity(checker.getAnyType(), key);
+        observesObject(key);
+        const declared = checker.getContextualType(key);
+        if (declared && objectLike(declared) && !openHolder(declared))
+            identities.add(declared);
+        for (const type of heldTypes(program, checker, key))
+            if (objectLike(type)) identities.add(type);
+    };
+    const keyedCollections = (type: ts.Type): readonly ts.Type[] =>
+        unionMembers(checker.getNonNullableType(type)).filter((member) =>
+            KEYED_COLLECTIONS.has(libraryName(member) ?? ""),
+        );
+    // A collection whose keys the program does not see given may hold any
+    // object of its key type (`any` where it names none).
+    const unseenKeys = (collection: ts.Expression): void => {
+        for (const member of keyedCollections(typeOf(collection))) {
+            const key =
+                (member.flags & ts.TypeFlags.Object) !== 0
+                    ? checker.getTypeArguments(member as ts.TypeReference)[0]
+                    : undefined;
+            addIdentity(
+                key && (key.flags & ts.TypeFlags.Any) === 0
+                    ? key
+                    : checker.getAnyType(),
+                collection,
+            );
         }
     };
     const identityComparison = (left: ts.Node, right: ts.Node): void => {
@@ -706,12 +751,21 @@ function observe(program: ts.Program): ProgramObservations {
                 (asserted.flags & ts.TypeFlags.Never) === 0
             ) {
                 const from = typeOf(operand);
+                // An untyped parameter of a function the program only calls
+                // directly holds what its calls pass (`heldTypes`): the
+                // assertion retypes those, open only where one is untyped.
+                const reaching = untyped(from)
+                    ? heldTypes(program, checker, operand)
+                    : [from];
                 assertions.push({
                     asserted,
-                    open: untyped(from),
-                    shapeless:
-                        untyped(from) ||
-                        (from.flags & ts.TypeFlags.NonPrimitive) !== 0,
+                    from: reaching,
+                    open: reaching.some(untyped),
+                    shapeless: reaching.some(
+                        (type) =>
+                            untyped(type) ||
+                            (type.flags & ts.TypeFlags.NonPrimitive) !== 0,
+                    ),
                 });
             }
         }
@@ -736,15 +790,37 @@ function observe(program: ts.Program): ProgramObservations {
                     ) {
                         if (ts.isSpreadElement(argument))
                             add(writes, type, { node });
-                        else addWrite(argument, { node });
+                        else {
+                            addWrite(argument, { node });
+                            unseenKeys(argument);
+                        }
                     }
                 });
+        }
+        // A collection handed where no keyed collection type is declared
+        // can be given keys the program does not show.
+        if (ts.isExpression(node) && keyedCollections(typeOf(node)).length) {
+            const contextual = checker.getContextualType(node);
+            if (
+                contextual &&
+                keyedCollections(contextual).length !==
+                    unionMembers(checker.getNonNullableType(contextual)).length
+            )
+                unseenKeys(node);
         }
         if (
             ts.isPropertyAccessExpression(node) ||
             ts.isElementAccessExpression(node)
         ) {
             const key = accessKey(node);
+            // A key method read other than as a direct callee, or a member
+            // only the run time names, can take keys the program does not
+            // show.
+            if (
+                key === undefined ||
+                (keyedCollectionKeyMethods.has(key) && !directCallOf(node))
+            )
+                unseenKeys(node.expression);
             if (
                 key === "__proto__" ||
                 (key === "groups" &&
@@ -839,30 +915,11 @@ function observe(program: ts.Program): ProgramObservations {
             });
         } else if (ts.isNewExpression(node)) {
             const name = libraryGlobal(checker, node.expression);
-            if (name && KEYED_COLLECTIONS.has(name)) {
-                const keyOf = (keys: ts.Type): ts.Type | undefined => {
-                    const key =
-                        (keys.flags & ts.TypeFlags.Object) !== 0
-                            ? checker.getTypeArguments(
-                                  keys as ts.TypeReference,
-                              )[0]
-                            : undefined;
-                    return key && (key.flags & ts.TypeFlags.Any) === 0
-                        ? key
-                        : undefined;
-                };
-                // `new Map()` is `Map<any, any>` by its own overload; the
-                // collection it stores into fixes the keys it can take.
-                const contextual = checker.getContextualType(node);
-                const key =
-                    keyOf(typeOf(node)) ??
-                    (contextual
-                        ? unionMembers(contextual)
-                              .map(keyOf)
-                              .find((member) => member !== undefined)
-                        : undefined);
-                addIdentity(key ?? checker.getAnyType(), node);
-            }
+            const first = node.arguments?.[0];
+            if (first && name === "WeakRef") keyed(first);
+            // A collection constructed with entries may hold any key of its
+            // key type.
+            else if (first) unseenKeys(node);
         } else if (ts.isCallExpression(node)) call(node);
         if (
             ts.isCallExpression(node) &&
@@ -953,12 +1010,21 @@ function observe(program: ts.Program): ProgramObservations {
             method === "propertyIsEnumerable"
         )
             enumerated(callee.expression);
-        else if (
+        else if (keyedCollectionKeyMethods.has(method) && first) {
+            const declaration = calledDeclaration(checker, node);
+            if (
+                declaration &&
+                declarationInDefaultLibrary(declaration) &&
+                ts.isInterfaceDeclaration(declaration.parent) &&
+                KEYED_COLLECTIONS.has(declaration.parent.name.text)
+            )
+                keyed(first);
+        } else if (
             method === "register" &&
             first &&
             libraryName(typeOf(callee.expression)) === "FinalizationRegistry"
         )
-            identity(first);
+            keyed(first);
     };
     for (const source of program.getSourceFiles())
         if (!source.isDeclarationFile)

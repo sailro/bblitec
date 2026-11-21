@@ -37,12 +37,16 @@ import {
 } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
+import { isTaskMethodWrite } from "./effect-task-methods.js";
 import { eventTargetCpp } from "./dom-targets.js";
+import { refuseUnreadable } from "./unreadable-values.js";
 import {
     absenceOf,
     absenceOfNull,
+    holdsUnreadable,
     knownAbsent,
     knownCondition,
+    knownOwnKeys,
     staticKeyOf,
     undefinedValue,
     valueDataType,
@@ -96,6 +100,7 @@ import {
     absenceKind,
     admitsUndefined,
     arrayElementType,
+    arrayShape,
     declaredContextualType,
     isNullable,
     provenPresent,
@@ -176,6 +181,7 @@ import { absentReceiverMessage, isDirectDataProperty } from "./properties.js";
 import { representedResultType } from "./represented-result.js";
 import {
     arrayWriteObservation,
+    readonlyArrayWriteObservation,
     recordFieldIsWritten,
     builtRecordFieldIsWritten,
 } from "./record-observations.js";
@@ -227,9 +233,11 @@ import {
     type TypedArrayKind,
     callMember,
     isUiElementHandleType,
+    soleArrayArmIndex,
     soleMemberIndex,
 } from "./data-types.js";
 import {
+    booleanValue,
     commonResourceValue,
     runtimeMeshValue,
     withCommonResourceMetadata,
@@ -291,6 +299,7 @@ import {
     propertyKey,
     unwrapExpression,
     valueConsumer,
+    type ValueConsumer,
     wrappedParent,
     isTypeAssertion,
     wrappersUnder,
@@ -870,6 +879,30 @@ function updateStepCpp(
 /** Whether an expression's wrappers include a type assertion. */
 function assertsType(expression: ts.Expression): boolean {
     return wrappersUnder(expression).some(isTypeAssertion);
+}
+
+/**
+ * The element facts a view of `value`'s array shares with it: the snapshot
+ * and its owner, which a write through any view withdraws.
+ */
+function elementFacts(
+    value: Value,
+): Pick<
+    Value,
+    "staticElements" | "staticElementsOwner" | "runtimeElementTemplate"
+> {
+    const facts = value.staticElementsOwner ?? value;
+    return {
+        ...(facts.staticElements
+            ? {
+                  staticElements: facts.staticElements,
+                  staticElementsOwner: facts,
+              }
+            : {}),
+        ...(facts.runtimeElementTemplate
+            ? { runtimeElementTemplate: facts.runtimeElementTemplate }
+            : {}),
+    };
 }
 
 /**
@@ -2069,6 +2102,33 @@ export class DataLowerer {
     }
 
     private readonly functionStorageFlow = new FunctionStorageFlow();
+    private readonly functionPropertyFlow = new FunctionStorageFlow();
+
+    private refuseErasedFunctionProperties(node: ts.Node): never {
+        return this.context.fail(
+            node,
+            "A stored function's properties cannot be read after callable record storage erased them.",
+        );
+    }
+
+    /** Absence is valid only if storage never erased a callable record's properties. */
+    public noteFunctionProperties(
+        type: DataType<"function">,
+        use: "reads" | "erases",
+        node: ts.Node,
+    ): void {
+        if (
+            type.generic ||
+            !this.functionPropertyFlow.note(
+                {
+                    signatureSite: type.signatureSite,
+                    abi: "function-properties",
+                },
+                use === "reads" ? "reads" : "passes",
+            )
+        )
+            this.refuseErasedFunctionProperties(node);
+    }
 
     private refuseDroppedArguments(node: ts.Node): never {
         return this.context.fail(
@@ -2122,21 +2182,30 @@ export class DataLowerer {
             }
             if (from.kind === "function" && to.kind === "function") {
                 this.context.dataTypes.connectFunctionCompletion(from, to);
-                if (
-                    !from.generic &&
-                    !to.generic &&
-                    !this.functionStorageFlow.connect(
-                        {
-                            signatureSite: from.signatureSite,
-                            abi: this.context.dataTypes.cppType(from),
-                        },
-                        {
-                            signatureSite: to.signatureSite,
-                            abi: this.context.dataTypes.cppType(to),
-                        },
+                if (!from.generic && !to.generic) {
+                    const sourceContract = {
+                        signatureSite: from.signatureSite,
+                        abi: this.context.dataTypes.cppType(from),
+                    };
+                    const targetContract = {
+                        signatureSite: to.signatureSite,
+                        abi: this.context.dataTypes.cppType(to),
+                    };
+                    if (
+                        !this.functionPropertyFlow.connect(
+                            { ...sourceContract, abi: "function-properties" },
+                            { ...targetContract, abi: "function-properties" },
+                        )
                     )
-                )
-                    this.refuseDroppedArguments(node);
+                        this.refuseErasedFunctionProperties(node);
+                    if (
+                        !this.functionStorageFlow.connect(
+                            sourceContract,
+                            targetContract,
+                        )
+                    )
+                        this.refuseDroppedArguments(node);
+                }
                 for (
                     let index = 0;
                     index <
@@ -3916,7 +3985,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 (actual?.kind === "handle" &&
                     actual.handle === declared.handle))
         )
-            this.context.dataTypes.requireEngineParameterStorage(
+            this.context.dataTypes.requireEngineOwnerStorage(
                 source.engineOwnerParameter,
             );
         if (
@@ -4067,8 +4136,22 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return represented.some(
             (field, index) => !dataTypesEqual(field.type, fields[index]!.type),
         )
-            ? this.context.dataTypes.ownedRecordType(represented)
+            ? this.context.dataTypes.ownedRecordType(represented, type)
             : type;
+    }
+
+    /**
+     * The owner an entry program's unowned handles share where no element
+     * names one: raw DOM element storage belongs to the document realm, and
+     * other handles to the program's one default engine, as each element
+     * `leafValue` reconstructs does.
+     */
+    private unownedHandleOwner(element: DataType<"handle">): Value | undefined {
+        return element.handle === "ui-element" ||
+            (belongsToEntryEngine(element.handle) &&
+                this.context.defaultEngine() !== undefined)
+            ? this.leafValue(`${handleCppType(element.handle)}{}`, element)
+            : undefined;
     }
 
     public knownValueFitsSink(
@@ -4588,12 +4671,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 narrowed,
                 expression,
             );
-            if (index >= 0)
-                return this.projectedNativeValue(
+            if (index >= 0) {
+                const member = value.dataType.members[index]!;
+                const projected = this.projectedNativeValue(
                     value,
                     `std::get<${index}>(${value.cpp})`,
-                    value.dataType.members[index]!,
+                    member,
                 );
+                // The array arm is the array the union's element facts
+                // describe: writes through it reach them.
+                return member.kind === "vector"
+                    ? { ...projected, ...elementFacts(value) }
+                    : projected;
+            }
             if (!this.sharesSomeMembers(value.dataType, narrowed)) return value;
             const members = compileDataValueSink(
                 narrowed,
@@ -5461,11 +5551,21 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 const type = left.dataType;
                 // A literal the left's record type cannot hold (a field it
                 // requires is missing) is stored, with the left, as the
-                // record type the result is stored as.
+                // record type the result is stored as: the sink's, else the
+                // one the expression's context (a parameter) declares.
+                const contextual =
+                    this.context.checker.getContextualType(expression);
+                const result =
+                    sink ??
+                    (contextual &&
+                        this.context.dataTypes.fromTsType(
+                            contextual,
+                            expression,
+                        ));
                 const shared =
                     type.kind === "struct" &&
-                    sink?.kind === "struct" &&
-                    !dataTypesEqual(sink, type) &&
+                    result?.kind === "struct" &&
+                    !dataTypesEqual(result, type) &&
                     this.context.probeEmission(
                         () =>
                             unlessRefused(() =>
@@ -5476,7 +5576,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                                 ),
                             ) === undefined,
                     )
-                        ? sink
+                        ? result
                         : undefined;
                 if (shared)
                     return this.coalesceDistinctRecords(
@@ -5551,6 +5651,22 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
             }
             if (fallback.kind !== left.kind) {
+                // A scalar read that may miss (an element past the end)
+                // falls back to a value of its scalar type, which the
+                // fallback converts to as any sink of that type reads it
+                // (a slot a partial record assertion left optional).
+                const scalar = left.dataType;
+                if (
+                    scalar &&
+                    (scalar.kind === "number" ||
+                        scalar.kind === "boolean" ||
+                        scalar.kind === "string") &&
+                    left.kind === scalar.kind
+                )
+                    return this.leafValue(
+                        `(${leftFound} ? ${left.cpp} : ${fallbackForSink(scalar, `!(${leftFound})`)})`,
+                        scalar,
+                    );
                 this.context.fail(
                     expression.right,
                     `A missed search's fallback must be the same ` +
@@ -6038,6 +6154,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (!dataType) {
             return undefined;
         }
+        const uninstalled =
+            dataType.kind === "function"
+                ? this.context.propertyAccess.readUninstalledFunctionMember(
+                      owner,
+                      access,
+                  )
+                : undefined;
+        if (uninstalled) return uninstalled;
         if (dataType.kind === "symbol")
             return symbolProperty(this, owner, property);
         if (dataType.kind === "regexp" && property === "lastIndex")
@@ -6344,31 +6468,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     writable(value).optionalFoundCpp = "true";
                 }
             }
+            // An array slot, or a union slot whose array arm holds the
+            // record's linked array (`retainRecordArrayLiteralFacts`) and
+            // no write in the program can change.
+            const slotType =
+                field.type.kind === "optional" ? field.type.inner : field.type;
             if (
                 staticField &&
-                (field.type.kind === "vector" ||
-                    (field.type.kind === "optional" &&
-                        field.type.inner.kind === "vector"))
-            ) {
-                const facts = staticField.staticElementsOwner ?? staticField;
-                return {
-                    ...value,
-                    ...(facts.staticElements
-                        ? { staticElements: facts.staticElements }
-                        : {}),
-                    ...(facts.staticElements
-                        ? {
-                              staticElementsOwner: facts,
-                          }
-                        : {}),
-                    ...(facts.runtimeElementTemplate
-                        ? {
-                              runtimeElementTemplate:
-                                  facts.runtimeElementTemplate,
-                          }
-                        : {}),
-                };
-            }
+                (slotType.kind === "vector" ||
+                    (slotType.kind === "union" &&
+                        soleArrayArmIndex(slotType) >= 0 &&
+                        staticField.dataType?.kind === "vector" &&
+                        this.unwrittenSlotArrays(field, staticField)))
+            )
+                return { ...value, ...elementFacts(staticField) };
             if (staticField?.staticNumber !== undefined) {
                 writable(value).staticNumber = staticField.staticNumber;
             }
@@ -6812,7 +6925,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 freshData: true,
             };
         }
-        if (mode === "write" && dataType.kind === "tuple") {
+        // An element write changes the array whatever path names it: a
+        // field's array (`record.lanes[0] = x`) drops the element facts its
+        // record holds, which the root binding's do not reach.
+        if (
+            mode === "write" &&
+            (dataType.kind === "tuple" || dataType.kind === "vector")
+        ) {
             this.invalidateStaticElements(owner);
         }
         if (dataType.kind === "module-namespace") {
@@ -8777,6 +8896,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.context.requiresStaticDataIteration(callback)
         )
             return false;
+        // A tuple holding a part generation cannot read has no native
+        // storage to iterate.
+        const bound = this.context.bindings.lookupOptional(owner);
+        if (bound && holdsUnreadable(bound)) return false;
         const storage = this.dataTypeAt(owner);
         return (
             (storage?.kind === "vector" || storage?.kind === "span") &&
@@ -9715,6 +9838,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 `Array.${method} expects a search value and an optional fromIndex.`,
             );
         }
+        const folded = this.foldedArraySearch(call, owner, method);
+        if (folded) return folded;
         if (
             element.kind === "handle" &&
             !element.ownedEngine &&
@@ -9824,6 +9949,75 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         };
     }
 
+    /**
+     * A search whose receiver's elements and search value generation holds
+     * as primitives, answered at generation: `includes` by SameValueZero
+     * (NaN finds NaN), `indexOf`/`lastIndexOf` by strict equality. A
+     * `fromIndex`, or any element or value generation does not hold, is the
+     * run time's.
+     */
+    public foldedArraySearch(
+        call: ts.CallExpression,
+        owner: Value,
+        method: "indexOf" | "includes" | "lastIndexOf",
+    ): Value | undefined {
+        if (call.arguments.length !== 1) return undefined;
+        const literalLanes = (): (string | number | boolean)[] | undefined => {
+            const callee = namedMember(this.context.checker, call.expression);
+            if (!callee) return undefined;
+            const resolved = this.context.unwrap(
+                this.context.resolveStaticExpression(callee.expression),
+            );
+            if (!ts.isArrayLiteralExpression(resolved)) return undefined;
+            const lanes: (string | number | boolean)[] = [];
+            for (const element of resolved.elements) {
+                if (
+                    ts.isSpreadElement(element) ||
+                    ts.isOmittedExpression(element)
+                )
+                    return undefined;
+                const lane = this.context.resolveStaticExpression(element);
+                if (ts.isStringLiteralLike(lane)) lanes.push(lane.text);
+                else if (ts.isNumericLiteral(lane))
+                    lanes.push(Number(lane.text));
+                else if (lane.kind === ts.SyntaxKind.TrueKeyword)
+                    lanes.push(true);
+                else if (lane.kind === ts.SyntaxKind.FalseKeyword)
+                    lanes.push(false);
+                else return undefined;
+            }
+            return lanes;
+        };
+        const elements =
+            (owner.staticElementsOwner ?? owner).staticElements ??
+            (owner.kind === "tuple" ? owner.tupleElements : undefined);
+        const primitive = (
+            value: Value,
+        ): string | number | boolean | undefined =>
+            value.staticString ?? value.staticNumber ?? value.staticBoolean;
+        const known = elements?.map(primitive);
+        const lanes =
+            known && known.every((lane) => lane !== undefined)
+                ? known
+                : literalLanes();
+        if (!lanes) return undefined;
+        const argument = argumentAt(call, 0);
+        return this.context.probeEmission((): Value | undefined => {
+            const needle = primitive(this.context.compileValue(argument));
+            if (needle === undefined) return undefined;
+            // The lanes are primitives: JavaScript's own search is the fold.
+            if (method === "includes")
+                return booleanValue(String(lanes.includes(needle)));
+            const index = lanes[method](needle);
+            return {
+                kind: "number",
+                cpp: `${index}.0`,
+                staticNumber: index,
+                dataType: { kind: "number" },
+            };
+        });
+    }
+
     /** A raw homogeneous resource array can compare only within its proved engine. */
     private compileEngineHandleSearch(
         call: ts.CallExpression,
@@ -9859,15 +10053,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             (facts.runtimeElementTemplate
                 ? [facts.runtimeElementTemplate]
                 : undefined);
-        // Raw DOM element storage belongs to the document realm, and an entry
-        // program's unowned handles belong to its one default engine, just like
-        // each element reconstructed by leafValue.
         const defaultOwner =
-            element.handle === "ui-element" ||
-            (!members &&
-                belongsToEntryEngine(element.handle) &&
-                this.context.defaultEngine() !== undefined)
-                ? this.leafValue(`${handleCppType(element.handle)}{}`, element)
+            element.handle === "ui-element" || !members
+                ? this.unownedHandleOwner(element)
                 : undefined;
         if (
             !defaultOwner &&
@@ -10336,7 +10524,38 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
     }
 
-    /** Link literal array fields to their stored owner before aliases can write them. */
+    /**
+     * Whether no write in the program changes `array`, the array a union
+     * field holds, whatever path reaches it: no write reaches arrays of the
+     * types the field's declarations hold, or the record's views are the
+     * array's only writers (`recordLiteralArray`) and they hold it only as
+     * readonly arrays (`readonlyArrayWriteObservation`).
+     */
+    private unwrittenSlotArrays(field: DataStructField, array: Value): boolean {
+        const { checker } = this.context;
+        const declared = (field.declarations ?? []).flatMap((declaration) =>
+            presentMembers(checker.getTypeAtLocation(declaration)).filter(
+                (member) => arrayShape(checker, member) !== undefined,
+            ),
+        );
+        return (
+            declared.length > 0 &&
+            declared.every((type) =>
+                array.recordLiteralArray &&
+                arrayShape(checker, type)?.mutable === false
+                    ? readonlyArrayWriteObservation(this.context, type) ===
+                      undefined
+                    : arrayWriteObservation(this.context, type, type) ===
+                      undefined,
+            )
+        );
+    }
+
+    /**
+     * Link literal array fields, and fields holding an array no write
+     * reaches (`unwrittenConstantArray`), to their stored owner before
+     * aliases can write them.
+     */
     public retainRecordArrayLiteralFacts(owner: Value, node: ts.Node): void {
         const type = owner.dataType;
         const properties = owner.recordProperties;
@@ -10347,16 +10566,36 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             "accessors",
         )) {
             const source = properties[field.sourceName];
-            const memberType =
+            const held =
                 field.type.kind === "optional" ? field.type.inner : field.type;
-            if (source?.kind !== "tuple" || memberType.kind !== "vector")
+            // A union slot holds a literal array in its one array arm.
+            const arm = held.kind === "union" ? soleArrayArmIndex(held) : -1;
+            const memberType =
+                held.kind === "union" && arm >= 0 ? held.members[arm]! : held;
+            if (
+                (source?.kind !== "tuple" && !source?.unwrittenConstantArray) ||
+                memberType.kind !== "vector"
+            )
                 continue;
             const storedSlot = `${owner.cpp}${this.context.dataTypes.memberAccess(type.name)}${field.name}`;
             const slot = field.accessor ? `${storedSlot}.get()` : storedSlot;
+            const present =
+                field.type.kind === "optional" ? `(*${slot})` : slot;
             const member = this.leafValue(
-                field.type.kind === "optional" ? `(*${slot})` : slot,
+                held.kind === "union"
+                    ? `std::get<${arm}>(${present})`
+                    : present,
                 memberType,
             );
+            const literal = ts.isExpression(node)
+                ? literalMember(node, field.sourceName)
+                : undefined;
+            if (
+                source.unwrittenConstantArray ||
+                (literal &&
+                    ts.isArrayLiteralExpression(unwrapExpression(literal)))
+            )
+                writable(member).recordLiteralArray = true;
             this.retainArrayLiteralFacts(member, source, node);
             writable(properties)[field.sourceName] = member;
         }
@@ -10439,16 +10678,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         element.dataType?.kind === "struct",
                 ))
         ) {
+            const ownKeys = elements.map((element) =>
+                knownOwnKeys(this.context, element, node),
+            );
             if (
                 !elements.every(
-                    (element) =>
+                    (element, index) =>
                         !element.parameterBinding &&
                         (element.staticString !== undefined ||
                             element.staticNumber !== undefined ||
                             element.staticBoolean !== undefined ||
                             (element.recordProperties !== undefined &&
-                                (element.recordOwnKeys !== undefined ||
-                                    element.kind === "record") &&
+                                ownKeys[index] !== undefined &&
                                 Object.keys(element.recordGetters ?? {})
                                     .length === 0 &&
                                 Object.keys(element.recordSetters ?? {})
@@ -10488,10 +10729,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     (key) =>
                         !recordFieldIsWritten(this.context, sourceElement, key),
                 );
-            for (const element of elements)
+            for (const [index, element] of elements.entries())
                 this.context.bindings.retainRecordPropertiesAlias(
                     element,
-                    unwrittenScalars,
+                    unwrittenScalars ||
+                        // An object whose keys its struct decides or its
+                        // declaration proves (a module constant's) was not
+                        // built for the array: the array's escape withdraws
+                        // the array's view of it, as a holder's escape
+                        // leaves its own facts.
+                        (element.kind !== "record" &&
+                            (element.recordOwnKeys === undefined ||
+                                element.declaredOwnKeys === true) &&
+                            ownKeys[index] !== undefined),
                 );
             writable(owner).staticElements = elements.map((element, index) => ({
                 kind: "data",
@@ -10504,14 +10754,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     ? { optionalFoundCpp: "true" }
                     : {}),
                 ...scalarFacts(element),
-                ...(element.recordProperties
+                ...(element.recordProperties && ownKeys[index]
                     ? {
                           // Keep the source identity: writes through either
                           // record view invalidate the same indexed fact map.
                           recordProperties: element.recordProperties,
-                          recordOwnKeys:
-                              element.recordOwnKeys ??
-                              Object.keys(element.recordProperties),
+                          recordOwnKeys: ownKeys[index],
                       }
                     : {}),
             }));
@@ -12263,6 +12511,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 expression,
             );
         const unwrapped = this.context.unwrap(expression);
+        // `(a, b)`: the left side runs for its effects and the right side
+        // is the value this sink stores (as `compileValue` reads it).
+        if (
+            ts.isBinaryExpression(unwrapped) &&
+            unwrapped.operatorToken.kind === ts.SyntaxKind.CommaToken
+        ) {
+            this.context.emitExpressionAsStatement(unwrapped.left);
+            return this.compileForSink(unwrapped.right, dataType);
+        }
         // `a.x = b.x = null`: the inner assignment's value
         // (compileAssignmentValue), converted for this sink.
         if (
@@ -12605,6 +12862,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         dataType: DataType,
         node: ts.Node,
     ): string {
+        // Storage holds what it is given: a part generation cannot read
+        // has none.
+        refuseUnreadable(this.context, value, node);
         this.requireDocumentDictionaryConversion(value, dataType, node);
         // An object URL is a string naming its handle, which a revocation
         // by that string resolves.
@@ -12688,8 +12948,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
         if (!trackedArrayField) this.invalidateStoredArrayFacts(value);
         // A stored tuple aliases its source. Once that alias leaves the local
-        // binding graph, generation cannot retain a snapshot of its contents.
-        if (value.dataType?.kind === "tuple")
+        // binding graph, generation cannot retain a snapshot of its contents,
+        // unless no write in the program reaches it.
+        if (value.dataType?.kind === "tuple" && !value.unwrittenConstantArray)
             this.invalidateStaticElements(value);
         // A member read out of the node's value narrows by its own
         // expression; one no expression names keeps its stored type.
@@ -12884,16 +13145,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const at = outermostWrapper(node, { branches: true });
         const consumer = valueConsumer(at);
         switch (consumer.kind) {
-            case "property": {
-                const name = this.context.propertyName(consumer.name);
-                const field =
-                    name !== undefined
-                        ? contextualProperty(checker, consumer.literal, name)
-                        : undefined;
-                return field?.declarations?.length === 1
-                    ? field.declarations[0]
-                    : undefined;
-            }
+            case "property":
+                return this.literalFieldDeclaration(consumer);
             case "argument":
                 return calledDeclaration(checker, consumer.call)?.parameters[
                     consumer.index
@@ -12911,6 +13164,24 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             default:
                 return undefined;
         }
+    }
+
+    /** The one declaration of the field a literal property writes. */
+    private literalFieldDeclaration(
+        consumer: Extract<ValueConsumer, { kind: "property" }>,
+    ): ts.Declaration | undefined {
+        const name = this.context.propertyName(consumer.name);
+        const field =
+            name !== undefined
+                ? contextualProperty(
+                      this.context.checker,
+                      consumer.literal,
+                      name,
+                  )
+                : undefined;
+        return field?.declarations?.length === 1
+            ? field.declarations[0]
+            : undefined;
     }
 
     /** A guarded numeric tuple, including a document array copied by spread. */
@@ -12971,27 +13242,56 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * (`spreadTupleLanes`, a native tuple's already read), any other
      * element the value `read` gives it, and a compile-time tuple's lane
      * the value `readLane` gives it. Any other spread refuses with
-     * `refusal`.
+     * `refusal`; without one, only compile-time tuples spread, and the
+     * values are undefined at the first spread of any other value.
      */
     public spreadLaneValues(
         elements: readonly ts.Expression[],
         read: (element: ts.Expression) => Value,
         refusal: string,
+        readLane?: (lane: Value, spread: ts.SpreadElement) => Value,
+    ): { value: Value; node: ts.Expression }[];
+    public spreadLaneValues(
+        elements: readonly ts.Expression[],
+        read: (element: ts.Expression) => Value,
+        refusal: undefined,
+        readLane?: (lane: Value, spread: ts.SpreadElement) => Value,
+    ): { value: Value; node: ts.Expression }[] | undefined;
+    public spreadLaneValues(
+        elements: readonly ts.Expression[],
+        read: (element: ts.Expression) => Value,
+        refusal: string | undefined,
         readLane: (lane: Value, spread: ts.SpreadElement) => Value = (lane) =>
             lane,
-    ): { value: Value; node: ts.Expression }[] {
-        return elements.flatMap((element) => {
-            if (!ts.isSpreadElement(element))
-                return [{ value: read(element), node: element }];
+    ): { value: Value; node: ts.Expression }[] | undefined {
+        const values: { value: Value; node: ts.Expression }[] = [];
+        for (const element of elements) {
+            if (!ts.isSpreadElement(element)) {
+                values.push({ value: read(element), node: element });
+                continue;
+            }
             const spread = this.tupleSpreadValue(element.expression);
-            const lanes =
-                this.spreadTupleLanes(spread, element) ??
-                this.context.fail(element, refusal);
-            return lanes.map((lane) => ({
-                value: spread.kind === "tuple" ? readLane(lane, element) : lane,
-                node: element,
-            }));
-        });
+            let lanes: readonly Value[] | undefined;
+            if (refusal !== undefined)
+                lanes =
+                    this.spreadTupleLanes(spread, element) ??
+                    this.context.fail(element, refusal);
+            else {
+                const iterated = this.iteratedElements(spread);
+                if (!iterated || !("lanes" in iterated)) return undefined;
+                lanes = iterated.lanes;
+            }
+            values.push(
+                ...lanes.map((lane) => ({
+                    value:
+                        spread.kind === "tuple"
+                            ? readLane(lane, element)
+                            : lane,
+                    node: element,
+                })),
+            );
+        }
+        return values;
     }
 
     public spanLikeForSink(
@@ -13333,13 +13633,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
-     * An array binding assigned an array whose elements keep their engine
-     * beside the handle: the binding keeps them so too, one array for both.
-     * A const local holding a new array, read where an array of the
-     * engine-less handles is expected, holds those instead: its initializer
-     * converts each element while nothing else holds the array.
+     * An array stored where its handles keep or drop their engine, one
+     * array for both. Elements that keep their engine beside the handle: a
+     * binding assigned the array keeps them so too; a const local holding a
+     * new array, read where engine-less handles are expected, holds those
+     * instead (its initializer converts each element while nothing else
+     * holds the array); a record field a literal stores the array in keeps
+     * them, as a resource field keeps its resource's engine. Engine-less
+     * elements stored where their engine is kept: the local the array is
+     * read from keeps it too.
      */
     public requireArrayBindingElements(
+        value: Value,
         element: DataType,
         target: DataType,
         node: ts.Node,
@@ -13352,10 +13657,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             from.kind !== "handle" ||
             to.kind !== "handle" ||
             from.handle !== to.handle ||
-            !from.ownedEngine ||
-            to.ownedEngine
+            !from.ownedEngine === !to.ownedEngine
         )
             return;
+        if (!from.ownedEngine) {
+            const read = this.readLocal(value, node);
+            if (read)
+                throw new DynamicBindingStorageRequired(read, {
+                    elements: target,
+                });
+            return;
+        }
         const declaration = this.assignedBinding(node);
         if (declaration)
             throw new DynamicBindingStorageRequired(declaration, {
@@ -13366,9 +13678,37 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             throw new DynamicBindingStorageRequired(local, {
                 elements: target,
             });
+        const converted = this.convertedExpression(node);
+        const consumer =
+            converted &&
+            valueConsumer(outermostWrapper(converted, { branches: true }));
+        if (consumer?.kind === "property")
+            this.context.dataTypes.requireEngineOwnerStorage(
+                this.literalFieldDeclaration(consumer),
+            );
     }
 
-    /** The const local a converted expression reads, initialized with a new array, while it has no demanded storage. */
+    /** The initialized local a converted value reads (its identifier, or the live binding it is), while it has no demanded storage. */
+    public readLocal(
+        value: Value,
+        node: ts.Node,
+    ): ts.VariableDeclaration | undefined {
+        const converted = this.convertedExpression(node);
+        const expression = converted && unwrapExpression(converted);
+        const declaration =
+            (expression && ts.isIdentifier(expression)
+                ? initializedVariableDeclaration(
+                      this.context.checker,
+                      expression,
+                  )
+                : undefined) ??
+            this.context.bindings.variableDeclarationOf(value.cpp);
+        return declaration && !this.context.dynamicBindings.has(declaration)
+            ? declaration
+            : undefined;
+    }
+
+    /** The const local a converted expression reads, initialized with a new array, while it has no demanded storage or array storage its elements may refine. */
     private newArrayLocal(node: ts.Node): ts.VariableDeclaration | undefined {
         const converted = this.convertedExpression(node);
         const checker = this.context.checker;
@@ -13377,7 +13717,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             freshConstLocal(checker, converted, (initializer) =>
                 yieldsNewArray(checker, initializer),
             );
-        return declaration && !this.context.dynamicBindings.has(declaration)
+        return declaration &&
+            (!this.context.dynamicBindings.has(declaration) ||
+                this.context.dynamicBindings.get(declaration) === "array")
             ? declaration
             : undefined;
     }
@@ -13606,6 +13948,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const raw =
             this.compileDataPath(expression, "read") ??
             this.context.compileValue(expression);
+        // Storage holds what it is given: a part generation cannot read
+        // has none.
+        refuseUnreadable(this.context, raw, source);
         const narrowed =
             raw.kind === "data"
                 ? this.narrowOptional(
@@ -17075,6 +17420,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         expression: ts.BinaryExpression,
         asValue = false,
     ): Value {
+        if (isTaskMethodWrite(this.context, expression.left))
+            this.context.fail(
+                expression,
+                "Task method replacements require simple assignment.",
+            );
         const result = (value: Value): Value =>
             asValue
                 ? this.context.bindings.pinValueToTemporary(
@@ -20867,19 +21217,29 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 isEngineScopedHandleKind(type.inner.handle) &&
                 !type.inner.ownedEngine
             ) {
-                this.context.dataTypes.requireEngineParameterStorage(
-                    value?.engineOwnerParameter,
-                );
                 // A parameter or local holding the handle stores its engine
                 // beside it.
                 const local = this.context.unwrap(operand);
+                // Another operand (a property chain) has no storage to give
+                // it one; an entry program's unowned handles share its one
+                // default engine (`unownedHandleOwner`), so its slot
+                // compares alone.
+                if (
+                    !ts.isIdentifier(local) &&
+                    belongsToEntryEngine(type.inner.handle) &&
+                    this.context.defaultEngine() !== undefined
+                )
+                    continue;
+                this.context.dataTypes.requireEngineOwnerStorage(
+                    value?.engineOwnerParameter,
+                );
                 if (ts.isIdentifier(local)) {
                     const declaration = resolvedSymbol(
                         this.context.checker,
                         local,
                     )?.valueDeclaration;
                     if (declaration && ts.isParameter(declaration))
-                        this.context.dataTypes.requireEngineParameterStorage(
+                        this.context.dataTypes.requireEngineOwnerStorage(
                             declaration,
                         );
                     requireDynamicBindingStorage(this.context.checker, local, {
@@ -22568,7 +22928,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ? iterated.range
                 : members?.length
                   ? commonResourceValue(members[0]!, members)
-                  : undefined;
+                  : this.unownedHandleOwner(sourceElement);
             if (!proof?.engineCpp)
                 return this.context.fail(
                     spread,

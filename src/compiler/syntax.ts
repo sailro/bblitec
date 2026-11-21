@@ -211,6 +211,23 @@ export function wrappersAround(
     return wrappers;
 }
 
+/**
+ * Orders two nodes of a program as its source spells them: by file, then
+ * by position. A node without a file (`undefined`) comes last.
+ */
+export function sourceOrder(
+    left: ts.Node | undefined,
+    right: ts.Node | undefined,
+): number {
+    if (left === right) return 0;
+    if (!left) return 1;
+    if (!right) return -1;
+    const leftFile = left.getSourceFile()?.fileName ?? "";
+    const rightFile = right.getSourceFile()?.fileName ?? "";
+    if (leftFile !== rightFile) return leftFile < rightFile ? -1 : 1;
+    return left.pos - right.pos || left.end - right.end;
+}
+
 /** Strip the type-only and grouping wrappers around an expression. */
 export function unwrapExpression(
     expression: ts.Expression,
@@ -282,6 +299,13 @@ export function operandYield(
         default:
             return undefined;
     }
+}
+
+/** Which of `||` and `&&` a node is: the selections that yield their left operand by its truthiness. */
+export function truthinessSelection(node: ts.Node): "||" | "&&" | undefined {
+    if (!ts.isBinaryExpression(node)) return undefined;
+    const left = operandYield(node, node.left);
+    return left === truthyValue ? "||" : left === falsyValue ? "&&" : undefined;
 }
 
 /** The `c ? a : b` an expression is, past its wrappers. */
@@ -404,6 +428,36 @@ export function outermostWrapper(
     )
         current = parent;
     return current;
+}
+
+/** An `if` statement a path up from a statement crosses, and its branch there. */
+export interface PathBranch {
+    readonly statement: ts.IfStatement;
+    /** The path runs through the `then` branch. */
+    readonly holds: boolean;
+}
+
+/**
+ * The `if` branches from `node` up to the first ancestor-or-self `top`
+ * accepts, innermost first, when only blocks and `if` branches hold it
+ * there; otherwise the node that blocks the path: a loop, another
+ * statement, or an `if` whose test holds it.
+ */
+export function branchPath(
+    node: ts.Node,
+    top: (node: ts.Node) => boolean,
+): readonly PathBranch[] | { readonly blocked: ts.Node } {
+    const path: PathBranch[] = [];
+    for (let current = node; !top(current); current = current.parent) {
+        const parent = current.parent;
+        if (ts.isIfStatement(parent) && parent.expression !== current)
+            path.push({
+                statement: parent,
+                holds: parent.thenStatement === current,
+            });
+        else if (!ts.isBlock(parent)) return { blocked: parent };
+    }
+    return path;
 }
 
 function climbsOperand(
@@ -604,8 +658,11 @@ export function valueConsumer(at: ts.Expression): ValueConsumer {
  */
 export type ValueUse = { readonly held: boolean } & (
     | { readonly kind: "member"; readonly access: MemberAccess }
-    /** Called, tested or compared. */
-    | { readonly kind: "read" }
+    /**
+     * Called, tested or compared: `at` is the expression its reader
+     * consumes, past the selections and literals that yield it.
+     */
+    | { readonly kind: "read"; readonly at: ts.Expression }
     /** An expression statement's value or `void`'s operand. */
     | { readonly kind: "discarded" }
     | {
@@ -645,7 +702,7 @@ export function valueUse(value: ts.Expression): ValueUse {
                 continue;
             case "operand":
                 // A selection's test or `,`'s left operand is read, not yielded.
-                if (!consumer.yielded) return { held, kind: "read" };
+                if (!consumer.yielded) return { held, kind: "read", at };
                 at = outermostWrapper(consumer.selection);
                 continue;
             case "member":
@@ -653,16 +710,12 @@ export function valueUse(value: ts.Expression): ValueUse {
             case "called":
             case "compared":
             case "tested":
-                return { held, kind: "read" };
+                return { held, kind: "read", at };
             case "operator":
-                return {
-                    held,
-                    kind:
-                        consumer.operator.operatorToken.kind ===
-                        ts.SyntaxKind.InstanceOfKeyword
-                            ? "read"
-                            : "handed",
-                };
+                return consumer.operator.operatorToken.kind ===
+                    ts.SyntaxKind.InstanceOfKeyword
+                    ? { held, kind: "read", at }
+                    : { held, kind: "handed" };
             case "discarded":
                 return { held, kind: "discarded" };
             case "returned":
@@ -1572,6 +1625,11 @@ export function isUpdateExpression(node: ts.Node): node is UpdateExpression {
     );
 }
 
+/** The step an update adds to its operand: 1 for `++`, -1 for `--`. */
+export function updateStep(node: UpdateExpression): 1 | -1 {
+    return node.operator === ts.SyntaxKind.PlusPlusToken ? 1 : -1;
+}
+
 /**
  * The property key a literal converts to (ToPropertyKey): a string or a
  * template without substitutions as written, a number or bigint as its
@@ -1829,7 +1887,8 @@ function isDataMember(member: ObjectMember): member is DataMember {
  * The member that decides `key`: the last one writing it, `"unknown"` when
  * a later spread or run-time key may write it too, undefined when nothing
  * does. `spreadMayWrite` narrows which spreads can (the checker knows a
- * spread whose type has no such key); by default every one may.
+ * spread whose type has no such key); by default every one may but a
+ * spread of literals none of which writes it (`spreadOfLiteralsMayWrite`).
  */
 export function lastWriter(
     members: readonly ObjectMember[],
@@ -1837,7 +1896,7 @@ export function lastWriter(
     spreadMayWrite: (
         spread: ts.SpreadAssignment,
         key: string,
-    ) => boolean = () => true,
+    ) => boolean = spreadOfLiteralsMayWrite,
 ): ObjectMember | "unknown" | undefined {
     let writer: ObjectMember | "unknown" | undefined;
     for (const member of members) {
@@ -1848,6 +1907,26 @@ export function lastWriter(
         else if (member.key === undefined) writer = "unknown";
     }
     return writer;
+}
+
+/**
+ * Whether a spread may write `key`: unless every object its operand yields
+ * is a literal ({@link spreadLiterals}) with no member that may write it,
+ * or an operand adding nothing (`...(c ? { a } : {})` never writes `b`).
+ */
+function spreadOfLiteralsMayWrite(
+    spread: ts.SpreadAssignment,
+    key: string,
+): boolean {
+    const arms = spreadLiterals(spread.expression, nullOperand);
+    return (
+        !arms ||
+        arms.some(
+            (arm) =>
+                arm !== undefined &&
+                lastWriter(objectLiteralMembers(arm), key) !== undefined,
+        )
+    );
 }
 
 /**

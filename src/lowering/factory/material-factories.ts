@@ -15,6 +15,7 @@ import { recordAt } from "../../compiler/record-access.js";
 import { pbrMaterialRecordSeedCpp } from "../pinned-material-defaults.js";
 import { lowerNodeInputScalarSetter } from "../node-input-uniform-lowerer.js";
 import { lowerPixelsTextureWrites } from "../pixels-texture-writes.js";
+import { lowerPixelsTexture3DFactory } from "../pixels-texture-volume.js";
 import { lowerShaderStorageNameBinding } from "../shader-storage-bindings.js";
 import { lowerShaderTextureNameBinding } from "../shader-texture-bindings.js";
 import {
@@ -131,9 +132,9 @@ const shaderDeclarationNamesCpp = `const std::vector<std::string>& shader_declar
 
 /**
  * `createMaterialView(source, { features: 0 })` over a ShaderMaterial, and
- * the program its redefined properties derive. The view keeps the source's
- * slots (`shader_resource_material`), which a derived program declares
- * alike; its own record draws the derived variant.
+ * the program its redefined properties derive. Its own record draws the
+ * derived variant over slots its tables read by name
+ * (`bind_shader_view_slots`).
  */
 const shaderMaterialViewsCpp = `
 MaterialHandle create_shader_material_view(
@@ -154,7 +155,7 @@ void derive_shader_material_view(
     }
     apply_shader_material_variant(record, variant);
     record.shader_transmissive = transmissive;
-    record.shader_uniform_upload.reset();
+    bind_shader_view_slots(engine, view);
 }
 
 std::uint32_t shader_material_view_variant(
@@ -166,6 +167,312 @@ std::uint32_t shader_material_view_variant(
     }
     return record.shader_variant;
 }
+`;
+
+/**
+ * A ShaderMaterial view's slots, read through its source by name as the
+ * pin's view reads `_uniformValues`, `_textureSlots` and
+ * `_storageBufferSlots` through its prototype: each name its variant
+ * declares keeps the entry its table gave that name, else aliases the
+ * source's slot of that name, else is the view's own.
+ */
+const shaderViewSlotsCpp = `namespace {
+
+std::vector<std::string_view> shader_sampler_names(const upstream::ShaderVariantInfo& info) {
+    return {info.samplers.begin(), info.samplers.end()};
+}
+
+std::vector<std::string_view> shader_storage_names(const upstream::ShaderVariantInfo& info) {
+    std::vector<std::string_view> names;
+    for (const auto& slot : info.storage_buffers) names.emplace_back(slot.name);
+    return names;
+}
+
+// One list's table laid out for \`names\`: the entry \`previous\` (laid out for
+// \`previous_names\`) gave each name, else the source slot of that name, else
+// the view's own. \`moved\` takes each own entry's index in the view's lists
+// before, or invalid_handle.
+std::vector<std::uint32_t> shader_view_table(
+    const std::vector<std::string_view>& names,
+    const std::vector<std::string_view>& source_names,
+    const std::vector<std::string_view>& previous_names,
+    const std::vector<std::uint32_t>& previous,
+    std::vector<std::uint32_t>& moved) {
+    const auto index_of = [](const std::vector<std::string_view>& list, std::string_view name) {
+        return static_cast<std::uint32_t>(std::find(list.begin(), list.end(), name) - list.begin());
+    };
+    std::vector<std::uint32_t> table;
+    moved.assign(names.size(), invalid_handle);
+    for (std::size_t slot = 0; slot < names.size(); ++slot) {
+        const std::uint32_t before = index_of(previous_names, names[slot]);
+        if (before < previous.size()) {
+            table.push_back(previous[before]);
+            if (previous[before] == own_shader_slot) moved[slot] = before;
+            continue;
+        }
+        const std::uint32_t aliased = index_of(source_names, names[slot]);
+        table.push_back(aliased < source_names.size() ? aliased : own_shader_slot);
+    }
+    return table;
+}
+
+// The view's own entries at the indices its new table gives them; a slot it
+// never filled stays absent, as a material's unset slot is.
+template <class Value>
+void move_own_shader_slots(std::vector<Value>& list, const std::vector<std::uint32_t>& moved) {
+    std::vector<Value> placed;
+    for (std::size_t slot = 0; slot < moved.size(); ++slot) {
+        if (moved[slot] >= list.size()) continue;
+        if (placed.size() <= slot) placed.resize(slot + 1);
+        placed[slot] = std::move(list[moved[slot]]);
+    }
+    list = std::move(placed);
+}
+
+} // namespace
+
+// Uniform slots alias by sharing their source's value and revision; a
+// view's uploads follow its own versions and its source's.
+void bind_shader_view_slots(Engine& engine, MaterialHandle view) {
+    MaterialRecord& record = ${recordAt("engine.materials", "view")};
+    const MaterialRecord& source = ${recordAt("engine.materials", "record.source_material")};
+    if (!record.shader_material || !source.shader_uniforms)
+        throw std::runtime_error("A shader view's slots read a ShaderMaterial source.");
+    const auto& info = upstream::shader_variant_info(record.shader_variant);
+    const auto& source_info = upstream::shader_variant_info(source.shader_variant);
+    const ShaderViewSlots previous = record.shader_view_slots ? *record.shader_view_slots : ShaderViewSlots{};
+    const auto* previous_info = record.shader_view_slots ? &upstream::shader_variant_info(previous.variant) : nullptr;
+    if (!record.shader_view_slots) {
+        // A new view holds none of its source's slots.
+        record.shader_textures.clear();
+        record.shader_render_textures.clear();
+        record.shader_csm_textures.clear();
+        record.shader_external_textures.clear();
+        record.shader_storage_buffers.clear();
+        record.shader_texture_version = 0;
+        record.shader_resource_version = 0;
+        auto state = std::make_shared<ShaderUniformState>();
+        state->slots = source.shader_uniforms->slots;
+        record.shader_uniforms = std::move(state);
+    } else {
+        ++record.shader_texture_version;
+        ++record.shader_resource_version;
+    }
+    auto table = std::make_shared<ShaderViewSlots>();
+    table->variant = record.shader_variant;
+    std::vector<std::uint32_t> moved;
+    table->samplers = shader_view_table(shader_sampler_names(info), shader_sampler_names(source_info),
+        previous_info ? shader_sampler_names(*previous_info) : std::vector<std::string_view>{},
+        previous.samplers, moved);
+    move_own_shader_slots(record.shader_textures, moved);
+    move_own_shader_slots(record.shader_render_textures, moved);
+    move_own_shader_slots(record.shader_csm_textures, moved);
+    for (std::size_t slot = info.samplers.size() - info.external_textures; slot < info.samplers.size(); ++slot)
+        if (table->samplers[slot] == own_shader_slot)
+            throw std::runtime_error(std::string("A ShaderMaterial view binds its source's external texture '") +
+                                     info.samplers[slot] + "', which the source does not declare.");
+    table->storage_buffers = shader_view_table(shader_storage_names(info), shader_storage_names(source_info),
+        previous_info ? shader_storage_names(*previous_info) : std::vector<std::string_view>{},
+        previous.storage_buffers, moved);
+    move_own_shader_slots(record.shader_storage_buffers, moved);
+    auto& state = *record.shader_uniforms;
+    state.source = source.shader_uniforms;
+    for (auto& slot : state.slots) slot.offset = invalid_handle;
+    for (const auto& declared : info.uniform_slots) {
+        ShaderUniformSlot* slot = find_shader_uniform(state, declared.name);
+        if (!slot) {
+            auto values = declared.defaults;
+            if (values.empty()) values = default_shader_uniform_values(declared.name, declared.count);
+            state.slots.push_back(ShaderUniformSlot{declared.name, declared.type, invalid_handle,
+                normalize_shader_uniform_value(declared.name, declared.type, declared.count, values)});
+            slot = &state.slots.back();
+        } else if (slot->type != declared.type) {
+            throw std::runtime_error(std::string("A ShaderMaterial view declares uniform '") + declared.name +
+                                     "' as " + declared.type + "; the slot it reads holds " + slot->type + ".");
+        }
+        slot->offset = declared.offset;
+    }
+    record.shader_uniform_values = info.defaults;
+    record.shader_uniform_values.resize(info.value_count, 0.0f);
+    record.shader_uniform_upload.reset();
+    record.shader_view_slots = std::move(table);
+}
+
+`;
+
+/**
+ * The slot objects a program reads out of a ShaderMaterial's
+ * `_uniformValues`, `_textureSlots` and `_storageBufferSlots`. A uniform
+ * slot's `value` is the material's own array, shared as the pin shares it;
+ * a texture or storage slot's `current` is what the slot holds at the read,
+ * and its record's identity names the slot it is, which a view installing
+ * it aliases (`install_shader_view_slots`).
+ */
+const shaderSlotMapReadsCpp = `js::Nullable<StoredTexture> shader_slot_texture(
+    Engine& engine,
+    MaterialHandle material,
+    std::uint32_t slot) {
+    MaterialRecord& record = shader_material(engine, material);
+    const auto owner = shader_slot_owner(engine, record, ShaderDeclarationList::samplers, slot);
+    const bool render_bound = owner.slot < owner.material.shader_render_textures.size() &&
+                              owner.material.shader_render_textures[owner.slot].has_value();
+#if BBLITE_SHADOWS_CSM
+    const bool csm_bound = owner.slot < owner.material.shader_csm_textures.size() &&
+                           owner.material.shader_csm_textures[owner.slot].value != invalid_handle;
+#else
+    constexpr bool csm_bound = false;
+#endif
+    if (render_bound || csm_bound)
+        throw std::runtime_error("A ShaderMaterial texture slot read holds a render-target or shadow texture, which its 'current' does not represent natively.");
+    if (owner.slot >= owner.material.shader_textures.size() ||
+        !owner.material.shader_textures[owner.slot].data.has_image())
+        return {};
+    return StoredTexture{owner.material.shader_textures[owner.slot]};
+}
+
+js::Nullable<StorageBufferHandle> shader_slot_storage_buffer(
+    Engine& engine,
+    MaterialHandle material,
+    std::uint32_t slot) {
+    MaterialRecord& record = shader_material(engine, material);
+    const auto owner = shader_slot_owner(engine, record, ShaderDeclarationList::storage_buffers, slot);
+    if (owner.slot >= owner.material.shader_storage_buffers.size() ||
+        owner.material.shader_storage_buffers[owner.slot].value == invalid_handle)
+        return {};
+    return owner.material.shader_storage_buffers[owner.slot];
+}
+
+// A system uniform has no slot natively; the pin's holds its default.
+js::F32Array shader_slot_uniform_value(
+    Engine& engine,
+    MaterialHandle material,
+    const std::string& name,
+    const std::string& type,
+    std::uint32_t count) {
+    auto& state = *shader_material(engine, material).shader_uniforms;
+    if (const ShaderUniformSlot* slot = find_shader_uniform(state, name)) return slot->value;
+    return normalize_shader_uniform_value(name, type, count, default_shader_uniform_values(name, count));
+}
+
+void register_shader_slot_read(
+    Engine& engine,
+    MaterialHandle material,
+    ShaderDeclarationList list,
+    std::uint32_t slot,
+    std::weak_ptr<const void> identity) {
+    const MaterialRecord& record = shader_material(engine, material);
+    ShaderSlotRead read{std::move(identity), material, list, slot};
+    if (record.shader_view_slots) {
+        const auto& table = list == ShaderDeclarationList::samplers ? record.shader_view_slots->samplers
+                                                                    : record.shader_view_slots->storage_buffers;
+        if (table.at(slot) != own_shader_slot) {
+            read.material = record.source_material;
+            read.slot = table[slot];
+        }
+    }
+    std::erase_if(engine.shader_slot_reads, [](const ShaderSlotRead& held) { return held.identity.expired(); });
+    engine.shader_slot_reads.push_back(std::move(read));
+}
+
+`;
+
+/**
+ * The slot maps `Object.defineProperties` gives a ShaderMaterial view, as
+ * the pin's bindings read them by declared name (createShaderBindGroup,
+ * writeCustomUniforms): a slot object read from the view's source aliases
+ * that slot, any other is the view's own. A uniform slot read from the
+ * source shares its array; a declared uniform the map lacks packs as zero.
+ */
+const shaderViewSlotInstallCpp = `void install_shader_view_slots(
+    Engine& engine,
+    MaterialHandle view,
+    ShaderDeclarationList list,
+    const std::vector<ShaderViewSlotEntry>& entries) {
+    MaterialRecord& record = ${recordAt("engine.materials", "view")};
+    if (!record.shader_material || !record.shader_view_slots)
+        throw std::runtime_error("Slot maps are installed on a ShaderMaterial view.");
+    const MaterialHandle source = record.source_material;
+    const auto& info = upstream::shader_variant_info(record.shader_variant);
+    const auto entry_of = [&](std::string_view name) -> const ShaderViewSlotEntry* {
+        const auto found = std::find_if(entries.begin(), entries.end(), [&](const auto& entry) { return entry.name == name; });
+        return found == entries.end() ? nullptr : &*found;
+    };
+    if (list == ShaderDeclarationList::uniforms) {
+        auto& state = *record.shader_uniforms;
+        const auto& from = ${recordAt("engine.materials", "source")}.shader_uniforms->slots;
+        std::vector<ShaderUniformSlot> slots;
+        for (const auto& entry : entries) {
+            const auto& value = std::get<js::F32Array>(entry.held);
+            const auto shared = std::find_if(from.begin(), from.end(), [&](const auto& slot) { return slot.value == value; });
+            ShaderUniformSlot slot = shared != from.end() ? *shared : ShaderUniformSlot{entry.name, "", invalid_handle, value};
+            slot.name = entry.name;
+            slot.offset = invalid_handle;
+            slots.push_back(std::move(slot));
+        }
+        for (const auto& declared : info.uniform_slots) {
+            const auto slot = std::find_if(slots.begin(), slots.end(), [&](const auto& held) { return held.name == declared.name; });
+            if (slot == slots.end()) continue;
+            if (slot->type.empty() && slot->value.size() == declared.count) {
+                slot->type = declared.type;
+            } else if (slot->type != declared.type) {
+                throw std::runtime_error(std::string("A ShaderMaterial view declares uniform '") + declared.name +
+                                         "' as " + declared.type + "; the slot its map holds does not.");
+            }
+            slot->offset = declared.offset;
+        }
+        state.slots = std::move(slots);
+        ++state.version;
+        record.shader_uniform_upload.reset();
+        return;
+    }
+    const bool samplers = list == ShaderDeclarationList::samplers;
+    if (!samplers && list != ShaderDeclarationList::storage_buffers)
+        throw std::runtime_error("A ShaderMaterial view installs uniform, texture or storage slot maps.");
+    const auto names = samplers ? shader_sampler_names(info) : shader_storage_names(info);
+    const std::size_t declared = samplers ? names.size() - info.external_textures : names.size();
+    auto table = std::make_shared<ShaderViewSlots>(*record.shader_view_slots);
+    auto& slots = samplers ? table->samplers : table->storage_buffers;
+    std::vector<std::pair<std::uint32_t, const ShaderViewSlotEntry*>> owned;
+    for (std::uint32_t slot = 0; slot < declared; ++slot) {
+        const ShaderViewSlotEntry* entry = entry_of(names[slot]);
+        if (!entry)
+            throw std::runtime_error(std::string("A ShaderMaterial view's slot map holds no slot for '") +
+                                     std::string(names[slot]) + "', which its variant declares.");
+        const auto read = std::find_if(engine.shader_slot_reads.begin(), engine.shader_slot_reads.end(), [&](const ShaderSlotRead& held) {
+            return !held.identity.owner_before(entry->identity) && !entry->identity.owner_before(held.identity) &&
+                   !held.identity.expired();
+        });
+        if (read == engine.shader_slot_reads.end()) {
+            slots[slot] = own_shader_slot;
+            owned.emplace_back(slot, entry);
+        } else if (read->list != list || read->material.value != source.value) {
+            throw std::runtime_error(std::string("A ShaderMaterial view's slot map holds, for '") + std::string(names[slot]) +
+                                     "', a slot of a material other than its source.");
+        } else {
+            slots[slot] = read->slot;
+        }
+    }
+    if (samplers) {
+        record.shader_textures.clear();
+        record.shader_render_textures.clear();
+        record.shader_csm_textures.clear();
+    } else {
+        record.shader_storage_buffers.clear();
+    }
+    record.shader_view_slots = std::move(table);
+    for (const auto& [slot, entry] : owned) {
+        if (samplers) {
+            const auto& current = std::get<js::Nullable<StoredTexture>>(entry->held);
+            if (current.has_value()) set_shader_pixels_texture(engine, view, slot, current.value());
+        } else {
+            const auto& current = std::get<js::Nullable<StorageBufferHandle>>(entry->held);
+            if (current.has_value()) set_shader_storage_buffer(engine, view, slot, current.value());
+        }
+    }
+    ++record.shader_texture_version;
+    ++record.shader_resource_version;
+}
+
 `;
 
 /**
@@ -393,10 +700,19 @@ void queue_node_material_group(Scene& scene, MeshHandle mesh) {
     public lowerShaderMaterialFactory({
         rangeUpdates = false,
         declarationLists = false,
+        creationLanes = false,
+        views = false,
+        slotMaps = false,
     }: {
         rangeUpdates?: boolean;
         /** The scene reads a ShaderMaterial's declaration lists. */
         declarationLists?: boolean;
+        /** A creation keeps its run-time uniform defaults' own numbers. */
+        creationLanes?: boolean;
+        /** The scene may create material views (`material_views.cpp`). */
+        views?: boolean;
+        /** The scene reads or installs a ShaderMaterial's slot maps. */
+        slotMaps?: boolean;
     } = {}): LoweredSource {
         const modulePath = "src/material/shader/shader-material.ts";
         const { declaration } = this.context.functionDeclaration(
@@ -548,7 +864,7 @@ MaterialHandle create_shader_material(
         if (values.empty()) values = default_shader_uniform_values(slot.name, slot.count);
         material.shader_uniforms->slots.push_back(ShaderUniformSlot{
             slot.name, slot.type, slot.offset,
-            normalize_shader_uniform_value(slot.name, slot.type, slot.count, values), 0.0});
+            normalize_shader_uniform_value(slot.name, slot.type, slot.count, values)});
     }
     engine.materials.push_back(material);
     return MaterialHandle{static_cast<std::uint32_t>(engine.materials.size() - 1)};
@@ -559,16 +875,13 @@ MaterialRecord& shader_material(Engine& engine, MaterialHandle handle) {
         throw std::runtime_error("Invalid shader material handle.");
     }
     MaterialRecord& material = ${recordAt("engine.materials", "handle")};
-    if (!material.shader_material) {
+    if (!material.shader_material || !material.shader_uniforms) {
         throw std::runtime_error("Material is not a shader material.");
-    }
-    if (material.source_material.value != invalid_handle || !material.shader_uniforms) {
-        throw std::runtime_error("Shader uniform access requires owned material slots; shader views are unsupported.");
     }
     return material;
 }
 
-// Construction installs defaults without the setter's equal-value suppression.
+${views ? shaderViewSlotsCpp : ""}${slotMaps ? shaderSlotMapReadsCpp : ""}${slotMaps && views ? shaderViewSlotInstallCpp : ""}// Construction installs defaults without the setter's equal-value suppression.
 void initialize_shader_uniform_values(
     Engine& engine, MaterialHandle material, std::uint32_t offset,
     std::uint32_t count, const float* values) {
@@ -581,7 +894,37 @@ void initialize_shader_uniform_values(
     throw std::runtime_error("Shader uniform initialization offset is absent.");
 }
 
-// Offset setter shared by setShaderUniform/setShaderFloat/
+${
+    creationLanes
+        ? `// A default the run time decides: the material keeps the option's own numbers,
+// which the pin's \`uniformDecls\` copies, beside the floats it initializes.
+void initialize_shader_uniform_creation_values(
+    Engine& engine, MaterialHandle material, std::uint32_t offset,
+    std::uint32_t count, const double* values) {
+    std::vector<float> lanes;
+    lanes.reserve(count);
+    for (std::uint32_t lane = 0; lane < count; ++lane) lanes.push_back(static_cast<float>(values[lane]));
+    initialize_shader_uniform_values(engine, material, offset, count, lanes.data());
+    shader_material(engine, material).shader_uniforms->creation_lanes.emplace_back(
+        offset, std::vector<double>(values, values + count));
+}
+
+// One number of a uniform's run-time creation default; a view reads its
+// source's.
+double shader_uniform_creation_lane(
+    Engine& engine, MaterialHandle material, std::uint32_t offset,
+    std::uint32_t lane) {
+    const MaterialRecord& record = ${recordAt("engine.materials", "material")};
+    const MaterialHandle owner =
+        record.source_material.value == invalid_handle ? material : record.source_material;
+    for (const auto& [at, lanes] : shader_material(engine, owner).shader_uniforms->creation_lanes)
+        if (at == offset && lane < lanes.size()) return lanes[lane];
+    throw std::runtime_error("A shader uniform's creation default is absent.");
+}
+
+`
+        : ""
+}// Offset setter shared by setShaderUniform/setShaderFloat/
 // setShaderVector3: the compiler resolves (variant, uniform name) to the
 // flat value offset through the reflected layout at compile time.
 void set_shader_uniform_values(
@@ -646,6 +989,8 @@ ${lowerShaderTextureNameBinding(this.context)}
 
 // setShaderTexture: the pin stores the Texture2D on the slot the sampler
 // name owns and bumps _resourceVersion so the group-1 bind group rebuilds.
+// A view's slot is the one its table names; the versions that move are those
+// of the material the call names.
 // Texture uploads and resource groups follow separate versions: replacing
 // storage changes a group without re-uploading its unchanged images.
 void set_shader_texture(
@@ -659,18 +1004,19 @@ void set_shader_texture(
         return;
     }
     MaterialRecord& record = shader_material(engine, material);
-    if (record.shader_textures.size() <= slot) {
-        record.shader_textures.resize(slot + 1);
+    const auto [slots, at] = shader_slot_owner(engine, record, ShaderDeclarationList::samplers, slot);
+    if (slots.shader_textures.size() <= at) {
+        slots.shader_textures.resize(at + 1);
     }
-    const FileTexture& previous = record.shader_textures[slot];
+    const FileTexture& previous = slots.shader_textures[at];
     const bool same_image = texture.data.pixels
         ? previous.data.pixels == texture.data.pixels
         : texture.identity != 0 && previous.identity == texture.identity;
-    const bool render_bound = slot < record.shader_render_textures.size() &&
-                              record.shader_render_textures[slot].has_value();
+    const bool render_bound = at < slots.shader_render_textures.size() &&
+                              slots.shader_render_textures[at].has_value();
 #if BBLITE_SHADOWS_CSM
-    const bool csm_bound = slot < record.shader_csm_textures.size() &&
-                          record.shader_csm_textures[slot].value != invalid_handle;
+    const bool csm_bound = at < slots.shader_csm_textures.size() &&
+                          slots.shader_csm_textures[at].value != invalid_handle;
 #else
     constexpr bool csm_bound = false;
 #endif
@@ -683,12 +1029,12 @@ void set_shader_texture(
         previous.data.premultiply_alpha == texture.data.premultiply_alpha &&
         previous.data.gpu_source == texture.data.gpu_source)
         return;
-    record.shader_textures[slot] = std::move(texture);
-    if (slot < record.shader_render_textures.size())
-        record.shader_render_textures[slot].reset();
+    slots.shader_textures[at] = std::move(texture);
+    if (at < slots.shader_render_textures.size())
+        slots.shader_render_textures[at].reset();
 #if BBLITE_SHADOWS_CSM
-    if (slot < record.shader_csm_textures.size())
-        record.shader_csm_textures[slot] = {};
+    if (at < slots.shader_csm_textures.size())
+        slots.shader_csm_textures[at] = {};
 #endif
     ++record.shader_texture_version;
     ++record.shader_resource_version;
@@ -707,22 +1053,23 @@ void set_shader_render_texture(
                               texture.source == RenderTextureSource::transmission_depth;
     if (texture.source != RenderTextureSource::render_target && !transmission)
         throw std::runtime_error("setShaderTexture requires a render target or transmission texture.");
-    if (record.shader_textures.size() <= slot) {
-        record.shader_textures.resize(slot + 1);
+    const auto [slots, at] = shader_slot_owner(engine, record, ShaderDeclarationList::samplers, slot);
+    if (slots.shader_textures.size() <= at) {
+        slots.shader_textures.resize(at + 1);
     }
-    if (record.shader_render_textures.size() <= slot) {
-        record.shader_render_textures.resize(slot + 1);
+    if (slots.shader_render_textures.size() <= at) {
+        slots.shader_render_textures.resize(at + 1);
     }
-    const auto& previous = record.shader_render_textures[slot];
+    const auto& previous = slots.shader_render_textures[at];
     if (previous && previous->source == texture.source &&
         previous->target == texture.target && previous->task == texture.task &&
         previous->depth_only == texture.depth_only)
         return;
-    record.shader_render_textures[slot] = texture;
-    record.shader_textures[slot] = {};
+    slots.shader_render_textures[at] = texture;
+    slots.shader_textures[at] = {};
 #if BBLITE_SHADOWS_CSM
-    if (slot < record.shader_csm_textures.size())
-        record.shader_csm_textures[slot] = {};
+    if (at < slots.shader_csm_textures.size())
+        slots.shader_csm_textures[at] = {};
 #endif
     ++record.shader_texture_version;
     ++record.shader_resource_version;
@@ -738,12 +1085,13 @@ void set_shader_storage_buffer(
         ${recordAt("engine.storage_buffers", "buffer")}.disposed) {
         throw std::runtime_error("Invalid shader storage buffer.");
     }
-    if (record.shader_storage_buffers.size() <= slot) {
-        record.shader_storage_buffers.resize(slot + 1);
+    const auto [slots, at] = shader_slot_owner(engine, record, ShaderDeclarationList::storage_buffers, slot);
+    if (slots.shader_storage_buffers.size() <= at) {
+        slots.shader_storage_buffers.resize(at + 1);
     }
-    if (record.shader_storage_buffers[slot] == buffer)
+    if (slots.shader_storage_buffers[at] == buffer)
         return;
-    record.shader_storage_buffers[slot] = buffer;
+    slots.shader_storage_buffers[at] = buffer;
     ++record.shader_resource_version;
 }
 
@@ -756,23 +1104,20 @@ void set_shader_csm_texture(
     std::uint32_t slot,
     ShadowGeneratorHandle generator) {
     MaterialRecord& record = shader_material(engine, material);
-    if (generator.value >= engine.shadow_generators.size() ||
-        ${recordAt("engine.shadow_generators", "generator")}.filter !=
-            ShadowFilter::csm_directional) {
-        throw std::runtime_error("Invalid CSM receiver texture.");
+    require_csm_receiver_generator(engine, generator);
+    const auto [slots, at] = shader_slot_owner(engine, record, ShaderDeclarationList::samplers, slot);
+    if (slots.shader_textures.size() <= at) {
+        slots.shader_textures.resize(at + 1);
     }
-    if (record.shader_textures.size() <= slot) {
-        record.shader_textures.resize(slot + 1);
+    if (slots.shader_csm_textures.size() <= at) {
+        slots.shader_csm_textures.resize(at + 1);
     }
-    if (record.shader_csm_textures.size() <= slot) {
-        record.shader_csm_textures.resize(slot + 1);
-    }
-    if (record.shader_csm_textures[slot].value == generator.value)
+    if (slots.shader_csm_textures[at].value == generator.value)
         return;
-    record.shader_csm_textures[slot] = generator;
-    record.shader_textures[slot] = {};
-    if (slot < record.shader_render_textures.size())
-        record.shader_render_textures[slot].reset();
+    slots.shader_csm_textures[at] = generator;
+    slots.shader_textures[at] = {};
+    if (at < slots.shader_render_textures.size())
+        slots.shader_render_textures[at].reset();
     ++record.shader_texture_version;
     ++record.shader_resource_version;
 }
@@ -837,11 +1182,13 @@ void set_alpha_to_coverage(
      * caller may override and whose defaults are read off the pin's own
      * `?? "…"` rather than restated. A call naming none of them emits the
      * same text it always did, because the defaults ride the signature.
-     * `writes` adds the lowered `updateTexture2DFromPixels`.
+     * `writes` adds the lowered `updateTexture2DFromPixels`, `volumes` the
+     * lowered `createTexture3DFromPixels`.
      */
     public lowerPixelsTextureFactory({
         writes = false,
-    }: { writes?: boolean } = {}): LoweredSource {
+        volumes = false,
+    }: { writes?: boolean; volumes?: boolean } = {}): LoweredSource {
         const module = "src/texture/pixels-texture.ts";
         const { declaration } = this.context.functionDeclaration(
             module,
@@ -908,6 +1255,10 @@ void set_alpha_to_coverage(
             "width * height * 4",
             "createTexture2DFromPixels expected byte count",
         );
+        const volumeFactory = volumes
+            ? `
+${lowerPixelsTexture3DFactory(this.context)}`
+            : "";
         return {
             modulePath: module,
             symbolName: "createTexture2DFromPixels",
@@ -1007,7 +1358,7 @@ ${
 ${lowerPixelsTextureWrites(this.context)}
 `
         : ""
-}
+}${volumeFactory}
 } // namespace bbl
 `,
         };
@@ -2143,6 +2494,7 @@ void release_material_view_gpu(
         nodePcfCasters = false,
         viewGpuRelease = false,
         shaderViews = false,
+        shaderMaterials = shaderViews,
     ): LoweredSource {
         const nodeCasters = nodeEsmCasters || nodePcfCasters;
         const standardModule = "src/material/standard/no-color-view.ts";
@@ -2294,9 +2646,19 @@ MaterialHandle create_no_color_material_view(
         source_record.source_material.value == invalid_handle
             ? source
             : source_record.source_material;
+${
+    shaderMaterials
+        ? `    // A shader view reads its slots through its source's.
+    view.shader_view_slots.reset();
     engine.materials.push_back(std::move(view));
-    return MaterialHandle{
+    const MaterialHandle created{
         static_cast<std::uint32_t>(engine.materials.size() - 1)};
+    if (shader) bind_shader_view_slots(engine, created);
+    return created;`
+        : `    engine.materials.push_back(std::move(view));
+    return MaterialHandle{
+        static_cast<std::uint32_t>(engine.materials.size() - 1)};`
+}
 }
 
 } // namespace

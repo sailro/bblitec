@@ -62,6 +62,7 @@ import {
 import { sourceLocation } from "../source-location.js";
 import {
     cppPrimary,
+    numericLogicalValueCpp,
     renderPinnedArithmetic,
     type PinnedExpressionSpelling,
     type RenderedCpp,
@@ -3574,6 +3575,8 @@ export class PinnedNumericLowerer {
                 return this.fail(node, "'&&' over a possibly undefined value");
             return `([&]() -> double { if (${nullish}) return ${select(right)}; auto&& ${temporary} = ${left}; return ${test} ? ${select(temporary)} : ${select(right)}; }())`;
         }
+        if (kind === "number")
+            return numericLogicalValueCpp(left, right, or, temporary);
         return `([&]() { auto&& ${temporary} = ${left}; return ${test} ? ${select(or ? temporary : right)} : ${select(or ? right : temporary)}; }())`;
     }
 

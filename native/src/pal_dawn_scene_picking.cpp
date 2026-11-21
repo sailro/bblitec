@@ -14,19 +14,20 @@
 namespace bbl::pal {
 
 #if (BBLITE_HAS_DAWN && BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PICKING
-WGPURenderPipeline
-create_dawn_pick_mesh_pipeline(WGPUDevice device, WGPUBindGroupLayout scene_layout,
-                               WGPUBindGroupLayout mesh_layout, const char* stem_vertex,
-                               const char* stem_fragment, std::uint32_t target_count,
-                               WGPUBindGroupLayout empty_layout, WGPUBindGroupLayout deform_layout,
-                               [[maybe_unused]] bool skeleton) {
+WGPURenderPipeline create_dawn_pick_mesh_pipeline(
+    WGPUDevice device, WGPUBindGroupLayout scene_layout, WGPUBindGroupLayout mesh_layout,
+    const char* stem_vertex, const char* stem_fragment, std::uint32_t target_count,
+    WGPUBindGroupLayout empty_layout, WGPUBindGroupLayout deform_layout,
+    [[maybe_unused]] bool skeleton, std::optional<PickVertexDataAttribute> vertex_data) {
     DawnShaderModule vertex{load_wgsl_module(device, stem_vertex)};
     DawnShaderModule fragment{load_wgsl_module(device, stem_fragment)};
 
     const std::array<WGPUBindGroupLayout, 4> groups{scene_layout, mesh_layout, empty_layout,
                                                     deform_layout};
     WGPUPipelineLayoutDescriptor layout_descriptor = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
-    layout_descriptor.bindGroupLayoutCount = deform_layout ? 4u : 2u;
+    // A projection's group 3 sits behind group 2; a discard rule's
+    // storage is group 2 itself.
+    layout_descriptor.bindGroupLayoutCount = deform_layout ? 4u : empty_layout ? 3u : 2u;
     layout_descriptor.bindGroupLayouts = groups.data();
     DawnPipelineLayout pipeline_layout{wgpuDeviceCreatePipelineLayout(device, &layout_descriptor)};
     if (!pipeline_layout)
@@ -34,7 +35,7 @@ create_dawn_pick_mesh_pipeline(WGPUDevice device, WGPUBindGroupLayout scene_layo
 
     // The renderer's interleaved stream read at its own pitch: the pin
     // binds a position-only buffer, and these are the same numbers.
-    auto attributes = vertex_attribute_array<3>();
+    auto attributes = vertex_attribute_array<4>();
     attributes[0].shaderLocation = 0;
     attributes[0].offset = 0;
     attributes[0].format = WGPUVertexFormat_Float32x3;
@@ -50,6 +51,15 @@ create_dawn_pick_mesh_pipeline(WGPUDevice device, WGPUBindGroupLayout scene_layo
     vertex_layout.arrayStride = sizeof(GpuVertex);
     vertex_layout.stepMode = WGPUVertexStepMode_Vertex;
     vertex_layout.attributeCount = skeleton ? 3u : 1u;
+    // A discard rule's `vertexData` lane of the same interleaved stream.
+    if (vertex_data) {
+        auto& data = attributes[vertex_layout.attributeCount++];
+        data.shaderLocation = vertex_data->location;
+        data.offset = vertex_data->offset;
+        data.format = vertex_data->components == 2   ? WGPUVertexFormat_Float32x2
+                      : vertex_data->components == 3 ? WGPUVertexFormat_Float32x3
+                                                     : WGPUVertexFormat_Float32x4;
+    }
     vertex_layout.attributes = attributes.data();
 
     std::array<WGPUColorTargetState, pick_color_targets> targets{};
@@ -176,11 +186,24 @@ WGPURenderPipeline create_dawn_pick_cloud_pipeline(WGPUDevice device,
 #endif
 
 #if (BBLITE_HAS_DAWN && BBLITE_HAS_PBR_RENDERER) && (BBLITE_HAS_PBR_RENDERER && BBLITE_HAS_PICKING)
+namespace {
+// The candidate's interleaved stream and 32-bit indices, drawn once per
+// instance it covers, under whichever pick pipeline and groups are bound.
+void draw_pick_candidate(WGPURenderPassEncoder pass, const DawnMesh& mesh,
+                         const PickMeshCandidate& candidate) {
+    wgpuRenderPassEncoderSetVertexBuffer(pass, 0, mesh.vertices, 0, WGPU_WHOLE_SIZE);
+    wgpuRenderPassEncoderSetIndexBuffer(pass, mesh.indices, WGPUIndexFormat_Uint32, 0,
+                                        WGPU_WHOLE_SIZE);
+    count_gpu_draw(wgpuRenderPassEncoderDrawIndexed, pass, mesh.index_count,
+                   pick_candidate_instances(candidate), 0, 0, 0);
+}
+} // namespace
+
 PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::RenderPlan& root_plan,
                             const std::vector<upstream::RenderPlan>& overlay_plans,
                             const std::vector<std::shared_ptr<Scene>>& active_registered_scenes,
                             [[maybe_unused]] GpuPickerHandle picker, double x, double y,
-                            const Engine::PickFilter* filter
+                            const Engine::PickOptions* options
 #if BBLITE_HAS_BILLBOARDS
                             ,
                             DawnBillboardPickContributor& billboard_pick
@@ -280,6 +303,32 @@ PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::Re
                 variant.fragment, 2u, program.empty_layout, program.layout, true);
         }
 #endif
+#if BBLITE_PICK_DISCARD
+        // Each composed `discard` rule's module per pipeline its candidates
+        // draw through, over its reflected storage group 2.
+        for (std::size_t index = 0; index < upstream::pick_discard_variants.size(); ++index) {
+            const auto& variant = upstream::pick_discard_variants[index];
+            for (std::size_t pipeline = 0; pipeline < pick_discard_pipelines; ++pipeline) {
+                const char* stem = pick_discard_stem(variant, pipeline);
+                if (!stem)
+                    continue;
+                auto& program = state.pick_discard_programs[index][pipeline];
+                program.vertex = std::string(stem) + ".vert";
+                program.fragment = std::string(stem) + ".frag";
+                program.layout = create_dawn_reflected_layout(state.device, program.stages(), 2);
+                WGPUBindGroupLayout mesh_layout = state.pick_mesh_layout;
+#if BBLITE_GPU_INSTANCING
+                if (pipeline == pick_discard_thin)
+                    mesh_layout = state.pick_thin_layout;
+#endif
+                program.pipeline = create_dawn_pick_mesh_pipeline(
+                    state.device, state.pick_scene_layout, mesh_layout, program.vertex.c_str(),
+                    program.fragment.c_str(),
+                    pick_discard_is_detailed(pipeline) ? pick_color_targets : 2u, program.layout,
+                    nullptr, false, pick_discard_vertex_data(variant, pipeline));
+            }
+        }
+#endif
         WGPUBufferDescriptor scene_buffer = WGPU_BUFFER_DESCRIPTOR_INIT;
         scene_buffer.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
         scene_buffer.size = sizeof(PickSceneUniforms);
@@ -316,9 +365,9 @@ PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::Re
             const DawnMesh& mesh = pick_meshes[item_index];
             return mesh.vertices && mesh.indices;
         },
-        ranges, next_id, filter, detailed);
+        ranges, next_id, options, detailed);
     // `pickAsyncImpl` takes no pick source under a supplied filter.
-    [[maybe_unused]] const bool pick_sources = filter == nullptr;
+    [[maybe_unused]] const bool pick_sources = !options || !options->filter;
     validate_pick_contributors(engine, scene, detailed, pick_sources);
 #if BBLITE_DEFORM_PICKING
     for (const auto& candidate : candidates) {
@@ -426,6 +475,41 @@ PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::Re
         mesh.thin_pick_uniform_buffer = state.pick_mesh_buffer;
         mesh.thin_pick_instances = mesh.instances;
         mesh.thin_pick_bound_size = bound_size;
+    }
+#endif
+
+    // The rule's storage per admitted candidate, asked in draw order and
+    // created before the pass encodes (`createMappedBuffer`), with the
+    // candidate's group 2 over it.
+    [[maybe_unused]] const std::vector<PickDiscardDraw> discard_draws =
+        prepare_pick_discard(engine, render_plan, candidates, ranges, options, detailed);
+#if BBLITE_PICK_DISCARD
+    std::vector<DawnBuffer> discard_storage;
+    std::vector<DawnBindGroup> discard_groups(discard_draws.size());
+    for (std::size_t slot = 0; slot < discard_draws.size(); ++slot) {
+        const PickDiscardDraw& draw = discard_draws[slot];
+        if (draw.variant < 0)
+            continue;
+        const auto variant_index = static_cast<std::size_t>(draw.variant);
+        const auto& variant = upstream::pick_discard_variants[variant_index];
+        const auto& program = state.pick_discard_programs[variant_index][draw.pipeline];
+        const std::size_t first = discard_storage.size();
+        for (const std::vector<std::uint8_t>& bytes : draw.storage) {
+            discard_storage.emplace_back(
+                create_buffer(state, WGPUBufferUsage_Storage, bytes.data(), bytes.size()));
+        }
+        discard_groups[slot] = DawnBindGroup{create_dawn_reflected_group(
+            state.device, program.layout, program.stages(), 2,
+            [&](std::string_view name, WGPUBindGroupEntry& entry) {
+                for (std::size_t storage = 0; storage < variant.storage_count; ++storage) {
+                    if (name != variant.storage_names[storage])
+                        continue;
+                    entry.buffer = discard_storage[first + storage].get();
+                    entry.size = WGPU_WHOLE_SIZE;
+                    return true;
+                }
+                return false;
+            })};
     }
 #endif
 
@@ -558,12 +642,35 @@ PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::Re
 #if BBLITE_VAT_PICKING
     // `bindVatPickingProjection`'s group, per VAT candidate, released with the pass.
     std::vector<WGPUBindGroup> vat_groups(blocks.size(), nullptr);
-    bool vat_program_bound = false;
+#endif
+#if BBLITE_VAT_PICKING || BBLITE_PICK_DISCARD
+    // Whether a VAT or discard program, which binds its own groups, is bound.
+    bool program_bound = false;
 #endif
     for (std::size_t index = 0; index < blocks.size(); ++index) {
         const DawnMesh& mesh = pick_meshes[candidates[index].item_index];
         const std::uint32_t offset =
             static_cast<std::uint32_t>(index * sizeof(DawnPickMeshUniforms));
+#if BBLITE_PICK_DISCARD
+        if (!discard_draws.empty() && discard_draws[index].variant >= 0) {
+            const PickDiscardDraw& draw = discard_draws[index];
+            wgpuRenderPassEncoderSetPipeline(
+                pass,
+                state.pick_discard_programs[static_cast<std::size_t>(draw.variant)][draw.pipeline]
+                    .pipeline);
+            wgpuRenderPassEncoderSetBindGroup(pass, 0, state.pick_scene_group, 0, nullptr);
+#if BBLITE_GPU_INSTANCING
+            if (draw.pipeline == pick_discard_thin)
+                wgpuRenderPassEncoderSetBindGroup(pass, 1, mesh.thin_pick_group, 1, &offset);
+            else
+#endif
+                wgpuRenderPassEncoderSetBindGroup(pass, 1, state.pick_mesh_group, 1, &offset);
+            wgpuRenderPassEncoderSetBindGroup(pass, 2, discard_groups[index].get(), 0, nullptr);
+            draw_pick_candidate(pass, mesh, candidates[index]);
+            program_bound = true;
+            continue;
+        }
+#endif
 #if BBLITE_VAT_PICKING
         if (candidates[index].vat >= 0) {
             const auto vat_index = static_cast<std::size_t>(candidates[index].vat);
@@ -616,20 +723,13 @@ PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::Re
                 wgpuRenderPassEncoderSetBindGroup(pass, 1, state.pick_mesh_group, 1, &offset);
             wgpuRenderPassEncoderSetBindGroup(pass, 2, program.empty_group, 0, nullptr);
             wgpuRenderPassEncoderSetBindGroup(pass, 3, vat_groups[index], 0, nullptr);
-            wgpuRenderPassEncoderSetVertexBuffer(pass, 0, mesh.vertices, 0, WGPU_WHOLE_SIZE);
-            wgpuRenderPassEncoderSetIndexBuffer(pass, mesh.indices, WGPUIndexFormat_Uint32, 0,
-                                                WGPU_WHOLE_SIZE);
-            const std::uint32_t instances =
-#if BBLITE_GPU_INSTANCING
-                candidates[index].thin ? candidates[index].instance_count :
-#endif
-                                       1u;
-            count_gpu_draw(wgpuRenderPassEncoderDrawIndexed, pass, mesh.index_count, instances, 0,
-                           0, 0);
-            vat_program_bound = true;
+            draw_pick_candidate(pass, mesh, candidates[index]);
+            program_bound = true;
             continue;
         }
-        if (vat_program_bound) {
+#endif
+#if BBLITE_VAT_PICKING || BBLITE_PICK_DISCARD
+        if (program_bound) {
             // Back to the affine program and the scene group it reads.
             wgpuRenderPassEncoderSetPipeline(pass,
 #if BBLITE_HAS_DETAILED_PICKING
@@ -637,7 +737,7 @@ PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::Re
 #endif
                                                       state.pick_mesh_pipeline);
             wgpuRenderPassEncoderSetBindGroup(pass, 0, state.pick_scene_group, 0, nullptr);
-            vat_program_bound = false;
+            program_bound = false;
 #if BBLITE_GPU_INSTANCING
             regular_pick_pipeline_bound = true;
 #endif
@@ -651,11 +751,7 @@ PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::Re
             wgpuRenderPassEncoderSetPipeline(pass, state.pick_thin_pipeline);
             wgpuRenderPassEncoderSetBindGroup(pass, 0, state.pick_scene_group, 0, nullptr);
             wgpuRenderPassEncoderSetBindGroup(pass, 1, mesh.thin_pick_group, 1, &offset);
-            wgpuRenderPassEncoderSetVertexBuffer(pass, 0, mesh.vertices, 0, WGPU_WHOLE_SIZE);
-            wgpuRenderPassEncoderSetIndexBuffer(pass, mesh.indices, WGPUIndexFormat_Uint32, 0,
-                                                WGPU_WHOLE_SIZE);
-            count_gpu_draw(wgpuRenderPassEncoderDrawIndexed, pass, mesh.index_count,
-                           candidates[index].instance_count, 0, 0, 0);
+            draw_pick_candidate(pass, mesh, candidates[index]);
             regular_pick_pipeline_bound = false;
             continue;
         }
@@ -737,10 +833,7 @@ PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::Re
         }
 #endif
         wgpuRenderPassEncoderSetBindGroup(pass, 1, state.pick_mesh_group, 1, &offset);
-        wgpuRenderPassEncoderSetVertexBuffer(pass, 0, mesh.vertices, 0, WGPU_WHOLE_SIZE);
-        wgpuRenderPassEncoderSetIndexBuffer(pass, mesh.indices, WGPUIndexFormat_Uint32, 0,
-                                            WGPU_WHOLE_SIZE);
-        count_gpu_draw(wgpuRenderPassEncoderDrawIndexed, pass, mesh.index_count, 1, 0, 0, 0);
+        draw_pick_candidate(pass, mesh, candidates[index]);
     }
 #if BBLITE_HAS_SPLATS
     for (const DawnSplatPass& splat : state.splat_passes) {

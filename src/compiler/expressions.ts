@@ -36,6 +36,7 @@ import ts from "typescript";
 import {
     absenceOf,
     absenceOfNull,
+    holdsUnreadable,
     knownCondition,
     ownKeysKnown,
     staticKeyOf,
@@ -226,6 +227,8 @@ import {
     type DataType,
 } from "./data-types.js";
 import { isBinaryDataType } from "./data-types/typed-arrays.js";
+import { refuseUnreadableRead, unlessUnreadable } from "./unreadable-values.js";
+import { StorageDemand } from "./storage-demand.js";
 import { readCallableProperty } from "./properties.js";
 import {
     compileJsonCall,
@@ -394,6 +397,7 @@ export interface ExpressionContext
             | "probeEmission"
             | "runCallOverHeldData"
             | "nativeEmission"
+            | "reachShaderCreations"
             | "requireEngine"
             | "conditions"
             | "compileNumber"
@@ -417,6 +421,7 @@ export interface ExpressionContext
             | "handleCollections"
             | "compileRegisteredConstant"
             | "compileRegisteredIntrinsic"
+            | "settledCallInitializer"
             | "compileThinInstanceUploadHelper"
             | "compilePixelsTextureUpload"
             | "compileStaticFetch"
@@ -677,6 +682,13 @@ export class ExpressionLowerer {
     }
 
     public compileValue(expression: ts.Expression): Value {
+        const value = this.compileValueOf(expression);
+        // A part generation cannot read refuses where its use reads it.
+        refuseUnreadableRead(this.context, value, expression);
+        return value;
+    }
+
+    private compileValueOf(expression: ts.Expression): Value {
         const forced =
             this.context.valueOverrides.size > 0
                 ? this.context.valueOverrides.get(expression)
@@ -1497,80 +1509,50 @@ export class ExpressionLowerer {
                               element: destination.element,
                           }
                         : this.context.dataLowerer.dataTypeAt(unwrapped);
+                const spreadLanes = (): Value => ({
+                    kind: "tuple",
+                    cpp: "",
+                    tupleElements: this.context.dataLowerer
+                        .spreadLaneValues(
+                            unwrapped.elements,
+                            (element) =>
+                                this.builtLane(
+                                    this.laneValue(element),
+                                    element,
+                                ),
+                            "Array spread requires a concrete native array element type.",
+                        )
+                        .map(({ value }) => value),
+                });
                 if (dataType?.kind !== "vector" && dataType?.kind !== "tuple")
-                    return {
-                        kind: "tuple",
-                        cpp: "",
-                        tupleElements: this.context.dataLowerer
-                            .spreadLaneValues(
-                                unwrapped.elements,
-                                (element) =>
-                                    this.builtLane(
-                                        this.laneValue(element),
-                                        element,
-                                    ),
-                                "Array spread requires a concrete native array element type.",
-                            )
-                            .map(({ value }) => value),
-                    };
-                if (
-                    dataType.kind === "vector" &&
-                    !this.context.dataTypes.carriesBorrowedPlatformEvent(
-                        dataType.element,
-                    ) &&
-                    [
-                        "number",
-                        "boolean",
-                        "string",
-                        "enum",
-                        "union",
-                        "struct",
-                    ].includes(dataType.element.kind)
-                ) {
-                    let elements: readonly Value[] | undefined;
-                    const copiedRecordSources: Value[] = [];
-                    const value = this.context.bindings.pinValueToTemporary(
-                        {
-                            kind: "data",
-                            cpp: this.context.dataLowerer.compileVectorSink(
-                                unwrapped,
-                                dataType,
-                                (evaluated) => {
-                                    elements = evaluated;
-                                },
-                                copiedRecordSources,
-                            ),
-                            dataType,
-                            freshData: true,
-                        },
-                        "array_literal",
-                        unwrapped,
+                    return spreadLanes();
+                // Spreads of compile-time tuples build one, as `[a, b]` does.
+                let stopped: StorageDemand | undefined;
+                try {
+                    const generation = this.context.keptEmission(() =>
+                        this.generationSpreadLanes(unwrapped),
                     );
-                    if (elements)
-                        this.context.dataLowerer.retainArrayLiteralFacts(
-                            value,
-                            {
-                                kind: "tuple",
-                                cpp: "",
-                                tupleElements: [...elements],
-                            },
-                            unwrapped,
-                        );
-                    if (!value.staticElements)
-                        for (const source of copiedRecordSources)
-                            this.context.dataLowerer.invalidateRecordArrayFacts(
-                                source,
-                            );
-                    return value;
+                    if (generation) return generation;
+                } catch (error) {
+                    if (!(error instanceof StorageDemand)) throw error;
+                    stopped = error;
                 }
-                return {
-                    kind: "data",
-                    cpp: this.context.dataLowerer.compileForSink(
-                        unwrapped,
-                        dataType,
-                    ),
-                    dataType,
-                };
+                // An array holding a part generation cannot read has no
+                // native storage: it is generation's, its lanes as spread.
+                const native = (): Value | undefined =>
+                    unlessUnreadable(() =>
+                        this.context.keptEmission(
+                            () => this.nativeSpreadArray(unwrapped, dataType),
+                            () => true,
+                        ),
+                    );
+                if (!stopped) return native() ?? spreadLanes();
+                // A spread whose storage a demand stops is not known to be
+                // one: the native array raises that demand joined with its
+                // later members' (`storeLiteralMember`); whatever else it
+                // meets, the demand stands.
+                unlessRefused(native);
+                throw stopped;
             }
             const pins = this.context.evaluationOrder.operandsToPin(
                 unwrapped.elements,
@@ -1719,8 +1701,7 @@ export class ExpressionLowerer {
             (unwrapped.operatorToken.kind ===
                 ts.SyntaxKind.AmpersandAmpersandToken ||
                 unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken) &&
-            (!this.runsCode(unwrapped.left) ||
-                !this.context.evaluationOrder.writesStorage(unwrapped.left))
+            this.skippable(unwrapped.left)
         ) {
             let leftValue: Value | undefined;
             const truthiness = this.context.probeEmission(
@@ -2599,6 +2580,17 @@ export class ExpressionLowerer {
         });
     }
 
+    /**
+     * Whether generation may leave `expression` unevaluated: it runs no
+     * code, or none that writes storage.
+     */
+    private skippable(expression: ts.Expression): boolean {
+        return (
+            !this.runsCode(expression) ||
+            !this.context.evaluationOrder.writesStorage(expression)
+        );
+    }
+
     private compileBrowserValue(expression: ts.Expression): Value {
         const unwrapped = this.context.unwrap(expression);
         if (ts.isCallExpression(unwrapped)) {
@@ -2850,6 +2842,99 @@ export class ExpressionLowerer {
         }
         const staticNumber = staticNumberValue(this.context, expression);
         return staticNumber === undefined ? value : { ...value, staticNumber };
+    }
+
+    /**
+     * A spread array literal whose every spread is a compile-time tuple,
+     * as a compile-time tuple of its lanes in source order, each other
+     * element a lane as `[a, b]` builds it, pinned where a later element
+     * changes what it reads; undefined at the first spread of any other
+     * value.
+     */
+    private generationSpreadLanes(
+        literal: ts.ArrayLiteralExpression,
+    ): Value | undefined {
+        const pins = this.context.evaluationOrder.operandsToPin(
+            literal.elements,
+        );
+        const pinned = new Set(
+            literal.elements.filter((_, index) => pins[index]),
+        );
+        const pin = (value: Value, element: ts.Expression): Value =>
+            pinOperand(this.context, value, element, "array_member");
+        const lanes = this.context.dataLowerer.spreadLaneValues(
+            literal.elements,
+            (element) => {
+                const value = this.laneValue(element);
+                return pinned.has(element)
+                    ? pin(value, element)
+                    : this.builtLane(value, element);
+            },
+            undefined,
+            (lane, spread) => (pinned.has(spread) ? pin(lane, spread) : lane),
+        );
+        return (
+            lanes && {
+                kind: "tuple",
+                cpp: "",
+                tupleElements: lanes.map(({ value }) => value),
+            }
+        );
+    }
+
+    /** A spread array literal stored natively as `dataType`. */
+    private nativeSpreadArray(
+        unwrapped: ts.ArrayLiteralExpression,
+        dataType: DataType<"vector" | "tuple">,
+    ): Value {
+        if (
+            dataType.kind === "vector" &&
+            !this.context.dataTypes.carriesBorrowedPlatformEvent(
+                dataType.element,
+            ) &&
+            ["number", "boolean", "string", "enum", "union", "struct"].includes(
+                dataType.element.kind,
+            )
+        ) {
+            let elements: readonly Value[] | undefined;
+            const copiedRecordSources: Value[] = [];
+            const value = this.context.bindings.pinValueToTemporary(
+                {
+                    kind: "data",
+                    cpp: this.context.dataLowerer.compileVectorSink(
+                        unwrapped,
+                        dataType,
+                        (evaluated) => {
+                            elements = evaluated;
+                        },
+                        copiedRecordSources,
+                    ),
+                    dataType,
+                    freshData: true,
+                },
+                "array_literal",
+                unwrapped,
+            );
+            if (elements)
+                this.context.dataLowerer.retainArrayLiteralFacts(
+                    value,
+                    {
+                        kind: "tuple",
+                        cpp: "",
+                        tupleElements: [...elements],
+                    },
+                    unwrapped,
+                );
+            if (!value.staticElements)
+                for (const source of copiedRecordSources)
+                    this.context.dataLowerer.invalidateRecordArrayFacts(source);
+            return value;
+        }
+        return {
+            kind: "data",
+            cpp: this.context.dataLowerer.compileForSink(unwrapped, dataType),
+            dataType,
+        };
     }
 
     /**
@@ -3636,6 +3721,34 @@ export class ExpressionLowerer {
                 });
             if (converted) [whenTrue, whenFalse] = converted;
         }
+        // Two absences generation knows and no storage above holds: one
+        // both arms give is the selection's, its condition still run unless
+        // skippable; `undefined` against `null` selects as the dynamic value
+        // each arm is.
+        const trueAbsence = absenceOf(whenTrue);
+        const falseAbsence = absenceOf(whenFalse);
+        if (trueAbsence !== undefined && falseAbsence !== undefined) {
+            if (trueAbsence === falseAbsence) {
+                if (
+                    knownCondition(condition) === undefined &&
+                    !(
+                        ts.isConditionalExpression(node) &&
+                        this.skippable(node.condition)
+                    )
+                )
+                    this.context.emitDiscardedValue(booleanValue(condition));
+                return trueAbsence === "undefined"
+                    ? undefinedValue()
+                    : nullValue();
+            }
+            const dynamic: DataType = { kind: "json" };
+            const trueArm = this.selectedArmValue(whenTrue, dynamic, node);
+            const falseArm = this.selectedArmValue(whenFalse, dynamic, node);
+            return this.context.dataLowerer.leafValue(
+                `(${condition} ? ${trueArm.cpp} : ${falseArm.cpp})`,
+                dynamic,
+            );
+        }
         const ownedResourceType: DataType<"handle"> | undefined =
             whenTrue.dataType?.kind === "handle" &&
             whenTrue.dataType.ownedEngine
@@ -3987,8 +4100,11 @@ export class ExpressionLowerer {
                 this.context.symbols.valueSymbol(receiver)
         )
             return undefined;
-        const task = this.context.bindings.lookupOptional(owner);
-        if (task?.kind !== "task" || !task.effectTask) return undefined;
+        const task = this.context.dataLowerer.narrowOptional(
+            this.compileValue(owner),
+            owner,
+        );
+        if (task.kind !== "task") return undefined;
         return this.compileValue(method);
     }
 
@@ -5201,6 +5317,7 @@ export class ExpressionLowerer {
                             values,
                             call,
                             method === "forEach",
+                            holdsUnreadable(owner),
                         ),
                 );
             return method === "map"
@@ -5212,6 +5329,13 @@ export class ExpressionLowerer {
                 : result;
         };
         if (method === "some") {
+            // A predicate whose body runs no code leaves only its bindings
+            // behind, so the answer generation knows is the whole call.
+            const pure =
+                local !== undefined &&
+                ts.isArrowFunction(local) &&
+                !ts.isBlock(local.body) &&
+                !this.runsCode(local.body);
             // Keep each callback's statements inside its short-circuited
             // operand. Emitting all bodies first would execute skipped calls.
             const predicates = elements.map((element, index) => {
@@ -5229,13 +5353,24 @@ export class ExpressionLowerer {
                             );
                     }),
                 );
-                return lines.length
-                    ? `([&]() -> bool { ${lines.join("\n")} return ${condition}; }())`
-                    : `(${condition})`;
+                return {
+                    cpp: lines.length
+                        ? `([&]() -> bool { ${lines.join("\n")} return ${condition}; }())`
+                        : `(${condition})`,
+                    known:
+                        lines.length && !pure
+                            ? undefined
+                            : knownCondition(condition),
+                };
             });
+            // Predicates generation knows, up to the first that holds,
+            // answer the search.
+            const first = predicates.findIndex(({ known }) => known !== false);
+            if (first < 0 || predicates[first]!.known === true)
+                return booleanValue(String(first >= 0));
             return {
                 kind: "boolean",
-                cpp: predicates.length ? predicates.join(" || ") : "false",
+                cpp: predicates.map(({ cpp }) => cpp).join(" || "),
                 dataType: { kind: "boolean" },
             };
         }
@@ -5288,6 +5423,8 @@ export class ExpressionLowerer {
         arguments_: readonly Value[],
         call: ts.CallExpression,
         discardReturn = false,
+        /** The tuple has no native storage (`holdsUnreadable`): each call runs inline. */
+        inline = false,
     ): Value {
         if (
             ts.isIdentifier(callback) ||
@@ -5301,6 +5438,7 @@ export class ExpressionLowerer {
                 arguments_,
                 call,
                 discardReturn,
+                inline ? { inline: true } : undefined,
             );
         }
         const tuple = arguments_[0];
@@ -6023,6 +6161,38 @@ export class ExpressionLowerer {
         return provenVoidAsUndefined(this.context, value, expression) ?? value;
     }
 
+    /**
+     * The resource facts every present arm of an optional handle selection
+     * shares (`flag ? createRenderTarget(...) : null` keeps its target's
+     * attachment signature), for the storage the selection fills.
+     */
+    private presentHandleTemplate(
+        unwrapped: ts.ConditionalExpression,
+        type: DataType<"handle">,
+    ): Value | undefined {
+        const present = [unwrapped.whenTrue, unwrapped.whenFalse].filter(
+            (arm) =>
+                !this.context.symbols.isNullishLiteral(
+                    this.context.unwrap(arm),
+                ),
+        );
+        const values = this.context.probeEmission(
+            () =>
+                unlessRefused(() =>
+                    present.map((arm) =>
+                        this.inRuntimeControlFlow(() => this.compileValue(arm)),
+                    ),
+                ),
+            () => false,
+        );
+        if (
+            !values?.length ||
+            values.some((value) => value.kind !== type.handle)
+        )
+            return undefined;
+        return commonResourceValue(values[0]!, values);
+    }
+
     private compileConditionalValue(
         unwrapped: ts.ConditionalExpression,
     ): Value | undefined {
@@ -6042,10 +6212,7 @@ export class ExpressionLowerer {
                 ? browserCondition.value
                     ? "true"
                     : "false"
-                : !this.runsCode(unwrapped.condition) ||
-                    !this.context.evaluationOrder.writesStorage(
-                        unwrapped.condition,
-                    )
+                : this.skippable(unwrapped.condition)
                   ? this.context.probeEmission(
                         () =>
                             this.context.conditions.compileCondition(
@@ -6254,12 +6421,42 @@ export class ExpressionLowerer {
             armRecord(unwrapped.whenTrue) !== undefined &&
             armRecord(unwrapped.whenFalse) !== undefined &&
             armRecord(unwrapped.whenTrue) !== armRecord(unwrapped.whenFalse);
-        const conditionalType =
+        let conditionalType =
             inferred && (selectedArray?.kind === "span" || distinctRecordArms)
                 ? this.context.dataTypes.markStoredObjectReferences(inferred)
                 : inferred?.kind === "enum"
                   ? { kind: "string" as const }
                   : inferred;
+        // TypeScript can collapse a callable record beside a plain function
+        // to the latter's signature. That is a view, not permission to erase
+        // the selected function object's installed properties.
+        if (conditionalType?.kind === "function") {
+            const arms = [unwrapped.whenTrue, unwrapped.whenFalse];
+            for (const arm of arms) {
+                const type = this.context.checker.getTypeAtLocation(arm);
+                const record = this.context.dataLowerer.dataTypeAt(arm);
+                if (
+                    record?.kind !== "struct" ||
+                    !this.context.dataTypes.structCall(record.name)
+                )
+                    continue;
+                if (
+                    !arms.every((source) =>
+                        this.context.checker.isTypeAssignableTo(
+                            this.context.checker.getTypeAtLocation(source),
+                            type,
+                        ),
+                    )
+                )
+                    this.context.fail(
+                        unwrapped,
+                        "Conditional function objects require a callable record layout that holds both arms.",
+                    );
+                conditionalType =
+                    this.context.dataTypes.markStoredObjectReferences(record);
+                break;
+            }
+        }
         if (
             conditionalType?.kind === "string" ||
             conditionalType?.kind === "number" ||
@@ -6316,6 +6513,13 @@ export class ExpressionLowerer {
                           this.context.dataLowerer.objectIdentity(unwrapped),
                       )
                     : undefined;
+            const handleTemplate =
+                conditionalType.inner.kind === "handle"
+                    ? this.presentHandleTemplate(
+                          unwrapped,
+                          conditionalType.inner,
+                      )
+                    : undefined;
             return {
                 kind: "data",
                 cpp:
@@ -6332,6 +6536,9 @@ export class ExpressionLowerer {
                           objectIdentityCpp: objectIdentity,
                           optionalFoundCpp: `(${objectIdentity}) != nullptr`,
                       }
+                    : {}),
+                ...(handleTemplate
+                    ? { runtimeElementTemplate: handleTemplate }
                     : {}),
             };
         }
@@ -6402,9 +6609,13 @@ export class ExpressionLowerer {
             const spreadOperand =
                 spreadsItsValue(unwrapped) &&
                 (aggregate(trueArm) || aggregate(falseArm));
+            // Texture2D has one stored representation even when an arm
+            // returns a getter-backed facade. Convert it before leaving
+            // the arm's preparation scope, rather than moving its getters.
             const sunk =
                 conditionalType &&
-                conditionalType.kind !== "handle" &&
+                (conditionalType.kind !== "handle" ||
+                    conditionalType.handle === "texture") &&
                 !spreadOperand
                     ? this.context.probeEmission(() => {
                           try {
@@ -8240,21 +8451,35 @@ export class ExpressionLowerer {
                 argumentAt(call, 0),
             );
             this.context.reachJsData();
+            // A literal creates a fresh RegExp on each evaluation, so folding
+            // it cannot lose a stored expression's lastIndex mutation.
+            if (
+                ts.isRegularExpressionLiteral(regexpExpression) &&
+                inputValue.staticString !== undefined
+            ) {
+                const { pattern, flags } =
+                    regularExpressionParts(regexpExpression)!;
+                const matched = new RegExp(pattern, flags).exec(
+                    inputValue.staticString,
+                );
+                this.context.emitDiscardedValue(inputValue);
+                if (memberName === "test")
+                    return booleanValue(String(matched !== null));
+                return matched === null
+                    ? nullValue()
+                    : {
+                          kind: "tuple",
+                          cpp: "",
+                          tupleElements: Array.from(matched, (capture) =>
+                              capture === undefined
+                                  ? undefinedValue()
+                                  : staticStringValue(capture, (text) =>
+                                        this.context.cppString(text),
+                                    ),
+                          ),
+                      };
+            }
             if (memberName === "test") {
-                // A literal creates a fresh RegExp on each evaluation, so folding
-                // it cannot lose a stored expression's lastIndex mutation.
-                if (
-                    ts.isRegularExpressionLiteral(regexpExpression) &&
-                    inputValue.staticString !== undefined
-                ) {
-                    const { pattern, flags } =
-                        regularExpressionParts(regexpExpression)!;
-                    const matched = new RegExp(pattern, flags).test(
-                        inputValue.staticString,
-                    );
-                    this.context.emitDiscardedValue(inputValue);
-                    return booleanValue(String(matched));
-                }
                 return {
                     kind: "boolean",
                     cpp: `${owner.cpp}.test(${input})`,

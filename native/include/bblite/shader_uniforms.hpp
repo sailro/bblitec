@@ -5,13 +5,17 @@
 
 namespace bbl {
 
-/** The pin owns one independent Float32Array for every declared uniform. */
+/**
+ * The pin owns one independent Float32Array for every declared uniform. A
+ * view's slot aliasing its source's shares the array and its revision
+ * (`slot._v`), at the offset the view's own variant lays it out.
+ */
 struct ShaderUniformSlot {
     std::string name;
     std::string type;
     std::uint32_t offset = invalid_handle;
     js::F32Array value;
-    double version = 0;
+    std::shared_ptr<double> version = std::make_shared<double>(0.0);
 };
 
 /** `enableShaderUniformRangeUpdates`: the before-render callback each scene received. */
@@ -24,7 +28,16 @@ struct ShaderUniformState {
     double version = 0;
     double ubo_version = 0;
     std::shared_ptr<ShaderUniformRangeUpdates> range_updates;
+    /** The numbers run-time creation options held, by uniform offset, which `uniformDecls` copies. */
+    std::vector<std::pair<std::uint32_t, std::vector<double>>> creation_lanes;
+    /** A view's source's slots, whose version its uploads also follow. */
+    std::shared_ptr<const ShaderUniformState> source;
 };
+
+/** `material._uniformVersion` as an upload reads it: a view's follows its own and its source's. */
+inline double shader_uniform_version(const ShaderUniformState& state) {
+    return state.source ? state.version + state.source->version : state.version;
+}
 
 /** Live aliases never invalidate this per-material serialized packet themselves. */
 struct ShaderUniformUploadState {
@@ -40,6 +53,34 @@ struct ShaderUniformInput {
     std::size_t size() const { return size_value; }
     double load(std::size_t index) const { return read(index); }
 };
+
+/**
+ * One entry of a slot map a ShaderMaterial view installs: its key, the
+ * identity of the slot object, and what that object holds (`current` of a
+ * texture or storage slot, `value` of a uniform slot).
+ */
+struct ShaderViewSlotEntry {
+    std::string name;
+    std::weak_ptr<const void> identity;
+    std::variant<js::Nullable<StoredTexture>, js::Nullable<StorageBufferHandle>, js::F32Array> held;
+};
+
+/** `current` of a ShaderMaterial's `_textureSlots` entry for declared sampler `slot`. */
+js::Nullable<StoredTexture> shader_slot_texture(Engine& engine, MaterialHandle material,
+                                                std::uint32_t slot);
+/** `current` of a ShaderMaterial's `_storageBufferSlots` entry for declared storage buffer `slot`. */
+js::Nullable<StorageBufferHandle>
+shader_slot_storage_buffer(Engine& engine, MaterialHandle material, std::uint32_t slot);
+/** `value` of a ShaderMaterial's `_uniformValues` entry for uniform `name` of `count` lanes. */
+js::F32Array shader_slot_uniform_value(Engine& engine, MaterialHandle material,
+                                       const std::string& name, const std::string& type,
+                                       std::uint32_t count);
+/** Records that the slot object of `identity` is the material's declared `slot` of `list`. */
+void register_shader_slot_read(Engine& engine, MaterialHandle material, ShaderDeclarationList list,
+                               std::uint32_t slot, std::weak_ptr<const void> identity);
+/** `Object.defineProperties(view, { <slot map>: { value } })`: the view's slots become the map's. */
+void install_shader_view_slots(Engine& engine, MaterialHandle view, ShaderDeclarationList list,
+                               const std::vector<ShaderViewSlotEntry>& entries);
 
 ShaderUniformRead get_shader_uniform(Engine& engine, MaterialHandle material,
                                      const std::string& name);

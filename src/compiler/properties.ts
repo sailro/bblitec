@@ -17,6 +17,7 @@
 import { readShaderMaterialFact } from "./shader-material-views.js";
 import { EVENT_TYPE_MEMBER, foreignEventTypes } from "./dom-listeners.js";
 import { AbsentRecordProperties } from "./absent-record-properties.js";
+import { callbackFunction } from "./user-functions.js";
 import { readEngineRenderFunction } from "./engine-render-function.js";
 import { elementChildrenSnapshot, readByOneWalk } from "./element-children.js";
 import {
@@ -38,6 +39,7 @@ import { voidReceiver } from "./undefined-values.js";
 import {
     isEffectTaskMethodName,
     reachEffectTaskMethod,
+    requireEffectTaskMethodOwner,
 } from "./effect-task-methods.js";
 import { doubleLiteral, snakeCase } from "../cpp-literals.js";
 import { CAMERA_LIMIT_PROPERTIES } from "./camera-setters.js";
@@ -237,6 +239,8 @@ interface PropertyRead {
      */
     carriesRenderTextureAspect?: true;
     renderTextureAspect?: "depth";
+    /** Carries the owner's proven target descriptor onto the target read. */
+    carriesRenderTargetSignature?: true;
     /**
      * Carries which recorded node-particle set the owner names onto the
      * value read, so the element access that follows can say which set's
@@ -1017,6 +1021,22 @@ export const propertyRules: readonly PropertyRule[] = [
         impure: true,
         feature: "frame-graph:color-texture-identity",
     },
+    // Its `_colorView`, read through a cast: the view `buildRenderTarget`
+    // creates with each `_colorTexture`, null when that is.
+    {
+        owner: "render-target",
+        property: "_colorView",
+        value: "data",
+        dataType: {
+            kind: "optional",
+            inner: { kind: "handle", handle: "gpu-texture-view" },
+        },
+        helper: "bbl::render_target_color_view_object",
+        helperTakesEngine: true,
+        helperReturnsFreshData: true,
+        impure: true,
+        feature: "frame-graph:color-texture-identity",
+    },
     {
         owner: "camera",
         property: "alpha",
@@ -1624,9 +1644,17 @@ export const propertyRules: readonly PropertyRule[] = [
         dataType: { kind: "boolean" },
         field: "hit",
     },
-    ...(["bu", "bv"] as const).map((field): PropertyRead => ({
+    ...(
+        [
+            ["bu", "bu"],
+            ["bv", "bv"],
+            ["faceId", "face_id"],
+            ["thinInstanceIndex", "thin_instance_index"],
+            ["distance", "distance"],
+        ] as const
+    ).map(([property, field]): PropertyRead => ({
         owner: "picking-info",
-        property: field,
+        property,
         value: "data",
         dataType: { kind: "number" },
         field,
@@ -1900,6 +1928,7 @@ export const propertyRules: readonly PropertyRule[] = [
         property: "rt",
         value: "render-target",
         field: "rt",
+        carriesRenderTargetSignature: true,
     },
     {
         // `loadSplat`'s promise that the sort worker has produced its first
@@ -2287,6 +2316,10 @@ export function readProperty(
                             isDepthTexture: true as const,
                             renderTextureSource: "render-target" as const,
                         }
+                      : {}),
+                  ...(rule.carriesRenderTargetSignature &&
+                  owner.renderTargetSignature
+                      ? { renderTargetSignature: owner.renderTargetSignature }
                       : {}),
               });
     if (rule.record || rule.field) {
@@ -4448,36 +4481,37 @@ export class PropertyAccessLowerer {
      */
     /**
      * A member a function object never received, read as `undefined`: the
-     * function is made by an arrow or function expression and carries no
-     * installed properties, and a program type declares the member optional
-     * (`(() => T) & { onResize?: ... }`). Properties are installed only on a
-     * fresh function (`Object.assign`) or through a binding whose declaration
-     * then stores a callable record, and the function's own and prototype
-     * members are library declarations.
+     * function carries no installed properties, and a program type declares
+     * the member optional (`(() => T) & { onResize?: ... }`). Installed
+     * properties live in callable records; stored functions must prove no
+     * such record lost its properties into their storage. Function intrinsic
+     * and prototype members remain library declarations.
      */
-    private isUninstalledFunctionMember(
+    public readUninstalledFunctionMember(
         owner: Value,
         expression: ts.PropertyAccessExpression,
-    ): boolean {
-        const declaration = owner.callbackDeclaration;
+    ): Value | undefined {
+        const declaration = callbackFunction(this.context.checker, owner);
+        const stored = owner.dataType?.kind === "function";
         if (
-            owner.kind !== "callback" ||
-            owner.dataType !== undefined ||
+            (!stored && owner.kind !== "callback") ||
+            (!stored && owner.dataType !== undefined) ||
             owner.recordProperties !== undefined ||
             owner.intrinsicName !== undefined ||
             owner.hostFunction !== undefined ||
-            !declaration ||
-            !(
-                ts.isArrowFunction(declaration) ||
-                ts.isFunctionExpression(declaration)
-            ) ||
+            (!stored &&
+                (!declaration ||
+                    !(
+                        ts.isArrowFunction(declaration) ||
+                        ts.isFunctionExpression(declaration)
+                    ))) ||
             writeSiteOf(expression) !== undefined
         )
-            return false;
+            return undefined;
         const members =
             accessedPropertySymbol(this.context.checker, expression)
                 ?.declarations ?? [];
-        return (
+        const optional =
             members.length > 0 &&
             members.every(
                 (member) =>
@@ -4485,8 +4519,16 @@ export class PropertyAccessLowerer {
                         ts.isMethodSignature(member)) &&
                     member.questionToken !== undefined &&
                     declarationOrigin(member) === "program",
-            )
-        );
+            );
+        if (!optional) return undefined;
+        if (owner.dataType?.kind === "function")
+            this.context.dataLowerer.noteFunctionProperties(
+                owner.dataType,
+                "reads",
+                expression,
+            );
+        this.context.emitDiscardedValue(owner);
+        return undefinedValue();
     }
 
     private readOwnerProperty(
@@ -4573,8 +4615,11 @@ export class PropertyAccessLowerer {
             }
             return undefined;
         }
-        if (this.isUninstalledFunctionMember(owner, expression))
-            return undefinedValue();
+        const uninstalled = this.readUninstalledFunctionMember(
+            owner,
+            expression,
+        );
+        if (uninstalled) return uninstalled;
         // A handle collection's size. The concept's other operations are
         // its loop and its searches; this is the same native vector read
         // through its one remaining JavaScript member, which is how both
@@ -5008,7 +5053,6 @@ export class PropertyAccessLowerer {
         }
         if (
             owner.kind === "task" &&
-            owner.effectTask &&
             isEffectTaskMethodName(expression.name.text)
         )
             return this.effectTaskMethod(owner, expression);
@@ -5070,7 +5114,8 @@ export class PropertyAccessLowerer {
         expression: ts.PropertyAccessExpression,
     ): Value {
         const dispose = expression.name.text === "dispose";
-        reachEffectTaskMethod(this.context, dispose, expression);
+        requireEffectTaskMethodOwner(this.context, owner, expression);
+        reachEffectTaskMethod(this.context, expression);
         return {
             kind: "data",
             cpp: `bbl::effect_task_method(${this.context.requireEngine(owner, expression)}, ${owner.cpp}, ${dispose})`,

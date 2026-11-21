@@ -188,7 +188,7 @@ inline CssMatrix css_transform_function(const Rml::TransformPrimitive& primitive
                 const double scale = column == 3 && row < 3   ? 1 / ratio
                                      : row == 3 && column < 3 ? ratio
                                                               : 1;
-                matrix[static_cast<std::size_t>(column * 4 + row)] =
+                matrix[static_cast<std::size_t>(column) * 4 + static_cast<std::size_t>(row)] =
                     composed.GetColumn(column)[row] * scale;
             }
         return matrix;

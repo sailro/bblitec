@@ -91,10 +91,8 @@ function tupleMembers(name: string, cpp: string): [string, PinnedBinding][] {
  * picked mesh -- and run the pinned solve over what the third attachment
  * carried.
  *
- * `surfaceNormalsValid` is upstream's `!hitRange.worldAdjusted`, and no
- * reached scene passes a `worldAdjustWgsl` rule (`pickAsync` refuses its
- * options object at generation), so the pass never adjusts a world and
- * the CPU normals are always valid.
+ * `surfaceNormalsValid` is upstream's `!hitRange.worldAdjusted`, which the
+ * readback carries for the winning range.
  */
 const DETAILED_CONTINUATION = `    if (info.detail && info.picked_kind == PickedNodeKind::mesh) {
         const PickDetailReadback& detail = *info.detail;
@@ -107,7 +105,7 @@ const DETAILED_CONTINUATION = `    if (info.detail && info.picked_kind == Picked
             mesh_cpu_positions(engine, mesh),
             mesh_cpu_normals(engine, mesh),
             detail.world,
-            true);
+            !detail.world_adjusted);
     }
 `;
 
@@ -565,12 +563,13 @@ ${body}
             source: `// ${this.context.provenance(modulePath, "pickAsync")}
 #include <bblite/runtime.hpp>
 #include <bblite/js_data.hpp>
-${billboardPick ? "#include <bblite/upstream/camera_math.hpp>\n" : ""}${
-                detailed
-                    ? "#include <bblite/upstream/pinned_normalize_vec3.hpp>\n" +
-                      "#include <bblite/upstream/renderer_plan.hpp>\n"
-                    : ""
-            }
+#include <bblite/upstream/camera_math.hpp>
+${
+    detailed
+        ? "#include <bblite/upstream/pinned_normalize_vec3.hpp>\n" +
+          "#include <bblite/upstream/renderer_plan.hpp>\n"
+        : ""
+}
 #include <cmath>
 ${detailed ? "#include <limits>\n" : ""}#include <stdexcept>
 ${detailed ? "#include <vector>\n" : ""}
@@ -627,11 +626,11 @@ PickingInfo gpu_pick_through_hook(
     GpuPickerHandle picker,
     double x,
     double y,
-    const Engine::PickFilter* filter) {
+    const Engine::PickOptions* options) {
     const GpuPickerRecord& record = picker_record(engine, picker);
     PickingInfo info = record.disposed || !engine.pick_hook
         ? PickingInfo{}
-        : engine.pick_hook(picker, x, y, filter);
+        : engine.pick_hook(picker, x, y, options);
     info.bind_engine(engine);
 ${detailed ? DETAILED_CONTINUATION : ""}    return info;
 }
@@ -656,7 +655,19 @@ PickingInfo gpu_pick(
     double x,
     double y,
     const Engine::PickFilter& filter) {
-    return gpu_pick_through_hook(engine, picker, x, y, &filter);
+    const Engine::PickOptions options{filter, {}, {}};
+    return gpu_pick_through_hook(engine, picker, x, y, &options);
+}
+
+// The pin's \`options\`: the filter as above, and the \`ignore\` entries the
+// shared candidate collector reads while it builds the list.
+PickingInfo gpu_pick(
+    Engine& engine,
+    GpuPickerHandle picker,
+    double x,
+    double y,
+    const Engine::PickOptions& options) {
+    return gpu_pick_through_hook(engine, picker, x, y, &options);
 }
 
 // The name a pick resolved to, read where the scene asks for it rather
@@ -719,6 +730,8 @@ void populate_picked_point(
         1.0 - 2.0 * sample_y / height,
         depth);
 }
+
+${this.lowerPickedDistance()}
 
 // The backend owns the resources, so it frees them through the same hook
 // it installed; the record only stops answering.
@@ -1325,13 +1338,10 @@ void populate_pick_ray(
      * three deltas and the root, lowered from those five statements.
      *
      * The origin is `detailed && pickRay ? <ray origin> : getCameraPosition
-     * (camera)`. This port reaches the distance only through
-     * `pickBillboardSprite`, whose throwaway picker is never detailed, so
-     * `detailed` binds statically false and the pin's own conditional folds
-     * to the camera arm -- `getCameraPosition` reads the camera's FLOAT
-     * world matrix, which `camera_position` is the lowering of. The pin
-     * stores the result on the info; the scene reads it as a value, so the
-     * store is the return.
+     * (camera)`: a detailed pick is the one that carries its ray
+     * (`info.ray`), and `getCameraPosition` reads the camera's FLOAT world
+     * matrix, which `camera_position` is the lowering of. The pin stores the
+     * result on the info; the shared resolve stores what this returns.
      */
     private lowerPickedDistance(): string {
         const modulePath = "src/picking/gpu-picker.ts";
@@ -1390,10 +1400,7 @@ void populate_pick_ray(
 
         const body = lowerPinnedBody(file, statements, {
             bindings: new Map<string, PinnedBinding>([
-                [
-                    "detailed",
-                    { cpp: "false", type: "bool", staticBoolean: false },
-                ],
+                ["detailed", { cpp: "info.ray.has_value()", type: "bool" }],
                 [
                     "pickRay",
                     {
@@ -1436,11 +1443,8 @@ void populate_pick_ray(
         });
         return `// ${this.context.provenance(modulePath, "pickAsyncImpl")}
 // \`info.distance\`, from the pick origin to the reconstructed point.
-double picked_distance(const Scene& scene, const PickingInfo& info) {
-    if (!info.picked_point || !scene.engine) return 0.0;
-    const Engine& engine = *scene.engine;
-    if (scene.camera.value >= engine.cameras.size()) return 0.0;
-    const CameraRecord& camera = ${recordAt("engine.cameras", "scene.camera")};
+double picked_distance(const CameraRecord& camera, const PickingInfo& info) {
+    if (!info.picked_point) return 0.0;
     const std::array<double, 3>& point = *info.picked_point;
 ${body}
 }`;
@@ -1458,7 +1462,7 @@ ${body}
      * `picked_kind` and builds the scene's own record.
      *
      * `distance` is the second half the pin computes beside `pickedPoint`,
-     * lowered beside it by `lowerPickedDistance`.
+     * which the shared resolve stores (`lowerPickedDistance`).
      */
     private lowerBillboardWrapper(): string {
         const wrapperModule = "src/sprite/picking/pick-billboard.ts";
@@ -1477,8 +1481,6 @@ PickingInfo pick_billboard_sprite(
     dispose_picker(engine, picker);
     return info;
 }
-
-${this.lowerPickedDistance()}
 `;
     }
 }

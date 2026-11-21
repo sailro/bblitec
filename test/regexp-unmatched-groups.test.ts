@@ -33,7 +33,9 @@ const program = `
     const pieces = "a1b-c".split(/(\\d)|-/);
     if (pieces.length !== 5 || pieces[1] !== "1" || pieces[3] !== undefined || pieces[4] !== "c")
         throw new Error("split " + pieces.length);
-    const mandatory = /(\\d+)-(\\d+)/.exec("10-20");
+    // A run-time text keeps this exec a call: a fresh literal over a known
+    // text folds at generation.
+    const mandatory = /(\\d+)-(\\d+)/.exec(Math.random() >= 0 ? "10-20" : "0-0");
     if (mandatory === null || Number(mandatory[1]) + Number(mandatory[2]) !== 30)
         throw new Error("mandatory groups");
     if ("x-y".split(/(-)/).join("|") !== "x|-|y") throw new Error("split capture");

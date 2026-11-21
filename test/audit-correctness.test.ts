@@ -16,6 +16,8 @@ import { PickingLowerer } from "../src/lowering/picking-lowerer.js";
 import { CompressedTextureLowerer } from "../src/lowering/compressed-texture-lowerer.js";
 import { writeKtx1 } from "../src/basis-transcode.js";
 import { packageKtx1 } from "../src/compressed-texture-package.js";
+import { pickDiscardHeader } from "../src/pinned-picking-shaders.js";
+import type { PickDiscardRuleManifest } from "../src/compiler/types.js";
 
 const nativeTools = optionalNativeFixtureTools(false);
 
@@ -526,35 +528,80 @@ test(
     },
 );
 
-test(
-    "detailed picking refuses only thin instances admitted by geometry and filter gates",
-    { skip: !nativeTools },
-    () => {
-        const source = sharedGpuSource();
-        const renderer = readFileSync(
-            "src/lowering/renderer-lowerer.ts",
-            "utf8",
+/**
+ * The shared pick candidate collector, extracted with its helpers and
+ * compiled over a stub render plan of the given meshes; `body` runs in
+ * `main` with `engine`, `scene`, `plan` and `collect(detailed, geometry,
+ * options)` in scope.
+ */
+function runPickCollector(name: string, body: string, discard?: string): void {
+    const source = sharedGpuSource();
+    const include = resolve("artifacts/audit-correctness", name, "include");
+    if (discard !== undefined) {
+        mkdirSync(join(include, "bblite/upstream"), { recursive: true });
+        writeFileSync(
+            join(include, "bblite/upstream/picking_discard.hpp"),
+            discard,
         );
-        const activeCount = "inline std::size_t thin_instance_active_count(";
-        runCpp(
-            "detailed-pick-admission",
-            `
+    }
+    const renderer = readFileSync("src/lowering/renderer-lowerer.ts", "utf8");
+    const activeCount = "inline std::size_t thin_instance_active_count(";
+    runCpp(
+        name,
+        `
         #define BBLITE_GPU_INSTANCING 1
         #define BBLITE_DEFORM_PICKING 0
         #define BBLITE_VAT_PICKING 0
+        #define BBLITE_PICK_DISCARD ${discard === undefined ? 0 : 1}
+        #define BBLITE_GPU_DEFORMATION 0
+        #include <bblite/js_data.hpp>
         #include <bblite/runtime.hpp>
         #include <cassert>
+        ${discard === undefined ? "" : "#include <bblite/upstream/picking_discard.hpp>"}
         namespace bbl::upstream {
             struct Item { MeshHandle mesh; };
             struct RenderPlan { std::vector<Item> items; const auto& scene_items() const { return items; } };
             ${cppFunction(renderer, "bool pick_candidate(const MeshRecord& mesh) {")}
             std::array<float,16> mesh_world_matrix(const Engine&, const MeshRecord&) { return {}; }
+            struct PinnedInstanceAttribute { std::string_view buffer_group; std::uint32_t offset; };
+            constexpr const PinnedInstanceAttribute* pinned_instance_attribute(std::string_view) { return nullptr; }
         }
         namespace bbl::pal {
             ${["struct PickMeshUniforms {", "struct PickRange {", "struct PickMeshCandidate {"].map((signature) => cppFunction(source, signature) + ";").join("\n")}
+            ${cppFunction(source, "inline std::uint32_t pick_candidate_instances(")}
             ${cppFunction(source.slice(source.lastIndexOf(activeCount)), activeCount)}
+            ${cppFunction(source, "inline const Engine::PickIgnore* pick_ignore_entry(")}
+            ${cppFunction(source, "inline std::array<std::uint32_t, 2> pick_ignored_range(")}
             template<class HasGeometry>
             ${cppFunction(source, "inline std::vector<PickMeshCandidate> collect_pick_mesh_candidates(")}
+            ${cppFunction(source, "struct PickDiscardDraw {")};
+            ${cppFunction(source, "enum PickDiscardPipeline : std::size_t {")};
+            ${
+                discard === undefined
+                    ? ""
+                    : [
+                          "inline const char* pick_discard_stem(",
+                          "struct GpuVertex {",
+                          "enum class VertexInputStream : std::uint32_t {",
+                          "inline constexpr std::string_view vertex_stream_group(",
+                          "enum class VertexInputLane {",
+                          "struct PinnedVertexInput {",
+                          "PinnedVertexInput pinned_vertex_input(",
+                          "bool pick_vertex_data_present(const Engine& engine, const MeshRecord& mesh, std::string_view attribute) {",
+                          "struct PickVertexDataAttribute {",
+                          "inline std::optional<PickVertexDataAttribute> pick_discard_vertex_data(",
+                      ]
+                          .map(
+                              (signature) =>
+                                  cppFunction(source, signature) +
+                                  (signature.startsWith("struct ") ||
+                                  signature.startsWith("enum ")
+                                      ? ";"
+                                      : ""),
+                          )
+                          .join("\n")
+            }
+            ${cppFunction(source, "std::vector<PickDiscardDraw> prepare_pick_discard(")}
         }
         int main() {
             bbl::Engine engine;
@@ -565,17 +612,35 @@ test(
             thin.thin_instances->count = 2; thin.thin_instances->matrices = bbl::js::F32Array(32);
             thin.thin_instances->gpu_buffer = std::make_shared<bbl::GpuObject>();
             bbl::upstream::RenderPlan plan; plan.items.push_back({{0}});
-            const auto collect = [&](bool detailed, bool geometry, const bbl::Engine::PickFilter* filter = nullptr) {
+            const auto collect = [&](bool detailed, bool geometry, const bbl::Engine::PickOptions* options = nullptr) {
                 std::vector<bbl::pal::PickRange> ranges;
                 std::uint32_t next = 1;
                 return bbl::pal::collect_pick_mesh_candidates(engine, scene, plan, plan.items.size(),
-                    [&](std::size_t) { return geometry; }, ranges, next, filter, detailed);
+                    [&](std::size_t) { return geometry; }, ranges, next, options, detailed);
             };
+            ${body}
+        }
+    `,
+        [
+            "/DBBLITE_HAS_PICKING=1",
+            "/DBBLITE_HAS_PBR_RENDERER=1",
+            ...(discard === undefined ? [] : [`/I${include}`]),
+        ],
+    );
+}
+
+test(
+    "detailed picking refuses only thin instances admitted by geometry and filter gates",
+    { skip: !nativeTools },
+    () => {
+        runPickCollector(
+            "detailed-pick-admission",
+            `
             assert(collect(true, true).size() == 1);
             plan.items.push_back({{1}});
             assert(collect(false, true).at(1).instance_count == 2);
             assert(collect(true, false).empty());
-            bbl::Engine::PickFilter filter = [](bbl::MeshHandle handle) { return handle.value == 0; };
+            const bbl::Engine::PickOptions filter{[](bbl::MeshHandle handle) { return handle.value == 0; }, {}, {}};
             assert(collect(true, true, &filter).size() == 1);
             thin.pickable = false; assert(collect(true, true).size() == 1); thin.pickable = true;
             thin.thin_instances->count = 0; assert(collect(true, true).size() == 1); thin.thin_instances->count = 2;
@@ -585,9 +650,154 @@ test(
             try { collect(true, true); }
             catch (const std::runtime_error& error) { refused = std::string(error.what()).find("thin-instance world matrix") != std::string::npos; }
             assert(refused);
-        }
-    `,
-            ["/DBBLITE_HAS_PICKING=1"],
+        `,
+        );
+    },
+);
+
+test(
+    "pick ignore entries skip a whole mesh before its filter and exclude thin-instance ranges",
+    { skip: !nativeTools },
+    () => {
+        runPickCollector(
+            "pick-ignore-candidates",
+            `
+            plan.items.push_back({{1}});
+            int asked = 0;
+            bbl::Engine::PickOptions options{[&asked](bbl::MeshHandle) { ++asked; return true; }, {}, {}};
+            // A mesh-only entry drops the mesh and its id, unasked.
+            options.ignore = {{bbl::MeshHandle{0}, {}, {}}};
+            auto picked = collect(false, true, &options);
+            assert(picked.size() == 1 && picked[0].item_index == 1 && picked[0].uniforms.pick_id == 1 && asked == 1);
+            // The first entry naming a mesh is its entry; a range wins over an index.
+            options.ignore = {{bbl::MeshHandle{1}, 7.0, std::array<double, 2>{1.9, 2.2}}, {bbl::MeshHandle{1}, {}, {}}};
+            picked = collect(false, true, &options);
+            assert(picked.size() == 2 && picked[1].uniforms.excluded_thin_instance_start == 1 &&
+                   picked[1].uniforms.excluded_thin_instance_count == 2 && picked[1].uniforms.pick_id == 2);
+            // Each lane is ToInt32, at least zero.
+            options.ignore = {{bbl::MeshHandle{1}, -3.5, {}}};
+            picked = collect(false, true, &options);
+            assert(picked[1].uniforms.excluded_thin_instance_start == 0 && picked[1].uniforms.excluded_thin_instance_count == 1);
+            options.ignore = {{bbl::MeshHandle{1}, 4294967297.0, {}}};
+            assert(collect(false, true, &options)[1].uniforms.excluded_thin_instance_start == 1);
+            // A thin entry on a regular mesh changes nothing; no entry excludes nothing.
+            options.ignore = {{bbl::MeshHandle{0}, 1.0, {}}};
+            picked = collect(false, true, &options);
+            assert(picked.size() == 2 && picked[0].uniforms.excluded_thin_instance_count == 0 &&
+                   picked[1].uniforms.excluded_thin_instance_count == 0);
+        `,
+        );
+    },
+);
+
+test(
+    "a pick discard rule draws the candidates its storage admits through the rule its key names",
+    { skip: !nativeTools },
+    () => {
+        const rule = (
+            key: string,
+            storage: PickDiscardRuleManifest["storage"],
+        ): PickDiscardRuleManifest => ({ key, wgsl: `wgsl ${key}`, storage });
+        runPickCollector(
+            "pick-discard-draws",
+            `
+            plan.items.push_back({{1}});
+            const auto candidates = collect(false, true);
+            std::vector<bbl::pal::PickRange> ranges(candidates.size());
+            int tail = 0;
+            bbl::Engine::PickOptions options;
+            options.discard = bbl::Engine::PickDiscard{"hide", "wgsl hide", {}, {}, {
+                {"first", "array<f32>", false, [](bbl::MeshHandle mesh) -> std::optional<std::vector<std::uint8_t>> {
+                    if (mesh.value != 0) return std::nullopt;
+                    return std::vector<std::uint8_t>(5, 1);
+                }},
+                {"second", "u32", true, [&tail](bbl::MeshHandle) -> std::optional<std::vector<std::uint8_t>> {
+                    ++tail;
+                    return std::vector<std::uint8_t>{};
+                }},
+            }};
+            // The first null entry draws the mesh through the default
+            // pipeline, unasked of the rest.
+            auto draws = bbl::pal::prepare_pick_discard(engine, plan, candidates, ranges, &options, false);
+            // Each entry is padded to createMappedBuffer's size: at least 4 bytes, 4-aligned.
+            assert(draws.size() == 2 && draws[0].variant == 0 && draws[0].pipeline == 0 && draws[0].storage.size() == 2 &&
+                   draws[0].storage[0] == std::vector<std::uint8_t>({1, 1, 1, 1, 1, 0, 0, 0}) &&
+                   draws[0].storage[1].size() == 4 && draws[1].variant == -1 && draws[1].storage.empty() && tail == 1);
+            const auto refuses = [&](bool detailed, const char* message) {
+                try { bbl::pal::prepare_pick_discard(engine, plan, candidates, ranges, &options, detailed); }
+                catch (const std::runtime_error& error) {
+                    assert(std::string(error.what()).find(message) != std::string::npos); return;
+                }
+                assert(false);
+            };
+            refuses(true, "not composed for this candidate's pipeline");
+            options.discard->storage[1].vertex = false;
+            refuses(false, "is not the rule generation composed");
+            options.discard->storage[1].vertex = true;
+            options.discard->storage.pop_back();
+            refuses(false, "is not the rule generation composed");
+            options.discard->wgsl = "other";
+            refuses(false, "is not the rule generation composed");
+            // A rule without storage draws every candidate through it.
+            options.discard = bbl::Engine::PickDiscard{"all", "wgsl all", {}, {}, {}};
+            refuses(false, "not composed for this candidate's pipeline");
+            draws = bbl::pal::prepare_pick_discard(engine, plan, {candidates[0]}, ranges, &options, false);
+            assert(draws.size() == 1 && draws[0].variant == 1 && draws[0].pipeline == bbl::pal::pick_discard_regular &&
+                   !ranges[0].world_adjusted);
+            // A rule reading vertex data draws a mesh without the attribute
+            // through its pipeline without it, and marks a range it adjusts.
+            engine.geometries.emplace_back();
+            engine.meshes[0].geometry = 0;
+            options.discard = bbl::Engine::PickDiscard{"tangent", "wgsl tangent", std::string("adjust"), std::string("tangent"), {}};
+            draws = bbl::pal::prepare_pick_discard(engine, plan, {candidates[0]}, ranges, &options, false);
+            assert(draws[0].variant == 2 && draws[0].pipeline == bbl::pal::pick_discard_regular_bare && ranges[0].world_adjusted);
+            engine.geometries[0].has_tangents = true;
+            assert(bbl::pal::prepare_pick_discard(engine, plan, {candidates[0]}, ranges, &options, true)[0].pipeline ==
+                   bbl::pal::pick_discard_detailed);
+            const auto& tangent = bbl::upstream::pick_discard_variants[2];
+            const auto lane = bbl::pal::pick_discard_vertex_data(tangent, bbl::pal::pick_discard_detailed);
+            assert(lane && lane->location == 5 && lane->components == 4 && lane->offset == offsetof(bbl::pal::GpuVertex, tangent));
+            assert(!bbl::pal::pick_discard_vertex_data(tangent, bbl::pal::pick_discard_regular_bare));
+            assert(!bbl::pal::pick_discard_vertex_data(tangent, bbl::pal::pick_discard_thin));
+            options.discard->key = "absent";
+            refuses(false, "was not composed at generation");
+            options.discard.reset();
+            assert(bbl::pal::prepare_pick_discard(engine, plan, candidates, ranges, &options, false).empty());
+        `,
+            pickDiscardHeader([
+                {
+                    rule: rule("hide", [
+                        { name: "first", type: "array<f32>", vertex: false },
+                        { name: "second", type: "u32", vertex: true },
+                    ]),
+                    advanced: false,
+                    vertexDataComponents: 0,
+                    vertexDataLocation: 0,
+                    regular: "",
+                    thin: "",
+                },
+                {
+                    rule: rule("all", []),
+                    advanced: false,
+                    vertexDataComponents: 0,
+                    vertexDataLocation: 0,
+                    regular: "",
+                },
+                {
+                    rule: {
+                        ...rule("tangent", []),
+                        worldAdjustWgsl: "adjust",
+                        vertexData: "tangent",
+                    },
+                    advanced: true,
+                    vertexDataComponents: 4,
+                    vertexDataLocation: 5,
+                    regular: "",
+                    detailed: "",
+                    regularBare: "",
+                    detailedBare: "",
+                },
+            ]),
         );
     },
 );
@@ -1681,6 +1891,40 @@ test(
         void start_engine(Engine&) { for (const auto& callback : callbacks) callback(16); callbacks.clear(); }
         }
     `,
+        );
+    },
+);
+
+test(
+    "a pick resolves a thin-instanced range's hit to its instance and any other hit to none",
+    { skip: !nativeTools },
+    () => {
+        const source = sharedGpuSource();
+        runCpp(
+            "pick-range-resolve",
+            `
+        #include <bblite/runtime.hpp>
+        #include <cassert>
+        namespace bbl::pal {
+            ${cppFunction(source, "struct PickRange {")};
+            ${cppFunction(source, "const PickRange* pick_range(const std::vector<PickRange>& ranges, std::uint32_t pick_id) {")}
+            ${cppFunction(source, "PickingInfo resolve_pick_result(const std::vector<PickRange>& ranges, std::uint32_t pick_id) {")}
+        }
+        int main() {
+            using bbl::PickedNodeKind;
+            const std::vector<bbl::pal::PickRange> ranges{
+                {1, PickedNodeKind::mesh, 4, 1, 0},
+                {2, PickedNodeKind::mesh, 5, 3, 0, true},
+                {5, PickedNodeKind::billboard_sprite, 0, 2},
+            };
+            assert(bbl::pal::resolve_pick_result(ranges, 1).thin_instance_index == -1.0);
+            const auto thin = bbl::pal::resolve_pick_result(ranges, 4);
+            assert(thin.picked_index == 5 && thin.thin_instance_index == 2.0);
+            assert(bbl::pal::resolve_pick_result(ranges, 6).thin_instance_index == -1.0);
+            assert(!bbl::pal::resolve_pick_result(ranges, 0).hit && !bbl::pal::pick_range(ranges, 0));
+        }
+    `,
+            ["/DBBLITE_HAS_PICKING=1"],
         );
     },
 );

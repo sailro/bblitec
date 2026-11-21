@@ -1057,6 +1057,22 @@ struct DawnState : DawnDevice {
     };
     std::array<PickVatProgram, upstream::pick_vat_variants.size()> pick_vat_programs{};
 #endif
+#if BBLITE_PICK_DISCARD
+    /** A composed `discard` rule's module per pipeline (regular, thin,
+     *  detailed), its two stages and its reflected storage group 2. */
+    struct PickDiscardProgram {
+        WGPURenderPipeline pipeline = nullptr;
+        WGPUBindGroupLayout layout = nullptr;
+        std::string vertex;
+        std::string fragment;
+        [[nodiscard]] std::array<DawnLayoutStage, 2> stages() const {
+            return {{ {vertex, WGPUShaderStage_Vertex}, { fragment, WGPUShaderStage_Fragment } }};
+        }
+    };
+    std::array<std::array<PickDiscardProgram, pick_discard_pipelines>,
+               upstream::pick_discard_variants.size()>
+        pick_discard_programs{};
+#endif
     WGPUBindGroupLayout pick_scene_layout = nullptr;
     WGPUBindGroupLayout pick_mesh_layout = nullptr;
     WGPUBuffer pick_scene_buffer = nullptr;
@@ -1113,6 +1129,9 @@ struct DawnState : DawnDevice {
     /** The pin's single-sample `BLIT_SHADER` and `DEPTH_GRAB_SHADER` passes. */
     DawnRenderPipeline task_grab_pipeline;
     DawnRenderPipeline task_depth_grab_pipeline;
+    /** Their multisampled arms, `BLIT_MSAA_SHADER` and `DEPTH_GRAB_MSAA_SHADER`. */
+    DawnRenderPipeline task_grab_msaa_pipeline;
+    DawnRenderPipeline task_depth_grab_msaa_pipeline;
 #endif
 #if BBLITE_DEPTH_RESOLVE_TASK
     /** `createDepthResolveTask`'s pipeline, one per target depth format. */
@@ -1839,6 +1858,16 @@ struct DawnState : DawnDevice {
                 wgpuBindGroupLayoutRelease(program.empty_layout);
             if (program.layout)
                 wgpuBindGroupLayoutRelease(program.layout);
+        }
+#endif
+#if BBLITE_PICK_DISCARD
+        for (auto& programs : pick_discard_programs) {
+            for (auto& program : programs) {
+                if (program.pipeline)
+                    wgpuRenderPipelineRelease(program.pipeline);
+                if (program.layout)
+                    wgpuBindGroupLayoutRelease(program.layout);
+            }
         }
 #endif
         if (pick_scene_layout)
@@ -2874,6 +2903,10 @@ void run_esm_blur(DawnState& state, WGPUCommandEncoder encoder, WGPUTextureView 
 WGPUTextureView shadow_map_view(DawnState& state, const Engine& engine,
                                 ShadowGeneratorHandle handle);
 
+/** A CSM receiver texture's view and comparison sampler, which shader materials and effects bind. */
+DawnCsmReceiverBinding csm_receiver_binding(DawnState& state, const Engine& engine,
+                                            ShadowGeneratorHandle generator);
+
 /**
  * The generators in `scene.lights` order, as a list a row's own light index
  * can be looked up in.
@@ -3591,6 +3624,7 @@ prepare_dawn_post_process_pass(DawnState& state, Engine& engine, TaskHandle hand
     const std::uint32_t output_width = extent.output_width;
     const std::uint32_t output_height = extent.output_height;
     if (gpu.program == npos) {
+        upstream::require_post_process_source(engine, pass);
         gpu.program = post_process_program(
             state, info, handle_at(state.render_targets, pass.output_target).color_format,
             target_sample_count(state, output_record), pass.alpha_mode, pass.extra_textures.size());
@@ -3790,7 +3824,8 @@ WGPURenderPipeline create_dawn_pick_mesh_pipeline(
     WGPUDevice device, WGPUBindGroupLayout scene_layout, WGPUBindGroupLayout mesh_layout,
     const char* stem_vertex, const char* stem_fragment, std::uint32_t target_count,
     WGPUBindGroupLayout empty_layout = nullptr, WGPUBindGroupLayout deform_layout = nullptr,
-    [[maybe_unused]] bool skeleton = false);
+    [[maybe_unused]] bool skeleton = false,
+    std::optional<PickVertexDataAttribute> vertex_data = std::nullopt);
 
 #if BBLITE_DEFORM_PICKING
 /**
@@ -3883,7 +3918,7 @@ PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::Re
                             const std::vector<upstream::RenderPlan>& overlay_plans,
                             const std::vector<std::shared_ptr<Scene>>& active_registered_scenes,
                             [[maybe_unused]] GpuPickerHandle picker, double x, double y,
-                            const Engine::PickFilter* filter
+                            const Engine::PickOptions* options
 #if BBLITE_HAS_BILLBOARDS
                             ,
                             DawnBillboardPickContributor& billboard_pick

@@ -299,3 +299,48 @@ test("pure string interpolation borrows its values without intermediate string c
     `);
     assert.doesNotMatch(result.cpp, /std::string v_bblite_template_part_/);
 });
+
+test("a closed string helper reads a module constant record through a helper parameter storing it", () => {
+    const source = (water: string, write = ""): string => `
+        import { createEngine, createMeshFromData } from "@babylonjs/lite";
+        type Item = { readonly name: string; count?: number | readonly number[] };
+        const WATER: Item = ${water};
+        function describe(item: Item): string {
+            return JSON.stringify(item);
+        }
+        // The read-only parameter keeps its argument's fields and own keys
+        // while the helper stores the record.
+        function withItem<T extends Item>(items: readonly T[], item: T, mesh: ReturnType<typeof createMeshFromData>): T[] {
+            ${write}
+            mesh.name = \`\${describe(item)}\`;
+            return [...items, item];
+        }
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            const mesh = createMeshFromData(engine, "probe", new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]), new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]), new Uint32Array([0, 1, 2]));
+            mesh.position.y = withItem([{ name: "a" }] as Item[], WATER, mesh).length;
+        }
+        void main();
+    `;
+    const counted = '{ name: "water", count: 4 }';
+    assert.match(
+        compileSource(source(counted)).cpp,
+        /\.name = "\{\\"name\\":\\"water\\",\\"count\\":4\}";/,
+    );
+    assert.match(
+        compileSource(source('{ name: "water" }')).cpp,
+        /\.name = "\{\\"name\\":\\"water\\"\}";/,
+    );
+    // A write through the constant reaches the parameter's object, and one
+    // giving it a key its literal lacks changes its own keys.
+    assert.doesNotMatch(
+        compileSource(source(counted, "WATER.count = Math.random();")).cpp,
+        /\\"count\\":4/,
+    );
+    assert.doesNotMatch(
+        compileSource(
+            source('{ name: "water" }', "Object.assign(item, { count: 3 });"),
+        ).cpp,
+        /\.name = "\{\\"name\\":\\"water\\"\}";/,
+    );
+});

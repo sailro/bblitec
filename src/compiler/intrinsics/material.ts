@@ -1,4 +1,5 @@
-import { texture2DFromParts } from "../data-sinks/resources.js";
+import { texture2DFromRecord } from "../data-sinks/resources.js";
+import { creationSideTables } from "../shader-side-tables.js";
 import { isPbrMaterialValue } from "../values/model.js";
 import {
     compileCreateExternalTexture,
@@ -101,6 +102,7 @@ export interface MaterialIntrinsicContext
             | "boundPixelsTextures"
             | "expectSameEngine"
             | "requireDefaultEngine"
+            | "reachShaderCreations"
             | "requireEngine"
             | "compileNumber"
             | "compileBoolean"
@@ -1241,9 +1243,18 @@ function shaderMaterialValue(
             initializer: materialCpp,
         });
         for (const uniform of dynamicUniforms) {
+            // A creation's own numbers stay the material's beside its floats.
+            if (uniform.creation)
+                context.reachFeature(
+                    "material:shader-uniform-creation-lanes",
+                    call,
+                );
+            const [lane, initialize] = uniform.creation
+                ? ["double", "initialize_shader_uniform_creation_values"]
+                : ["float", "initialize_shader_uniform_values"];
             context.emit({
                 kind: "expression",
-                code: `([&]() { const std::array<float, ${uniform.components.length}> values{${uniform.components.join(", ")}}; bbl::initialize_shader_uniform_values(${engine}, ${material}, ${uniform.offset}u, ${uniform.components.length}u, values.data()); }());`,
+                code: `([&]() { const std::array<${lane}, ${uniform.components.length}> values{${uniform.components.join(", ")}}; bbl::${initialize}(${engine}, ${material}, ${uniform.offset}u, ${uniform.components.length}u, values.data()); }());`,
             });
         }
         materialCpp = material;
@@ -1266,10 +1277,24 @@ function compileShaderMaterialCreation(
         const variant =
             context.intrinsicOptions.compileShaderMaterialOptions(options);
         const binding = optionsBinding(context, argumentAt(call, 0));
+        const shaderCreation = variant.creation
+            ? {
+                  options: variant.creation,
+                  ...(binding ? { binding } : {}),
+                  site: call,
+                  sideTables: creationSideTables(context, call),
+              }
+            : undefined;
+        if (shaderCreation)
+            context.sceneManifest.shaderDerivations.recordMaterial(
+                variant.name,
+                shaderCreation,
+            );
         if (variant.creation)
             context.sceneManifest.shaderDerivations.recordCreation(
                 variant.name,
                 variant.creation,
+                true,
             );
         const created = `bbl::create_shader_material(${engine}, ${variant.id}u)`;
         return {
@@ -1284,12 +1309,9 @@ function compileShaderMaterialCreation(
                 : {}),
             facts: {
                 ...shaderVariantFacts([variant.name]),
-                ...(variant.creation
+                ...(shaderCreation
                     ? {
-                          shaderCreation: {
-                              options: variant.creation,
-                              ...(binding ? { binding } : {}),
-                          },
+                          shaderCreation,
                       }
                     : {}),
             },
@@ -1393,6 +1415,9 @@ function compileSetShaderStorageBuffer(
     );
     context.expectKind(buffer, "storage-buffer", argumentAt(call, 2));
     context.expectSameEngine(material, buffer, call);
+    // Both setters are defined with the shader-material family, which a
+    // material only known by its type has not reached through its creation.
+    context.reachFeature("material:shader", call);
     context.reachFeature("material:shader-storage", call);
     const dynamic = !material.shaderVariant || name.staticString === undefined;
     const slot = dynamic
@@ -1529,7 +1554,7 @@ function compileSetShaderTexture(
         );
     const given = context.compileValue(argumentAt(call, 2));
     let texture = context.bindings.pinValueToTemporary(
-        texture2DFromParts(context, given, argumentAt(call, 2)) ?? given,
+        texture2DFromRecord(context, given, argumentAt(call, 2)) ?? given,
         "shader_texture",
         call,
     );

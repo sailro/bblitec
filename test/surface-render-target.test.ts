@@ -5,6 +5,7 @@ import { LoweringContext } from "../src/lowering/context.js";
 import { RenderTargetLowerer } from "../src/lowering/render-target-lowerer.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import {
+    cppFunction,
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
@@ -109,14 +110,14 @@ test("surface render targets retain sampled depth and validate descriptor owners
             `${setup} createRenderTargetTexture(engine, {format: engine.format, samples: 1, size: {width: 2 ** 32 - 1, height: 4}}); } void main();`,
         ),
     );
-    // A surface stand-in is re-read at every build, which no native size is.
+    // Constant getters do not depend on the engine canvas's backing extent.
     assert.throws(
         () =>
             compileSource(
                 `${setup} const half = { get width(): number { return 32; }, get height(): number { return 32; } };
                 createRenderTargetTexture(engine, {format: engine.format, samples: 1, size: {canvas: half}} as Parameters<typeof createRenderTargetTexture>[1]); } void main();`,
             ),
-        /sized by a surface stand-in \(`size: \{ canvas \}`\) reads canvas\.width and canvas\.height again at every build/,
+        /surface stand-in requires pure width\/height getters/,
     );
 });
 
@@ -242,16 +243,153 @@ test("a surface size selected at run time keeps each arm's own sizing", () => {
     );
 });
 
-test("a run-time surface size selection read twice still refuses", () => {
-    assert.throws(
-        () =>
-            compileSource(`${setup}
+const selectedSize = `
         const postScale = Number(localStorage.getItem("postres") ?? "0.5");
         const scaledSize = postScale < 1 ? { surface: engine, scale: postScale } : engine;
-        createSurfaceRenderTargetTexture(engine, {format: "rgba8unorm", samples: 1, size: scaledSize});
+        type Size = Parameters<typeof createSurfaceRenderTargetTexture>[1]["size"];`;
+const perArmScale =
+    /if \(v_\w*postScale\w* < 1\.0\) \{ const double scale = v_\w*postScale\w*;/g;
+
+test("a run-time surface size selection read again selects at every read", () => {
+    // Each read rebuilds the scaled arm's literal, which no read writes,
+    // compares or keeps: every target, a loop's too, selects its sizing.
+    const selected = (reads: string): number =>
+        compileSource(
+            `${setup}${selectedSize}${reads} } void main();`,
+        ).cpp.match(perArmScale)?.length ?? 0;
+    const read = `createSurfaceRenderTargetTexture(engine, {format: "rgba8unorm", samples: 1, size: scaledSize});`;
+    assert.equal(selected(`${read} ${read}`), 2);
+    assert.equal(
+        selected(`for (let index = 0; index < postScale * 4; index++) ${read}`),
+        1,
+    );
+});
+
+test("a surface size selection read again refuses where the program can tell its object", () => {
+    // A callee that writes or compares the object one read hands it would
+    // miss the object another read rebuilds: the selection is not deferred.
+    for (const callee of [
+        `function grow(opts: { size: Size }): void { if ("scale" in opts.size) opts.size.scale = 0.25; }`,
+        `function grow(opts: { size: Size }): void { if (opts.size === engine) throw new Error("surface"); }`,
+    ])
+        assert.throws(
+            () =>
+                compileSource(`${setup}${selectedSize}
+        ${callee}
+        grow({ size: scaledSize });
         createSurfaceRenderTargetTexture(engine, {format: "rgba8unorm", samples: 1, size: scaledSize});
         } void main();`),
-        /Conditional expressions require matching native value branches/,
+            (error: unknown) =>
+                error instanceof Error &&
+                /Conditional expressions require matching native value branches/.test(
+                    error.message,
+                ) &&
+                !/An arm of a call/.test(error.message),
+        );
+});
+
+test("a local call handed a run-time surface size selection compiles once per outcome", () => {
+    // The callee sizes its target by a member of its options record with a
+    // surface fallback; the call takes one arm per outcome of the
+    // selection's condition, read before it, whatever its other arguments do.
+    for (const label of [`"ao"`, `tag("ao")`]) {
+        const result = compileSource(`${setup}${selectedSize}
+        function accum(opts: { label: string; size?: Size }) {
+            const size = opts.size ?? engine;
+            return createSurfaceRenderTargetTexture(engine, {format: "rgba8unorm", samples: 1, size});
+        }
+        let tags = 0;
+        const tag = (label: string): string => { tags++; return label; };
+        accum({ label: ${label}, size: scaledSize });
+        createSurfaceRenderTargetTexture(engine, {format: "rgba8unorm", samples: 1, size: scaledSize});
+        } void main();`);
+        assert.match(
+            result.cpp,
+            /const bool (v_bblite_case_test_\d+) = v_\w*postScale\w* < 1\.0;\s+if \(\1\) \{/,
+        );
+        assert.match(
+            result.cpp,
+            /const double scale = \(\*v_bblite_opts_parameter_size_scale_\d+\);/,
+        );
+        assert.equal(result.cpp.match(perArmScale)?.length, 1);
+    }
+    // A selection testing an object binding splits a call whose arguments
+    // hand that binding to a module function: nothing rebinds it.
+    const handed = compileSource(`
+        import {createEngine, createRenderTarget} from "@babylonjs/lite";
+        type Size = Parameters<typeof createRenderTarget>[0]["size"];
+        const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+        function accum(opts: { label: string; size?: Size }) {
+            return createRenderTarget({ lbl: opts.label, format: "rgba8unorm", samples: 1, size: opts.size ?? engine });
+        }
+        function describe(owner: typeof engine | undefined): string { return owner ? "owned" : "free"; }
+        const picked = engine.drawCallCount ? engine : undefined;
+        const sized = picked ? { surface: engine, scale: 0.5 } : engine;
+        accum({ label: describe(picked), size: sized });
+        accum({ label: "b", size: sized });`);
+    assert.equal(
+        handed.cpp.match(
+            /const bool v_bblite_case_test_\d+ = \w+\.has_value\(\);/g,
+        )?.length,
+        2,
+    );
+});
+
+test("run-time surface size selections size every target from the arm their condition takes", (t) => {
+    // `half` takes its scaled arm and `whole` its surface at run time; each
+    // is read by a target and by a call compiled once per outcome.
+    const result = compileSource(`
+        import {createEngine, createRenderTarget} from "@babylonjs/lite";
+        type Size = Parameters<typeof createRenderTarget>[0]["size"];
+        async function main() {
+            const engine = await createEngine({});
+            function accum(opts: { label: string; size?: Size }) {
+                const size = opts.size ?? engine;
+                return createRenderTarget({ lbl: opts.label, format: "rgba8unorm", samples: 1, size });
+            }
+            const draws = engine.drawCallCount;
+            const half = draws < 1 ? { surface: engine, scale: 0.5 } : engine;
+            const whole = draws > 1 ? { surface: engine, scale: 0.25 } : engine;
+            createRenderTarget({ format: "r8unorm", samples: 1, size: half });
+            accum({ label: "half", size: half });
+            createRenderTarget({ format: "r8unorm", samples: 1, size: whole });
+            accum({ label: "whole", size: whole });
+        }
+        void main();`);
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const lowered = new RenderTargetLowerer(new LoweringContext()).lower()
+        .source;
+    runGeneratedProgram(
+        tools,
+        "selected-surface-render-targets",
+        `#define main generated_main
+${result.cpp}
+#undef main
+#include <cassert>
+#include <vector>
+namespace { std::vector<double> ratios; }
+namespace bbl {
+${cppFunction(lowered, "std::array<double, 2> resolve_surface_render_target_size(")}
+Engine create_engine(EngineOptions) { return {}; }
+RenderTargetHandle swapchain_render_target(Engine&) { return RenderTargetHandle{0}; }
+RenderTargetHandle create_render_target(Engine&, RenderTargetOptions options) {
+    const bool scaled = options.resolve_surface_size != nullptr;
+    assert(scaled == (options.scale_source.value == 0u));
+    assert(options.width_ratio == options.height_ratio);
+    ratios.push_back(scaled ? options.width_ratio : 1.0);
+    return RenderTargetHandle{static_cast<std::uint32_t>(ratios.size())};
+}
+}
+int main() {
+    assert(generated_main() == 0);
+    assert((ratios == std::vector<double>{0.5, 0.5, 1.0, 1.0}));
+}
+`,
+        { timeoutMs: 10000, expectedOutput: "" },
     );
 });
 

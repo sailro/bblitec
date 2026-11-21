@@ -27,7 +27,9 @@ import {
     recordComponents,
     recordIdentity,
     type InstantiatedRecord,
+    type RecordJoin,
 } from "./record-components.js";
+import { sourceOrder } from "./syntax.js";
 
 /** One storage demand a compile replays with. */
 export type StorageRequest =
@@ -252,13 +254,15 @@ export class ReplayStorage {
         switch (request.kind) {
             case "dynamic": {
                 const known = this.dynamicBindings.get(request.declaration);
-                const callableUpgrade =
-                    known === "callback" &&
+                // A callback binding's record of callables, and an array
+                // binding's elements, refine the storage it holds.
+                const upgrade =
                     typeof request.storage === "object" &&
-                    "callable" in request.storage;
+                    ((known === "callback" && "callable" in request.storage) ||
+                        (known === "array" && "elements" in request.storage));
                 if (
                     this.dynamicBindings.has(request.declaration) &&
-                    !callableUpgrade &&
+                    !upgrade &&
                     (known || !request.storage)
                 )
                     return false;
@@ -276,12 +280,24 @@ export class ReplayStorage {
             case "record": {
                 const key = this.recordKey(request.demand);
                 if (this.refusedRecords.has(key)) return false;
-                const merged = mergeNativeRecordStorage(
-                    this.records.get(key),
-                    request.demand,
-                );
-                if (!merged) return false;
-                this.records.set(key, merged);
+                const known = this.records.get(key);
+                const merged = mergeNativeRecordStorage(known, request.demand);
+                // A record keeps the site its source spells first, and the
+                // type and frames it was demanded in there, whichever attempt
+                // met it first.
+                const site =
+                    known && sourceOrder(known.node, request.demand.node) <= 0
+                        ? known
+                        : request.demand;
+                if (!merged) {
+                    if (known && site !== known)
+                        this.records.set(key, {
+                            ...known,
+                            ...recordSite(site),
+                        });
+                    return false;
+                }
+                this.records.set(key, { ...merged, ...recordSite(site) });
                 this.plannedComponents = undefined;
                 return true;
             }
@@ -374,6 +390,40 @@ export class ReplayStorage {
     }
 
     /**
+     * The record demands this storage holds, in an order of the program
+     * alone (`recordOrder`): a compile lays their records out in it,
+     * whatever order the attempts that met them took them in.
+     */
+    public orderedRecords(): readonly NativeRecordStorageDemand[] {
+        const spelled = typeSpeller(this.checker);
+        return [...this.records.values()].sort((left, right) =>
+            recordOrder(spelled, left, right),
+        );
+    }
+
+    /** The joins of `records` ({@link orderedRecords}), each record's in `joinOrder`. */
+    public orderedJoins(
+        records: readonly NativeRecordStorageDemand[],
+    ): readonly RecordJoin[] {
+        const spelled = typeSpeller(this.checker);
+        return records.flatMap((demand) =>
+            [...(demand.joins ?? [])].sort((left, right) =>
+                joinOrder(spelled, left, right),
+            ),
+        );
+    }
+
+    /** The dynamic bindings this storage holds, in source order of their declarations. */
+    public sourceOrderedDynamicBindings(): readonly (readonly [
+        ts.VariableDeclaration,
+        DynamicBindingStorage | undefined,
+    ])[] {
+        return [...this.dynamicBindings].sort(([left], [right]) =>
+            sourceOrder(left, right),
+        );
+    }
+
+    /**
      * Whether a planned record request only joins types that one record
      * component already holds: a strict attempt, which stores such records
      * in that component's layout, never demands it.
@@ -424,6 +474,116 @@ export function demandsKeyOnly(request: StorageRequest): boolean {
 /** A set of key orders as one string, whatever order it lists them in. */
 function spellKeyOrders(orders: KeyOrders): string {
     return JSON.stringify(orders.map((order) => JSON.stringify(order)).sort());
+}
+
+/**
+ * A request whose storage its key and source types name: a key's
+ * (`demandsKeyOnly`), a record type's, a binding's named storage. Every
+ * other request carries a data type or proof its site lowered (a binding's
+ * element or native storage, a record's native owner, a generic signature,
+ * a completion proof, an asserted field's storage).
+ */
+export function demandsSourceStorage(request: StorageRequest): boolean {
+    if (demandsKeyOnly(request)) return true;
+    switch (request.kind) {
+        case "record":
+        case "refused-record":
+            return request.demand.native === undefined;
+        case "dynamic":
+            return typeof request.storage !== "object";
+        default:
+            return false;
+    }
+}
+
+/** Orders two strings by code unit, the same on every machine. */
+function compareText(left: string, right: string): number {
+    return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/** Where a record type is declared: its alias's, else its own symbol's first declaration. */
+function typeDeclaration(type: ts.Type): ts.Node | undefined {
+    return (
+        type.aliasSymbol?.declarations?.[0] ??
+        type.getSymbol()?.declarations?.[0]
+    );
+}
+
+/** The checker's spelling of a type, spelled once per type for one sort. */
+function typeSpeller(checker: ts.TypeChecker): (type: ts.Type) => string {
+    const spellings = new Map<ts.Type, string>();
+    return (type) => {
+        let spelling = spellings.get(type);
+        if (spelling === undefined) {
+            spelling = checker.typeToString(type);
+            spellings.set(type, spelling);
+        }
+        return spelling;
+    };
+}
+
+/** Orders two record types by declaration, then as `spelled` spells them. */
+function typeOrder(
+    spelled: (type: ts.Type) => string,
+    left: ts.Type,
+    right: ts.Type,
+): number {
+    if (left === right) return 0;
+    return (
+        sourceOrder(typeDeclaration(left), typeDeclaration(right)) ||
+        compareText(spelled(left), spelled(right))
+    );
+}
+
+/** Where and as what a record demand was met: the fields its site decides. */
+function recordSite(
+    demand: NativeRecordStorageDemand,
+): Pick<NativeRecordStorageDemand, "identity" | "type" | "node" | "frames"> {
+    return {
+        identity: demand.identity,
+        type: demand.type,
+        node: demand.node,
+        frames: demand.frames,
+    };
+}
+
+/**
+ * Orders record demands for predeclaration. A joined component's struct is
+ * mapped once, by the first of its records predeclared, so the order is
+ * part of the layout: a record its source spells without type arguments
+ * comes before instantiations, which resolve through such records, and a
+ * record stored with its declared functions (`stored`) before one mapped
+ * without them; then by the site the source spells first, then by type.
+ */
+function recordOrder(
+    spelled: (type: ts.Type) => string,
+    left: NativeRecordStorageDemand,
+    right: NativeRecordStorageDemand,
+): number {
+    return (
+        Number(instantiated(left)) - Number(instantiated(right)) ||
+        Number(!left.stored) - Number(!right.stored) ||
+        sourceOrder(left.node, right.node) ||
+        typeOrder(spelled, left.type, right.type)
+    );
+}
+
+/** Whether a record demand resolves its type through type-argument frames. */
+function instantiated(demand: NativeRecordStorageDemand): boolean {
+    return demand.frames.some((frame) => frame.size > 0);
+}
+
+/** Orders joins by source type, then target type, then kind. */
+function joinOrder(
+    spelled: (type: ts.Type) => string,
+    left: RecordJoin,
+    right: RecordJoin,
+): number {
+    return (
+        typeOrder(spelled, left.source, right.source) ||
+        typeOrder(spelled, left.target, right.target) ||
+        compareText(left.kind, right.kind)
+    );
 }
 
 function addNew<T>(set: Set<T>, value: T): boolean {

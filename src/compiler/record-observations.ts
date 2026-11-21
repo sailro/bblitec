@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { writeGuardRejects } from "./value-guards.js";
-import { forEachAnalysisNode } from "./analysis-walk.js";
+import { forEachAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
 import { isOpaqueEngineObject, pinnedSourceHandleKind } from "./data-types.js";
 import type { EvaluationOrder } from "./evaluation-order.js";
 import { callOnlyReadsArgument } from "./parameter-effects.js";
@@ -22,7 +22,11 @@ import {
     determinedTypeArguments,
     mentionsTypeParameter,
 } from "./type-arguments.js";
-import { bindingReferences, soleBindingRead } from "./binding-references.js";
+import {
+    bindingReferences,
+    exportedUnderAnotherName,
+    soleBindingRead,
+} from "./binding-references.js";
 import { OPEN_HOLDER_FLAGS } from "./written-holders.js";
 import {
     declarationOrigin,
@@ -30,7 +34,11 @@ import {
     resolvedSymbol,
     nullishLiteral,
     calledDeclaration,
+    calledFunction,
+    calledOrigin,
+    calledParameterType,
     namedMember,
+    libraryStaticMember,
 } from "./symbols.js";
 import {
     expressionMayRunCode,
@@ -46,6 +54,7 @@ import {
     positionalParameter,
     variableKind,
     propertyKey,
+    literalKey,
     valueConsumer,
     isGeneratorFunction,
 } from "./syntax.js";
@@ -130,17 +139,7 @@ export function recordCopyObservation(
     // other. Only the copy can be told apart by identity or enumeration,
     // and it flows only where its target type flows.
     const either = [source, target];
-    // An assertion can retype the copy as a subtype of its target, or as
-    // anything once it went through `any` or `unknown`.
-    const copyTypes = [
-        target,
-        ...observations.assertions
-            .filter(
-                ({ asserted, open }) =>
-                    open || checker.isTypeAssignableTo(asserted, target),
-            )
-            .map(({ asserted }) => asserted),
-    ];
+    const copies = copyTypes(checker, observations, target);
     const keptWrite = (write: ObservedWrite): boolean =>
         write.property === undefined || fields.includes(write.property);
     if (call) {
@@ -172,7 +171,7 @@ export function recordCopyObservation(
     const answer = observed(
         observations,
         (type) => holds(type, either),
-        (type) => holds(type, copyTypes),
+        (type) => holds(type, copies),
         keptWrite,
         carries,
         view,
@@ -509,6 +508,247 @@ export function arrayWriteObservation(
 }
 
 /**
+ * Why the elements of an array of `type`'s elements, only ever referenced
+ * as readonly arrays (`readonly number[]`) -- a literal a record field of
+ * that type holds alone, or one `constantArrayWriteObservation` follows --
+ * could change, or undefined when nothing can: no reference to it writes,
+ * so only an assertion retyping a value as, or as holding, a mutable array
+ * that may hold its elements makes it writable.
+ */
+export function readonlyArrayWriteObservation(
+    context: RecordObservationContext,
+    type: ts.Type,
+): string | undefined {
+    let answer = readonlyArrayWriteAnswers.get(type);
+    if (answer === undefined) {
+        answer = assertedWritableArray(context, type) ?? null;
+        readonlyArrayWriteAnswers.set(type, answer);
+    }
+    return answer ?? undefined;
+}
+
+/** @unjournaled {@link readonlyArrayWriteObservation}'s answers by type: pure functions of the checked program. */
+const readonlyArrayWriteAnswers = new WeakMap<ts.Type, string | null>();
+
+/** Whether an element type may be one of an array of `type`'s elements. */
+function elementRelated(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): (other: ts.Type) => boolean {
+    const element = arrayElementType(checker, type);
+    return (other) =>
+        element === undefined ||
+        checker.isTypeAssignableTo(element, other) ||
+        checker.isTypeAssignableTo(other, element);
+}
+
+/** {@link readonlyArrayWriteObservation}, computed. */
+function assertedWritableArray(
+    context: RecordObservationContext,
+    type: ts.Type,
+): string | undefined {
+    const { checker } = context;
+    const related = elementRelated(checker, type);
+    const assertion = programObservations(context.program).assertions.find(
+        ({ asserted }) =>
+            holdsMutableArray(checker, asserted, related, new Set()),
+    );
+    return (
+        assertion &&
+        `an assertion to '${checker.typeToString(assertion.asserted)}' may write such arrays`
+    );
+}
+
+/**
+ * Why the elements of the array a `const` binding's array literal creates
+ * could change, or undefined when nothing can: every reference to the
+ * binding hands the array on where the program holds it only as a readonly
+ * array (`handedOnReadonly`), so the binding's own mutable type writes
+ * nothing and, as for a record field's own literal, only an assertion
+ * makes it writable (`readonlyArrayWriteObservation`).
+ */
+export function constantArrayWriteObservation(
+    context: RecordObservationContext,
+    declaration: ts.VariableDeclaration,
+): string | undefined {
+    let answer = constantArrayWriteAnswers.get(declaration);
+    if (answer === undefined) {
+        answer = constantArrayWrite(context, declaration) ?? null;
+        constantArrayWriteAnswers.set(declaration, answer);
+    }
+    return answer ?? undefined;
+}
+
+/** @unjournaled {@link constantArrayWriteObservation}'s answers by declaration: pure functions of the checked program. */
+const constantArrayWriteAnswers = new WeakMap<
+    ts.VariableDeclaration,
+    string | null
+>();
+
+/** {@link constantArrayWriteObservation}, computed. */
+function constantArrayWrite(
+    context: RecordObservationContext,
+    declaration: ts.VariableDeclaration,
+): string | undefined {
+    const { program, checker } = context;
+    const symbol = ts.isIdentifier(declaration.name)
+        ? declaredSymbol(checker, declaration.name)
+        : undefined;
+    if (
+        !symbol ||
+        variableKind(declaration) !== "const" ||
+        !declaration.initializer ||
+        !ts.isArrayLiteralExpression(unwrapExpression(declaration.initializer))
+    )
+        return "the binding is not a constant created by its array literal";
+    if (exportedUnderAnotherName(program, checker, symbol))
+        return "the binding leaves its module under another name";
+    const type = checker.getTypeAtLocation(declaration.name);
+    const related = elementRelated(checker, type);
+    const mutable = bindingReferences(program, checker, symbol).find(
+        (reference) => !handedOnReadonly(checker, reference, [], related),
+    );
+    if (mutable)
+        return `'${mutable.getText()}' hands the array on where it may be written`;
+    return readonlyArrayWriteObservation(context, type);
+}
+
+/**
+ * Whether `at` hands the value whose member `path` is the array on only
+ * where the program holds that member as a readonly array: through a
+ * selection or an object literal's property into a binding's declared type,
+ * an assignment target's type, or the parameter of an authored function or
+ * of the engine's API. A generic callee's parameter is read both as its
+ * body declares it and as the call instantiates it, which its result keeps.
+ */
+function handedOnReadonly(
+    checker: ts.TypeChecker,
+    at: ts.Expression,
+    path: readonly string[],
+    related: (element: ts.Type) => boolean,
+): boolean {
+    const holdsReadonly = (type: ts.Type): boolean => {
+        let member: ts.Type | undefined = type;
+        for (const key of path) {
+            const property: ts.Symbol | undefined = checker.getPropertyOfType(
+                checker.getNonNullableType(member),
+                key,
+            );
+            member = property && checker.getTypeOfSymbol(property);
+            if (!member) return false;
+        }
+        return !holdsMutableArray(checker, member, related, new Set());
+    };
+    const consumer = valueConsumer(outermostWrapper(at));
+    switch (consumer.kind) {
+        case "operand":
+            return handedOnReadonly(checker, consumer.selection, path, related);
+        case "property": {
+            const key = propertyKey(consumer.name);
+            return (
+                key !== undefined &&
+                handedOnReadonly(
+                    checker,
+                    consumer.literal,
+                    [key, ...path],
+                    related,
+                )
+            );
+        }
+        case "initializer":
+            return (
+                consumer.declaration.type !== undefined &&
+                holdsReadonly(
+                    checker.getTypeAtLocation(consumer.declaration.name),
+                )
+            );
+        case "assigned":
+            return holdsReadonly(
+                checker.getTypeAtLocation(consumer.assignment.left),
+            );
+        case "argument": {
+            const authored = calledFunction(checker, consumer.call);
+            const declaration =
+                authored ??
+                (calledOrigin(checker, consumer.call) === "babylon"
+                    ? calledDeclaration(checker, consumer.call)
+                    : undefined);
+            const parameter =
+                declaration &&
+                positionalParameter(consumer.call, declaration, consumer.index);
+            const instantiated =
+                parameter &&
+                calledParameterType(
+                    checker,
+                    consumer.call,
+                    declaration.parameters.indexOf(parameter),
+                );
+            return (
+                parameter !== undefined &&
+                instantiated !== undefined &&
+                holdsReadonly(checker.getTypeAtLocation(parameter.name)) &&
+                holdsReadonly(instantiated)
+            );
+        }
+        default:
+            return false;
+    }
+}
+
+/**
+ * Whether a value of `type` holds, as itself or anywhere inside, a mutable
+ * array whose element type `related` accepts. An open type may hold any,
+ * but an `unknown` one is written only through a further assertion, and a
+ * type parameter holds what its constraint does.
+ */
+function holdsMutableArray(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+    related: (element: ts.Type) => boolean,
+    seen: Set<ts.Type>,
+): boolean {
+    if (seen.has(type)) return false;
+    seen.add(type);
+    if ((type.flags & ts.TypeFlags.Unknown) !== 0) return false;
+    if ((type.flags & ts.TypeFlags.TypeParameter) !== 0) {
+        const constraint = checker.getBaseConstraintOfType(type);
+        return (
+            constraint !== undefined &&
+            holdsMutableArray(checker, constraint, related, seen)
+        );
+    }
+    if ((type.flags & OPEN_HOLDER_FLAGS) !== 0) return true;
+    if (type.isUnionOrIntersection())
+        return type.types.some((member) =>
+            holdsMutableArray(checker, member, related, seen),
+        );
+    const shape = arrayShape(checker, type);
+    if (shape)
+        return (
+            (shape.mutable && related(shape.element)) ||
+            holdsMutableArray(checker, shape.element, related, seen)
+        );
+    if ((type.flags & ts.TypeFlags.Object) === 0) return false;
+    return (
+        checker
+            .getPropertiesOfType(type)
+            .some((property) =>
+                holdsMutableArray(
+                    checker,
+                    checker.getTypeOfSymbol(property),
+                    related,
+                    seen,
+                ),
+            ) ||
+        checker
+            .getIndexInfosOfType(type)
+            .some((index) =>
+                holdsMutableArray(checker, index.type, related, seen),
+            )
+    );
+}
+
+/**
  * Whether `array` names a binding that builds its array before any other
  * reference can hold it: a function's `const` initialized with a new array,
  * named in no nested function or class, where every statement writing
@@ -664,14 +904,16 @@ function observedArrayWrites(
                       )
                     : assignable(own, sourceElement)),
         ) ||
-        observations.assertions.some(({ asserted, open }) => {
+        observations.assertions.some(({ asserted, open, from }) => {
             const shape = arrayShape(checker, asserted);
             const wide =
                 shape?.mutable && !shape.tuple ? shape.element : undefined;
             return (
                 wide !== undefined &&
                 assignable(wide, element) &&
-                (open || assignable(sourceElement, wide))
+                (open ||
+                    assignable(sourceElement, wide) ||
+                    from.some((type) => assignable(source, type)))
             );
         });
     const targetShape = arrayShape(checker, target);
@@ -744,25 +986,49 @@ function arrayIdentityObservation(
     return answer ?? undefined;
 }
 
+/**
+ * Whether an assertion can retype a copy of `copy` type: one through
+ * `any` or `unknown` retypes anything, one to a subtype of `copy`
+ * narrows it, and one a value of `copy` type reaches (`from`) hands it
+ * on as the asserted type, related or not.
+ */
+function assertionRetypes(
+    checker: ts.TypeChecker,
+    assertion: ProgramObservations["assertions"][number],
+    copy: ts.Type,
+): boolean {
+    return (
+        assertion.open ||
+        checker.isTypeAssignableTo(assertion.asserted, copy) ||
+        assertion.from.some((from) => checker.isTypeAssignableTo(copy, from))
+    );
+}
+
+/** The types a copy of `target` type has: its own and each an assertion retypes it to. */
+function copyTypes(
+    checker: ts.TypeChecker,
+    observations: ProgramObservations,
+    target: ts.Type,
+): ts.Type[] {
+    return [
+        target,
+        ...observations.assertions
+            .filter((assertion) => assertionRetypes(checker, assertion, target))
+            .map(({ asserted }) => asserted),
+    ];
+}
+
 function observedArrayIdentity(
     context: RecordObservationContext,
     target: ts.Type,
 ): string | undefined {
     const observations = programObservations(context.program);
     const { checker } = context;
-    const copyTypes = [
-        target,
-        ...observations.assertions
-            .filter(
-                ({ asserted, open }) =>
-                    open || checker.isTypeAssignableTo(asserted, target),
-            )
-            .map(({ asserted }) => asserted),
-    ];
+    const copies = copyTypes(checker, observations, target);
     if (
         [...observations.identities].some((type) =>
-            holdsArray(context, type, copyTypes, (element) =>
-                copyTypes.some((copy) => {
+            holdsArray(context, type, copies, (element) =>
+                copies.some((copy) => {
                     const own = arrayElementType(checker, copy);
                     return (
                         own === undefined ||
@@ -861,21 +1127,7 @@ function identityUses(
     const array = checker.isArrayLikeType(
         checker.getTypeAtLocation(declaration.name),
     );
-    // The expressions that read the object: references of the names that
-    // hold it, and reads of a member a callee was handed it as.
-    const followed: ts.Symbol[] = [];
-    const reads: ts.Expression[] = [];
-    const follow = (name: ts.BindingName): void => {
-        const symbol = ts.isIdentifier(name)
-            ? declaredSymbol(checker, name)
-            : undefined;
-        if (symbol && !followed.includes(symbol)) {
-            followed.push(symbol);
-            reads.push(
-                ...bindingReferences(context.program, context.checker, symbol),
-            );
-        }
-    };
+    const { reads, follow, add } = objectReads(context);
     follow(declaration.name);
     let reason: string | undefined;
     for (let index = 0; index < reads.length && !reason; index++) {
@@ -898,28 +1150,197 @@ function identityUses(
             parent.expression !== use
         ) {
             const position = parent.arguments?.indexOf(use) ?? -1;
-            const callee = calledDeclaration(checker, parent);
-            // The engine takes what it is handed in its own storage:
-            // a record or array converts at the call.
             if (
-                (callee && declarationOrigin(callee) === "babylon") ||
+                engineTakesArgument(checker, use) ||
                 (ts.isCallExpression(parent) &&
                     callOnlyReadsArgument(checker, parent, position))
             )
                 continue;
-            const parameter = programParameter(callee, parent, position);
+            const parameter = programParameter(
+                calledDeclaration(checker, parent),
+                parent,
+                position,
+            );
             if (parameter) follow(parameter.name);
             else if (array) reason = storedIdentity(context, use);
         } else if (array && !onlyReads(use, parent)) {
             const member = handedMemberReads(context, use);
-            if (member)
-                reads.push(...member.filter((read) => !reads.includes(read)));
+            if (member) add(member);
             else reason = storedIdentity(context, use);
         }
     }
     const uses = { ...(reason ? { reason } : {}), tokens };
     identityUseAnswers.set(declaration, uses);
     return uses;
+}
+
+/**
+ * The expressions that read an object, as a walk over them finds more:
+ * `follow` adds the references of a name that holds it, once per name;
+ * `add` adds the reads of a member a callee was handed it as, once each.
+ */
+function objectReads(context: RecordObservationContext): {
+    readonly reads: readonly ts.Expression[];
+    readonly follow: (name: ts.BindingName) => void;
+    readonly add: (more: readonly ts.Expression[]) => void;
+} {
+    const followed = new Set<ts.Symbol>();
+    const reads: ts.Expression[] = [];
+    const queued = new Set<ts.Expression>();
+    const add = (more: readonly ts.Expression[]): void => {
+        for (const read of more)
+            if (!queued.has(read)) {
+                queued.add(read);
+                reads.push(read);
+            }
+    };
+    const follow = (name: ts.BindingName): void => {
+        const symbol = ts.isIdentifier(name)
+            ? declaredSymbol(context.checker, name)
+            : undefined;
+        if (symbol && !followed.has(symbol)) {
+            followed.add(symbol);
+            add(bindingReferences(context.program, context.checker, symbol));
+        }
+    };
+    return { reads, follow, add };
+}
+
+/** @unjournaled Pure functions of the checked program, kept across replays. */
+const rebuiltAnswers = new WeakMap<ts.VariableDeclaration, string | null>();
+
+/**
+ * Why rebuilding, at each read of a declaration's binding, the objects its
+ * initializer's literals create could be told apart from the one object
+ * JavaScript keeps, or undefined when nothing can. The reads are followed
+ * as {@link oneObjectObservation} follows them -- through wrappers,
+ * selections, aliases, the parameters of program functions it is handed to
+ * and the reads of the member an object literal hands it as -- and each
+ * only reads the object: reads a member without calling it, tests,
+ * stringifies, spreads or enumerates it, compares it with a nullish
+ * literal, or hands it to a callee that only reads it, or to the engine,
+ * which takes what a call hands it, however nested in literals, in its own
+ * storage. A literal nested in another is rebuilt where its member is read,
+ * which no read names.
+ */
+export function rebuiltObjectObservation(
+    context: RecordObservationContext,
+    declaration: ts.VariableDeclaration,
+): string | undefined {
+    const known = rebuiltAnswers.get(declaration);
+    if (known !== undefined) return known ?? undefined;
+    const { checker } = context;
+    const nested =
+        declaration.initializer !== undefined &&
+        someAnalysisNode(
+            declaration.initializer,
+            (node) =>
+                ts.isObjectLiteralExpression(node) &&
+                node.properties.some((property) =>
+                    someAnalysisNode(property, ts.isObjectLiteralExpression),
+                ),
+        );
+    let reason = nested ? "a literal it creates holds another" : undefined;
+    const { reads, follow, add } = objectReads(context);
+    follow(declaration.name);
+    for (let index = 0; index < reads.length && !reason; index++) {
+        const use = flowingUse(reads[index]!);
+        const consumer = valueConsumer(use);
+        switch (consumer.kind) {
+            case "member":
+                if (writeSiteOf(consumer.access))
+                    reason = "the program writes through it";
+                else if (
+                    valueConsumer(outermostWrapper(consumer.access)).kind ===
+                    "called"
+                )
+                    reason = "the program calls a method of it";
+                break;
+            case "compared": {
+                const { left, right } = consumer.comparison;
+                if (
+                    nullishLiteral(checker, left === use ? right : left) ===
+                    undefined
+                )
+                    reason = "the program compares it by identity";
+                break;
+            }
+            case "switched":
+                reason = "the program compares it by identity";
+                break;
+            case "initializer":
+                if (ts.isIdentifier(consumer.declaration.name))
+                    follow(consumer.declaration.name);
+                break;
+            case "argument": {
+                if (
+                    engineTakesArgument(checker, use) ||
+                    (ts.isCallExpression(consumer.call) &&
+                        callOnlyReadsArgument(
+                            checker,
+                            consumer.call,
+                            consumer.index,
+                        ))
+                )
+                    break;
+                const parameter = programParameter(
+                    calledDeclaration(checker, consumer.call),
+                    consumer.call,
+                    consumer.index,
+                );
+                if (parameter) follow(parameter.name);
+                else reason = "the program hands it to code it does not hold";
+                break;
+            }
+            case "property":
+            case "element": {
+                if (engineTakesArgument(checker, use)) break;
+                const member = handedMemberReads(context, use);
+                if (member) add(member);
+                else reason = "the program keeps it";
+                break;
+            }
+            case "spread":
+            case "operator":
+            case "operand":
+            case "keyed":
+            case "tested":
+            case "stringified":
+            case "enumerated":
+            case "discarded":
+                break;
+            default:
+                reason = "the program keeps it";
+        }
+    }
+    rebuiltAnswers.set(declaration, reason ?? null);
+    return reason;
+}
+
+/**
+ * Whether the engine takes `use` as what a call hands it, however nested in
+ * literals: in its own storage, converted at the call.
+ */
+function engineTakesArgument(
+    checker: ts.TypeChecker,
+    use: ts.Expression,
+): boolean {
+    let holder: ts.Node = use;
+    while (
+        ts.isPropertyAssignment(holder.parent) ||
+        ts.isShorthandPropertyAssignment(holder.parent) ||
+        ts.isObjectLiteralExpression(holder.parent) ||
+        ts.isArrayLiteralExpression(holder.parent) ||
+        isExpressionWrapper(holder.parent)
+    )
+        holder = holder.parent;
+    const call = holder.parent;
+    const callee =
+        (ts.isCallExpression(call) || ts.isNewExpression(call)) &&
+        call.expression !== holder
+            ? calledDeclaration(checker, call)
+            : undefined;
+    return callee !== undefined && declarationOrigin(callee) === "babylon";
 }
 
 /**
@@ -977,28 +1398,56 @@ function storedIdentity(
     use: ts.Expression,
 ): string | undefined {
     const { checker } = context;
-    let holder: ts.Node = use;
-    while (
-        ts.isPropertyAssignment(holder.parent) ||
-        ts.isShorthandPropertyAssignment(holder.parent) ||
-        ts.isObjectLiteralExpression(holder.parent) ||
-        ts.isArrayLiteralExpression(holder.parent) ||
-        isExpressionWrapper(holder.parent)
-    )
-        holder = holder.parent;
-    const call = holder.parent;
-    const callee =
-        (ts.isCallExpression(call) || ts.isNewExpression(call)) &&
-        call.expression !== holder
-            ? calledDeclaration(checker, call)
-            : undefined;
-    if (callee && declarationOrigin(callee) === "babylon") return undefined;
+    if (engineTakesArgument(checker, use)) return undefined;
     const slot = checker.getNonNullableType(
-        checker.getContextualType(use) ?? checker.getTypeAtLocation(use),
+        descriptorValueSlot(checker, use) ??
+            checker.getContextualType(use) ??
+            checker.getTypeAtLocation(use),
     );
     return checker.isArrayLikeType(slot)
         ? arrayIdentityObservation(context, slot)
         : undefined;
+}
+
+/** A descriptor's `value` is stored in the defined property, not its `any`-typed descriptor slot. */
+function descriptorValueSlot(
+    checker: ts.TypeChecker,
+    use: ts.Expression,
+): ts.Type | undefined {
+    const value = valueConsumer(use);
+    if (value.kind !== "property" || propertyKey(value.name) !== "value")
+        return undefined;
+    const descriptor = valueConsumer(flowingUse(value.literal));
+    let handed = descriptor;
+    let key: string | undefined;
+    if (descriptor.kind === "property") {
+        key = propertyKey(descriptor.name);
+        handed = valueConsumer(flowingUse(descriptor.literal));
+    }
+    if (handed.kind !== "argument" || !ts.isCallExpression(handed.call))
+        return undefined;
+    const member = libraryStaticMember(checker, handed.call.expression);
+    if (member?.owner !== "Object") return undefined;
+    if (
+        member.name === "defineProperty" &&
+        handed.index === 2 &&
+        descriptor.kind === "argument"
+    ) {
+        const name = handed.call.arguments[1];
+        key = name && literalKey(name);
+    } else if (
+        member.name !== "defineProperties" ||
+        handed.index !== 1 ||
+        descriptor.kind !== "property"
+    )
+        return undefined;
+    const target = handed.call.arguments[0];
+    if (target === undefined || key === undefined) return undefined;
+    const property = checker.getPropertyOfType(
+        checker.getTypeAtLocation(target),
+        key,
+    );
+    return property && checker.getTypeOfSymbolAtLocation(property, target);
 }
 
 /** An equality, which compares object operands by identity. */

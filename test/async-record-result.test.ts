@@ -410,3 +410,73 @@ int run_window_application(WorkerEntry initialize, EngineOptions) {
         },
     );
 });
+
+test("an awaited record's owned layout stores as a narrower record it is held as", () => {
+    // The loader's record pairs its material with the engine and holds a
+    // parsed document, so it settles as an owned layout of `Wall`; storing
+    // it as `Brick` joins the declared records the layout retains.
+    const result = compileSource(`
+        import { createShaderMaterial, wgsl, createEngine } from "@babylonjs/lite";
+        import type { ShaderMaterial } from "@babylonjs/lite";
+        const VERT = \`@vertex fn mainVertex(input: VertexInput) -> @builtin(position) vec4<f32> { return vec4<f32>(input.position, 1.0); }\`;
+        const FRAG = \`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+        interface Cell { id: string }
+        interface Wall { cells: Cell[]; material: ShaderMaterial; setWinter(amount: number): void }
+        interface Brick { cells: Cell[]; setWinter(amount: number): void }
+        const kept: Brick[] = [];
+        async function loadWall(): Promise<Wall> {
+            const response = await fetch(new URLSearchParams(location.search).get("catalog") ?? "data:application/json,{}");
+            const catalog = (await response.json()) as { cells: Cell[] };
+            const material = createShaderMaterial({ name: "wall", vertexSource: wgsl\`\${VERT}\`, fragmentSource: wgsl\`\${FRAG}\`, attributes: ["position"], uniforms: ["worldViewProjection"] });
+            return { cells: catalog.cells, material, setWinter(amount: number): void { console.log(amount); } };
+        }
+        function keep(brick: Brick): void {
+            kept.push(brick);
+        }
+        async function main(): Promise<void> {
+            const canvas = document.createElement("canvas");
+            await createEngine(canvas);
+            const assets = await loadWall();
+            keep(assets);
+        }
+        void main();
+    `);
+    assert.match(result.cpp, /kept/);
+});
+
+test("a property one record type stores as a document and another as an array is a document in both", () => {
+    // `peek` shares `Wall`'s cells with a dynamic value, so `Wall` stores
+    // them as a document; `Brick`, joined with `Wall` by `pom`, does too.
+    const result = compileSource(`
+        import { createShaderMaterial, wgsl, createEngine } from "@babylonjs/lite";
+        import type { ShaderMaterial } from "@babylonjs/lite";
+        const VERT = \`@vertex fn mainVertex(input: VertexInput) -> @builtin(position) vec4<f32> { return vec4<f32>(input.position, 1.0); }\`;
+        const FRAG = \`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+        interface Cell { id: string }
+        interface Wall { cells: Cell[]; material: ShaderMaterial; setWinter(amount: number): void }
+        interface Brick { cells: Cell[]; setWinter(amount: number): void }
+        const kept: Brick[] = [];
+        async function loadWall(): Promise<Wall> {
+            const response = await fetch(new URLSearchParams(location.search).get("catalog") ?? "data:application/json,{}");
+            const catalog = (await response.json()) as { cells: Cell[] };
+            const material = createShaderMaterial({ name: "wall", vertexSource: wgsl\`\${VERT}\`, fragmentSource: wgsl\`\${FRAG}\`, attributes: ["position"], uniforms: ["worldViewProjection"] });
+            return { cells: catalog.cells, material, setWinter(amount: number): void { console.log(amount); } };
+        }
+        interface Loose { cells: unknown }
+        function peek(l: Loose): number { return JSON.stringify(l.cells).length; }
+        interface Options { name?: string; pom: Brick; count?: number }
+        function keep(opts: Options): number {
+            const { cells } = opts.pom;
+            kept.push(opts.pom);
+            return cells.length + (opts.count ?? 1);
+        }
+        async function main(): Promise<void> {
+            const canvas = document.createElement("canvas");
+            await createEngine(canvas);
+            const assets = await loadWall();
+            console.log(peek(assets), keep({ name: "a", pom: assets, ...(Math.random() > 0.5 ? { count: 2 } : {}) }));
+        }
+        void main();
+    `);
+    assert.match(result.cpp, /kept/);
+});

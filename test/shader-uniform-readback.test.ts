@@ -94,12 +94,12 @@ bbl::set_shader_uniform(engine,handle,"uVector",bbl::js::F32Array(std::vector<fl
 assert(bbl::shader_uniform_render_values(material)[1]==9);
 assert(held.load(0)==9);
 if(cached){
-auto& slot=material.shader_uniforms->slots[2];slot.version=2147483648.0;material.shader_uniforms->version++;
+auto& slot=material.shader_uniforms->slots[2];*slot.version=2147483648.0;material.shader_uniforms->version++;
 assert(bbl::shader_uniform_render_values(material)[1]==9);
 assert(material.shader_uniform_upload->slot_versions[2]==std::numeric_limits<std::int32_t>::min());
 held.store(0,11);bbl::set_shader_uniform(engine,handle,"uScalar",3.0);
 assert(bbl::shader_uniform_render_values(material)[1]==11);
-slot.version=-1;material.shader_uniform_upload.reset();
+*slot.version=-1;material.shader_uniform_upload.reset();
 assert(bbl::shader_uniform_render_values(material)[1]==0);
 }
 }}
@@ -205,7 +205,7 @@ ${cppFunction(recovery, "void begin_device_recovery(")}
 int main(){for(bool cached:{false,true}){
 bbl::shader_uniform_caching_enabled=cached;bbl::Engine engine;const auto handle=bbl::create_shader_material(engine,0);const auto late=bbl::create_shader_material(engine,0);const auto taskOnly=bbl::create_shader_material(engine,0);
 auto& material=bbl::shader_material(engine,handle);auto held=std::get<bbl::js::F32Array>(bbl::get_shader_uniform(engine,handle,"uVector"));
-material.shader_uniforms->slots.push_back({"alphaCutoff","f32",bbl::invalid_handle,bbl::normalize_shader_uniform_value("alphaCutoff","f32",1,bbl::default_shader_uniform_values("alphaCutoff",1)),0});
+material.shader_uniforms->slots.push_back({"alphaCutoff","f32",bbl::invalid_handle,bbl::normalize_shader_uniform_value("alphaCutoff","f32",1,bbl::default_shader_uniform_values("alphaCutoff",1))});
 assert(material.shader_alpha_cutoff(material)==static_cast<double>(0.4f));
 material.shader_uniforms->slots.back().value.store(0,0.7f);
 assert(material.shader_alpha_cutoff(material)==static_cast<double>(0.7f));

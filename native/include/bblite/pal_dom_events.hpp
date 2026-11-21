@@ -724,8 +724,8 @@ inline Engine& dom_target_owner(DomEventTargetValue value) {
 /** Weak collections distinguish targets without extending their document's lifetime. */
 inline js::WeakIdentity dom_target_weak_identity(DomEventTargetValue value) {
     auto& engine = dom_target_owner(value);
-    return engine.dom_targets.identities.at(
-        (static_cast<std::uint64_t>(value.target.kind) << 32) | value.target.element);
+    return engine.dom_targets.identities.at((static_cast<std::uint64_t>(value.target.kind) << 32) |
+                                            value.target.element);
 }
 
 namespace js {

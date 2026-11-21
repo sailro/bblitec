@@ -120,17 +120,17 @@ test("a sampler's native state is its descriptor as WebGPU resolves and validate
         return;
     }
     // Each descriptor, and the state (filters min/mag/mip, then address
-    // U/V as enumerators; anisotropy; LOD clamp) or the refusal.
+    // U/V/W as enumerators; anisotropy; LOD clamp) or the refusal.
     const cases: readonly (readonly [string, string])[] = [
-        ["{}", "00011 1 32"],
-        ['{ label: "named", lodMinClamp: 0 }', "00011 1 32"],
+        ["{}", "000111 1 32"],
+        ['{ label: "named", lodMinClamp: 0 }', "000111 1 32"],
         [
             '{ magFilter: "linear", minFilter: "linear", mipmapFilter: "linear", addressModeU: "repeat", addressModeV: "mirror-repeat", maxAnisotropy: 2.5, lodMaxClamp: 4 }',
-            "11102 2 4",
+            "111021 2 4",
         ],
         [
             '{ magFilter: "linear", minFilter: "linear", mipmapFilter: "linear", maxAnisotropy: 70000 }',
-            "11111 65535 32",
+            "111111 65535 32",
         ],
         ["{ maxAnisotropy: 4 }", "refused"],
         ["{ maxAnisotropy: 0.4 }", "refused"],
@@ -138,7 +138,7 @@ test("a sampler's native state is its descriptor as WebGPU resolves and validate
         ["{ lodMinClamp: 1 }", "refused"],
         ["{ lodMinClamp: 0, lodMaxClamp: -1 }", "refused"],
         ["{ lodMaxClamp: Infinity }", "refused"],
-        ['{ addressModeW: "repeat" }', "refused"],
+        ['{ addressModeW: "repeat" }', "000110 1 32"],
         ['{ minFilter: "cubic" as GPUFilterMode }', "refused"],
     ];
     const samplers = initializers(
@@ -168,7 +168,8 @@ void print(const GpuSamplerDescriptor& descriptor) {
         const TextureSamplerState state = texture_sampler_state(descriptor);
         std::cout << static_cast<int>(state.min_filter) << static_cast<int>(state.mag_filter)
                   << static_cast<int>(state.mipmap_mode) << static_cast<int>(state.address_u)
-                  << static_cast<int>(state.address_v) << " " << state.max_anisotropy << " "
+                  << static_cast<int>(state.address_v) << static_cast<int>(state.address_w) << " "
+                  << state.max_anisotropy << " "
                   << state.max_lod << ";";
     } catch (const std::runtime_error&) {
         std::cout << "refused;";

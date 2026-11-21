@@ -1,11 +1,45 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
+import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerStorageBuffer } from "../src/lowering/storage-buffer-lowerer.js";
+import { emitUpstreamGenerated } from "../src/upstream-lower.js";
 import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
 import { pinnedError } from "./pinned-errors.js";
+
+test("a stored binder setting storage by name on a typed ShaderMaterial generates the setter it calls", () => {
+    // No ShaderMaterial is created: the closure only knows its parameter's
+    // type, so the call takes the by-name setter.
+    const result = compileSource(`
+import { createEngine, createStandardMaterial, createStorageBuffer, isShaderMaterial, setShaderStorageBuffer, startEngine, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";
+function createPalette(engine: EngineContext): { bind(material: ShaderMaterial): void } {
+    const buffer = createStorageBuffer(engine, new Float32Array(4), "palette");
+    const bound: ShaderMaterial[] = [];
+    const rebind = (): void => { for (const material of bound) setShaderStorageBuffer(material, "palette", buffer); };
+    return { bind(material: ShaderMaterial): void { bound.push(material); rebind(); } };
+}
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    const palette = createPalette(engine);
+    const material = createStandardMaterial();
+    if (isShaderMaterial(material)) palette.bind(material);
+    await startEngine(engine);
+}
+void main();
+`);
+    assert.match(result.cpp, /bbl::set_shader_storage_buffer_by_name\(/);
+    const output = resolve("artifacts/shader-storage-by-name-check");
+    emitUpstreamGenerated(output, result.manifest.features);
+    assert.match(
+        readFileSync(join(output, "upstream/src/material_shader.cpp"), "utf8"),
+        /void set_shader_storage_buffer_by_name\(/,
+    );
+});
 
 test("GPU storage buffers preserve source mirrors, updates and disposal ownership", (t) => {
     const tools = optionalNativeFixtureTools(false);

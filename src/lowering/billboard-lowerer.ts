@@ -1008,7 +1008,7 @@ BillboardSystemHandle create_billboard_system(
     // draws that program, its extra textures bind after the atlas, and
     // its params start zeroed.
     system.custom_shader = options.custom_shader;
-    system.custom_textures = std::move(options.custom_textures);
+    system.custom_textures = planar_pixels_textures(std::move(options.custom_textures));
     system.custom_texture_names = std::move(options.custom_texture_names);
     system.opacity = options.opacity;
     system.visible = options.visible;

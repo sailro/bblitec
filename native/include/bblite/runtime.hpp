@@ -1215,6 +1215,8 @@ struct TextureSamplerState {
     TextureAddressMode address_v = TextureAddressMode::repeat;
     float max_anisotropy = 1.0f;
     float max_lod = 1000.0f;
+    /** WebGPU's `addressModeW` default; a 3D texture's sampler names its own. */
+    TextureAddressMode address_w = TextureAddressMode::clamp;
     bool operator==(const TextureSamplerState&) const = default;
 };
 
@@ -1963,6 +1965,9 @@ struct RenderTargetRecord {
     ScaleRounding scale_rounding = ScaleRounding::floor;
     /** Canvas-sized default graph targets inherit their scene's surface. */
     std::optional<UiElementHandle> surface_canvas{};
+    /**
+     * Generated surface-scale or pure stand-in getters, evaluated against this build's source extent.
+     */
     SurfaceRenderTargetSizeResolver resolve_surface_size = nullptr;
     std::shared_ptr<RenderTargetLifecycle> lifecycle{};
     DepthTextureFormat depth_format = DepthTextureFormat::depth24_plus_stencil8;
@@ -1995,6 +2000,11 @@ struct RenderTargetRecord {
      * `TEXTURE_BINDING`.
      */
     bool depth_binding = false;
+    /**
+     * A shader reads the multisampled colour attachment's samples (a render
+     * task's grab), which the pin's every colour attachment allows.
+     */
+    bool color_binding = false;
 };
 
 /** The pin's mixed cache tuple, named by its seven identity/value inputs. */
@@ -2592,10 +2602,13 @@ struct PixelsTexture {
     // `isStandardUvInverted` fold.
     TextureUvTransform uv_transform{};
     bool uv_invert_y = false;
+    /** `Texture3D.depth` (`createTexture3DFromPixels`): present exactly when the texture is
+     *  `dimension: "3d"`, its texels x fastest, then y, then z. */
+    std::optional<std::uint32_t> depth;
 };
 
-/** The texture record a `PixelsTexture` binds as: its texels, sampler, transform and encoding. */
-inline TextureData pixels_texture_data(const PixelsTexture& texture) {
+/** The texels, sampler, transform and encoding a `PixelsTexture` uploads, of either dimension. */
+inline TextureData pixels_texture_image(const PixelsTexture& texture) {
     TextureData data;
     data.bytes = texture.rgba.bytes();
     data.pixels = texture.rgba.state();
@@ -2607,6 +2620,25 @@ inline TextureData pixels_texture_data(const PixelsTexture& texture) {
     data.uv_invert_y = texture.uv_invert_y;
     data.srgb = texture.srgb;
     return data;
+}
+
+/** Where a 2D texture is read, a `Texture3D` refuses: only a 3d view samples one. */
+inline void require_planar_pixels_texture(const PixelsTexture& texture) {
+    if (texture.depth)
+        throw std::runtime_error("A Texture3D binds only to a texture binding with a 3d view.");
+}
+
+/** `textures` where 2D textures are read, each checked by `require_planar_pixels_texture`. */
+inline std::vector<PixelsTexture> planar_pixels_textures(std::vector<PixelsTexture> textures) {
+    for (const PixelsTexture& texture : textures)
+        require_planar_pixels_texture(texture);
+    return textures;
+}
+
+/** The texture record a 2D `PixelsTexture` binds as. */
+inline TextureData pixels_texture_data(const PixelsTexture& texture) {
+    require_planar_pixels_texture(texture);
+    return pixels_texture_image(texture);
 }
 
 inline bool operator==(const FileTexture& left, const FileTexture& right) {
@@ -3331,18 +3363,39 @@ struct SplatMeshRecord {
 
 #include <bblite/runtime/sprite-records.hpp>
 
+/**
+ * An effect texture layout's `viewDimension`: a `Texture3D` fills a 3d view
+ * and a CSM receiver texture, a depth array, a 2d-array one.
+ */
+enum class EffectViewDimension {
+    texture_2d,
+    texture_2d_array,
+    texture_3d,
+};
+
 struct EffectTextureSlot {
     std::string name;
     /** The descriptor's binding number, which `setEffectTexture` also matches. */
     std::uint32_t binding = 0;
     bool depth_texture = false;
+    EffectViewDimension view_dimension = EffectViewDimension::texture_2d;
     SolidTexture texture{};
     /** Shared CPU texels retain their identity and live upload versions. */
     std::optional<PixelsTexture> pixels_texture;
     /** A render target's texture, resolved where a frame graph records the pass. */
     std::optional<RenderTextureRef> render_texture;
+    /**
+     * A CSM receiver texture (`getCsmReceiverTexture`): the generator's depth
+     * array and comparison sampler, resolved where a scene records the pass.
+     */
+    std::optional<ShadowGeneratorHandle> csm_texture;
     bool set = false;
 };
+
+/** A slot whose texture and sampler a pass resolves when it records, not when it uploads. */
+inline bool effect_slot_binds_per_draw(const EffectTextureSlot& slot) {
+    return slot.render_texture || slot.csm_texture;
+}
 
 /**
  * One `EffectWrapper`: which composed module it draws and what fills the
@@ -3413,6 +3466,34 @@ struct LocalCubemapRecord {
     std::vector<Copy> copies;
     std::uint32_t width = 0, mip_count = 0, layers = 0;
     bool overrides_environment = false;
+};
+
+/** A ShaderMaterial view's table entry for a slot the view holds itself. */
+inline constexpr std::uint32_t own_shader_slot = invalid_handle;
+
+/**
+ * A ShaderMaterial view's `_textureSlots` and `_storageBufferSlots`, in the
+ * declaration order of shader variant `variant`: the source slot each entry
+ * aliases, or `own_shader_slot` for one the view's own lists hold.
+ */
+struct ShaderViewSlots {
+    std::uint32_t variant = invalid_handle;
+    std::vector<std::uint32_t> samplers;
+    std::vector<std::uint32_t> storage_buffers;
+};
+
+enum class ShaderDeclarationList : std::uint8_t;
+
+/**
+ * A slot object the program read out of a ShaderMaterial's `_textureSlots`
+ * or `_storageBufferSlots`: the identity of the record holding it and the
+ * material slot it is, which a view installing it aliases.
+ */
+struct ShaderSlotRead {
+    std::weak_ptr<const void> identity;
+    MaterialHandle material;
+    ShaderDeclarationList list;
+    std::uint32_t slot = invalid_handle;
 };
 
 struct MaterialRecord {
@@ -3794,9 +3875,11 @@ struct MaterialRecord {
     // bindings resolved against the scene's `textures` record. Empty for
     // every other family, and for a program that samples nothing.
     std::vector<FileTexture> shader_textures;
-    /** Sampler slots changed since their shared GPU texture upload. */
+    /** A ShaderMaterial view's slot tables; null where the material holds every slot. */
+    std::shared_ptr<const ShaderViewSlots> shader_view_slots;
+    /** Sampler slots changed since their shared GPU texture upload (`shader_slot_version`). */
     std::uint64_t shader_texture_version = 0;
-    /** Texture or storage slots changed since a shader bind group was built. */
+    /** Texture or storage slots changed since a shader bind group was built (`shader_slot_version`). */
     std::uint64_t shader_resource_version = 0;
     /** Shader slots a render target fills, resolved where each draw binds them. */
     std::vector<std::optional<RenderTextureRef>> shader_render_textures;
@@ -5396,6 +5479,8 @@ struct Engine {
      */
     std::uint64_t source_output_identity = 0;
     std::vector<MaterialRecord> materials;
+    /** The ShaderMaterial slot objects the program read and still holds (`register_shader_slot_read`). */
+    std::vector<ShaderSlotRead> shader_slot_reads;
     /** Source materials `enableMaterialTracking` installed observable colors on. */
     std::vector<MaterialHandle> tracked_materials;
     /** Meshes a world-matrix provider parents (`MeshRecord::provider_world`). */
@@ -5529,12 +5614,57 @@ struct Engine {
      * plausible.
      */
     /**
-     * The pin's `pickAsync` `filter` option rides the request: the shared
-     * candidate collector asks it per mesh and both backends skip their
-     * pick sources under it (`pickAsyncImpl`). Null is an unfiltered pick.
+     * The pin's `pickAsync` `filter` option: the shared candidate collector
+     * asks it per mesh and both backends skip their pick sources under it
+     * (`pickAsyncImpl`).
      */
     using PickFilter = std::function<bool(MeshHandle)>;
-    std::function<PickingInfo(GpuPickerHandle, double, double, const PickFilter*)> pick_hook;
+    /**
+     * One `PickIgnore` of the `ignore` option: the mesh, and the thin
+     * instances of it a pick skips; with neither an index nor a range the
+     * whole mesh is skipped (`picking-ignore.ts`).
+     */
+    struct PickIgnore {
+        MeshHandle mesh;
+        std::optional<double> thin_instance_index;
+        /** `start`, `count`. */
+        std::optional<std::array<double, 2>> thin_instance_range;
+    };
+    /**
+     * One storage entry of the `discard` rule: its WGSL binding, whether
+     * the vertex stage reads it, and its `data`, whose bytes the pick
+     * uploads for a mesh; null draws that mesh through the default pipeline.
+     */
+    struct PickDiscardStorage {
+        std::string name;
+        std::string type;
+        bool vertex = false;
+        std::function<std::optional<std::vector<std::uint8_t>>(MeshHandle)> data;
+    };
+    /**
+     * The `discard` rule: its key, which names the rule generation composed,
+     * the members that composition spliced, and its storage entries in
+     * declaration order.
+     */
+    struct PickDiscard {
+        std::string key;
+        std::string wgsl;
+        std::optional<std::string> world_adjust_wgsl;
+        std::optional<std::string> vertex_data;
+        std::vector<PickDiscardStorage> storage;
+    };
+    /**
+     * The `pickAsync` options a native pick honours: an empty `filter` is
+     * none, `ignore` lists the entries in the option's order (one entry is
+     * a list of one), and an empty `discard` is no rule.
+     */
+    struct PickOptions {
+        PickFilter filter;
+        std::vector<PickIgnore> ignore;
+        std::optional<PickDiscard> discard;
+    };
+    /** Null is a pick with no options. */
+    std::function<PickingInfo(GpuPickerHandle, double, double, const PickOptions*)> pick_hook;
     std::shared_ptr<TextSurface> text_surface;
     std::uint64_t next_pixels_texture_identity = 1;
     /**
@@ -5740,6 +5870,16 @@ inline TransmissionGrab enable_render_task_transmission(Engine& engine, TaskHand
             target.sampled_depth = true;
         }
     }
+    // A multisampled target's grab averages its colour samples.
+    if (record.render.target.value != invalid_handle) {
+        auto& target = handle_at(engine.render_targets, record.render.target);
+        if (target.samples > 1 && target.has_color && !target.color_binding) {
+            if (record.record_state == FrameTaskRecordState::recorded)
+                throw std::runtime_error("enableRenderTaskTransmission on a multisampled target "
+                                         "must precede the task's recording.");
+            target.color_binding = true;
+        }
+    }
     return TransmissionGrab{task};
 }
 
@@ -5843,14 +5983,13 @@ inline GpuDeviceIdentity gpu_device_identity(Engine& engine) {
 }
 /**
  * A `GPUSamplerDescriptor` as a texture binds it: `webgpu_sampler`'s
- * resolution, which the state holds but for a W address mode and a LOD
- * floor, both refused.
+ * resolution, which the state holds but for a LOD floor, refused.
  */
 inline TextureSamplerState texture_sampler_state(const GpuSamplerDescriptor& descriptor) {
     using Address = pal::WebGpuSampler::Address;
     const pal::WebGpuSampler sampler = pal::webgpu_sampler(descriptor);
-    if (sampler.address_w != Address::clamp_to_edge || sampler.lod_min_clamp != 0.0f)
-        pal::webgpu_refuse("a texture's sampler state has no W address mode or LOD floor.");
+    if (sampler.lod_min_clamp != 0.0f)
+        pal::webgpu_refuse("a texture's sampler state has no LOD floor.");
     const auto filter = [](bool linear) {
         return linear ? TextureFilter::linear : TextureFilter::nearest;
     };
@@ -5865,7 +6004,8 @@ inline TextureSamplerState texture_sampler_state(const GpuSamplerDescriptor& des
             address(sampler.address_u),
             address(sampler.address_v),
             static_cast<float>(sampler.max_anisotropy),
-            sampler.lod_max_clamp};
+            sampler.lod_max_clamp,
+            address(sampler.address_w)};
 }
 /** `device.createSampler(descriptor)`: a sampler object of its own each call. */
 inline GpuSampler create_device_sampler(const GpuDeviceIdentity& device,
@@ -5982,6 +6122,48 @@ render_target_color_texture(const Engine& engine, RenderTargetHandle target) {
     if (!render_target_color_view_set(engine, target))
         return std::nullopt;
     return record.color_texture;
+}
+/**
+ * `rt._colorView`: the one view `buildRenderTarget` creates with each
+ * `_colorTexture`, so that allocation's ordinal names the view object too
+ * (the shared counter gives no other object that ordinal).
+ */
+[[nodiscard]] inline js::Nullable<GpuTextureView>
+render_target_color_view_object(const Engine& engine, RenderTargetHandle target) {
+    const js::Nullable<GpuTextureIdentity> texture = render_target_color_texture(engine, target);
+    if (!texture)
+        return std::nullopt;
+    return GpuTextureView{*texture, texture->object};
+}
+/**
+ * A Texture2D record holding a render target's `_colorView` (and optionally
+ * its `_colorTexture`) as read at one moment, with its own sampler and
+ * `_sampleType`. A fixed eager target keeps that colour until disposal, so
+ * the record binds as the target's colour view (`render_target_color_view`);
+ * a target whose builds or resizes replace its colour is refused.
+ */
+inline RenderTextureRef
+render_target_color_snapshot(const Engine& engine, const js::Nullable<GpuTextureIdentity>& texture,
+                             const js::Nullable<GpuTextureView>& view, const GpuSampler& sampler,
+                             std::string_view sample_type = "float") {
+    if (!view || (texture && !(*texture == view->texture)))
+        throw std::runtime_error("A Texture2D record of a render target's colour states that "
+                                 "colour's view, and its texture when it states one.");
+    for (std::uint32_t index = 0; index < engine.render_targets.size(); ++index) {
+        const RenderTargetHandle target{index};
+        const auto& record = engine.render_targets[index];
+        if (!render_target_color_view_set(engine, target) ||
+            !(record.color_texture == view->texture))
+            continue;
+        if (record.allocation != TargetAllocation::fixed)
+            throw std::runtime_error(
+                "A Texture2D record holding a render target's colour view as read once binds "
+                "only a fixed-size createRenderTargetTexture target: a frame-graph build "
+                "replaces this target's colour.");
+        return render_target_color_view(engine, target, sampler, sample_type);
+    }
+    throw std::runtime_error("A Texture2D record of GPU parts without its size binds a live "
+                             "render target's colour view; this view is of none.");
 }
 /** `texture.sampler = sampler` on a render target's texture or depth facade. */
 inline void set_render_texture_sampler(Engine& engine, const RenderTextureRef& texture,
@@ -6684,6 +6866,15 @@ inline void resize_engine(Engine& engine) {
 inline MaterialHandle mark_shader_material_transmissive(Engine& engine, MaterialHandle material) {
     handle_at(engine.materials, material).shader_transmissive = true;
     return material;
+}
+
+/** The shader variant a ShaderMaterial, or a view of one, draws: what a run-time variant split selects on. */
+inline std::uint32_t shader_material_variant(const Engine& engine, MaterialHandle material) {
+    const MaterialRecord& record = handle_at(engine.materials, material);
+    if (!record.shader_material)
+        throw std::runtime_error(
+            "A shader variant split reached a material that is not a ShaderMaterial.");
+    return record.shader_variant;
 }
 
 /** The shader factory's authored alpha flag; other material families omit it. */
@@ -7478,6 +7669,15 @@ inline Scene configure_scene_render_defaults(Scene scene, bool enabled, std::uin
            (!surface || scene.surface_canvas->value == surface->value);
 }
 
+/** Snapshot before dispatch: a program hook can replace itself or grow frame_tasks. */
+inline bool run_frame_task_record_override(Engine& engine, TaskHandle handle) {
+    const auto record = handle_at(engine.frame_tasks, handle).record_override;
+    if (!record)
+        return false;
+    record();
+    return true;
+}
+
 /**
  * `setSurfaceSize`'s `_resize` on the engine's own canvas: each scene
  * registered there rebuilds its frame graph, whose record of every task
@@ -7489,11 +7689,33 @@ inline void rebuild_canvas_task_targets(Engine& engine) {
         if (!scene || !scene_on_surface(*scene, std::nullopt))
             continue;
         for (const TaskHandle handle : scene->frame_passes()) {
-            const FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
-            if (task.record_state != FrameTaskRecordState::pending_build)
-                record_task_color_views(engine, task);
+            if (handle_at(engine.frame_tasks, handle).record_state ==
+                FrameTaskRecordState::pending_build)
+                continue;
+            run_frame_task_record_override(engine, handle);
+            record_task_color_views(engine, handle_at(engine.frame_tasks, handle));
         }
     }
+}
+
+/**
+ * Whether a registered scene's frame graph holds a TAA task. Only such a
+ * frame writes a source task's scene block after that task's pass is
+ * encoded (`advanceJitter`), so only it takes a backend's temporal
+ * submission; any other frame encodes as a program without TAA does.
+ */
+[[nodiscard]] inline bool
+frame_has_temporal_task(const Engine& engine, const std::vector<std::shared_ptr<Scene>>& scenes) {
+    for (const std::shared_ptr<Scene>& scene : scenes) {
+        if (!scene)
+            continue;
+        for (const TaskHandle handle : scene->frame_passes()) {
+            const FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
+            if (task.kind == FrameTaskKind::post_process && task.post_process.taa)
+                return true;
+        }
+    }
+    return false;
 }
 
 /**
@@ -8368,6 +8590,11 @@ void set_shader_uniform_values(Engine& engine, MaterialHandle material, std::uin
                                std::uint32_t count, const float* values);
 void initialize_shader_uniform_values(Engine& engine, MaterialHandle material, std::uint32_t offset,
                                       std::uint32_t count, const float* values);
+void initialize_shader_uniform_creation_values(Engine& engine, MaterialHandle material,
+                                               std::uint32_t offset, std::uint32_t count,
+                                               const double* values);
+[[nodiscard]] double shader_uniform_creation_lane(Engine& engine, MaterialHandle material,
+                                                  std::uint32_t offset, std::uint32_t lane);
 /** The pin installs cached shader writers process-wide for subsequent uploads. */
 inline bool shader_uniform_caching_enabled = false;
 inline void enable_shader_uniform_caching() { shader_uniform_caching_enabled = true; }
@@ -8406,6 +8633,45 @@ void set_shader_storage_buffer_by_name(Engine& engine, MaterialHandle material,
                                        const std::string& name, StorageBufferHandle buffer);
 /** A ShaderMaterial list: `uniformDecls`, `samplerDecls`, `storageBufferDecls` or `attributes`. */
 enum class ShaderDeclarationList : std::uint8_t { uniforms, samplers, storage_buffers, attributes };
+
+/** The material and slot holding one of a shader material's declared slots. */
+template <class Record> struct ShaderSlotOwner {
+    Record& material;
+    std::uint32_t slot;
+};
+
+/**
+ * Where a shader material's declared sampler or storage-buffer `slot` lives:
+ * its own lists, or the source slot its view table aliases.
+ */
+template <class EngineRef, class Record>
+ShaderSlotOwner<Record> shader_slot_owner(EngineRef& engine, Record& material,
+                                          ShaderDeclarationList list, std::uint32_t slot) {
+    if (list != ShaderDeclarationList::samplers && list != ShaderDeclarationList::storage_buffers)
+        throw std::runtime_error("A shader slot owner is a sampler's or a storage buffer's.");
+    if (!material.shader_view_slots)
+        return {material, slot};
+    const auto& table = list == ShaderDeclarationList::samplers
+                            ? material.shader_view_slots->samplers
+                            : material.shader_view_slots->storage_buffers;
+    if (slot >= table.size())
+        throw std::runtime_error(
+            "A shader view's table does not hold the slot its variant declares.");
+    if (table[slot] == own_shader_slot)
+        return {material, slot};
+    return {handle_at(engine.materials, material.source_material), table[slot]};
+}
+
+/**
+ * A shader material's `shader_texture_version` or `shader_resource_version`
+ * as its uploads read it: a view's follows its own changes and its source's.
+ */
+inline std::uint64_t shader_slot_version(const Engine& engine, const MaterialRecord& material,
+                                         std::uint64_t MaterialRecord::* version) {
+    return material.shader_view_slots
+               ? material.*version + handle_at(engine.materials, material.source_material).*version
+               : material.*version;
+}
 /** The names a shader material's declaration list holds, in declaration order. */
 const std::vector<std::string>& shader_declaration_names(Engine& engine, MaterialHandle material,
                                                          ShaderDeclarationList list);
@@ -8413,6 +8679,12 @@ void set_shader_render_texture(Engine& engine, MaterialHandle material, std::uin
                                RenderTextureRef texture);
 void set_shader_csm_texture(Engine& engine, MaterialHandle material, std::uint32_t slot,
                             ShadowGeneratorHandle generator);
+/** A CSM receiver texture's generator (`getCsmReceiverTexture`): a cascaded one. */
+inline void require_csm_receiver_generator(const Engine& engine, ShadowGeneratorHandle generator) {
+    if (generator.value >= engine.shadow_generators.size() ||
+        handle_at(engine.shadow_generators, generator).filter != ShadowFilter::csm_directional)
+        throw std::runtime_error("Invalid CSM receiver texture.");
+}
 void set_shadow_caster_material(Engine& engine, MaterialHandle material, MaterialHandle caster);
 void set_shader_pixels_texture(Engine& engine, MaterialHandle material, std::uint32_t slot,
                                const PixelsTexture& texture);
@@ -8490,8 +8762,10 @@ MaterialHandle create_node_esm_shadow_material_view(Engine& engine, MaterialHand
                                                     ShadowGeneratorHandle generator);
 MaterialHandle create_pbr_no_color_material_view(Engine& engine, MaterialHandle source);
 MaterialHandle create_shader_no_color_material_view(Engine& engine, MaterialHandle source);
-/** `createMaterialView(source, { features: 0 })` over a ShaderMaterial: its slots stay the source's. */
+/** `createMaterialView(source, { features: 0 })` over a ShaderMaterial: its slots alias the source's. */
 MaterialHandle create_shader_material_view(Engine& engine, MaterialHandle source);
+/** A shader view's slot tables, laid out by name for its variant's declarations. */
+void bind_shader_view_slots(Engine& engine, MaterialHandle view);
 /** The program a shader view draws: one generation derived from its redefined properties. */
 void derive_shader_material_view(Engine& engine, MaterialHandle view, std::uint32_t variant,
                                  bool transmissive);
@@ -9310,6 +9584,22 @@ void update_texture_2d_from_pixels(Engine& engine, const StoredTexture& tex,
 PixelsTexture create_texture_2d_from_pixels(Engine& engine, const js::U8Array& pixels, double width,
                                             double height, PixelsTextureOptions options = {});
 
+/** `PixelsTexture3DOptions` a call named; the generated factory resolves the pin's defaults. */
+struct PixelsTexture3DOptions {
+    TextureFilter filter{};
+    bool has_filter = false;
+    TextureAddressMode address_mode{};
+    bool has_address_mode = false;
+    bool srgb = false;
+};
+
+PixelsTexture create_texture_3d_from_pixels(Engine& engine, const std::string& path, double width,
+                                            double height, double depth,
+                                            PixelsTexture3DOptions options = {});
+PixelsTexture create_texture_3d_from_pixels(Engine& engine, const js::U8Array& pixels, double width,
+                                            double height, double depth,
+                                            PixelsTexture3DOptions options = {});
+
 double add_sprite_2d_index(Engine& engine, Sprite2DLayerHandle layer, Sprite2DProps props);
 void update_sprite_2d_index(Engine& engine, Sprite2DLayerHandle layer, double index,
                             Sprite2DProps props);
@@ -9350,6 +9640,9 @@ void set_effect_texture(Engine& engine, EffectWrapperHandle effect, const Effect
                         const StoredTexture& texture);
 void set_effect_texture(Engine& engine, EffectWrapperHandle effect, const EffectBindingKey& key,
                         RenderTextureRef texture);
+/** `setEffectTexture` with a CSM receiver texture, whose native value is its generator. */
+void set_effect_csm_texture(Engine& engine, EffectWrapperHandle effect, const EffectBindingKey& key,
+                            ShadowGeneratorHandle generator);
 void dispose_effect_wrapper(Engine& engine, EffectWrapperHandle effect);
 /** The pin's bind-group build for the wrapper's declared bindings; refuses a released slot. */
 void require_effect_bind_group(const Engine& engine, EffectWrapperHandle effect);
@@ -9516,6 +9809,9 @@ PickingInfo gpu_pick(Engine& engine, GpuPickerHandle picker, double x, double y)
 /** The same pick under the pin's `filter` option; see `Engine::PickFilter`. */
 PickingInfo gpu_pick(Engine& engine, GpuPickerHandle picker, double x, double y,
                      const Engine::PickFilter& filter);
+/** The same pick under `pickAsync`'s options; see `Engine::PickOptions`. */
+PickingInfo gpu_pick(Engine& engine, GpuPickerHandle picker, double x, double y,
+                     const Engine::PickOptions& options);
 /**
  * `KHR_interactivity` (the generated flow-graph unit). The loader chains
  * `attach_flow_graphs` onto an interactive asset's scene setup, and
@@ -9555,8 +9851,11 @@ void dispose_picker(Engine& engine, GpuPickerHandle picker);
  * wrapper makes and disposes itself. Emitted only where a scene reached it.
  */
 PickingInfo pick_billboard_sprite(Engine& engine, Scene& scene, double x, double y);
-/** `PickingInfo.distance`: camera position to the reconstructed point. */
-[[nodiscard]] double picked_distance(const Scene& scene, const PickingInfo& info);
+/**
+ * `PickingInfo.distance`: the pick origin -- a detailed pick's ray origin,
+ * else the camera position -- to the reconstructed point.
+ */
+[[nodiscard]] double picked_distance(const CameraRecord& camera, const PickingInfo& info);
 /**
  * Run and clear everything `setTimeout` queued. Called by the frame
  * conductor after the frame's own callbacks, which is where the browser

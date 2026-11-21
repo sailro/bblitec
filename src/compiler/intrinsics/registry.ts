@@ -88,7 +88,12 @@ import {
     compilePhysicsIntrinsic,
     type PhysicsIntrinsicContext,
 } from "./physics.js";
-import { compileSceneIntrinsic, type SceneIntrinsicContext } from "./scene.js";
+import {
+    compileSceneIntrinsic,
+    runtimeOnlySceneIntrinsics,
+    type SceneIntrinsicContext,
+} from "./scene.js";
+import { inertPinnedExports } from "../native-inert-calls.js";
 import {
     compileSkeletonIntrinsic,
     type SkeletonIntrinsicContext,
@@ -169,6 +174,8 @@ export const runtimeOnlyIntrinsics: ReadonlySet<string> = new EmissionSet([
     ...runtimeOnlyClusteredLightIntrinsics,
     ...runtimeOnlyMeshIntrinsics,
     ...runtimeOnlyPickingIntrinsics,
+    ...runtimeOnlySceneIntrinsics,
+    ...inertPinnedExports,
 ]);
 
 /** Repeated data work still uses its normal lowerer to record stream facts. */
@@ -209,6 +216,7 @@ export const nativeDataIterationIntrinsics: ReadonlySet<string> =
         "findClosestPointWithinInto",
         "navRayBlockedFast",
         "disposeNavigationPlugin",
+        "createTexture3DFromPixels",
     ]);
 
 /**

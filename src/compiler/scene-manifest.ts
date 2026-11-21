@@ -55,6 +55,7 @@ import type {
     SsaoLiveSetting,
     SsaoTaskManifest,
     ShadowGeneratorManifest,
+    PickDiscardRuleManifest,
     SplatFragmentManifest,
     SpriteCustomShaderManifest,
     Value,
@@ -217,6 +218,8 @@ export class SceneManifestRecorder {
     @journaled private accessor dynamicSceneLights = false;
     @journaled private accessor mutableToneMappingEnabled = false;
     private readonly sceneSpriteCustomShaders: Readonly<SpriteCustomShaderManifest>[] =
+        emissionArray([]);
+    private readonly scenePickDiscardRules: PickDiscardRuleManifest[] =
         emissionArray([]);
     /**
      * The splat shader plugins one `loadSplat` call passed, in its order.
@@ -450,6 +453,7 @@ export class SceneManifestRecorder {
             dynamicMeshOpacity: this.dynamicMeshOpacity,
             splatFragments: this.sceneSplatFragments ?? [],
             spriteCustomShaders: this.sceneSpriteCustomShaders,
+            pickDiscardRules: this.scenePickDiscardRules,
             effects: this.effects,
             pureSpriteVertex: this.reachedPureSpriteVertex,
             plainSpriteLayer: this.reachedPlainSpriteLayer,
@@ -1113,6 +1117,29 @@ export class SceneManifestRecorder {
     /** One custom-shader descriptor, in the pin's own `_key` order. */
     public recordSpriteCustomShader(shader: SpriteCustomShaderManifest): void {
         this.sceneSpriteCustomShaders.push(shader);
+    }
+
+    /**
+     * One `pickAsync` discard rule. The pin caches a rule's pipelines by its
+     * `key` and builds them from the first rule bearing it; the native pick
+     * selects the composed rule by key, so a key names one rule.
+     */
+    public recordPickDiscardRule(
+        rule: PickDiscardRuleManifest,
+        node: ts.Node,
+    ): void {
+        const known = this.scenePickDiscardRules.find(
+            (entry) => entry.key === rule.key,
+        );
+        if (!known) {
+            this.scenePickDiscardRules.push(rule);
+            return;
+        }
+        if (JSON.stringify(known) !== JSON.stringify(rule))
+            this.context.fail(
+                node,
+                `Two pickAsync discard rules share the key '${rule.key}' with different members; the native pick selects its composed pipelines by key.`,
+            );
     }
 
     /**
@@ -1798,16 +1825,9 @@ export class SceneManifestRecorder {
         manifest: PostProcessCompositeManifest,
         site: ts.Node,
     ): void {
-        if (
-            manifest.intrinsic === "createTaaPostProcessTask" &&
-            (this.context.isInFrameCallback() ||
-                this.context.engineLifecycle.engineHasStarted())
-        ) {
-            this.context.fail(
-                site,
-                "TAA task creation after frame execution is not lowered; its source must retain scene UBO history from its first frame.",
-            );
-        }
+        // The factory gives its source the retained scene UBO a temporal
+        // frame packs (`create_persistent_scene_uniforms`), so a task created
+        // after frames ran starts from the block the source would pack.
         if (
             manifest.intrinsic === "createTaaPostProcessTask" &&
             this.context.hasRegisteredScene()

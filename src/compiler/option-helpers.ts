@@ -14,7 +14,10 @@ import type { DataLowerer } from "./data-lowering.js";
 import ts from "typescript";
 import { absenceOf, knownCondition } from "./values/model.js";
 import { traceSourceNode } from "./source-trace.js";
-import { engineSampleCountCpp } from "./engine-samples.js";
+import {
+    engineSampleCountCpp,
+    knownEngineSampleCount,
+} from "./engine-samples.js";
 import {
     isExpressionWrapper,
     jsonScalarLiteral,
@@ -576,22 +579,36 @@ export function foldingNoRecordFields(
     };
 }
 
+/** A compiled sample count: its C++, and its value when generation knows it. */
+export interface CompiledSampleCount {
+    cpp: string;
+    count: 1 | 4 | undefined;
+}
+
 /** `engine.msaaSamples`: the engine's own sample count; undefined for another expression. */
 function engineSampleCount(
     context: StaticFoldContext,
     expression: ts.Expression,
-): string | undefined {
+): CompiledSampleCount | undefined {
     const unwrapped = context.resolveStaticExpression(expression);
     if (
         ts.isPropertyAccessExpression(unwrapped) &&
         ts.isIdentifier(unwrapped.expression) &&
         unwrapped.name.text === "msaaSamples" &&
         context.bindings.lookup(unwrapped.expression).kind === "engine"
-    )
-        return engineSampleCountCpp(
-            context.bindings.lookup(unwrapped.expression),
-        );
+    ) {
+        const engine = context.bindings.lookup(unwrapped.expression);
+        return {
+            cpp: engineSampleCountCpp(engine),
+            count: knownEngineSampleCount(engine),
+        };
+    }
     return undefined;
+}
+
+/** The sample counts WebGPU takes, as the pin types them (`1 | 4`). */
+export function isSampleCount(count: number): count is 1 | 4 {
+    return count === 1 || count === 4;
 }
 
 /**
@@ -600,26 +617,24 @@ function engineSampleCount(
  * or one the run decides, which `bbl::render_target_sample_count` checks
  * where the attachment is made.
  */
-/** The sample counts WebGPU takes, as the pin types them (`1 | 4`). */
-export function isSampleCount(count: number): count is 1 | 4 {
-    return count === 1 || count === 4;
-}
-
 export function compileRenderTargetSampleCount(
     context: StaticFoldContext & Pick<LoweringServices, "compileNumber">,
     expression: ts.Expression,
-): string {
+): CompiledSampleCount {
     const engineCount = engineSampleCount(context, expression);
     if (engineCount) return engineCount;
     const count = staticNumberValue(context, expression);
     if (count === undefined)
-        return `bbl::render_target_sample_count(${context.compileNumber(expression, "double")})`;
+        return {
+            cpp: `bbl::render_target_sample_count(${context.compileNumber(expression, "double")})`,
+            count: undefined,
+        };
     if (!isSampleCount(count))
         context.fail(
             context.resolveStaticExpression(expression),
             "A render target's sample count is 1 or 4.",
         );
-    return `${count}u`;
+    return { cpp: `${count}u`, count };
 }
 
 export function compilePositiveInteger(
@@ -775,11 +790,22 @@ export interface StaticJsonContext extends Pick<
  * Two families read a document straight out of the scene's own text — a node
  * material's graph and a node particle's — and both draw the same line: a
  * literal is data and cannot drift, so it is folded, while anything the
- * source computes is a module generation runs instead.
+ * source computes is a module generation runs instead. With `leaf`, a part
+ * that is not JSON holds what `leaf` reads it as, `notJson` where nothing.
  */
 export function staticJsonValue(
     context: StaticJsonContext,
     expression: ts.Expression,
+    leaf?: (expression: ts.Expression) => unknown,
+): unknown {
+    const value = staticJsonData(context, expression, leaf);
+    return value === notJson && leaf ? leaf(expression) : value;
+}
+
+function staticJsonData(
+    context: StaticJsonContext,
+    expression: ts.Expression,
+    leaf: ((expression: ts.Expression) => unknown) | undefined,
 ): unknown {
     const node = context.resolveStaticExpression(expression);
     if (ts.isObjectLiteralExpression(node)) {
@@ -789,7 +815,7 @@ export function staticJsonValue(
         const value: Record<string, unknown> = {};
         for (const { kind, key, value: initializer } of members) {
             if (kind !== "property") return notJson;
-            const member = staticJsonValue(context, initializer);
+            const member = staticJsonValue(context, initializer, leaf);
             if (member === notJson) return notJson;
             // An own `["__proto__"]` key is data; `=` would set the prototype.
             Object.defineProperty(value, key, {
@@ -810,7 +836,7 @@ export function staticJsonValue(
             ) {
                 return notJson;
             }
-            const member = staticJsonValue(context, element);
+            const member = staticJsonValue(context, element, leaf);
             if (member === notJson) return notJson;
             values.push(member);
         }

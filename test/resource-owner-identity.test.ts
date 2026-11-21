@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
+import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
@@ -142,5 +144,236 @@ test("resource identity callbacks require owned parameters and preserve absence 
         function present(value:Mesh|undefined):boolean {return value!==undefined;}
         const callbacks:Array<typeof present>=[present];
     `),
+    );
+});
+
+test("a spread of unowned handles into engine-owned storage pairs them with the entry's engine", () => {
+    // `visible` holds engine-owned meshes; the awaited group's plain mesh
+    // array names no engine, so its handles are the entry engine's, as a
+    // handle read out of storage is.
+    const { cpp } = compileSource(`
+        import { createBox, createEngine, createSceneContext, addToScene } from "@babylonjs/lite";
+        import type { EngineContext, Mesh, SceneContext } from "@babylonjs/lite";
+        interface Part { mesh: Mesh }
+        interface Batch { meshes: Mesh[] }
+        interface Group { id: string; masonry: Part; corbels: Batch }
+        function createBatch(engine: EngineContext, count: number): Batch {
+            const meshes: Mesh[] = [];
+            for (let i = 0; i < count; i++) meshes.push(createBox(engine, { size: 1 }));
+            return { meshes };
+        }
+        function makeGroup(engine: EngineContext, id: string): Group {
+            return { id, masonry: { mesh: createBox(engine, { size: 2 }) }, corbels: createBatch(engine, id.length + 1) };
+        }
+        async function loadGroup(engine: EngineContext, id: string): Promise<Group> {
+            await new Promise<void>((resolve) => setTimeout(resolve, 1));
+            return makeGroup(engine, id);
+        }
+        async function buildTower(engine: EngineContext, scene: SceneContext): Promise<Mesh[]> {
+            const body: Part = { mesh: createBox(engine, { size: 3 }) };
+            const visible: Mesh[] = [body.mesh];
+            const register = (group: Group): void => {
+                visible.push(group.masonry.mesh, ...group.corbels.meshes);
+            };
+            for (const id of ["a", "bb"]) register(await loadGroup(engine, id));
+            for (const mesh of visible) addToScene(scene, mesh);
+            return visible;
+        }
+        async function main(): Promise<void> {
+            const engine = await createEngine(document.createElement("canvas"));
+            const scene = createSceneContext(engine);
+            console.log((await buildTower(engine, scene)).length);
+        }
+        void main();
+    `);
+    assert.match(cpp, /bbl::js::array_from_iterable</);
+});
+
+test("an entry program compares an optional stored handle with a plain one by its slot", () => {
+    // Every unowned material of the entry program is its one engine's, so
+    // the cached record's material compares with the mesh's alone.
+    const { cpp } = compileSource(`
+        import { addToScene, createBox, createEngine, createSceneContext, createStandardMaterial } from "@babylonjs/lite";
+        import type { Material, Mesh } from "@babylonjs/lite";
+        interface CachedView { source: Material; base: number; view: Material | null }
+        const views = new Map<Mesh, CachedView>();
+        async function main(): Promise<void> {
+            const engine = await createEngine(document.createElement("canvas"));
+            const scene = createSceneContext(engine);
+            const box = createBox(engine, { size: 1 });
+            box.material = createStandardMaterial();
+            addToScene(scene, box);
+            for (const mesh of scene.meshes) {
+                const material = mesh.material;
+                if (!material) continue;
+                const base = mesh.position.x > 0 ? 3 : 0;
+                const cached = views.get(mesh);
+                let view: Material | null;
+                if (cached?.source === material && cached.base === base) view = cached.view;
+                else {
+                    view = material;
+                    views.set(mesh, { source: material, base, view });
+                }
+                console.log(view === null);
+            }
+        }
+        void main();
+    `);
+    assert.match(cpp, /\.has_value\(\) && \(\*\w+\) == v_\w+_material\)/);
+});
+
+test("an array of elements stored in a record field stays the caller's one array", (t) => {
+    // `mapped` holds elements that keep their engine, so the field does,
+    // and the arrays the caller still changes keep them too: each tab's
+    // rows are the array the caller holds.
+    const source = `
+        interface Tab { readonly name: string; readonly rows: readonly HTMLElement[]; }
+        const tabs: Tab[] = [];
+        function keep(name: string, rows: HTMLElement[]): void {
+            if (rows.length === 0) return;
+            tabs.push({ name, rows });
+        }
+        const grown: HTMLElement[] = [];
+        grown.push(document.createElement("div"));
+        const listed: HTMLElement[] = [document.createElement("div")];
+        keep("grown", grown);
+        keep("listed", listed);
+        keep("mapped", listed.map((row) => row));
+        const added = document.createElement("div");
+        grown.push(added);
+        const replaced = listed[0]!;
+        listed[0] = document.createElement("div");
+        const [first, second, third] = tabs;
+        if (!first || !second || !third) throw new Error("stored tabs");
+        if (first.rows.length !== 2 || first.rows[1] !== added || first.rows[0] !== grown[0]) throw new Error("grown rows");
+        if (second.rows[0] !== listed[0] || second.rows[0] === replaced) throw new Error("listed rows");
+        if (third.rows.length !== 1 || third.rows[0] !== replaced) throw new Error("mapped rows");
+        globalThis.close();
+    `;
+    runInNewContext(
+        ts.transpileModule(source, {
+            compilerOptions: { target: ts.ScriptTarget.ESNext },
+        }).outputText,
+        {
+            document: { createElement: (tag: string) => ({ tag }) },
+            globalThis: { close: () => undefined },
+        },
+    );
+    const { cpp } = compileSource(source);
+    assert.match(
+        cpp,
+        /bbl::js::Array<std::pair<bbl::StoredEngine, bbl::UiElementHandle>> rows;/,
+    );
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) return t.skip("Native fixture compiler unavailable.");
+    runGeneratedProgram(
+        tools,
+        "resource-owner-identity/element-rows",
+        `
+        #define main generated_main
+        ${cpp}
+        #undef main
+        #include <cassert>
+        namespace bbl {
+            unsigned created = 0;
+            UiElementHandle ui_create_element(Engine& owner, std::string_view tag) {
+                assert(&owner == &pal::window_document_engine() && tag == "div");
+                return UiElementHandle{created++};
+            }
+        }
+        namespace bbl::pal {
+            Engine& window_document_engine() { static Engine host; return host; }
+            int run_window_application(WorkerEntry initialize, EngineOptions) {
+                const js::RealmScope scope;
+                EventLoop loop;
+                WorkerRealm realm(loop);
+                loop.run([&] { initialize(realm); });
+                return 0;
+            }
+        }
+        int main() { const int result = generated_main(); assert(bbl::created == 4); return result; }
+    `,
+        {
+            flags: [
+                "/DBBLITE_HAS_UI=1",
+                "/DBBLITE_WORKERS=1",
+                "/DBBLITE_OFFSCREEN_SURFACES=1",
+            ],
+            timeoutMs: 10000,
+            expectedOutput: "",
+        },
+    );
+    // A new array of meshes read from record fields, which keep their
+    // engine, is the array a callback's record receives even after it
+    // grows: its local holds the engine-less elements that record holds.
+    const meshes = `
+        import {createBox, type EngineContext, type Mesh} from "@babylonjs/lite";
+        interface Part { readonly mesh: Mesh; show(): void; }
+        function inspect(engine: EngineContext): number {
+            const listeners: ((ready: { meshes: Mesh[] }) => void)[] = [];
+            const held: Mesh[][] = [];
+            listeners.push((ready) => { held.push(ready.meshes); });
+            function part(size: number): Part {
+                const mesh = createBox(engine, { size });
+                return { mesh, show: () => { if (size < 0) console.log(mesh.name); } };
+            }
+            function finish(top: Part, bottom: Part): number {
+                top.show();
+                const meshes = [top.mesh, bottom.mesh];
+                for (const listener of listeners) listener({ meshes });
+                meshes.push(top.mesh);
+                if (held[0] !== meshes || held[0]!.length !== 3) throw new Error("one array");
+                return meshes.length;
+            }
+            return finish(part(1), part(2));
+        }
+        const factories: Array<typeof inspect> = [inspect];
+    `;
+    runInNewContext(
+        `${
+            ts.transpileModule(meshes, {
+                compilerOptions: {
+                    target: ts.ScriptTarget.ESNext,
+                    module: ts.ModuleKind.CommonJS,
+                },
+            }).outputText
+        }; if (factories[0](engine) !== 3) throw new Error("meshes");`,
+        {
+            exports: {},
+            require: () => ({ createBox: () => ({ name: "box" }) }),
+            engine: {},
+        },
+    );
+    const { cpp: meshCpp } = compileSource(meshes);
+    const factory =
+        /double (\w+)\(\[\[maybe_unused\]\] bblscene::(\w+)& \w+, \[\[maybe_unused\]\] bbl::StoredEngine \w+\);/.exec(
+            meshCpp,
+        );
+    assert.ok(factory, "mesh factory");
+    const [, name, environment] = factory;
+    runGeneratedProgram(
+        tools,
+        "resource-owner-identity/callback-meshes",
+        `
+        #define main generated_main
+        ${meshCpp}
+        #undef main
+        #include <cassert>
+        namespace bbl {
+            MeshHandle create_box(Engine& engine, BoxOptions) {
+                const auto generation = static_cast<std::uint32_t>(engine.meshes.size());
+                engine.meshes.emplace_back();
+                return {0, generation};
+            }
+        }
+        int main() {
+            const bbl::js::RealmScope realm;
+            auto engine = std::make_shared<bbl::Engine>();
+            bblscene::${environment} environment{};
+            assert(bblscene::${name}(environment, bbl::StoredEngine{engine}) == 3);
+            assert(engine->meshes.size() == 2);
+        }
+        `,
+        { expectedOutput: "" },
     );
 });

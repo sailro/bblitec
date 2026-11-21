@@ -2,7 +2,7 @@
 // typed data declarations, recursive and forward callback bindings, and
 // array/object binding patterns, lowered into the scope stack's bindings.
 import ts from "typescript";
-import { soleBindingRead } from "./binding-references.js";
+import { activationBindingReads } from "./binding-references.js";
 import { isRebound } from "./binding-rebinds.js";
 import {
     absenceOf,
@@ -61,6 +61,11 @@ import { nativeReturnTsType } from "./native-return-type.js";
 import { isNativeOwnerRecord } from "./native-owner-carrier.js";
 import { NativeRecordStorageRequired } from "./native-record-storage.js";
 import { recordPropertyKeys } from "./object-statics.js";
+import {
+    constantArrayWriteObservation,
+    rebuiltObjectObservation,
+    recordFieldIsWritten,
+} from "./record-observations.js";
 import { ownKeyOrder } from "./record-key-orders.js";
 import {
     nullability,
@@ -130,6 +135,7 @@ import {
     snapshotReadCpp,
     statedTruthinessCpp,
     valueForKind,
+    withCommonResourceMetadata,
     withNativeMetadata,
     type Value,
     type NullableResourceType,
@@ -1045,11 +1051,14 @@ export class DeclarationLowerer {
     }
 
     /**
-     * A `const` whose conditional initializer can be read where its one
-     * reference is, with the same result: the condition and both arms read
+     * A `const` whose conditional initializer can be read where each of its
+     * references is, with the same result: the condition and both arms read
      * only bindings nothing rebinds and build only plain literals (no call,
-     * member read, construction or write), and the reference is in the same
-     * function with no loop between them, so it is evaluated once there.
+     * member read, construction or write), and every reference is in the
+     * same function. A reference evaluated more than once (several
+     * references, or a loop between) rebuilds an arm's object literals
+     * each time, which must not be told from the one object JavaScript
+     * keeps (`rebuiltObjectObservation`).
      */
     private deferrableSelection(
         declaration: ts.VariableDeclaration,
@@ -1133,9 +1142,20 @@ export class DeclarationLowerer {
                 armKind === ts.SyntaxKind.TrueKeyword)
         )
             return undefined;
-        return soleBindingRead(this.context.program, checker, declaration)
-            ? selection
-            : undefined;
+        const found = activationBindingReads(
+            this.context.program,
+            checker,
+            declaration,
+        );
+        if (
+            !found ||
+            (found.repeated &&
+                someAnalysisNode(selection, ts.isObjectLiteralExpression) &&
+                rebuiltObjectObservation(this.context, declaration) !==
+                    undefined)
+        )
+            return undefined;
+        return selection;
     }
 
     /** Whether a selection has no one native storage (its arms differ). */
@@ -2097,16 +2117,27 @@ export class DeclarationLowerer {
                         : "copy",
                 );
             }
+            // A reference, or a wrapper copy of a path holding the same
+            // array, is a view of that array: it shares its element facts.
             const staticElementsOwner =
-                aliases && narrowed.staticElements
+                (aliases || (wrapperCopiesIdentity && !constructs)) &&
+                narrowed.staticElements
                     ? (narrowed.staticElementsOwner ?? narrowed)
                     : undefined;
+            // A const keeps the resource facts its selection's present arms
+            // share; a reassigned slot may hold another resource.
             const optionalHandle =
                 narrowed.dataType.kind === "optional" &&
                 narrowed.dataType.inner.kind === "handle"
-                    ? this.context.dataLowerer.leafValue(
-                          optionalValueCpp(boundCpp),
-                          narrowed.dataType.inner,
+                    ? withCommonResourceMetadata(
+                          this.context.dataLowerer.leafValue(
+                              optionalValueCpp(boundCpp),
+                              narrowed.dataType.inner,
+                          ),
+                          narrowed.runtimeElementTemplate &&
+                              variableKind(declaration) === "const"
+                              ? [narrowed.runtimeElementTemplate]
+                              : [],
                       )
                     : undefined;
             const taggedValue =
@@ -2198,6 +2229,7 @@ export class DeclarationLowerer {
                               }
                             : {}),
                         ...(!narrowed.freshData &&
+                        !optionalHandle &&
                         narrowed.runtimeElementTemplate
                             ? {
                                   runtimeElementTemplate:
@@ -4672,9 +4704,18 @@ export class DeclarationLowerer {
             ...(annotated.kind === "struct" &&
             initializerSnapshot?.kind === "record" &&
             ts.isIdentifier(name) &&
-            !mutablePlainObject &&
+            (!mutablePlainObject ||
+                this.ownKeysUnwritten(
+                    annotated.name,
+                    initializerSnapshot,
+                    name,
+                    initializer,
+                )) &&
             ownKeysKnown(this.context, initializerSnapshot, name)
-                ? { recordOwnKeys: recordPropertyKeys(initializerSnapshot) }
+                ? {
+                      recordOwnKeys: recordPropertyKeys(initializerSnapshot),
+                      declaredOwnKeys: true,
+                  }
                 : annotated.kind === "enummap" &&
                     ts.isObjectLiteralExpression(initializer) &&
                     !this.context.sharedClosures.identifierIsRebound(name)
@@ -4700,7 +4741,16 @@ export class DeclarationLowerer {
                   ? { recordProperties: staticRecordProperties }
                   : {}),
             ...(staticElements && !sharedDataBinding && !selfReferentialBinding
-                ? { staticElements }
+                ? {
+                      staticElements,
+                      ...(staticElements === staticTupleElements &&
+                      constantArrayWriteObservation(
+                          this.context,
+                          declaration,
+                      ) === undefined
+                          ? { unwrittenConstantArray: true as const }
+                          : {}),
+                  }
                 : {}),
         };
         const represented =
@@ -5206,6 +5256,35 @@ export class DeclarationLowerer {
             identifier,
         );
         return type?.kind === "handle";
+    }
+
+    /**
+     * Whether a stored record object keeps the own keys its creation gave
+     * it: nothing rebinds its name, and no write in the program can give it
+     * a key `record` lacks, or take one it has from it
+     * (`recordFieldIsWritten`, from `origin`).
+     */
+    private ownKeysUnwritten(
+        structName: string,
+        record: Value,
+        name: ts.Identifier,
+        origin: ts.Node,
+    ): boolean {
+        if (this.context.sharedClosures.identifierIsRebound(name)) return false;
+        const keys = recordPropertyKeys(record);
+        const type = this.context.checker.getTypeAtLocation(name);
+        return this.context.dataTypes
+            .structFields(structName, name, "accessors")
+            .every(
+                (field) =>
+                    !recordFieldIsWritten(
+                        this.context,
+                        type,
+                        field.sourceName,
+                        keys.includes(field.sourceName),
+                        origin,
+                    ),
+            );
     }
 
     /**

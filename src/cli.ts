@@ -24,6 +24,7 @@ import {
     composeBillboardPickingShader,
     composeCloudPickingShader,
     composeDeformPickingShaders,
+    composePickDiscardShaders,
     composeVatPickingShaders,
     composeDetailedMeshPickingShader,
     composeMeshPickingShader,
@@ -1358,6 +1359,16 @@ async function main(): Promise<void> {
                           "mesh:vat-instance-storage",
                       ),
               }),
+              // Each `discard` rule a pick reaches, for every pipeline
+              // a candidate of this scene can draw through.
+              discard: await composePickDiscardShaders(
+                  result.manifest.pickDiscardRules,
+                  {
+                      thin: gpuInstancing,
+                      detailed:
+                          result.manifest.features.includes("picking:detailed"),
+                  },
+              ),
               ...(result.manifest.features.includes("loader:splat")
                   ? { cloud: await composeCloudPickingShader() }
                   : {}),

@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import ts from "typescript";
 import { compileSource, surveySource } from "../src/compiler.js";
@@ -8,9 +10,12 @@ import {
     DynamicBindingStorageRequired,
     ParameterObjectStorageRequired,
 } from "../src/compiler/dynamic-binding-storage.js";
-import { EngineOwnerStorageRequired } from "../src/compiler/engine-owner-storage.js";
 import { GenericFunctionStorageRequired } from "../src/compiler/generic-function-storage.js";
 import { NativeRecordStorageRequired } from "../src/compiler/native-record-storage.js";
+import {
+    ReplayStorage,
+    type StorageRequest,
+} from "../src/compiler/replay-storage.js";
 import type { StorageDemand } from "../src/compiler/storage-demand.js";
 import {
     demandOrPlan,
@@ -380,6 +385,117 @@ test("a plan ends at a demand whose change later statements may read", () => {
     });
 });
 
+test("one plan collects two independent module-const dynamic demands and stops at their read", () => {
+    const { checker, statements, context, declarationAt } = plannedStatements(`
+        export const KEG_PIVOT = [0.5, 0.5, 0.5] as const;
+        export const BEER_PIVOT = [0.5, 0, 0.5] as const;
+        const height = KEG_PIVOT[1];
+    `);
+    const planner = new StorageDemandPlanner(checker);
+    const before = storagePlanningStatistics();
+    let read = false;
+    planner.run(() => {
+        for (let index = 0; index < 2; index++)
+            attemptPlanned(planner, context, statements[index]!, () => {
+                throw new DynamicBindingStorageRequired(
+                    declarationAt(index),
+                    "array",
+                );
+            });
+        attemptPlanned(planner, context, statements[2]!, () => {
+            read = true;
+        });
+    });
+    assert.deepEqual(
+        planner.demands.map((request) =>
+            request.kind === "dynamic"
+                ? request.declaration.name.getText()
+                : request.kind,
+        ),
+        ["KEG_PIVOT", "BEER_PIVOT"],
+    );
+    assert.equal(read, false);
+    assert.equal(storagePlanningStatistics().dependent - before.dependent, 1);
+});
+
+test("independent literal bindings batch without changing generated storage", () => {
+    const directory = join(
+        process.cwd(),
+        "artifacts",
+        "storage-demand-planner",
+        "module-bindings",
+    );
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        join(directory, "pivots.ts"),
+        `
+        export const seed = { value: 0, increment() { this.value++; } };
+        export const first = { value: 1, increment() { this.value++; } };
+        export const second = { value: 2, increment() { this.value++; } };
+        export function mutate(): void {
+            seed.increment();
+            first.increment();
+            second.increment();
+        }
+        `,
+    );
+    const source = `
+        import { seed, first, second, mutate } from "./pivots";
+        async function main(): Promise<void> {
+            await Promise.resolve();
+            mutate();
+            const held = [seed, first, second];
+            if (held.indexOf(seed) !== 0 || held.indexOf(first) !== 1 || held.indexOf(second) !== 2) throw new Error("identity");
+            globalThis.close();
+        }
+        void main();
+    `;
+    const compile = () =>
+        compileSource(source, { fileName: join(directory, "entry.ts") });
+    const baseline = measured(false, compile);
+    const planned = measured(true, compile);
+    assert.equal(planned.result.cpp, baseline.result.cpp);
+    assert.deepEqual(planned.result.manifest, baseline.result.manifest);
+    assert.ok(
+        planned.constructions < baseline.constructions,
+        `planned ${planned.constructions}, strict ${baseline.constructions}`,
+    );
+});
+
+test("a dynamic demand for another binding or an effectful initializer ends discovery", () => {
+    for (const [source, statementIndex, declarationIndex, storage] of [
+        ["let value = []; value = [1]; const next = [];", 1, 0, "array"],
+        ["const value = build(); const next = [];", 0, 0, "source"],
+        ["const value = holder.value; const next = [];", 0, 0, "source"],
+        ["const value = { ...holder }; const next = [];", 0, 0, "source"],
+        ["const value = [...items]; const next = [];", 0, 0, "array"],
+        ["const value = { [key]: 1 }; const next = [];", 0, 0, "source"],
+    ] as const) {
+        const { checker, statements, context, declarationAt } =
+            plannedStatements(source);
+        const planner = new StorageDemandPlanner(checker);
+        let next = false;
+        const before = storagePlanningStatistics();
+        planner.run(() => {
+            attemptPlanned(
+                planner,
+                context,
+                statements[statementIndex]!,
+                () => {
+                    throw new DynamicBindingStorageRequired(
+                        declarationAt(declarationIndex),
+                        storage,
+                    );
+                },
+            );
+            next = true;
+        });
+        assert.equal(next, false, source);
+        assert.equal(planner.demands.length, 1, source);
+        assert.equal(storagePlanningStatistics().writes - before.writes, 1);
+    }
+});
+
 test("a plan ends at a destructured generic call's signature", () => {
     // A destructured generic call's demand is not independent: the plan
     // ends there.
@@ -485,7 +601,7 @@ test("past a rolled-back statement a plan collects only demands of a key", () =>
     });
 });
 
-test("a demand lowering can go on past is planned, one kind per plan", () => {
+test("a demand lowering can go on past is planned, whatever kind follows", () => {
     const { checker, statements, declarationAt } = plannedStatements(`
         function keep(first: { value: number }, second: { value: number }) {}
         let other = { gain: 1 };
@@ -500,108 +616,104 @@ test("a demand lowering can go on past is planned, one kind per plan", () => {
         (error) => error === demand,
     );
     const planner = new StorageDemandPlanner(checker);
+    let lowered = false;
     planner.run(() => {
         demandOrPlan(demand);
         demandOrPlan(new ParameterObjectStorageRequired(second!));
-        // A demand of another kind may follow from the planned ones.
+        // Past the copies lowering stores what it stored before them.
         demandOrPlan(new DynamicBindingStorageRequired(other, undefined));
-        assert.fail("planning goes on past a demand of another kind");
+        lowered = true;
     });
+    assert.ok(lowered);
     assert.deepEqual(
         planner.demands.map((request) =>
             request.kind === "parameter-object"
                 ? request.declaration.name.getText()
                 : request.kind,
         ),
-        ["first", "second"],
+        ["first", "second", "dynamic"],
     );
 });
 
-test("past a demand lowering went on without, a plan collects demands of a key and keeps the order of the rest", () => {
-    // A record join goes on with a copy. An engine owner and an absence tag
-    // add only their keys: the plan collects them and goes on. A later
-    // join then could come before one following from the owner, which
-    // would change the order the compile lays records out in: the plan ends
-    // there, as at a binding's demand.
-    const { checker, statements, context, declarationAt } = plannedStatements(`
-        interface Target { name: string; type: string }
+test("past a demand lowering went on without, a plan ends at storage its site lowered", () => {
+    // A binding's element storage is a data type lowering read off values
+    // that may hold the copy: strict lowering could ask for another.
+    const { checker, statements, declarationAt } = plannedStatements(`
         function keep(first: { value: number }) {}
-        const first = { name: "a", type: "f32" };
-        const second = { name: "b", type: "u32" };
-        const tagged: string | null | undefined = undefined;
-        let other = { gain: 1 };
+        let other = [1];
     `);
-    const typeOf = (index: number) =>
-        checker.getTypeAtLocation(declarationAt(index).name);
-    const target = checker.getDeclaredTypeOfSymbol(
-        checker.getSymbolAtLocation(
-            (statements[0] as ts.InterfaceDeclaration).name,
-        )!,
-    );
-    const join = (index: number) =>
-        new NativeRecordStorageRequired({
-            identity: typeOf(index),
-            type: typeOf(index),
-            node: statements[index]!,
-            frames: [],
-            joins: [{ source: typeOf(index), target, kind: "value" }],
-        });
-    const owner = (statements[1] as ts.FunctionDeclaration).parameters[0]!;
-    const plan = (keys: boolean, last: StorageDemand) => {
+    const first = (statements[0] as ts.FunctionDeclaration).parameters[0]!;
+    const plan = (lowered: StorageDemand) => {
         const before = storagePlanningStatistics();
         const planner = new StorageDemandPlanner(checker);
-        const lowered: number[] = [];
         planner.run(() => {
-            attemptPlanned(planner, context, statements[2]!, () => {
-                demandOrPlan(join(2));
-                if (keys) demandOrPlan(new EngineOwnerStorageRequired(owner));
-                lowered.push(2);
-            });
-            attemptPlanned(planner, context, statements[3]!, () => {
-                demandOrPlan(last);
-                lowered.push(3);
-            });
-            if (keys)
-                attemptPlanned(planner, context, statements[4]!, () => {
-                    throw new AbsenceTagStorageRequired(declarationAt(4));
-                });
+            demandOrPlan(new ParameterObjectStorageRequired(first));
+            throw lowered;
         });
         return {
             demands: planner.demands.map((request) => request.kind),
-            lowered,
             writes: storagePlanningStatistics().writes - before.writes,
         };
     };
-    // Joins alone go on, as before.
-    assert.deepEqual(plan(false, join(3)), {
-        demands: ["record", "record"],
-        lowered: [2, 3],
-        writes: 0,
-    });
-    const ended = {
-        demands: ["record", "engine-owner"],
-        lowered: [2],
-        writes: 1,
-    };
-    assert.deepEqual(plan(true, join(3)), ended);
+    const elements = { kind: "number" } as const;
     assert.deepEqual(
-        plan(
-            true,
-            new DynamicBindingStorageRequired(declarationAt(5), undefined),
-        ),
-        ended,
+        plan(new DynamicBindingStorageRequired(declarationAt(1), { elements })),
+        { demands: ["parameter-object"], writes: 1 },
     );
-    // A demand of a key goes on past any.
-    assert.deepEqual(plan(true, new ParameterObjectStorageRequired(owner)), {
-        demands: ["record", "engine-owner", "parameter-object", "absence-tag"],
-        lowered: [2, 3],
-        writes: 0,
-    });
+    // A named storage is the binding's wherever lowering meets it.
+    assert.deepEqual(
+        plan(new DynamicBindingStorageRequired(declarationAt(1), "array")),
+        { demands: ["parameter-object", "dynamic"], writes: 0 },
+    );
 });
 
-test("a plan that went on past a demand ends at the next statement's demand of another kind", () => {
-    // Lowering on past the parameter's copy, the next statement's demand
-    // may follow from it: the plan ends there.
+test("past a demand lowering went on without, a plan lowers on as many statements as before its first", () => {
+    // A demand that follows from one the plan met (a join chain's next
+    // link) only the next attempt meets: past its latest demand the plan
+    // lowers on as far as it lowered before its first, then ends.
+    const { checker, statements, context } = plannedStatements(`
+        function keep(first: { value: number }, second: { value: number }) {}
+        const a = 1;
+        const b = 2;
+        const c = 3;
+        const d = 4;
+        const e = 5;
+    `);
+    const [first, second] = (statements[0] as ts.FunctionDeclaration)
+        .parameters;
+    const plan = (demands: ReadonlyMap<number, ts.ParameterDeclaration>) => {
+        const planner = new StorageDemandPlanner(checker);
+        const lowered: number[] = [];
+        planner.run(() => {
+            for (const [index, statement] of statements.entries())
+                attemptPlanned(planner, context, statement, () => {
+                    const parameter = demands.get(index);
+                    if (parameter)
+                        demandOrPlan(
+                            new ParameterObjectStorageRequired(parameter),
+                        );
+                    lowered.push(index);
+                });
+        });
+        return lowered;
+    };
+    // Two statements up to the demand, two past it.
+    assert.deepEqual(plan(new Map([[1, first!]])), [0, 1, 2, 3]);
+    // A later demand within them lowers on as far again.
+    assert.deepEqual(
+        plan(
+            new Map([
+                [1, first!],
+                [3, second!],
+            ]),
+        ),
+        [0, 1, 2, 3, 4, 5],
+    );
+});
+
+test("a plan that went on past a demand collects the next statement's demand of another kind", () => {
+    // Lowering on past the parameter's copy, the next statement's binding
+    // demand is collected; that ownership change ends the plan.
     const { checker, statements, context, declarationAt } = plannedStatements(`
         function keep(first: { value: number }) {}
         keep({ value: 1 });
@@ -626,9 +738,107 @@ test("a plan that went on past a demand ends at the next statement's demand of a
         };
     };
     assert.deepEqual(plan(), {
-        demands: ["parameter-object"],
+        demands: ["parameter-object", "dynamic"],
         writes: 1,
     });
+});
+
+test("replay storage lays out its records and bindings in an order of the program, whatever order it took them in", () => {
+    // A compile's predeclaration walks them in that order: a plan that met
+    // the demands in another order than strict lowering lays out the same
+    // program.
+    const { checker, statements, declarationAt } = plannedStatements(`
+        interface Target { name: string; type: string }
+        const first = { name: "a", type: "f32" };
+        const second = { name: "b", type: "u32" };
+        let third = { name: "c", type: "i32" };
+    `);
+    const typeOf = (index: number) =>
+        checker.getTypeAtLocation(declarationAt(index).name);
+    const target = checker.getDeclaredTypeOfSymbol(
+        checker.getSymbolAtLocation(
+            (statements[0] as ts.InterfaceDeclaration).name,
+        )!,
+    );
+    const join = (index: number, site: ts.Node) =>
+        new NativeRecordStorageRequired({
+            identity: typeOf(index),
+            type: typeOf(index),
+            node: site,
+            frames: [],
+            joins: [{ source: typeOf(index), target, kind: "value" }],
+        }).request;
+    const binding = (index: number) =>
+        new DynamicBindingStorageRequired(declarationAt(index), "source")
+            .request;
+    const taken = (requests: readonly StorageRequest[]) => {
+        const storage = new ReplayStorage(checker);
+        for (const request of requests) storage.add(request);
+        return storage;
+    };
+    const declared = (type: ts.Type) =>
+        [1, 2, 3].find((index) => typeOf(index) === type);
+    const layout = (storage: ReplayStorage) => ({
+        records: storage
+            .orderedRecords()
+            .map((demand) => declared(demand.type)),
+        joins: storage
+            .orderedJoins(storage.orderedRecords())
+            .map((join) => declared(join.source)),
+        bindings: storage
+            .sourceOrderedDynamicBindings()
+            .map(([declaration]) => declaration.name.getText()),
+    });
+    const forward = layout(
+        taken([
+            join(1, statements[1]!),
+            join(2, statements[2]!),
+            binding(1),
+            binding(3),
+        ]),
+    );
+    assert.deepEqual(
+        layout(
+            taken([
+                binding(3),
+                join(2, statements[2]!),
+                binding(1),
+                join(1, statements[1]!),
+            ]),
+        ),
+        forward,
+    );
+    assert.deepEqual(forward, {
+        records: [1, 2],
+        joins: [1, 2],
+        bindings: ["first", "third"],
+    });
+    // A record met again at a site its source spells first keeps that site.
+    const met = taken([join(1, statements[2]!), join(1, statements[1]!)]);
+    assert.equal(met.orderedRecords()[0]!.node, statements[1]);
+    // An instantiation comes after the records it resolves through, and a
+    // record stored with its declared functions before one mapped without
+    // them, wherever their sites are: the first maps a joined component.
+    const record = (index: number, stored: boolean, framed: boolean) =>
+        new NativeRecordStorageRequired({
+            identity: typeOf(index),
+            type: typeOf(index),
+            node: statements[index]!,
+            frames: framed
+                ? [new Map([[target.getSymbol()!, typeOf(index)]])]
+                : [],
+            ...(stored ? { stored: true as const } : {}),
+        }).request;
+    assert.deepEqual(
+        layout(
+            taken([
+                record(1, true, true),
+                record(2, false, false),
+                record(3, true, false),
+            ]),
+        ).records,
+        [3, 2, 1],
+    );
 });
 
 test("a plan goes on past an engine owner and meets the next store's", () => {
@@ -698,6 +908,44 @@ test("a plan goes on past a record join and meets the next store's engine owner"
     // the second owner; then the compile.
     assert.equal(planned.collected, 2);
     assert.equal(planned.constructions, 4);
+});
+
+test("a plan that went on past a demand collects the next one of another kind", () => {
+    // Engine owners and constants' objects alternate. Each object's binding
+    // demand ends its plan; past an owner a plan still collects it.
+    const source = `
+        interface Decl { name: string; size: number }
+        interface Holder { readonly el: HTMLElement }
+        interface Other { readonly other: HTMLElement }
+        const A: Decl = { name: "a", size: 1 };
+        const B: Decl = { name: "b", size: 2 };
+        const holders: Holder[] = [];
+        const others: Other[] = [];
+        async function main(): Promise<void> {
+            await Promise.resolve();
+            const root = document.createElement("div");
+            document.body.appendChild(root);
+            holders.push({ el: root });
+            const first: Decl[] = [A];
+            others.push({ other: root });
+            const second: Decl[] = [B];
+            holders[0]!.el.classList.add("x");
+            others[0]!.other.classList.add("y");
+            if (first.indexOf(A) !== 0 || second.indexOf(B) !== 0 || !root.classList.contains("y")) throw new Error("identity");
+            globalThis.close();
+        }
+        void main();
+    `;
+    const strict = measured(false, () => compileSource(source));
+    const planned = measured(true, () => compileSource(source));
+    assert.deepEqual(planned.result, strict.result);
+    // The worker realm, each owner, each object, then the compile.
+    assert.equal(strict.constructions, 6);
+    // The worker realm and the first owner; one plan meets the first
+    // object, the next goes on past the second owner and meets the second
+    // object; then the compile.
+    assert.equal(planned.collected, 3);
+    assert.equal(planned.constructions, 5);
 });
 
 test("a struct store demands every element field's engine owner in one replay", () => {

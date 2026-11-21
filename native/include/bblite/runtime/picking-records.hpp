@@ -44,6 +44,11 @@ struct PickDetailReadback {
      * the pick and the read.
      */
     std::array<float, 16> world{};
+    /**
+     * The pin's `worldAdjusted` for the winning range: a discard rule's
+     * `worldAdjustWgsl` moved it, so its CPU normals no longer describe it.
+     */
+    bool world_adjusted = false;
 };
 
 /**
@@ -52,8 +57,8 @@ struct PickDetailReadback {
  * WHAT WAS HIT, the basic pipeline's reconstructed world point, and the
  * detailed pipeline's own members -- the exact primitive, its barycentric
  * weights and the four normals `populateDetailedMeshInfo` derives.
- * `subMeshId` and `thinInstanceIndex` belong to pipelines this port does
- * not reach and remain outside this record.
+ * `subMeshId` belongs to pipelines this port does not reach and remains
+ * outside this record.
  */
 struct Engine;
 struct PickingInfoState {
@@ -81,6 +86,13 @@ struct PickingInfoState {
      */
     std::uint32_t picked_range_offset = 0;
     std::optional<std::array<double, 3>> picked_point{};
+    /**
+     * `thinInstanceIndex`: the hit's offset in a thin-instanced mesh's
+     * range, -1 for any other hit and a miss (`pickAsyncImpl`).
+     */
+    double thin_instance_index = -1.0;
+    /** `distance`: the pick origin to `picked_point` (`picked_distance`), 0 without one. */
+    double distance = 0.0;
     /**
      * `createEmptyPickingInfo`'s own detailed defaults: `faceId` is -1
      * ("no primitive"), the weights are zero and every normal is null.
@@ -112,6 +124,8 @@ struct PickingInfo {
     std::uint32_t& picked_index;
     std::uint32_t& picked_range_offset;
     std::optional<std::array<double, 3>>& picked_point;
+    double& thin_instance_index;
+    double& distance;
     double& face_id;
     double& bu;
     double& bv;
@@ -152,7 +166,8 @@ private:
     explicit PickingInfo(std::shared_ptr<PickingInfoState> shared)
         : state(std::move(shared)), hit(state->hit), picked_kind(state->picked_kind),
           picked_index(state->picked_index), picked_range_offset(state->picked_range_offset),
-          picked_point(state->picked_point), face_id(state->face_id), bu(state->bu), bv(state->bv),
+          picked_point(state->picked_point), thin_instance_index(state->thin_instance_index),
+          distance(state->distance), face_id(state->face_id), bu(state->bu), bv(state->bv),
           ray(state->ray), picked_normal(state->picked_normal),
           picked_normal_world(state->picked_normal_world),
           picked_face_normal(state->picked_face_normal),

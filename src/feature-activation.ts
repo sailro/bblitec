@@ -837,6 +837,18 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "(uniformDecls, samplerDecls, storageBufferDecls)",
         consumers: CMAKE,
     },
+    "material:shader-uniform-creation-lanes": {
+        provenance:
+            "src/material/shader/shader-material.ts createShaderMaterial " +
+            "(uniformDecls copies each declaration's defaultValue)",
+        consumers: CMAKE,
+    },
+    "material:shader-slot-maps": {
+        provenance:
+            "src/material/shader/shader-material.ts createShaderMaterial " +
+            "(_uniformValues, _textureSlots, _storageBufferSlots)",
+        consumers: CMAKE,
+    },
     "material:shader-storage": {
         provenance:
             "src/material/shader/storage-buffer.ts + " +
@@ -1377,6 +1389,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/texture/pixels-texture.ts (updateTexture2DFromPixels, queue.writeTexture)",
         consumers: CMAKE,
     },
+    "texture:pixels-3d": {
+        provenance: "src/texture/pixels-texture.ts (createTexture3DFromPixels)",
+        consumers: CMAKE,
+    },
     "sprite:custom-shader": {
         provenance:
             "src/sprite/sprite-custom-shader.ts + src/sprite/custom-shader-core.ts",
@@ -1690,6 +1706,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "src/frame-graph/transmission.ts enableRenderTaskTransmission " +
             "(executePassWithTransmission, transmission-depth-grab.ts)",
+        consumers: CMAKE,
+    },
+    "frame-graph:multisampled-task-transmission": {
+        provenance:
+            "src/frame-graph/transmission.ts BLIT_MSAA_SHADER " +
+            "(transmission-depth-grab.ts DEPTH_GRAB_MSAA_SHADER)",
         consumers: CMAKE,
     },
     "frame-graph:depth-resolve": {
@@ -2438,6 +2460,23 @@ function capabilityRows(
             "src/picking/vat-picking-pipeline.ts: a VAT candidate takes the " +
                 "advanced pipeline with the bake's projection; a thin one reads " +
                 "its clip params from the instance storage or texture.",
+            ["render_capabilities.hpp", "variant table", "deployed shaders"],
+        ),
+        checkedRow(
+            "BBLITE_PICK_DISCARD",
+            "capability",
+            (emit.pickingShaders?.discard?.length ?? 0) > 0,
+            [
+                [
+                    (emit.pickingShaders?.discard?.length ?? 0) > 0,
+                    "a GPU pick reaches at least one discard rule",
+                ],
+            ],
+            "no pickAsync names a discard rule",
+            "src/picking/picking-pipeline.ts: getPickingPipelineSet keys a " +
+                "rule's pipelines on its key and composes them from its WGSL " +
+                "and storage layout; a mesh whose storage entry returns null " +
+                "draws through the default pipeline.",
             ["render_capabilities.hpp", "variant table", "deployed shaders"],
         ),
         checkedRow(

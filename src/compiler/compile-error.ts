@@ -33,7 +33,9 @@ export class CompileError extends Error {
             | "entry-scope-required"
             | "dynamic-storage-required"
             // A selection whose arms have no one native storage.
-            | "mismatched-branches" = "unsupported",
+            | "mismatched-branches"
+            // A read of a part generation cannot read (`unreadableValue`).
+            | "unreadable-value" = "unsupported",
         subject?: ts.Node,
     ) {
         super(`${fileName}:${line}:${column}: ${message}`);

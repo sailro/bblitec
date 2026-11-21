@@ -24,6 +24,7 @@
 #include <bblite/features/compute_frame_graph.hpp>
 #include <bblite/features/frame_post_submit.hpp>
 #include <bblite/features/screenshot_capture.hpp>
+#include <bblite/features/shadows_csm.hpp>
 #include <bblite/features/device_recovery.hpp>
 #include <bblite/features/has_billboards.hpp>
 #include <bblite/features/has_clustered_lights.hpp>
@@ -181,6 +182,15 @@ void release(GpuState& state) {
         if (program.pipeline)
             SDL_ReleaseGPUGraphicsPipeline(state.device, program.pipeline);
         program.pipeline = nullptr;
+    }
+#endif
+#if BBLITE_PICK_DISCARD
+    for (auto& programs : state.pick_discard_programs) {
+        for (auto& program : programs) {
+            if (program.pipeline)
+                SDL_ReleaseGPUGraphicsPipeline(state.device, program.pipeline);
+            program.pipeline = nullptr;
+        }
     }
 #endif
 #if BBLITE_HAS_SPLATS
@@ -1476,9 +1486,9 @@ public:
                             &billboard_pick
 #endif
         ]([[maybe_unused]] GpuPickerHandle picker, double x, double y,
-                           const Engine::PickFilter* filter) -> PickingInfo {
+                           const Engine::PickOptions* options) -> PickingInfo {
             return pick_sdl_gpu_scene(state, engine, root_plan, overlay_plans,
-                                      active_registered_scenes, picker, x, y, filter
+                                      active_registered_scenes, picker, x, y, options
 #if BBLITE_HAS_BILLBOARDS
                                       ,
                                       billboard_pick
@@ -2182,9 +2192,13 @@ public:
                 capture_texture = nullptr;
             }
 #if BBLITE_HAS_TAA
+            // Only a frame running a TAA task submits temporally; any other
+            // encodes as a build without TAA does.
+            const bool temporal = frame_has_temporal_task(engine, data_.active_registered_scenes);
             // Queue occurrences, preserving task aliases and cross-scene order.
             // No draw is encoded if a later logical hook throws.
-            std::vector<std::variant<PreparedSdlScenePass, PreparedSdlPostProcessPass>>
+            std::vector<
+                std::variant<PreparedSdlScenePass, PreparedSdlPostProcessPass, PreparedSdlCopyPass>>
                 temporal_passes;
             {
 #endif
@@ -2400,9 +2414,7 @@ public:
                                                 ,
                                                 std::vector<PreparedSdlDraw>* deferred = nullptr,
                                                 const std::shared_ptr<PersistentSceneUniforms>&
-                                                    deferred_scene = {},
-                                                std::optional<SDL_GPUSampleCount> deferred_samples =
-                                                    {}
+                                                    deferred_scene = {}
 #endif
                                                 ,
                                                 std::optional<ShaderTaskTarget> shader_target = {},
@@ -2427,11 +2439,7 @@ public:
                         [[maybe_unused]] const auto task_samples =
                             shader_target
                                 ? std::optional<SDL_GPUSampleCount>{shader_target->samples}
-#if BBLITE_HAS_TAA
-                                : deferred_samples;
-#else
-                            : std::optional<SDL_GPUSampleCount>{};
-#endif
+                                : std::optional<SDL_GPUSampleCount>{};
                         bool scene_matrix_bound = true;
                         // One dispatch for both passes; only the sources
                         // differ (`secondary_pipeline_for`).
@@ -2957,7 +2965,7 @@ public:
                                    nullptr, nullptr, nullptr, false
 #if BBLITE_HAS_TAA
                                    ,
-                                   nullptr, {}, {}
+                                   nullptr, {}
 #endif
                                    ,
                                    frame_attachment
@@ -3028,8 +3036,9 @@ public:
                         }
 #endif
 #if BBLITE_HAS_TAA
-                        if (task.kind != FrameTaskKind::render &&
-                            task.kind != FrameTaskKind::post_process) {
+                        if (temporal && task.kind != FrameTaskKind::render &&
+                            task.kind != FrameTaskKind::post_process &&
+                            task.kind != FrameTaskKind::copy) {
                             throw std::runtime_error(
                                 "Temporal submission requires a prepared frame-task encoding adapter.");
                         }
@@ -3040,21 +3049,27 @@ public:
                             GpuRenderTarget& target = pal::resolve_gpu_target(
                                 engine, state.render_targets, task.render.target, target_user);
 #if BBLITE_HAS_TAA
-                            if (task.source_scene != graph_scene.state ||
-                                task.render.scene_stages ||
-                                task.render.shadow_generator.value != invalid_handle ||
-                                !target.color || target.color_format != state.frame_color_format) {
+                            // A colour pass needs its colour texture; a
+                            // depth-only one queues as the pin's no-colour
+                            // pass, over its own scene UBO.
+                            if (temporal && (task.source_scene != graph_scene.state ||
+                                             task.render.scene_stages ||
+                                             task.render.shadow_generator.value != invalid_handle ||
+                                             (target_record.has_color && !target.color))) {
                                 throw std::runtime_error(
-                                    "Temporal source requires a prepared Standard color pass in its owning scene.");
+                                    "Temporal source requires a prepared Standard color or depth-only pass in its owning scene.");
                             }
 #endif
                             CameraRecord* const task_camera = task_pass_camera(engine, task);
 #if BBLITE_HAS_TAA
-                            validate_temporal_source(engine, task, task_camera,
-                                                     handle_at(task_draw_lists, handle));
-                            prepare_temporal_scene_uniforms(
-                                task, task_camera, target.width, target.height, graph_extent.width,
-                                graph_extent.height, [](const float*, std::size_t) {});
+                            if (temporal) {
+                                validate_temporal_source(engine, task, task_camera,
+                                                         handle_at(task_draw_lists, handle));
+                                prepare_temporal_scene_uniforms(task, task_camera, target.width,
+                                                                target.height, graph_extent.width,
+                                                                graph_extent.height,
+                                                                [](const float*, std::size_t) {});
+                            }
 #endif
                             // `_writePassSceneUBO` folds the camera's own
                             // viewport into whichever extent the task was
@@ -3207,6 +3222,39 @@ public:
                                 continue;
                             }
 #endif
+#if BBLITE_HAS_TAA
+                            // A temporal frame queues the task's pass, colour or
+                            // depth-only, to encode in task order once every
+                            // pass is prepared, over the task's retained scene UBO.
+                            const auto queue_temporal_pass =
+                                [&](std::optional<SDL_GPUColorTargetInfo> color,
+                                    const SDL_GPUDepthStencilTargetInfo* depth,
+                                    const ShaderTaskTarget& shader_target,
+                                    SDL_GPUTexture* depth_copy) {
+                                    timing_sequence.refuse("render tasks of temporal frames");
+#if BBLITE_EXTERNAL_RENDERABLES
+                                    refuse_external_renderables(
+                                        graph_scene, "a temporal anti-aliasing source pass");
+#endif
+                                    PreparedSdlScenePass prepared;
+                                    prepared.target = color;
+                                    if (depth)
+                                        prepared.depth = *depth;
+                                    prepared.depth_copy = depth_copy;
+                                    prepared.viewport = upstream::pass_camera_viewport(
+                                        task_camera, static_cast<double>(target.width),
+                                        static_cast<double>(target.height));
+                                    upstream::sort_transparent_draws(
+                                        handle_at(task_draw_lists, handle).transparent, engine,
+                                        task_camera);
+                                    draw_scene(graph_scene, graph_meshes, nullptr, {}, {},
+                                               task_matrix, task_camera, task_pass_matrices, handle,
+                                               handle_at(task_draw_lists, handle), nullptr, nullptr,
+                                               nullptr, nullptr, nullptr, false, &prepared.draws,
+                                               task.scene_uniforms, shader_target);
+                                    temporal_passes.emplace_back(std::move(prepared));
+                                };
+#endif
                             if (!target_record.has_color) {
                                 if (!target_record.has_depth || !target.depth) {
                                     throw std::runtime_error(
@@ -3233,6 +3281,17 @@ public:
                                 task_depth.store_op = SDL_GPU_STOREOP_STORE;
                                 task_depth.stencil_load_op = task_depth.load_op;
                                 task_depth.stencil_store_op = SDL_GPU_STOREOP_STORE;
+                                const ShaderTaskTarget depth_target{
+                                    SDL_GPU_TEXTUREFORMAT_INVALID, target.depth_format,
+                                    target_sample_count(state, target_record),
+                                    target_record.depth_compare};
+#if BBLITE_HAS_TAA
+                                if (temporal) {
+                                    queue_temporal_pass(std::nullopt, &task_depth, depth_target,
+                                                        target.depth_copy);
+                                    continue;
+                                }
+#endif
                                 auto depth_timing = sdl_timed_pass(command, timing_sequence.pass());
                                 SdlRenderPass task_pass{
                                     SDL_BeginGPURenderPass(command, nullptr, 0, &task_depth)};
@@ -3248,17 +3307,15 @@ public:
                                            nullptr, nullptr, nullptr, false
 #if BBLITE_HAS_TAA
                                            ,
-                                           nullptr, {}, {}
+                                           nullptr, {}
 #endif
                                            ,
-                                           ShaderTaskTarget{
-                                               SDL_GPU_TEXTUREFORMAT_INVALID, target.depth_format,
-                                               target_sample_count(state, target_record),
-                                               target_record.depth_compare});
+                                           depth_target);
                                 task_pass.end();
                                 depth_timing.run();
                                 if (target.depth_copy)
-                                    encode_metal_depth_copy(state, command, target);
+                                    encode_metal_depth_copy(state, command, target.depth,
+                                                            target.depth_copy);
                                 continue;
                             }
                             SDL_GPUColorTargetInfo target_info{};
@@ -3326,44 +3383,25 @@ public:
                                 task_depth.stencil_store_op = SDL_GPU_STOREOP_STORE;
                                 task_depth_pointer = &task_depth;
                             }
+                            // The pipelines this colour pass draws through: the
+                            // task's own attachments, an external depth in the
+                            // frame's depth format.
+                            const ShaderTaskTarget task_shader_target{
+                                target.color_format,
+                                task_depth_pointer ? (task.render.depth.source ==
+                                                              RenderTextureSource::geometry_depth
+                                                          ? state.depth_format
+                                                          : target.depth_format)
+                                                   : SDL_GPU_TEXTUREFORMAT_INVALID,
+                                target_sample_count(state, target_record),
+                                target_record.depth_compare};
 #if BBLITE_HAS_TAA
-                            // The temporal source's pass is encoded after its
-                            // post-process writes, outside this task.
-                            (void)pal::task_pass_breaks(task, {.temporal = true});
-                            timing_sequence.refuse("temporal anti-aliasing sources");
-#if BBLITE_EXTERNAL_RENDERABLES
-                            refuse_external_renderables(graph_scene,
-                                                        "a temporal anti-aliasing source pass");
-#endif
-                            PreparedSdlScenePass prepared;
-                            prepared.target = target_info;
-                            if (task_depth_pointer)
-                                prepared.depth = *task_depth_pointer;
-                            if (const std::optional<PixelViewport> rectangle =
-                                    upstream::pass_camera_viewport(
-                                        task_camera, static_cast<double>(target.width),
-                                        static_cast<double>(target.height))) {
-                                prepared.viewport =
-                                    SDL_GPUViewport{static_cast<float>(rectangle->x),
-                                                    static_cast<float>(rectangle->y),
-                                                    static_cast<float>(rectangle->width),
-                                                    static_cast<float>(rectangle->height),
-                                                    0.0f,
-                                                    1.0f};
-                                prepared.scissor = SDL_Rect{rectangle->x, rectangle->y,
-                                                            rectangle->width, rectangle->height};
+                            if (temporal) {
+                                (void)pal::task_pass_breaks(task, {.temporal = true});
+                                queue_temporal_pass(target_info, task_depth_pointer,
+                                                    task_shader_target, nullptr);
+                                continue;
                             }
-                            upstream::sort_transparent_draws(
-                                handle_at(task_draw_lists, handle).transparent, engine,
-                                task_camera);
-                            draw_scene(graph_scene, graph_meshes, nullptr, {}, {}, task_matrix,
-                                       task_camera, task_pass_matrices, handle,
-                                       handle_at(task_draw_lists, handle), nullptr, nullptr,
-                                       nullptr, nullptr, nullptr, false, &prepared.draws,
-                                       task.scene_uniforms,
-                                       target_sample_count(state, target_record));
-                            temporal_passes.emplace_back(std::move(prepared));
-                            continue;
 #endif
 #if BBLITE_EXTERNAL_RENDERABLES
 #if BBLITE_PINNED_MATERIALS
@@ -3419,9 +3457,7 @@ public:
                             // execution) and its break: end the pass, grab, and
                             // resume loading what the first segment stored.
                             pal::TaskPassBreaks pass_breaks = pal::task_pass_breaks(
-                                task, {.multisampled = target_sample_count(state, target_record) !=
-                                                       SDL_GPU_SAMPLECOUNT_1,
-                                       .swapchain = target_record.swapchain,
+                                task, {.swapchain = target_record.swapchain,
                                        .billboard_stages =
                                            BBLITE_HAS_BILLBOARDS && task.render.scene_stages,
                                        .external_renderables = task_externals != nullptr});
@@ -3459,27 +3495,18 @@ public:
                                 }
 #endif
                             }
-                            draw_scene(
-                                graph_scene, graph_meshes, task_pass, state.shader_pipelines,
-                                state.shader_a2c_pipelines, task_matrix, task_camera,
-                                task_pass_matrices, handle, handle_at(task_draw_lists, handle),
-                                nullptr, nullptr, nullptr, nullptr, nullptr,
-                                task.render.scene_stages
+                            draw_scene(graph_scene, graph_meshes, task_pass, state.shader_pipelines,
+                                       state.shader_a2c_pipelines, task_matrix, task_camera,
+                                       task_pass_matrices, handle,
+                                       handle_at(task_draw_lists, handle), nullptr, nullptr,
+                                       nullptr, nullptr, nullptr, task.render.scene_stages
 #if BBLITE_HAS_TAA
-                                ,
-                                nullptr, {}, {}
+                                       ,
+                                       nullptr, {}
 #endif
-                                ,
-                                ShaderTaskTarget{target.color_format,
-                                                 task_depth_pointer
-                                                     ? (task.render.depth.source ==
-                                                                RenderTextureSource::geometry_depth
-                                                            ? state.depth_format
-                                                            : target.depth_format)
-                                                     : SDL_GPU_TEXTUREFORMAT_INVALID,
-                                                 target_sample_count(state, target_record),
-                                                 target_record.depth_compare},
-                                &pass_breaks, resume_pass, task_externals);
+                                       ,
+                                       task_shader_target, &pass_breaks, resume_pass,
+                                       task_externals);
                             if (task.render.scene_stages) {
 #if BBLITE_HAS_TEXT
                                 // The scene's text, bound for this pass's
@@ -3678,9 +3705,15 @@ public:
                                 sdl_timed_pass(command, timing_sequence.pass());
                             SdlRenderPass effect_pass{
                                 SDL_BeginGPURenderPass(command, &effect_target, 1, nullptr)};
+                            EffectCsmTextureSource csm_texture;
+#if BBLITE_SHADOWS_CSM && BBLITE_SHADOW_RECEIVERS
+                            csm_texture = [&](ShadowGeneratorHandle generator) {
+                                return csm_receiver_binding(state, generator);
+                            };
+#endif
                             record_effect_task_pass(command, effect_pass, engine, pass, task,
                                                     effect_output.width, effect_output.height,
-                                                    source_texture);
+                                                    source_texture, csm_texture);
                             effect_pass.end();
                             if (target_record.swapchain) {
                                 capture_texture = effect_target.texture;
@@ -3699,56 +3732,59 @@ public:
 #if BBLITE_HAS_POST_PROCESS
                         if (task.kind == FrameTaskKind::post_process) {
 #if BBLITE_HAS_TAA
-                            // Temporal builds encode every post-process pass
-                            // after the frame's final writes, outside its task.
-                            timing_sequence.refuse("post-process tasks of temporal frames");
-                            if (task.post_process.taa) {
-                                auto& taa = *task.post_process.taa;
-                                auto& source = engine.frame_tasks.at(
-                                    task.post_process.source_tasks.at(0).value);
-                                if (!source.source_scene || !source.scene_uniforms) {
-                                    throw std::runtime_error(
-                                        "Temporal task source has no retained scene UBO.");
+                            if (temporal) {
+                                // A temporal frame encodes every post-process pass
+                                // after the frame's final writes, outside its task.
+                                timing_sequence.refuse("post-process tasks of temporal frames");
+                                if (task.post_process.taa) {
+                                    auto& taa = *task.post_process.taa;
+                                    auto& source = engine.frame_tasks.at(
+                                        task.post_process.source_tasks.at(0).value);
+                                    if (!source.source_scene || !source.scene_uniforms) {
+                                        throw std::runtime_error(
+                                            "Temporal task source has no retained scene UBO.");
+                                    }
+                                    CameraRecord* camera = task_pass_camera(engine, source);
+                                    [[maybe_unused]] const double draws =
+                                        upstream::execute_taa_post_process(
+                                            taa, task.post_process.passes.at(0).params[0], camera,
+                                            [](CameraRecord* value) {
+                                                return upstream::scene_camera_change_key(*value);
+                                            },
+                                            [&](std::size_t child) {
+                                                write_sdl_gpu_post_process_uniforms(
+                                                    state, engine, handle, child, width, height);
+                                            },
+                                            [&](std::size_t child) -> std::optional<double> {
+                                                temporal_passes.emplace_back(
+                                                    prepare_post_process_pass(
+                                                        state, engine, handle, swapchain,
+                                                        swapchain_format, width, height, child,
+                                                        source_texture, target_texture, false));
+                                                return upstream::post_process_leaf_draw_count();
+                                            },
+                                            [&](TaaPostProcessState& value) {
+                                                const auto& blend = task.post_process.passes.at(0);
+                                                const auto extent = resolve_post_process_extent(
+                                                    pal::resolve_render_target(
+                                                        engine, blend.output_target, target_user),
+                                                    state.render_targets, blend, width, height);
+                                                advance_temporal_jitter(
+                                                    value, *source.scene_uniforms,
+                                                    extent.source_width, extent.source_height,
+                                                    [](std::size_t, const float*, std::size_t) {});
+                                            });
+                                    ++taa.execution_count;
+                                } else {
+                                    for (std::size_t child = 0;
+                                         child < task.post_process.passes.size(); ++child) {
+                                        temporal_passes.emplace_back(prepare_post_process_pass(
+                                            state, engine, handle, swapchain, swapchain_format,
+                                            width, height, child, source_texture, target_texture));
+                                    }
                                 }
-                                CameraRecord* camera = task_pass_camera(engine, source);
-                                [[maybe_unused]] const double draws =
-                                    upstream::execute_taa_post_process(
-                                        taa, task.post_process.passes.at(0).params[0], camera,
-                                        [](CameraRecord* value) {
-                                            return upstream::scene_camera_change_key(*value);
-                                        },
-                                        [&](std::size_t child) {
-                                            write_sdl_gpu_post_process_uniforms(
-                                                state, engine, handle, child, width, height);
-                                        },
-                                        [&](std::size_t child) -> std::optional<double> {
-                                            temporal_passes.emplace_back(prepare_post_process_pass(
-                                                state, engine, handle, swapchain, swapchain_format,
-                                                width, height, child, source_texture,
-                                                target_texture, false));
-                                            return upstream::post_process_leaf_draw_count();
-                                        },
-                                        [&](TaaPostProcessState& value) {
-                                            const auto& blend = task.post_process.passes.at(0);
-                                            const auto extent = resolve_post_process_extent(
-                                                pal::resolve_render_target(
-                                                    engine, blend.output_target, target_user),
-                                                state.render_targets, blend, width, height);
-                                            advance_temporal_jitter(
-                                                value, *source.scene_uniforms, extent.source_width,
-                                                extent.source_height,
-                                                [](std::size_t, const float*, std::size_t) {});
-                                        });
-                                ++taa.execution_count;
-                            } else {
-                                for (std::size_t child = 0; child < task.post_process.passes.size();
-                                     ++child) {
-                                    temporal_passes.emplace_back(prepare_post_process_pass(
-                                        state, engine, handle, swapchain, swapchain_format, width,
-                                        height, child, source_texture, target_texture));
-                                }
+                                continue;
                             }
-                            continue;
 #endif
                             // A composite records the chain its own factory
                             // built; a plain effect is the same loop over one.
@@ -3790,11 +3826,10 @@ public:
                             continue;
                         }
                         const bool force_full_viewport = frame_options.full_copy_viewport(copy);
+                        PreparedSdlCopyPass prepared;
                         if (copy.resolve_target.value != invalid_handle &&
                             copy.target.value == invalid_handle) {
                             // The source's resolve path is always one pass.
-                            const auto resolve_timing =
-                                sdl_timed_pass(command, timing_sequence.pass());
                             if (copy.source.source != RenderTextureSource::render_target) {
                                 throw std::runtime_error("Resolve source must be a render target.");
                             }
@@ -3809,177 +3844,152 @@ public:
                                 // scene failed under BBLITE_MSAA=1.
                                 const GpuRenderTarget& resolve_source = pal::resolve_gpu_target(
                                     engine, state.render_targets, copy.source.target, target_user);
-                                SDL_GPUTextureLocation copy_source{};
-                                copy_source.texture = target_texture(copy.source.target, false);
-                                SDL_GPUTextureLocation copy_destination{};
-                                copy_destination.texture =
+                                PreparedSdlCopyPass::TextureCopy texture_copy;
+                                texture_copy.source.texture =
+                                    target_texture(copy.source.target, false);
+                                texture_copy.destination.texture =
                                     target_texture(copy.resolve_target, false);
-                                SdlCopyPass resolve_copy{SDL_BeginGPUCopyPass(command)};
-                                SDL_CopyGPUTextureToTexture(resolve_copy, &copy_source,
-                                                            &copy_destination, resolve_source.width,
-                                                            resolve_source.height, 1, false);
-                                resolve_copy.end();
-                                continue;
+                                texture_copy.width = resolve_source.width;
+                                texture_copy.height = resolve_source.height;
+                                prepared.texture_copy = texture_copy;
+                            } else {
+                                prepared.target.texture = target_texture(copy.source.target, false);
+                                prepared.target.load_op = SDL_GPU_LOADOP_LOAD;
+                                prepared.target.store_op =
+                                    overlay_keeps_samples(engine, frame_overlays,
+                                                          copy.source.target)
+                                        ? SDL_GPU_STOREOP_RESOLVE_AND_STORE
+                                        : SDL_GPU_STOREOP_RESOLVE;
+                                prepared.target.resolve_texture =
+                                    target_texture(copy.resolve_target, false);
                             }
-                            SDL_GPUColorTargetInfo resolve_info{};
-                            resolve_info.texture = target_texture(copy.source.target, false);
-                            resolve_info.load_op = SDL_GPU_LOADOP_LOAD;
-                            resolve_info.store_op =
-                                overlay_keeps_samples(engine, frame_overlays, copy.source.target)
-                                    ? SDL_GPU_STOREOP_RESOLVE_AND_STORE
-                                    : SDL_GPU_STOREOP_RESOLVE;
-                            resolve_info.resolve_texture =
-                                target_texture(copy.resolve_target, false);
-                            SdlRenderPass resolve_pass{
-                                SDL_BeginGPURenderPass(command, &resolve_info, 1, nullptr)};
-                            resolve_pass.end();
-                            continue;
-                        }
-
-                        const RenderTargetRecord& target_record =
-                            pal::resolve_render_target(engine, copy.target, target_user);
-                        const auto blit_timing = sdl_timed_pass(command, timing_sequence.pass());
-                        // A copy writing a VIEWPORT of the swapchain composes
-                        // with whatever else wrote the rest of it -- scene 187
-                        // presents SMAA into one half and the raw image into
-                        // the other -- and an SDL_GPU swapchain texture cannot
-                        // be read back. So it draws into the same readable
-                        // present copy a presenting post-process pass uses, and
-                        // that copy is what gets blitted and captured. Drawing
-                        // straight to the swapchain instead left the capture
-                        // reading this copy's own source: half the frame, at
-                        // half the width.
-                        const auto surface_pane =
-                            target_record.swapchain && !force_full_viewport
-                                ? scene_surface_pane(engine, graph_scene, width, height)
-                                : std::nullopt;
-                        if (surface_pane) {
-                            // After a direct pass, `swapchain` names that pass's image.
-                            if (whole_frame)
-                                create_color(state, swapchain_format, width, height, true);
-                            SDL_GPUColorTargetInfo surface_target{};
-                            surface_target.texture = whole_frame ? state.color : swapchain;
-                            surface_target.load_op =
-                                graph_layer == 0 ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
-                            surface_target.store_op = SDL_GPU_STOREOP_STORE;
-                            SdlRenderPass surface_pass{
-                                SDL_BeginGPURenderPass(command, &surface_target, 1, nullptr)};
-                            const SDL_GPUViewport viewport{static_cast<float>(surface_pane->x),
-                                                           static_cast<float>(surface_pane->y),
-                                                           static_cast<float>(surface_pane->width),
-                                                           static_cast<float>(surface_pane->height),
-                                                           0.0f,
-                                                           1.0f};
-                            const SDL_Rect scissor{surface_pane->x, surface_pane->y,
-                                                   surface_pane->width, surface_pane->height};
-                            SDL_SetGPUViewport(surface_pass, &viewport);
-                            SDL_SetGPUScissor(surface_pass, &scissor);
-                            SDL_BindGPUGraphicsPipeline(surface_pass, state.blit_pipeline);
-                            const SDL_GPUTextureSamplerBinding binding{source_texture(copy.source),
-                                                                       state.background_sampler};
-                            SDL_BindGPUFragmentSamplers(surface_pass, 0, &binding, 1);
-                            count_gpu_draw(SDL_DrawGPUPrimitives, surface_pass, 3, 1, 0, 0);
-                            surface_pass.end();
-                            if (whole_frame)
-                                capture_texture = state.color;
-                            continue;
-                        }
-                        const bool partial_present =
-                            target_record.swapchain && copy.has_viewport && !force_full_viewport;
+                        } else {
+                            const RenderTargetRecord& target_record =
+                                pal::resolve_render_target(engine, copy.target, target_user);
+                            prepared.source = SDL_GPUTextureSamplerBinding{
+                                source_texture(copy.source), state.background_sampler};
+                            // A copy writing a VIEWPORT of the swapchain composes
+                            // with whatever else wrote the rest of it -- scene 187
+                            // presents SMAA into one half and the raw image into
+                            // the other -- and an SDL_GPU swapchain texture cannot
+                            // be read back. So it draws into the same readable
+                            // present copy a presenting post-process pass uses, and
+                            // that copy is what gets blitted and captured. Drawing
+                            // straight to the swapchain instead left the capture
+                            // reading this copy's own source: half the frame, at
+                            // half the width.
+                            const auto surface_pane =
+                                target_record.swapchain && !force_full_viewport
+                                    ? scene_surface_pane(engine, graph_scene, width, height)
+                                    : std::nullopt;
+                            if (surface_pane) {
+                                // After a direct pass, `swapchain` names that pass's image.
+                                if (whole_frame)
+                                    create_color(state, swapchain_format, width, height, true);
+                                prepared.target.texture = whole_frame ? state.color : swapchain;
+                                prepared.target.load_op =
+                                    graph_layer == 0 ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
+                                prepared.target.store_op = SDL_GPU_STOREOP_STORE;
+                                prepared.pipeline = state.blit_pipeline;
+                                prepared.viewport = surface_pane;
+                                if (whole_frame)
+                                    prepared.capture = state.color;
+                            } else {
+                                const bool partial_present = target_record.swapchain &&
+                                                             copy.has_viewport &&
+                                                             !force_full_viewport;
 #if BBLITE_HAS_POST_PROCESS
-                        if (partial_present && !state.post_process_present) {
-                            state.post_process_present = create_frame_texture(
-                                state.device, swapchain_format, SDL_GPU_SAMPLECOUNT_1, width,
-                                height,
-                                SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER, 1,
-                                true);
-                        }
-#else
-                    if (partial_present) {
-                        throw std::runtime_error("A copy task writing a viewport of the "
-                                                 "swapchain needs the readable present copy, "
-                                                 "which only a post-process build carries.");
-                    }
-#endif
-                        SDL_GPUColorTargetInfo blit_target{};
-#if BBLITE_HAS_POST_PROCESS
-                        blit_target.texture = partial_present ? state.post_process_present
+                                if (partial_present && !state.post_process_present) {
+                                    state.post_process_present =
+                                        create_frame_texture(state.device, swapchain_format,
+                                                             SDL_GPU_SAMPLECOUNT_1, width, height,
+                                                             SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
+                                                                 SDL_GPU_TEXTUREUSAGE_SAMPLER,
+                                                             1, true);
+                                }
+                                prepared.target.texture = partial_present
+                                                              ? state.post_process_present
                                                               : target_texture(copy.target, false);
 #else
-                    blit_target.texture = target_texture(copy.target, false);
+                            if (partial_present) {
+                                throw std::runtime_error(
+                                    "A copy task writing a viewport of the "
+                                    "swapchain needs the readable present copy, "
+                                    "which only a post-process build carries.");
+                            }
+                            prepared.target.texture = target_texture(copy.target, false);
 #endif
-                        blit_target.load_op = copy.has_viewport && !force_full_viewport
-                                                  ? SDL_GPU_LOADOP_LOAD
-                                                  : SDL_GPU_LOADOP_DONT_CARE;
-                        blit_target.store_op = SDL_GPU_STOREOP_STORE;
-                        SdlRenderPass blit_pass{
-                            SDL_BeginGPURenderPass(command, &blit_target, 1, nullptr)};
-                        SDL_BindGPUGraphicsPipeline(blit_pass,
-                                                    target_sample_count(state, target_record) ==
+                                prepared.target.load_op = copy.has_viewport && !force_full_viewport
+                                                              ? SDL_GPU_LOADOP_LOAD
+                                                              : SDL_GPU_LOADOP_DONT_CARE;
+                                prepared.target.store_op = SDL_GPU_STOREOP_STORE;
+                                prepared.pipeline = target_sample_count(state, target_record) ==
                                                             SDL_GPU_SAMPLECOUNT_1
                                                         ? state.blit_pipeline
-                                                        : state.blit_msaa_pipeline);
-                        if (force_full_viewport || copy.has_viewport) {
+                                                        : state.blit_msaa_pipeline;
+                                if (force_full_viewport || copy.has_viewport) {
 #if BBLITE_HAS_GEOMETRY_OUTPUT
-                            const GpuRenderTarget& target = pal::resolve_gpu_target(
-                                engine, state.render_targets, copy.target, target_user);
-                            const NormalizedViewport normalized_viewport =
-                                force_full_viewport ? NormalizedViewport{} : copy.viewport;
-                            const PixelViewport pixel_viewport = upstream::resolve_copy_viewport(
-                                normalized_viewport, target.width, target.height);
-                            const SDL_GPUViewport gpu_viewport{
-                                static_cast<float>(pixel_viewport.x),
-                                static_cast<float>(pixel_viewport.y),
-                                static_cast<float>(pixel_viewport.width),
-                                static_cast<float>(pixel_viewport.height),
-                                0.0f,
-                                1.0f,
-                            };
-                            SDL_SetGPUViewport(blit_pass, &gpu_viewport);
-                            const SDL_Rect scissor{
-                                pixel_viewport.x,
-                                pixel_viewport.y,
-                                pixel_viewport.width,
-                                pixel_viewport.height,
-                            };
-                            SDL_SetGPUScissor(blit_pass, &scissor);
+                                    const GpuRenderTarget& target = pal::resolve_gpu_target(
+                                        engine, state.render_targets, copy.target, target_user);
+                                    const NormalizedViewport normalized_viewport =
+                                        force_full_viewport ? NormalizedViewport{} : copy.viewport;
+                                    prepared.viewport = upstream::resolve_copy_viewport(
+                                        normalized_viewport, target.width, target.height);
 #else
-                        throw std::runtime_error("Viewport copy requires geometry-output support.");
+                                throw std::runtime_error(
+                                    "Viewport copy requires geometry-output support.");
 #endif
-                        }
-                        const SDL_GPUTextureSamplerBinding texture_binding{
-                            source_texture(copy.source),
-                            state.background_sampler,
-                        };
-                        SDL_BindGPUFragmentSamplers(blit_pass, 0, &texture_binding, 1);
-                        count_gpu_draw(SDL_DrawGPUPrimitives, blit_pass, 3, 1, 0, 0);
-                        blit_pass.end();
+                                }
 #if BBLITE_HAS_POST_PROCESS
-                        if (partial_present) {
-                            // Present what the frame composed, and capture the
-                            // same texture -- the post-process present pass
-                            // does exactly this after its own draw.
-                            SDL_GPUBlitInfo present_blit{};
-                            present_blit.source = SDL_GPUBlitRegion{
-                                state.post_process_present, 0, 0, 0, 0, width, height};
-                            present_blit.destination = SDL_GPUBlitRegion{
-                                target_texture(copy.target, false), 0, 0, 0, 0, width, height};
-                            present_blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
-                            present_blit.flip_mode = SDL_FLIP_NONE;
-                            present_blit.filter = SDL_GPU_FILTER_NEAREST;
-                            SDL_BlitGPUTexture(command, &present_blit);
-                            capture_texture = state.post_process_present;
-                        } else
+                                if (partial_present) {
+                                    // Present what the frame composed, and capture the
+                                    // same texture -- the post-process present pass
+                                    // does exactly this after its own draw.
+                                    SDL_GPUBlitInfo present_blit{};
+                                    present_blit.source = SDL_GPUBlitRegion{
+                                        state.post_process_present, 0, 0, 0, 0, width, height};
+                                    present_blit.destination =
+                                        SDL_GPUBlitRegion{target_texture(copy.target, false),
+                                                          0,
+                                                          0,
+                                                          0,
+                                                          0,
+                                                          width,
+                                                          height};
+                                    present_blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
+                                    present_blit.flip_mode = SDL_FLIP_NONE;
+                                    present_blit.filter = SDL_GPU_FILTER_NEAREST;
+                                    prepared.present = present_blit;
+                                    prepared.capture = state.post_process_present;
+                                } else
 #endif
-                            if (target_record.swapchain) {
-                            capture_texture = source_texture(copy.source);
+                                    if (target_record.swapchain) {
+                                    prepared.capture = prepared.source.texture;
+                                }
+                            }
                         }
+#if BBLITE_HAS_TAA
+                        if (temporal) {
+                            // Encoded in task order with the passes a temporal
+                            // frame queues after its final writes.
+                            timing_sequence.refuse("copy tasks of temporal frames");
+                            temporal_passes.emplace_back(prepared);
+                            continue;
+                        }
+#endif
+                        const auto copy_timing = sdl_timed_pass(command, timing_sequence.pass());
+                        encode_sdl_copy_pass(command, prepared, capture_texture);
                     }
                 }
 #if BBLITE_HAS_TAA
                 for (const auto& prepared : temporal_passes) {
                     if (const auto* source = std::get_if<PreparedSdlScenePass>(&prepared)) {
                         encode_sdl_gpu_prepared_scene(command, *source);
+                        if (source->depth_copy)
+                            encode_metal_depth_copy(state, command, source->depth->texture,
+                                                    source->depth_copy);
+                    } else if (const auto* copy = std::get_if<PreparedSdlCopyPass>(&prepared)) {
+                        encode_sdl_copy_pass(command, *copy, capture_texture);
                     } else {
                         encode_post_process_pass(state, command,
                                                  std::get<PreparedSdlPostProcessPass>(prepared),

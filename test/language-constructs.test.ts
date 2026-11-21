@@ -1481,6 +1481,165 @@ check(
 `,
 );
 
+// A spread literal of compile-time tuples is one: each spread builds a new
+// array, read at generation, mutated, aliased, stored and compared as the
+// run time keeps it.
+check(
+    "spread-literals-of-compile-time-tuples-are-new-arrays",
+    `
+    function reads(): void {
+        const rows = [{ name: "a", n: 1 }, { name: "b", n: 2 }];
+        const more = [...rows, { name: "c", n: 3 }];
+        if (more.length !== 3 || more[2]!.n !== 3 || more[0]!.name !== "a" || !more.some((row) => row.name === "c")) throw new Error("reads");
+    }
+    function mutation(): void {
+        const lanes = [1, 2];
+        const grown = [...lanes, 3];
+        grown.push(4);
+        grown[0] = 9;
+        if (lanes.length !== 2 || lanes[0] !== 1 || grown.join(",") !== "9,2,3,4") throw new Error("mutation after the spread");
+    }
+    function aliasing(): void {
+        const lanes = [1, 2];
+        const grown = [...lanes, 3];
+        const alias = grown;
+        alias.push(5);
+        alias[1] = 8;
+        if (grown.length !== 4 || grown[1] !== 8 || alias !== grown || lanes[1] !== 2) throw new Error("aliasing");
+    }
+    function identity(): void {
+        const lanes = [1, 2];
+        const copy = [...lanes];
+        const again = [...lanes];
+        if (copy === lanes || copy === again || copy.length !== again.length) throw new Error("identity");
+    }
+    function escape(): void {
+        const lanes = [1, 2];
+        const lists: number[][] = [];
+        const copy = [...lanes];
+        lists.push(copy);
+        lists[0]![0] = 7;
+        const holder: { items: number[] } = { items: [...lanes, ...copy] };
+        holder.items.push(6);
+        if (copy[0] !== 7 || lists[0] !== copy || holder.items.join(",") !== "1,2,7,2,6" || lanes[0] !== 1) throw new Error("escape into storage");
+    }
+    function records(): void {
+        const rows = [{ name: "a", n: 1 }, { name: "b", n: 2 }];
+        const more = [...rows, { name: "c", n: 3 }];
+        more[0]!.n = 5;
+        more.push({ name: "d", n: 4 });
+        if (more[0] !== rows[0] || rows[0]!.n !== 5 || rows.length !== 2 || more.length !== 4) throw new Error("record elements");
+    }
+    function elementWrite(): void {
+        const rows = [{ name: "a", n: 1 }, { name: "b", n: 2 }];
+        const copy = [...rows];
+        copy[1]!.n = 6;
+        if (rows[1]!.n !== 6 || copy[1] !== rows[1]) throw new Error("element write");
+    }
+    reads();
+    mutation();
+    aliasing();
+    identity();
+    escape();
+    records();
+    elementWrite();
+`,
+);
+
+// A helper's spread of the declarations it is given returns new arrays over
+// the same records, searched at generation and written where they live.
+check(
+    "spread-results-a-helper-returns-keep-element-identity-and-writes",
+    `
+    interface Row { name: string; size: number }
+    function hasRow<T extends { name: string }>(rows: readonly T[], name: string): boolean {
+        let visits = 0;
+        const found = rows.some((row) => { visits++; return row.name === name; });
+        if (visits === 0 && rows.length > 0) throw new Error("predicate effects");
+        return found;
+    }
+    function withRow<T extends { name: string }>(rows: readonly T[], row: T): T[] {
+        return hasRow(rows, row.name) ? [...rows] : [...rows, row];
+    }
+    const EXTRA: Row = { name: "extra", size: 4 };
+    const READ: readonly Row[] = [{ name: "a", size: 1 }, { name: "b", size: 2 }];
+    const SAME: readonly Row[] = [{ name: "a", size: 1 }, { name: "b", size: 2 }];
+    const GROWN: readonly Row[] = [{ name: "a", size: 1 }, { name: "b", size: 2 }];
+    const PUSHED: readonly Row[] = [{ name: "a", size: 1 }, { name: "b", size: 2 }];
+    function reads(): void {
+        const added = withRow(withRow(READ, EXTRA), EXTRA);
+        if (added.length !== 3 || added[2]!.name !== "extra" || !hasRow(added, "a") || hasRow(added, "z")) throw new Error("reads");
+    }
+    function identity(): void {
+        const added = withRow(SAME, EXTRA);
+        const kept = withRow(SAME, SAME[0]!);
+        if (added.length !== 3 || kept.length !== 2 || added === kept || kept === SAME) throw new Error("helper results");
+        if (added[0] !== SAME[0] || added[2] !== EXTRA || kept[1] !== SAME[1]) throw new Error("element identity");
+    }
+    function writes(): void {
+        const added = withRow(GROWN, EXTRA);
+        added[0]!.size += 1;
+        if (GROWN[0]!.size !== 2 || added[0]!.size !== 2 || added.length !== 3) throw new Error("writes through results");
+    }
+    function pushes(): void {
+        const added = withRow(PUSHED, EXTRA);
+        added.push({ name: "pushed", size: 0 });
+        if (added.length !== 4 || PUSHED.length !== 2 || added[3]!.name !== "pushed" || added[0]!.size !== 1) throw new Error("push onto results");
+    }
+    reads();
+    identity();
+    writes();
+    pushes();
+`,
+);
+
+// A field `Object.assign` replaces on a record a helper's spread returns is
+// read where it lives.
+check(
+    "spread-results-a-helper-returns-read-a-field-object-assign-replaces",
+    `
+    interface Row { name: string; size: number }
+    function hasRow<T extends { name: string }>(rows: readonly T[], name: string): boolean {
+        return rows.some((row) => row.name === name);
+    }
+    function withRow<T extends { name: string }>(rows: readonly T[], row: T): T[] {
+        return hasRow(rows, row.name) ? [...rows] : [...rows, row];
+    }
+    const EXTRA: Row = { name: "extra", size: 4 };
+    const ROWS: readonly Row[] = [{ name: "a", size: 1 }, { name: "b", size: 2 }];
+    function assigns(): void {
+        const added = withRow(ROWS, EXTRA);
+        Object.assign(added[0]!, { name: "assigned" });
+        if (ROWS[0]!.name !== "assigned" || !hasRow(added, "assigned") || hasRow(added, "a")) throw new Error("writes the program spells otherwise");
+    }
+    assigns();
+`,
+);
+
+// A field a write through another record type replaces on a record a
+// helper's spread returns is read where it lives.
+check(
+    "spread-results-a-helper-returns-read-a-field-another-type-replaces",
+    `
+    interface Row { name: string; size: number }
+    function withRow<T extends { name: string }>(rows: readonly T[], row: T): T[] {
+        return [...rows, row];
+    }
+    function rename(row: { name: string }): void {
+        row.name = "renamed";
+    }
+    const EXTRA: Row = { name: "extra", size: 4 };
+    const ROWS: readonly Row[] = [{ name: "a", size: 1 }, { name: "b", size: 2 }];
+    function renames(): void {
+        const added = withRow(ROWS, EXTRA);
+        rename(added[1]!);
+        if (added[1]!.name !== "renamed") throw new Error("result renamed");
+        if (ROWS[1]!.name !== "renamed") throw new Error("source renamed");
+    }
+    renames();
+`,
+);
+
 check(
     "push-spreads-what-an-array-literal-spreads",
     `
@@ -2293,6 +2452,136 @@ check(
 `,
 );
 
+check(
+    "element-writes-through-record-field-arrays-reach-later-reads",
+    `
+    type Lanes = { readonly name: string; readonly lanes?: number[] };
+    type Mixed = { readonly name: string; readonly lanes?: number | number[] };
+    const WATER: Lanes = { name: "water", lanes: [1, 2, 3] };
+    const MIXED: Mixed = { name: "mixed", lanes: [1, 2, 3] };
+    function describe(item: Lanes | Mixed): string {
+        return \`\${item.name}=\${JSON.stringify(item.lanes)}\`;
+    }
+    (WATER.lanes as number[])[0] = 7;
+    (MIXED.lanes as number[])[1] = 8;
+    const water = \`\${describe(WATER)}\`;
+    const mixed = \`\${describe(MIXED)}\`;
+    if (water !== "water=[7,2,3]") throw new Error(water);
+    if (mixed !== "mixed=[1,8,3]") throw new Error(mixed);
+`,
+);
+
+check(
+    "callee-element-writes-through-record-parameters-reach-later-reads",
+    `
+    type Lanes = { readonly name: string; readonly lanes?: number[] };
+    type Mixed = { readonly name: string; readonly lanes?: number | number[] };
+    const WATER: Lanes = { name: "water", lanes: [1, 2, 3] };
+    const MIXED: Mixed = { name: "mixed", lanes: [1, 2, 3] };
+    function describe(item: Lanes | Mixed): string {
+        return \`\${item.name}=\${JSON.stringify(item.lanes)}\`;
+    }
+    function poke(item: Lanes | Mixed, index: number): void {
+        (item.lanes as number[])[index] = 7;
+    }
+    poke(WATER, 0);
+    poke(MIXED, 2);
+    const water = \`\${describe(WATER)}\`;
+    const mixed = \`\${describe(MIXED)}\`;
+    if (water !== "water=[7,2,3]") throw new Error(water);
+    if (mixed !== "mixed=[1,2,7]") throw new Error(mixed);
+`,
+);
+
+check(
+    "locals-holding-record-field-arrays-share-their-elements",
+    `
+    type Lanes = { readonly name: string; readonly lanes?: number[] };
+    type Mixed = { readonly name: string; readonly lanes?: number | number[] };
+    const WATER: Lanes = { name: "water", lanes: [1, 2, 3] };
+    const MIXED: Mixed = { name: "mixed", lanes: [1, 2, 3] };
+    function describe(item: Lanes | Mixed): string {
+        return \`\${item.name}=\${JSON.stringify(item.lanes)}\`;
+    }
+    const waterLanes = WATER.lanes;
+    if (waterLanes) waterLanes[0] = 7;
+    const mixedLanes = MIXED.lanes;
+    if (Array.isArray(mixedLanes)) mixedLanes[1] = 8;
+    const water = \`\${describe(WATER)}\`;
+    const mixed = \`\${describe(MIXED)}\`;
+    if (water !== "water=[7,2,3]") throw new Error(water);
+    if (mixed !== "mixed=[1,8,3]") throw new Error(mixed);
+`,
+);
+
+check(
+    "deferred-readers-of-union-field-arrays-see-later-writes",
+    `
+    type Mixed = { readonly name: string; readonly lanes?: number | number[] };
+    type Fixed = { readonly name: string; readonly lanes?: number | readonly number[] };
+    const MIXED: Mixed = { name: "mixed", lanes: [1, 2, 3] };
+    const FIXED: Fixed = { name: "fixed", lanes: [1, 2, 3] };
+    function describe(item: Mixed | Fixed): string {
+        return \`\${item.name}=\${JSON.stringify(item.lanes)}\`;
+    }
+    const readers: Array<() => string> = [];
+    readers.push(() => \`\${describe(MIXED)}\`);
+    readers.push(() => \`\${describe(FIXED)}\`);
+    (MIXED.lanes as number[])[0] = 7;
+    (FIXED as unknown as { lanes: number[] }).lanes[2] = 9;
+    const mixed = readers[0]!();
+    const fixed = readers[1]!();
+    if (mixed !== "mixed=[7,2,3]") throw new Error(mixed);
+    if (fixed !== "fixed=[1,2,9]") throw new Error(fixed);
+`,
+);
+
+check(
+    "records-holding-a-constant-array-see-its-later-writes",
+    `
+    type Fixed = { readonly name: string; readonly lanes?: number | readonly number[] };
+    const KEPT: [number, number, number] = [1, 2, 3];
+    const DIRECT: [number, number, number] = [1, 2, 3];
+    const ALIASED: [number, number, number] = [1, 2, 3];
+    const HANDED: [number, number, number] = [1, 2, 3];
+    const kept: Fixed = { name: "kept", lanes: KEPT };
+    const direct: Fixed = { name: "direct", lanes: DIRECT };
+    const aliased: Fixed = { name: "aliased", lanes: ALIASED };
+    const handed: Fixed = { name: "handed", lanes: HANDED };
+    function describe(item: Fixed): string {
+        return \`\${item.name}=\${JSON.stringify(item.lanes)}\`;
+    }
+    function bump(lanes: number[]): void {
+        lanes[2] = lanes[2]! + 10;
+    }
+    const list: Fixed[] = [kept, direct, aliased, handed];
+    const readers = list.map((item) => () => describe(item));
+    DIRECT[0] = 7;
+    const alias: number[] = ALIASED;
+    alias[1] = 8;
+    bump(HANDED);
+    const seen = readers.map((read) => read()).join(" ");
+    if (seen !== "kept=[1,2,3] direct=[7,2,3] aliased=[1,8,3] handed=[1,2,13]") throw new Error(seen);
+    const lanes = kept.lanes as readonly number[];
+    if (lanes[0]! + lanes[1]! + lanes[2]! !== 6) throw new Error("kept lanes");
+    const read = direct.lanes as readonly number[];
+    if (read[0] !== 7) throw new Error("direct lanes");
+`,
+);
+
+check(
+    "a record holding a constant array sees a write through an assertion",
+    `
+    type Fixed = { readonly name: string; readonly lanes?: number | readonly number[] };
+    const LANES: [number, number, number] = [1, 2, 3];
+    const fixed: Fixed = { name: "fixed", lanes: LANES };
+    const list: Fixed[] = [fixed];
+    (list[0]!.lanes as number[])[1] = 9;
+    const lanes = fixed.lanes as readonly number[];
+    if (lanes[1] !== 9 || LANES[1] !== 9) throw new Error(String(lanes[1]));
+`,
+);
+
 test("an alias into a field container refuses after that container resizes", () => {
     assert.throws(
         () =>
@@ -2431,6 +2720,41 @@ check(
     if (runs[0]!(1) !== 2 || active !== first) throw new Error("one empty array");
 `,
 );
+
+// A search over elements generation holds answers at generation, with
+// JavaScript's comparisons: includes finds NaN (SameValueZero), indexOf
+// and lastIndexOf do not (strict equality); a predicate over it folds too.
+check(
+    "array-search-over-generation-known-elements",
+    `
+    const lanes = [1, NaN, 3, 1];
+    const names = ["world", "uTint"];
+    const kept = ["world", "view", "uTint"].filter((name) => names.includes(name));
+    if (!lanes.includes(NaN) || lanes.indexOf(NaN) !== -1 || lanes.lastIndexOf(1) !== 3 || lanes.indexOf(3) !== 2) throw new Error("search");
+    if (kept.length !== 2 || kept[1] !== "uTint" || ["a"].includes("b")) throw new Error("filter");
+`,
+);
+
+// Assertions retype an array without changing its identity, including
+// assertions to an unrelated type through an unknown parameter.
+for (const [name, asserted] of [
+    ["array", "readonly number[]"],
+    ["unrelated-array", "readonly string[]"],
+    ["record", "{ tag: string }"],
+] as const) {
+    check(
+        `array-identity-through-an-open-assertion-to-${name}`,
+        `
+    const VALUES: readonly number[] = [1, 2];
+    function keep(values: readonly number[]): { values: readonly number[] } { return { values }; }
+    function same(a: unknown, b: unknown): boolean { return (a as ${asserted}) === (b as ${asserted}); }
+    const first = keep(VALUES);
+    const second = keep(VALUES);
+    const other = keep([1, 2]);
+    if (!same(first.values, second.values) || same(first.values, other.values)) throw new Error("array assertion identity");
+`,
+    );
+}
 
 // A recursive function's readonly array parameter is its caller's array
 // where the function compares it by identity.
@@ -3246,6 +3570,56 @@ test("a record type stored as one class's instances refuses another record where
             ),
         /Method 'inc' is read as a value; method values are unsupported/,
     );
+});
+
+// A weak map keyed through an `object` parameter keys what the calls of
+// its function pass; only a key that can hold the record type keeps a
+// class handing out `this` from being copied as it.
+const objectKeyedNotes = `
+    interface Gauge { readonly tight: boolean; span(a: number, b: number): number }
+    class Tally {
+        count = 0;
+        get tight(): boolean { return this.count > 0; }
+        span(a: number, b: number): number { return a * b + this.count; }
+        gauge(): Gauge { return this.count > 0 ? this : loose; }
+    }
+    const loose: Gauge = { tight: false, span: (a, b) => a + b };
+    interface World { readonly tallies: Tally[] }
+    const notes = new WeakMap<object, string[]>();
+    function note(owner: object, text: string): number {
+        let list = notes.get(owner);
+        if (!list) { list = []; notes.set(owner, list); }
+        list.push(text);
+        return list.length;
+    }
+    function annotate(world: World): number { return note(world, "seen"); }
+    const world: World = { tallies: [new Tally(), new Tally()] };
+`;
+
+check(
+    "a class handing out this stays one object where a broad key only takes other types",
+    `${objectKeyedNotes}
+    world.tallies[1]!.count = 2;
+    const gauges = world.tallies.map((tally) => tally.gauge());
+    world.tallies[1]!.count = 3;
+    if (gauges[0]!.tight || gauges[0]!.span(2, 3) !== 5 || !gauges[1]!.tight || gauges[1]!.span(2, 3) !== 9)
+        throw new Error("gauges");
+    `,
+);
+
+test("a broad key that can hold a record keeps it keyed by identity", () => {
+    for (const keyed of [
+        "function mark(): number { return note(world.tallies[0]!.gauge(), 'kept'); }",
+        "function mark(): void { const key: object = world; notes.set(key, []); }",
+        "const handed: unknown = notes;",
+    ])
+        assert.throws(
+            () =>
+                compileSource(
+                    `${objectKeyedNotes} const gauges: Gauge[] = world.tallies.map((tally) => tally.gauge()); ${keyed} export {};`,
+                ),
+            /'Gauge' is stored as the 'Tally' instances it holds; a record that is not one stored as it would be a copy of the one object JavaScript keeps/,
+        );
 });
 
 check(
@@ -4869,6 +5243,219 @@ check(
     let modes = "";
     for (const input of inputs) modes += mode(input) + ";";
     if (modes !== "slow;fast;normal;normal;") throw new Error("guarded JSON enum");
+`,
+);
+
+// A closure stored where a union holds several function types takes the
+// one with its own parameter and result types.
+check(
+    "a-closure-in-a-union-of-function-types-takes-the-arm-its-signature-fits",
+    `
+    interface Batch { resume: number | (() => number) | ((mark: number) => number) }
+    const base = new Float32Array([2])[0]!;
+    const batches: Batch[] = [{ resume: () => base + 1 }, { resume: (mark: number) => mark * base }, { resume: 7 }];
+    let total = 0;
+    for (const batch of batches) {
+        const resume = batch.resume;
+        if (typeof resume === "number") total += resume;
+    }
+    const none = batches[0]!.resume as () => number;
+    const marked = batches[1]!.resume as (mark: number) => number;
+    total += none() + marked(5);
+    if (total !== 7 + 3 + 10) throw new Error("total " + total);
+`,
+);
+check(
+    "batch-method-unions-in-returned-records-and-optional-containers",
+    `
+    interface ScalarBatch {
+        add(x: number, y: number): number;
+        resumeFrom(n: number): void;
+    }
+    interface ListBatch {
+        add(variant: number, x: number, y: number): number;
+        resumeFrom(marks: readonly number[]): void;
+    }
+    const calls: number[] = [];
+    function scalar(): ScalarBatch {
+        return {
+            add(x, y) { return x + y; },
+            resumeFrom(n) { calls.push(n * 2); },
+        };
+    }
+    function list(): ListBatch {
+        return {
+            add(variant, x, y) { return variant * (x + y); },
+            resumeFrom(marks) { calls.push(marks.length * 3); },
+        };
+    }
+    type Add = number | ScalarBatch["add"] | ListBatch["add"];
+    type Resume = number | ScalarBatch["resumeFrom"] | ListBatch["resumeFrom"];
+    interface Schedule { add?: Add[]; resume?: Resume[]; direct?: Resume }
+    function adds() { return [scalar().add, list().add]; }
+    function resumes() { return [scalar().resumeFrom, list().resumeFrom]; }
+    // The returned arrays' elements have no contextual expression at the
+    // record sink; the closures must keep their checked declarations.
+    const schedules = new Map<string, Schedule>();
+    schedules.set("active", { add: adds(), resume: resumes(), direct: list().resumeFrom });
+    schedules.set("empty", {});
+    const schedule = schedules.get("active")!;
+    const indices = new Int32Array([0, 1]);
+    const scalarAdd = schedule.add![indices[0]!] as ScalarBatch["add"];
+    const listAdd = schedule.add![indices[1]!] as ListBatch["add"];
+    const scalarResume = schedule.resume![indices[0]!] as ScalarBatch["resumeFrom"];
+    const listResume = schedule.resume![indices[1]!] as ListBatch["resumeFrom"];
+    scalarResume(scalarAdd(2, 3));
+    listResume([listAdd(2, 3, 4), 7]);
+    const direct = schedule.direct as ListBatch["resumeFrom"];
+    direct([1]);
+    if (scalarAdd(2, 3) !== 5 || listAdd(2, 3, 4) !== 14 || calls.join(",") !== "10,6,3")
+        throw new Error("stored batch methods " + calls.join(","));
+    if (schedules.get("empty")!.resume !== undefined) throw new Error("absent methods");
+`,
+);
+
+check(
+    "shared-batch-record-layouts-keep-each-method-signature",
+    `
+    interface Group { values: number[] }
+    interface ScalarBatch extends Group {
+        add(x: number, y: number): void;
+        resumeFrom(n: number): void;
+    }
+    interface ListBatch extends Group {
+        add(variant: number, x: number, y: number): void;
+        resumeFrom(marks: readonly number[]): void;
+    }
+    function scalar(): ScalarBatch {
+        const values = [0];
+        return {
+            values,
+            add: (x: number, y: number): void => { values[0] += x + y; },
+            resumeFrom: (n: number): void => { values[0] = n; },
+        };
+    }
+    function list(): ListBatch {
+        const values = [0];
+        return {
+            values,
+            add: (variant: number, x: number, y: number): void => { values[0] += variant * (x + y); },
+            resumeFrom: (marks: readonly number[]): void => { values[0] = marks.length; },
+        };
+    }
+    function retain(batch: ScalarBatch | ListBatch): ScalarBatch | ListBatch { return batch; }
+    const retained = [retain(scalar()), retain(list())];
+    const plain = retained[0]! as ScalarBatch, marked = retained[1]! as ListBatch;
+    const indices = new Int32Array([0, 1]);
+    const extra = indices[1]! ? marked : undefined;
+    const shared: readonly Group[] = [plain, marked, ...(extra ? [extra] : [])];
+    if (shared[0] !== plain || shared[1] !== marked) throw new Error("shared identity");
+    const a = shared[indices[0]!]! as ScalarBatch;
+    const b = shared[indices[1]!]! as ListBatch;
+    a.resumeFrom(5); a.add(2, 3);
+    b.resumeFrom([1, 2, 3]); b.add(2, 3, 4);
+    let total = 0;
+    for (const group of shared) total += group.values[0]!;
+    if (total !== 44) throw new Error("shared batch calls " + total);
+`,
+);
+// A comma expression's value is its right side, stored as the sink stores
+// it (an empty array as the other arm's record array), after its left side
+// runs in the arm that takes it.
+check(
+    "a-comma-arm-stores-its-right-side-as-the-other-arms-array",
+    `
+    interface Range { binding: number; from: number }
+    class Batch {
+        count = 0;
+        begun = 0;
+        begin(): void { this.count = 0; this.begun++; }
+        beginRetaining(bindings: number[]): Range[] { this.count = bindings.length; return bindings.map((binding, from) => ({ binding, from })); }
+    }
+    const batch = new Batch();
+    const gate = new Float32Array([1, 0]);
+    const kept = gate[0]! > 0.5 ? batch.beginRetaining([3, 4]) : (batch.begin(), []);
+    if (kept.length !== 2 || kept[1]!.binding !== 4 || batch.begun !== 0) throw new Error("retained " + kept.length + " " + batch.begun);
+    const fresh = gate[1]! > 0.5 ? batch.beginRetaining([3, 4]) : (batch.begin(), []);
+    let total = 0;
+    for (const range of fresh) total += range.from;
+    if (fresh.length !== 0 || total !== 0 || batch.begun !== 1 || batch.count !== 0) throw new Error("begun " + fresh.length + " " + batch.begun);
+`,
+);
+// A missed element falls back to an empty literal its record type cannot
+// hold: both are stored as the narrower record the parameter declares.
+check(
+    "a-missed-record-element-falls-back-to-a-literal-of-the-parameters-record",
+    `
+    interface Tower { id?: number; level: number; yaw: number }
+    const towers: Tower[] = [{ id: 7, level: 1, yaw: new Float32Array([0.5])[0]! }];
+    function hostIdentity(tower: Pick<Tower, "id">, index: number): number {
+        return tower.id ?? -(index + 1);
+    }
+    const lanes = new Int32Array([0, 2]);
+    const found = hostIdentity(towers[lanes[0]!] ?? {}, lanes[0]!);
+    if (found !== 7) throw new Error("present " + found);
+    const missed = hostIdentity(towers[lanes[1]!] ?? {}, lanes[1]!);
+    if (missed !== -3) throw new Error("fallback " + missed);
+`,
+);
+// An element read past the end falls back to a field a partial record
+// assertion left optional; the fallback reads as the element's number.
+check(
+    "a-missed-element-falls-back-to-a-field-a-partial-assertion-left-optional",
+    `
+    interface Tower { id: string; yaw: number }
+    const towers: Tower[] = [];
+    const built: number[] = [];
+    const tower = { id: "a" } as Tower;
+    tower.yaw = new Float32Array([0.5])[0]!;
+    towers.push(tower);
+    const first = towers.every((t, index) => (built[index] ?? t.yaw) === t.yaw);
+    if (!first) throw new Error("fallback");
+    built[0] = 2;
+    const second = towers.every((t, index) => (built[index] ?? t.yaw) === t.yaw);
+    if (second) throw new Error("element");
+`,
+);
+
+// A conditional whose arms generation knows absent selects the absence the
+// taken arm gives: the one both give, its condition still run, or
+// `undefined` against `null`.
+check(
+    "a-conditional-whose-arms-give-one-absence-is-that-absence",
+    `
+    const gate = new Float32Array([0, 1]);
+    const off = gate[0]! > 0;
+    const unset: { a?: unknown; b?: unknown } = {};
+    const both = off ? unset.a : unset.b;
+    if (both !== undefined || typeof both !== "undefined") throw new Error("undefined pair");
+    const nulls = off ? null : null;
+    if (nulls !== null) throw new Error("null pair");
+    let runs = 0;
+    const tick = (): boolean => ++runs > 1;
+    const counted = tick() ? undefined : undefined;
+    if (counted !== undefined || runs !== 1) throw new Error("condition effects " + runs);
+`,
+);
+
+check(
+    "a-conditional-over-undefined-and-null-gives-its-taken-arms-absence",
+    `
+    const gate = new Float32Array([0, 1]);
+    const off = gate[0]! > 0;
+    const on = gate[1]! > 0;
+    const unset: { a?: unknown } = {};
+    const missed = off ? unset.a : null;
+    if (missed !== null || typeof missed !== "object") throw new Error("null arm " + missed);
+    const taken = on ? unset.a : null;
+    if (taken !== undefined || taken === null) throw new Error("undefined arm " + taken);
+    function body(entity: unknown): object | null {
+        const hit = entity as { kind?: unknown; animal?: { animal?: unknown } } | null;
+        const found = hit?.kind === "animal" ? hit.animal?.animal : null;
+        return typeof found === "object" && found !== null ? found : null;
+    }
+    const spheres: { kind: "sphere" }[] = [{ kind: "sphere" }];
+    if (body(on ? spheres[0] : null) !== null || body(off ? spheres[0] : null) !== null) throw new Error("absent body");
 `,
 );
 
@@ -16570,16 +17157,16 @@ check(
 `,
 );
 
-test("a union with several function arms refuses a function value", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-            interface Slot { pick: number | (() => number) | ((value: number) => number) }
-            const slots: Slot[] = [{ pick: () => 1 }];
-            if (slots.length !== 1) throw new Error("x");`),
-        /does not match the expected data union/,
-    );
-});
+check(
+    "a-constant-callback-selects-its-declared-union-arm",
+    `
+    interface Slot { pick: number | (() => number) | ((value: number) => number) }
+    const slots: Slot[] = [{ pick: () => 1 }, { pick: (value: number) => value * 2 }];
+    const first = slots[0]!.pick as () => number;
+    const second = slots[1]!.pick as (value: number) => number;
+    if (first() !== 1 || second(3) !== 6) throw new Error("function arms");
+`,
+);
 
 check(
     "recursive-function-varying-literal-argument",
@@ -18699,6 +19286,60 @@ test("imported module records run their members on the one object their module c
     await executeGeneratedAssertions(t, "imported-module-records", cpp);
 });
 
+test("an imported generic alias omitting its defaulted argument is one record type with its complete instantiation", async (t) => {
+    const cpp = compileModules(
+        resolve("artifacts/imported-alias-default-argument"),
+        [
+            [
+                "sources",
+                `export interface Texture { width: number }
+                export type Source<T extends Texture | null = Texture> = (() => T) & {
+                    onResize?: (callback: () => void) => () => void;
+                };
+                export const listeners: Array<() => void> = [];
+                export function make(texture: Texture): Source {
+                    return Object.assign(() => texture, {
+                        onResize: (callback: () => void) => { listeners.push(callback); return () => {}; },
+                    });
+                }
+                export type Tagged<K extends string, T extends Texture | null = Texture> = (() => T) & { key?: K };
+                export function tag(texture: Texture): Tagged<"a"> {
+                    return Object.assign(() => texture, { key: "a" as const });
+                }`,
+            ],
+        ],
+        `import { listeners, make, tag, type Source, type Tagged, type Texture } from "./sources.js";
+        const tagged: Tagged<"a">[] = [tag({ width: 1 })];
+        const complete: Tagged<"a", Texture>[] = tagged;
+        complete.push(tag({ width: 2 }));
+        if (tagged.length !== 2 || tagged[1] !== complete[1] || tagged[1]!.key !== "a" || tagged[1]!().width !== 2)
+            throw new Error("spelled argument");
+        interface Holder { readonly live: Source; readonly enabled: boolean }
+        const made: Source[] = [];
+        function build(texture: Texture, enabled: boolean): Holder {
+            if (!enabled) return { live: () => texture, enabled };
+            const live = make(texture);
+            made.push(live);
+            return { live, enabled };
+        }
+        const texture: Texture = { width: 3 };
+        const holders: Holder[] = [];
+        for (const enabled of [true, false, Math.random() < 2]) holders.push(build(texture, enabled));
+        let resized = 0;
+        for (const holder of holders) {
+            if (holder.live() !== texture) throw new Error("call");
+            holder.live.onResize?.(() => { resized++; });
+        }
+        for (const listener of listeners) listener();
+        if (resized !== 2 || made.length !== 2 || holders[0]!.live !== made[0] || holders[2]!.live !== made[1])
+            throw new Error("one record");
+        const replaced = (callback: () => void) => { callback(); return () => {}; };
+        holders[0]!.live.onResize = replaced;
+        if (made[0]!.onResize !== replaced || holders[2]!.live.onResize === replaced) throw new Error("one slot");`,
+    );
+    await executeGeneratedAssertions(t, "imported-alias-default-argument", cpp);
+});
+
 test("imported capability records issue class instances behind empty-object tokens", async (t) => {
     const cpp = compileModules(
         resolve("artifacts/imported-capability-records"),
@@ -19204,6 +19845,81 @@ test(
         );
     },
 );
+
+// A record holding meshes, stored in an `object` field, is that very record:
+// the document holds it boxed by reference, its live fields read through the
+// box, and its mesh field refuses reflection, as no document holds a handle.
+test("an object field holds a record whose fields hold meshes as that record", (t) => {
+    const { cpp } = compileSource(`
+        import { createBox, type EngineContext, type Mesh } from "@babylonjs/lite";
+        interface Placed { x: number }
+        interface Marker extends Placed { tag: number; meshes: Mesh[] }
+        interface Frame { x: number; owner?: object }
+        function frameOf(placed: Placed): Frame | null {
+            if (!Number.isFinite(placed.x)) return null;
+            return { x: placed.x * 2, owner: placed };
+        }
+        function inspect(engine: EngineContext): number {
+            const mesh = createBox(engine);
+            const markers: Marker[] = [{ x: 1, tag: 3, meshes: [mesh] }, { x: 2, tag: 4, meshes: [] }];
+            const frames = new Map<object, Frame>();
+            for (const marker of markers) {
+                const frame = frameOf(marker);
+                if (frame) frames.set(marker, frame);
+            }
+            const first = frames.get(markers[0]!);
+            if (!first || first.owner !== markers[0] || first.x !== 2) throw new Error("owner identity");
+            if (frames.get(markers[1]!)?.owner === markers[0]) throw new Error("distinct owners");
+            markers[0]!.tag = 7;
+            if ((first.owner as { tag?: unknown }).tag !== 7) throw new Error("live view");
+            if (markers[0]!.meshes.length !== 1) throw new Error("meshes");
+            return frames.size;
+        }
+        const inspections: Array<typeof inspect> = [inspect];
+    `);
+    assert.match(
+        cpp,
+        /if \(key == "meshes"\) return bbl::js::native_handle_field_json\(key, value->\w+\);/,
+    );
+    const entry =
+        /double (\w+)\(\[\[maybe_unused\]\] bblscene::(\w+)& \w+, \[\[maybe_unused\]\] bbl::StoredEngine \w+\);/.exec(
+            cpp,
+        );
+    assert.ok(entry, "inspection entry");
+    if (!native) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(
+        native,
+        "language-constructs/object-field-record-with-meshes",
+        `
+        #define main generated_main
+        ${cpp}
+        #undef main
+        #include <cassert>
+        namespace bbl {
+            MeshHandle create_box(Engine& engine, BoxOptions) {
+                engine.meshes.emplace_back();
+                return {0, 0};
+            }
+        }
+        int main() {
+            const bbl::js::RealmScope realm;
+            auto engine = std::make_shared<bbl::Engine>();
+            bblscene::${entry[2]} environment{};
+            assert(bblscene::${entry[1]}(environment, bbl::StoredEngine{engine}) == 2);
+            bool refused = false;
+            try {
+                static_cast<void>(bblscene::json_value_property(bbl::js::make_ref<bblscene::MarkerData>(), "meshes"));
+            } catch (const std::runtime_error&) {
+                refused = true;
+            }
+            assert(refused);
+        }
+    `,
+    );
+});
 
 check(
     "a-local-record-stored-as-a-closed-key-record-is-that-record",
@@ -21122,5 +21838,87 @@ check(
     const total = (patchPos?.length ?? 0) + (patchNrm?.length ?? 0) + (patchIdx?.length ?? 0);
     if (gate[0]! > 0) patchPos = patchNrm = patchIdx = null;
     if (total !== 6 || patchPos !== null || patchNrm !== null || patchIdx !== null) throw new Error("patch " + total);
+`,
+);
+
+check(
+    "optional-function-properties-survive-mixed-tuple-array-sources",
+    `
+    type Reader = (() => number) & { changed?: (notify: () => void) => () => void };
+    let notifications = 0;
+    let stopped = 0;
+    function watched(value: number): Reader {
+        return Object.assign(() => value, {
+            changed: (notify: () => void) => {
+                notify();
+                return () => { stopped += value; };
+            },
+        });
+    }
+    function connect(rows: readonly (readonly [string | number, Reader])[]): number {
+        const cleanup: Array<() => void> = [];
+        let total = 0;
+        rows.forEach(([, read], index) => {
+            total += read();
+            if (read.changed) cleanup.push(read.changed(() => { notifications += index + 1; }));
+        });
+        cleanup.forEach((stop) => stop());
+        return total;
+    }
+    const plain: Array<() => number> = [() => 5, () => 11];
+    const gate = new Float32Array([1, 0]);
+    const present = watched(3);
+    const fallback = () => 5;
+    const selected = gate[0]! > 0 ? present : fallback;
+    const absent = gate[1]! > 0 ? watched(9) : () => 5;
+    const total = connect([["first", selected], [1, plain[0]!], ["last", watched(7)], [3, plain[1]!], ["absent", absent]]);
+    if (total !== 31 || notifications !== 4 || stopped !== 10 || selected !== present)
+        throw new Error("readers " + total + " " + notifications + " " + stopped);
+    let produced = 0;
+    const factories: Array<() => () => number> = [() => { produced++; return () => 13; }];
+    if ((factories[0]!() as Reader).changed !== undefined || produced !== 1)
+        throw new Error("receiver evaluated " + produced);
+`,
+);
+
+test("an optional property refuses function storage that erased installed properties", () => {
+    for (const [writeFirst, parameter] of [
+        [true, ""],
+        [false, ""],
+        [true, "index: number"],
+        [false, "index: number"],
+    ] as const) {
+        assert.throws(
+            () =>
+                compileSource(`
+                type Reader = ((${parameter}) => number) & { changed?: () => void };
+                const readers: Array<(${parameter}) => number> = [() => 1];
+                const decorated: (() => number) & { changed?: () => void } = Object.assign(() => 2, { changed: () => {} });
+                function inspect(reader: Reader): boolean { return !!reader.changed; }
+                ${writeFirst ? "readers.push(decorated);" : ""}
+                inspect(readers[0]!);
+                ${writeFirst ? "" : "readers.push(decorated);"}
+                `),
+            /properties cannot be read after callable record storage erased them/,
+        );
+    }
+});
+
+check(
+    "a-record-argument-container-field-holds-the-absence-the-program-writes",
+    `
+    interface Pt { x: number; z: number; w?: number }
+    interface Resolved { name: string; easedFull?: readonly { x: number; z: number }[] }
+    type Ctx = Pick<Resolved, "name" | "easedFull">;
+    function lay(r: Ctx, corners: number): number {
+        if (corners > 0) r.easedFull = undefined;
+        if (r.easedFull) { const pos = r.easedFull.map((p) => ({ x: p.x, z: p.z })); return pos.length; }
+        return -1;
+    }
+    const gate = new Float32Array([1, 0]);
+    const pts: Pt[] = [{ x: 0, z: 0 }, { x: 1, z: 1 }];
+    const cleared = lay({ name: "a", easedFull: pts }, gate[0]! > 0.5 ? 1 : 0);
+    const kept = lay({ name: "b", easedFull: pts }, gate[1]! > 0.5 ? 1 : 0);
+    if (cleared !== -1 || kept !== 2) throw new Error("eased " + cleared + " " + kept);
 `,
 );

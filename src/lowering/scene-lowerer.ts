@@ -2091,6 +2091,30 @@ void set_scene_clip_plane(Scene& scene, Vec4 plane) {
         clear: (name: string) => number,
         options: SceneCoreOptions,
     ): string {
+        if (options.taskMethodSlots) {
+            const graphDispose = this.context.propertyFunction(
+                "src/frame-graph/frame-graph.ts",
+                "createFrameGraph",
+                "dispose",
+                { unique: true },
+            ).declaration;
+            this.context.assertStatementShapes(
+                graphDispose.body,
+                graphDispose.body.statements,
+                `for (const task of fg._tasks) { task.dispose(); }
+                fg._tasks.length = 0;
+                fg._currentProcessedTask = null;`,
+                "Frame-graph method disposal",
+            );
+            this.context.expectShapeCount(
+                this.context.functionDeclaration(
+                    "src/scene/scene-core.ts",
+                    "createSceneContext",
+                ).declaration,
+                "ctx._disposables.push(() => fg.dispose())",
+                "Scene frame-graph disposal",
+            );
+        }
         return `double scene_callback_delta(const Scene& scene, double engine_delta_ms) {
     return ${callbackDelta};
 }
@@ -2098,6 +2122,22 @@ void set_scene_clip_plane(Scene& scene, Vec4 plane) {
 Scene create_scene_context(Engine& engine) {
     Scene scene;
     scene.engine = &engine;
+${
+    options.taskMethodSlots
+        ? `    // createSceneContext's first disposable is the frame graph.
+    scene.disposables.emplace_back([owner = &engine, weak = std::weak_ptr<SceneState>(scene.state)] {
+        const auto state = weak.lock();
+        if (!state) return;
+        for (std::size_t index = 0; index < state->tasks.size(); ++index) {
+            const auto handle = state->tasks[index];
+            if (handle_at(owner->frame_tasks, handle).kind == FrameTaskKind::effect)
+                dispose_effect_render_task(*owner, handle);
+        }
+        state->tasks.clear();
+    });
+`
+        : ""
+}\
 ${options.pbrSceneHooks ? "    scene.state->source_material_publication = true;\n" : ""}\
 #if BBLITE_HAS_UI
     scene.surface_canvas = engine.surface_canvas;

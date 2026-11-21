@@ -113,7 +113,10 @@ export class IntrinsicOptions {
         return compileRenderTargetOptions(this.context, expression);
     }
 
-    public compileRenderTaskOptions(expression: ts.Expression): string {
+    public compileRenderTaskOptions(expression: ts.Expression): {
+        cpp: string;
+        singleSampleTarget: boolean;
+    } {
         return compileRenderTaskOptions(this.context, expression);
     }
 
@@ -315,6 +318,7 @@ export class IntrinsicOptions {
             expression,
             uniform,
             lengthCheck,
+            "float",
         );
     }
 

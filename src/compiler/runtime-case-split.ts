@@ -19,6 +19,8 @@ import {
 } from "./type-facts.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { isStringValue, type Value } from "./types.js";
+import { isShaderMaterialType } from "./shader-derivations.js";
+import { runtimeShaderVariants } from "./shader-material-views.js";
 import {
     functionOfDeclaration,
     isModuleScopeFunction,
@@ -35,6 +37,7 @@ import {
     nullValue,
     presenceCpp,
     undefinedValue,
+    withShaderVariants,
 } from "./values/model.js";
 
 export type CaseSplitContext = Pick<
@@ -58,6 +61,10 @@ export type CaseSplitContext = Pick<
     | "leaveRuntimeControlFlow"
     | "probeEmission"
     | "program"
+    | "reachShaderCreations"
+    | "requireEngine"
+    | "sceneManifest"
+    | "settledCallInitializer"
     | "userFunctions"
 >;
 
@@ -126,7 +133,10 @@ export function armSpecializesCall(
  * runtime test (`f({...(c ? a : {})})`), or pass a value of a few outcomes (a
  * boolean, an optional object present or absent), itself or as a member of a
  * record an argument names (`f(options)`), or an object that is one of a few
- * module constants (`f(entry.lane ?? DEFAULT_LANE)`), once per outcome when
+ * module constants (`f(entry.lane ?? DEFAULT_LANE)`), or a ShaderMaterial
+ * whose shader variant only the run time knows (one outcome per variant the
+ * program creates, `runtimeShaderVariants`, the arm read from a generated
+ * variant table), once per outcome when
  * the single compilation refuses: a callee that specializes on its argument
  * (a shader composed from options) then sees each outcome as a constant. The
  * test is read once, before the call, which is where JavaScript reads it
@@ -134,18 +144,24 @@ export function armSpecializesCall(
  * free of writes, no argument assigns or constructs, and an argument's calls
  * go to module-level functions that receive none of the bindings the tests
  * read (such a function reaches a local binding only through its
- * arguments). With more than two tests, the call splits only on those whose
+ * arguments). A name whose declaration deferred its selection
+ * (`deferredSelection`) is tested by that selection's condition, which
+ * nothing an argument does changes: it alone splits a call whose arguments
+ * do more. With more than two tests, the call splits only on those whose
  * staying a runtime test, with every other test fixed, still refuses; a call
  * that depends on more than `MAX_SELECTORS`, whose tests' outcomes make
  * more than `MAX_ARMS` arms, or that reads more than
  * `MAX_CANDIDATE_SELECTORS`, keeps its refusal, which then says so.
+ * Intrinsics use `held-text`: only the finite inputs of replayable string
+ * initializers select, not otherwise unsupported run-time options.
  */
 export function compileWithRuntimeCaseSplit(
     context: CaseSplitContext,
     call: ts.CallExpression,
     compile: () => Value | undefined,
+    selectors: "arguments" | "held-text" = "arguments",
 ): Value | undefined {
-    const tests = selectorTests(context, call);
+    const tests = selectorTests(context, call, selectors === "held-text");
     if (tests === undefined) return compile();
     try {
         return context.probeEmission(compile, () => true);
@@ -185,6 +201,16 @@ export function compileWithRuntimeCaseSplit(
             (product, selector) => product * selector.outcomes.length,
             1,
         );
+        if (arms === 0)
+            context.sceneManifest.shaderDerivations.refuseWithoutCreations(
+                () => {
+                    throw beyondSplit(
+                        error,
+                        selectors,
+                        "the shader variants the program creates, and it creates none",
+                    );
+                },
+            );
         if (arms > MAX_ARMS)
             throw beyondSplit(
                 error,
@@ -257,9 +283,9 @@ function armRefused(
 }
 
 /**
- * The refusal of a call a split could not reach: its own text, then the
- * limit the run-time tests exceeded (`reach`) and the tests. A restart
- * stands as it is.
+ * The refusal of a call a split could not reach: its own text, then what
+ * its run-time tests compile once per (`reach`: past a limit, or no shader
+ * variant at all) and the tests. A restart stands as it is.
  */
 function beyondSplit(
     error: unknown,
@@ -295,7 +321,13 @@ type Outcome =
     | "falsy"
     | "absent"
     | { readonly literal: string }
-    | ConstantOutcome;
+    | ConstantOutcome
+    | VariantOutcome;
+
+/** One shader variant a run-time ShaderMaterial may be, by its program's name. */
+interface VariantOutcome {
+    readonly variant: string;
+}
 
 /**
  * The module constant an object is in one arm: a reference to it, and,
@@ -328,7 +360,8 @@ interface Selector {
         | "presence"
         | "optional-boolean"
         | "literal"
-        | "constant";
+        | "constant"
+        | "variant";
     test: ts.Expression;
     nodes: readonly ts.Expression[];
     outcomes: readonly Outcome[];
@@ -367,7 +400,7 @@ interface SelectorTests {
 /** Every outcome a test of `kind` can take. */
 const KIND_OUTCOMES: Readonly<
     Record<
-        Exclude<Selector["kind"], "literal" | "constant">,
+        Exclude<Selector["kind"], "literal" | "constant" | "variant">,
         readonly Outcome[]
     >
 > = {
@@ -389,7 +422,7 @@ function kindOutcomes(
         ? [...(stringLiteralValues(type) ?? [])].map((literal) => ({
               literal,
           }))
-        : kind === "constant"
+        : kind === "constant" || kind === "variant"
           ? []
           : KIND_OUTCOMES[kind];
 }
@@ -497,7 +530,9 @@ function forcedValue(
                   cpp: context.cppString(outcome.literal),
                   staticString: outcome.literal,
               }
-            : constantValue(read(), outcome);
+            : "variant" in outcome
+              ? withShaderVariants(read(), [outcome.variant])
+              : constantValue(read(), outcome);
     // A present object is truthy and present wherever the arm reads it.
     if (selector.kind === "presence")
         return outcome === "truthy"
@@ -668,11 +703,13 @@ export function moduleLevelCallee(
  * spelling it, and the records they name, when the call can be split on
  * them: no argument assigns, constructs or suspends, its calls go to
  * module-level functions handed none of the bindings the tests read, and
- * no test writes.
+ * no test writes. A deferred selection's condition splits it whatever its
+ * arguments do.
  */
 function selectorTests(
     context: CaseSplitContext,
     call: ts.CallExpression,
+    onlyHeldText: boolean,
 ): SelectorTests | undefined {
     const calls: ts.CallExpression[] = [];
     const effects = (node: ts.Node): boolean => {
@@ -690,7 +727,12 @@ function selectorTests(
             return true;
         return ts.forEachChild(node, effects) ?? false;
     };
-    if (call.arguments.some(effects)) return undefined;
+    // What an argument does may change what a test reads, but not a
+    // deferred selection's condition, which reads only bindings nothing
+    // rebinds (`deferrableSelection`): only such tests split a call whose
+    // arguments do more than read.
+    const effectful = call.arguments.some(effects);
+    const unchanging = new Set<ts.Expression>();
     // Each distinct test with every place it appears.
     const groups: (Selector & { nodes: ts.Expression[] })[] = [];
     const addGroup = (
@@ -720,6 +762,7 @@ function selectorTests(
     // can be (`selectedModuleConstants`) is asked only where an answer
     // depends on it.
     const candidates: { node: ts.Expression; index: number }[] = [];
+    const heldCalls = new Set<ts.CallExpression>();
     const known = new Map<
         ts.Expression,
         readonly ts.Identifier[] | undefined
@@ -744,6 +787,9 @@ function selectorTests(
         const kind = selectorKind(type);
         if (kind) {
             if (!containsSelection(node)) addGroup(kind, node);
+        } else if (isShaderMaterialType(type) && !containsSelection(node)) {
+            // A ShaderMaterial's variant, when the run time decides it.
+            addGroup("variant", node);
         } else if (ts.isIdentifier(node) && heldRecord(context, node)) {
             const record = records.find((candidate) =>
                 sameExpression(context.checker, candidate.nodes[0]!, node),
@@ -759,30 +805,59 @@ function selectorTests(
                 candidates.push({ node, index: groups.length });
         }
     };
-    const visit = (node: ts.Node): void => {
+    const visit = (node: ts.Node, held = false): void => {
         if (ts.isFunctionLike(node)) return;
-        if (ts.isConditionalExpression(node))
-            addGroup("condition", node.condition);
-        // A value of a few outcomes a module's function is handed
-        // (`build(optionsFor(kind))`) selects the call it builds for.
-        if (ts.isCallExpression(node) && calls.includes(node))
-            for (const argument of node.arguments) {
-                const kind = selectorKind(
-                    context.checker.getTypeAtLocation(argument),
-                );
-                if (
-                    (kind === "literal" || kind === "boolean") &&
-                    !containsSelection(argument)
-                )
-                    addGroup(kind, argument);
+        // A name whose declaration deferred its selection reads it here.
+        const deferred =
+            ts.isIdentifier(node) && context.bindings.deferredSelection(node);
+        if (deferred && (!onlyHeldText || held)) {
+            unchanging.add(deferred.condition);
+            addGroup("condition", deferred.condition);
+        }
+        if (!effectful) {
+            // Required text can be held in a const's closed-helper result.
+            // The same replay proof the static evaluator uses admits its
+            // finite arguments here; the arm then folds that initializer.
+            if (
+                ts.isIdentifier(node) &&
+                isValueReference(node) &&
+                context.bindings.lookupOptional(node)?.staticString ===
+                    undefined &&
+                holdsOnly(context.checker.getTypeAtLocation(node), ["string"])
+            ) {
+                const initializer = context.settledCallInitializer(node);
+                if (initializer && !heldCalls.has(initializer)) {
+                    heldCalls.add(initializer);
+                    calls.push(initializer);
+                    visit(initializer, true);
+                }
             }
-        if (ts.isPropertyAssignment(node)) valuePosition(node.initializer);
-        if (ts.isShorthandPropertyAssignment(node)) valuePosition(node.name);
-        if (ts.isSpreadAssignment(node)) valuePosition(node.expression);
-        ts.forEachChild(node, visit);
+        }
+        if (!effectful && (!onlyHeldText || held)) {
+            if (ts.isConditionalExpression(node))
+                addGroup("condition", node.condition);
+            // A value of a few outcomes a module's function is handed
+            // (`build(optionsFor(kind))`) selects the call it builds for.
+            if (ts.isCallExpression(node) && calls.includes(node))
+                for (const argument of node.arguments) {
+                    const kind = selectorKind(
+                        context.checker.getTypeAtLocation(argument),
+                    );
+                    if (
+                        (kind === "literal" || kind === "boolean") &&
+                        !containsSelection(argument)
+                    )
+                        addGroup(kind, argument);
+                }
+            if (ts.isPropertyAssignment(node)) valuePosition(node.initializer);
+            if (ts.isShorthandPropertyAssignment(node))
+                valuePosition(node.name);
+            if (ts.isSpreadAssignment(node)) valuePosition(node.expression);
+        }
+        ts.forEachChild(node, (child) => visit(child, held));
     };
     call.arguments.forEach((argument) => {
-        valuePosition(argument);
+        if (!effectful && !onlyHeldText) valuePosition(argument);
         visit(argument);
     });
     if (
@@ -803,7 +878,9 @@ function selectorTests(
     };
     const roots = new Set<ts.Symbol>();
     for (const test of [
-        ...groups.map((group) => group.test),
+        ...groups
+            .map((group) => group.test)
+            .filter((test) => !unchanging.has(test)),
         ...records.map((record) => record.nodes[0]!),
     ]) {
         if (context.evaluationOrder.writesStorage(test)) return undefined;
@@ -983,6 +1060,29 @@ function runtimeSelectors(
                 variable.push(group);
             continue;
         }
+        if (group.kind === "variant") {
+            if (
+                !value ||
+                !(
+                    value.kind === "material" ||
+                    (value.dataType?.kind === "handle" &&
+                        value.dataType.handle === "material")
+                ) ||
+                value.sceneShaderVariant !== undefined
+            )
+                continue;
+            // With no variant created yet the call takes no arm: a later
+            // creation restarts lowering with it (`ShaderCreationsRequired`),
+            // and with none the call's refusal stands (`refuseUncreated`).
+            const variants =
+                value.possibleSceneShaderVariants ??
+                runtimeShaderVariants(context);
+            variable.push({
+                ...group,
+                outcomes: variants.map((variant) => ({ variant })),
+            });
+            continue;
+        }
         if (group.kind === "constant") {
             const resolved =
                 value && !staticArgument(value)
@@ -1138,8 +1238,43 @@ function splitCall(
                   presence?: string;
                   literal?: (text: string) => string;
                   constant?: (outcome: ConstantOutcome) => string;
+                  variant?: (outcome: VariantOutcome) => string;
               }
             | undefined => {
+            if (selector.kind === "variant") {
+                // The arm a variant takes, from the generated table of
+                // the variants the split compiled (`derived_shader_variant_<site>`).
+                const value = selectorValue(context, selector);
+                if (!value) return undefined;
+                const arms = selector.outcomes.map((outcome) =>
+                    typeof outcome === "object" && "variant" in outcome
+                        ? outcome.variant
+                        : "",
+                );
+                const name = context.allocateTemporaryCppName("case_arm");
+                context.emit({
+                    kind: "declaration",
+                    type: "const std::uint32_t",
+                    name,
+                    initializer:
+                        context.sceneManifest.shaderDerivations.derivedVariantCpp(
+                            undefined,
+                            new Map(
+                                arms.map((variant, arm) => [
+                                    context.sceneManifest.reachedShaderPrograms.findIndex(
+                                        (program) => program.name === variant,
+                                    ),
+                                    arm,
+                                ]),
+                            ),
+                            `bbl::shader_material_variant(${context.requireEngine(value, selector.test)}, ${value.cpp})`,
+                        ),
+                });
+                return {
+                    variant: (outcome) =>
+                        `${name} == ${arms.indexOf(outcome.variant)}u`,
+                };
+            }
             if (selector.kind === "literal") {
                 const value = selectorValue(context, selector);
                 if (!value || !literalStorage(value)) return undefined;
@@ -1277,13 +1412,18 @@ function splitCall(
         }
         const test = tests[depth]!;
         const selector = selectors[depth]!;
+        // No variant created yet: the variant table, read above, throws
+        // before any arm (`refuseWithoutCreations`).
+        if (selector.outcomes.length === 0) return;
         // Truth is the truth test; an optional boolean's falsy one its
         // presence (after truth, false); the last outcome is the rest.
         const guard = (outcome: Outcome): string =>
             typeof outcome === "object"
                 ? "literal" in outcome
                     ? test.literal!(outcome.literal)
-                    : test.constant!(outcome)
+                    : "variant" in outcome
+                      ? test.variant!(outcome)
+                      : test.constant!(outcome)
                 : outcome === "truthy"
                   ? test.truth!
                   : test.presence!;

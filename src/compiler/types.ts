@@ -53,6 +53,7 @@ import type { MaterialPluginManifest } from "../pinned-material-plugins.js";
 import type { PinnedStandardMaterialInput } from "../pinned-standard-variants.js";
 import type {
     ShaderCreation,
+    ShaderCreationLedger,
     ShaderRecipeLookup,
 } from "./shader-derivations.js";
 import type { ShaderMaterialView } from "./shader-material-views.js";
@@ -252,6 +253,8 @@ export interface CompileManifest {
     toneMapping?: string;
     /** The sprite-family custom fragment shaders scene code built. */
     spriteCustomShaders: SpriteCustomShaderManifest[];
+    /** Every `pickAsync` discard rule a site folds to, in reach order. */
+    pickDiscardRules: PickDiscardRuleManifest[];
     /** Every `createEffectWrapper` the scene built, in reach order. */
     effects: EffectManifest[];
     /** Whether a standalone SpriteRenderer needs the pure-2D vertex stage. */
@@ -492,6 +495,10 @@ export interface EffectBindingManifest {
     kind: "uniform" | "texture" | "sampler";
     /** Explicit texture layout sample type; the pin defaults to float. */
     textureSampleType?: "float" | "depth";
+    /** A texture layout's `viewDimension` other than the pin's 2d default. */
+    viewDimension?: "2d-array" | "3d";
+    /** A sampler layout's `samplerType: "comparison"`; absent is the pin's filtering default. */
+    comparison?: true;
     /** `uniformByteLength` after the pin's align4; 0 for the other kinds. */
     uniformBytes: number;
     /**
@@ -521,6 +528,18 @@ export interface EffectManifest {
     bindings: EffectBindingManifest[];
     /** The descriptor's blend over the target; absent, the pass writes its output. */
     blend?: CompiledBlendState;
+}
+
+/**
+ * A `PickDiscardRule`'s generation-known members: what the pin's shader
+ * builders splice and its pipeline cache keys on (`ruleKey`).
+ */
+export interface PickDiscardRuleManifest {
+    key: string;
+    wgsl: string;
+    worldAdjustWgsl?: string;
+    vertexData?: string;
+    storage: { name: string; type: string; vertex: boolean }[];
 }
 
 export interface SpriteCustomShaderManifest {
@@ -2052,6 +2071,12 @@ export type ValueKind =
     | "task"
     | "texture"
     | "tuple"
+    /**
+     * A part of plain data the program holds where generation cannot read
+     * it (`unreadableValue`): it passes on with the data holding it, and
+     * every read of it refuses with its `unreadableRefusal`.
+     */
+    | "unreadable"
     | "void";
 
 /**
@@ -2126,6 +2151,9 @@ export function isCompileTimeOnlyValue(kind: ValueKind): boolean {
         // `createHavokWorld`; a native build reaches its solver through
         // the PAL, so the binding exists for that call to accept.
         kind === "physics-engine-module" ||
+        // A part of plain data generation cannot read: it passes on with
+        // the data holding it, and a read of it refuses.
+        kind === "unreadable" ||
         isNodeParticleValue(kind)
     );
 }
@@ -2600,6 +2628,8 @@ export interface ValueFields {
     uiLookupId?: string;
     /** This engine/surface/scene presents into a retained host canvas. */
     surfaceCanvas?: true;
+    /** The engine created on this retained canvas; aliases preserve its ownership proof. */
+    canvasEngineIdentity?: symbol;
     /** The scene was created on its engine's primary surface. */
     scenePrimarySurface?: true;
     environmentAsset?: CompileAsset;
@@ -2654,7 +2684,7 @@ export interface ValueFields {
     staticElementIndex?: number;
     /** Shared by aliases even after their generation-known elements are withdrawn. */
     collectionCardinality?: CollectionCardinality;
-    /** Representative metadata for a handle read from a runtime container. */
+    /** Representative metadata for a handle read from a runtime container: an array's elements, or an optional's present handle. */
     runtimeElementTemplate?: Value;
     /**
      * Keep this lookup nullable when it initializes a local even if
@@ -3049,8 +3079,8 @@ export interface ValueFields {
      */
     slotDeclarations?: readonly ts.Declaration[];
     /**
-     * Stored into a record field declared only as a read-only array view
-     * (`ArrayLike`, `readonly T[]`): no array grows through that field.
+     * A tuple stored into a record field declared only as a read-only array
+     * view (`ArrayLike`, `readonly T[]`): no array grows through that field.
      */
     readonlyArraySlot?: true;
     /** JavaScript truthiness when it differs from mere optional presence. */
@@ -3143,16 +3173,18 @@ export interface ValueFields {
     postProcessComposite?: PostProcessCompositeManifest;
     /** Proven scene-render task factory result, including its constant aliases. */
     renderTask?: true;
+    /** A render task whose target is proven single-sample. */
+    singleSampleTarget?: true;
     /** Proven `createEffectRenderTask` result. */
     effectTask?: true;
     /** Proven `createCopyToTextureTask` result. */
     copyTask?: true;
     /** Proven target descriptor retained by aliases for pass-signature admission. */
     renderTargetSignature?: {
-        readonly surfaceFormat: boolean;
         readonly hasColor: boolean;
         readonly depthFormat?: string;
-        readonly samples: number;
+        /** Undefined for a count the run decides. */
+        readonly samples: 1 | 4 | undefined;
     };
     /**
      * Set instead when a `task` value names a screen-space effect. Its
@@ -3296,10 +3328,28 @@ export interface ValueFields {
     /** Complete own-key order proven for a native record whose key set cannot change. */
     recordOwnKeys?: readonly string[];
     /**
+     * `recordOwnKeys` are what a binding's declaration proves of the object
+     * it creates, not a holder's view of an object the holder built.
+     */
+    declaredOwnKeys?: true;
+    /**
      * The object literal whose object this record is: the literal at a field
      * of a `const`'s literal, read where no write replaces that field.
      */
     recordLiteral?: ts.ObjectLiteralExpression;
+    /**
+     * The native array a record holds whose only writers are the record's
+     * views: its literal's own array literal, which no other reference held
+     * when the record took it, or an `unwrittenConstantArray`, which every
+     * other reference holds as a readonly array.
+     */
+    recordLiteralArray?: true;
+    /**
+     * The array a `const` binding's literal created, which no write in the
+     * program reaches (`constantArrayWriteObservation`): a holder storing
+     * it keeps its elements' facts.
+     */
+    unwrittenConstantArray?: true;
     /** Module namespace exports are live bindings and cannot be written through this record. */
     moduleNamespace?: true;
     /** Fields alias an already-retained native object; escaping must preserve those field references. */
@@ -3546,6 +3596,8 @@ export type Feature =
     | "material:shader"
     | "material:shader-uniform-ranges"
     | "material:shader-declaration-lists"
+    | "material:shader-uniform-creation-lanes"
+    | "material:shader-slot-maps"
     | "material:shader-storage"
     | "material:shader-external-texture"
     | "material:standard"
@@ -3748,6 +3800,7 @@ export type Feature =
     | "texture:ktx2"
     | "texture:pixels"
     | "texture:pixels-writes"
+    | "texture:pixels-3d"
     | "sprite:billboard"
     | "sprite:billboard-axis-locked"
     | "sprite:billboard-cutout"
@@ -3762,6 +3815,7 @@ export type Feature =
     | "frame-graph:task-mesh-removal"
     | "frame-graph:task-mesh-refresh"
     | "frame-graph:render-task-transmission"
+    | "frame-graph:multisampled-task-transmission"
     | "frame-graph:depth-resolve"
     | "frame-graph:color-texture-identity"
     | "frame-graph:task-material-override"
@@ -3863,6 +3917,8 @@ export interface ResolvedCompileOptions extends DeploymentOptions {
     runtimeLocationSearch?: boolean;
     /** A reached constructed promise can end a synchronous activation at its await. */
     pendingActivations?: boolean;
+    /** The shader material creations a previous attempt reached, for run-time variant splits. */
+    shaderCreations?: ShaderCreationLedger;
     fileName: string;
     /** The page's inline module script in the program, and the import of the entry it ends with. */
     pageLoader?: PageLoaderProgram;

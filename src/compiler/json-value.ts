@@ -50,8 +50,80 @@ export interface JsonValuePolicy {
     unsupportedMessage: string;
 }
 
-/** Convert one parsed JSON value under the caller's explicit policy. */
+/** What a part of a JSON value at a key path reads as, where not itself. */
+type JsonLeafReader = (
+    json: unknown,
+    path: readonly (string | number)[],
+) => Value | undefined;
+
+/**
+ * Convert one parsed JSON value under the caller's explicit policy. With
+ * `leaf`, a part it reads as a value (by its key path) is that value, and
+ * the arrays and objects holding one carry no `staticJson`.
+ */
 export function jsonToValue(
+    context: JsonValueContext,
+    policy: JsonValuePolicy,
+    json: unknown,
+    node: ts.Node,
+    leaf?: JsonLeafReader,
+): Value {
+    return convertJson(context, policy, json, node, leaf, []).value;
+}
+
+function convertJson(
+    context: JsonValueContext,
+    policy: JsonValuePolicy,
+    json: unknown,
+    node: ts.Node,
+    leaf: JsonLeafReader | undefined,
+    path: readonly (string | number)[],
+): { readonly value: Value; readonly read: boolean } {
+    const read = leaf?.(json, path);
+    if (read) return { value: read, read: true };
+    if (Array.isArray(json)) {
+        const elements = json.map((element, index) =>
+            convertJson(context, policy, element, node, leaf, [...path, index]),
+        );
+        const held = !elements.some(({ read }) => read);
+        return {
+            value: {
+                kind: "tuple",
+                cpp: "",
+                tupleElements: elements.map(({ value }) => value),
+                ...(policy.staticMetadata && held ? { staticJson: json } : {}),
+            },
+            read: !held,
+        };
+    }
+    if (typeof json === "object" && json !== null) {
+        const properties = Object.entries(json).map(
+            ([name, value]) =>
+                [
+                    name,
+                    convertJson(context, policy, value, node, leaf, [
+                        ...path,
+                        name,
+                    ]),
+                ] as const,
+        );
+        const held = !properties.some(([, { read }]) => read);
+        return {
+            value: {
+                kind: "record",
+                cpp: "",
+                recordProperties: Object.fromEntries(
+                    properties.map(([name, { value }]) => [name, value]),
+                ),
+                ...(policy.staticMetadata && held ? { staticJson: json } : {}),
+            },
+            read: !held,
+        };
+    }
+    return { value: scalarJsonValue(context, policy, json, node), read: false };
+}
+
+function scalarJsonValue(
     context: JsonValueContext,
     policy: JsonValuePolicy,
     json: unknown,
@@ -99,29 +171,6 @@ export function jsonToValue(
                       dataType: { kind: "boolean" as const },
                   }
                 : {}),
-        };
-    }
-    if (Array.isArray(json)) {
-        return {
-            kind: "tuple",
-            cpp: "",
-            tupleElements: json.map((element) =>
-                jsonToValue(context, policy, element, node),
-            ),
-            ...(policy.staticMetadata ? { staticJson: json } : {}),
-        };
-    }
-    if (typeof json === "object") {
-        return {
-            kind: "record",
-            cpp: "",
-            recordProperties: Object.fromEntries(
-                Object.entries(json).map(([name, value]) => [
-                    name,
-                    jsonToValue(context, policy, value, node),
-                ]),
-            ),
-            ...(policy.staticMetadata ? { staticJson: json } : {}),
         };
     }
     context.fail(node, policy.unsupportedMessage);

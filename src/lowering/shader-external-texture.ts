@@ -282,6 +282,12 @@ void set_shader_external_texture(
     std::uint32_t slot,
     ExternalTextureHandle texture) {
     MaterialRecord& record = shader_material(engine, material);
+    // \`getMaterialSource\`: a view binds its source's slot.
+    if (record.shader_view_slots) {
+        const auto owner = shader_slot_owner(engine, record, ShaderDeclarationList::samplers, slot);
+        set_shader_external_texture(engine, record.source_material, owner.slot, std::move(texture));
+        return;
+    }
     external_texture_resolvers_installed = true;
     if (record.shader_external_textures.size() <= slot) {
         record.shader_external_textures.resize(slot + 1);
@@ -316,9 +322,11 @@ void require_shader_external_textures(const Engine& engine, const RenderPlan& pl
         for (std::size_t slot = info.samplers.size() - info.external_textures;
              slot < info.samplers.size(); ++slot) {
             const char* name = info.samplers[slot];
+            const auto owner = shader_slot_owner(engine, material, ShaderDeclarationList::samplers,
+                                                 static_cast<std::uint32_t>(slot));
             const ExternalTexture* texture =
-                slot < material.shader_external_textures.size()
-                    ? material.shader_external_textures[slot].get()
+                owner.slot < owner.material.shader_external_textures.size()
+                    ? owner.material.shader_external_textures[owner.slot].get()
                     : nullptr;
             if (!texture) {
                 throw std::runtime_error(${noSource});

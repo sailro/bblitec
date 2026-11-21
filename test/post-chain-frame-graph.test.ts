@@ -47,16 +47,15 @@ onBeforeRender(scene, () => {
     assert.ok(
         compiled.manifest.features.includes("frame-graph:color-view-state"),
     );
-    // Only its presence is represented.
-    assert.throws(
-        () =>
-            compileSource(
-                program(`
+    // Its value is the view object of the target's colour allocation.
+    assert.match(
+        compileSource(
+            program(`
 const built = createRenderTarget({ lbl: "built", format: "rgba8unorm", samples: 1, size: engine });
 const view = (built as unknown as RenderTargetInternals)._colorView;
 if (view) throw new Error("view");`),
-            ),
-        /Unsupported property value '\(built as unknown as RenderTargetInternals\)\._colorView'/,
+        ).cpp,
+        /v_view = bbl::render_target_color_view_object\(v_engine, v_built\);/,
     );
 });
 

@@ -14,6 +14,32 @@
 namespace bbl::pal {
 
 #if BBLITE_HAS_PICKING
+#if BBLITE_VAT_PICKING || BBLITE_PICK_DISCARD
+namespace {
+// A pick module over `info`'s stream and targets with its own stages and
+// vertex attributes, both stages' slots read by name.
+void load_pick_program(GpuState& state, GpuState::PickStageProgram& program,
+                       const std::string& vertex_stem, const std::string& fragment_stem,
+                       SDL_GPUGraphicsPipelineCreateInfo info,
+                       const SDL_GPUVertexAttribute* attributes, Uint32 attribute_count,
+                       const char* what) {
+    program.vertex_slots = read_pinned_stage_slots(vertex_stem);
+    program.fragment_slots = read_pinned_stage_slots(fragment_stem);
+    auto vertex =
+        load_shader(state.device, vertex_stem, SDL_GPU_SHADERSTAGE_VERTEX, program.vertex_slots);
+    auto fragment = load_shader(state.device, fragment_stem, SDL_GPU_SHADERSTAGE_FRAGMENT,
+                                program.fragment_slots);
+    info.vertex_shader = vertex.get();
+    info.fragment_shader = fragment.get();
+    info.vertex_input_state.vertex_attributes = attributes;
+    info.vertex_input_state.num_vertex_attributes = attribute_count;
+    program.pipeline = create_sdl_gpu_graphics_pipeline(state.device, vertex, &info);
+    if (!program.pipeline)
+        gpu_error(what);
+}
+} // namespace
+#endif
+
 void ensure_pick_pipelines(GpuState& state) {
     if (state.pick_mesh_pipeline)
         return;
@@ -209,21 +235,42 @@ void ensure_pick_pipelines(GpuState& state) {
                          static_cast<Uint32>(offsetof(GpuVertex, weights))};
     for (std::size_t index = 0; index < upstream::pick_vat_variants.size(); ++index) {
         const auto& variant = upstream::pick_vat_variants[index];
-        auto& program = state.pick_vat_programs[index];
-        program.vertex_slots = read_pinned_stage_slots(variant.vertex);
-        program.fragment_slots = read_pinned_stage_slots(variant.fragment);
-        auto vat_vertex = load_shader(state.device, variant.vertex, SDL_GPU_SHADERSTAGE_VERTEX,
-                                      program.vertex_slots);
-        auto vat_fragment = load_shader(state.device, variant.fragment,
-                                        SDL_GPU_SHADERSTAGE_FRAGMENT, program.fragment_slots);
-        SDL_GPUGraphicsPipelineCreateInfo vat_info = info;
-        vat_info.vertex_shader = vat_vertex.get();
-        vat_info.fragment_shader = vat_fragment.get();
-        vat_info.vertex_input_state.vertex_attributes = vat_attributes.data();
-        vat_info.vertex_input_state.num_vertex_attributes = 3u;
-        program.pipeline = create_sdl_gpu_graphics_pipeline(state.device, vat_vertex, &vat_info);
-        if (!program.pipeline)
-            gpu_error("SDL_CreateGPUGraphicsPipeline VAT pick");
+        load_pick_program(state, state.pick_vat_programs[index], variant.vertex, variant.fragment,
+                          info, vat_attributes.data(), 3u,
+                          "SDL_CreateGPUGraphicsPipeline VAT pick");
+    }
+#endif
+#if BBLITE_PICK_DISCARD
+    // Each composed `discard` rule's module per pipeline its candidates
+    // draw through: the regular and thin arms over the affine pipeline's
+    // stream and targets, the detailed arm over the detailed pipeline's.
+    for (std::size_t index = 0; index < upstream::pick_discard_variants.size(); ++index) {
+        const auto& variant = upstream::pick_discard_variants[index];
+        for (std::size_t pipeline = 0; pipeline < pick_discard_pipelines; ++pipeline) {
+            const char* stem = pick_discard_stem(variant, pipeline);
+            if (!stem)
+                continue;
+            // The rule's `vertexData` lane of the same interleaved stream.
+            std::array<SDL_GPUVertexAttribute, 2> discard_attributes{};
+            discard_attributes[0] = position;
+            Uint32 attribute_count = 1;
+            if (const auto data = pick_discard_vertex_data(variant, pipeline)) {
+                discard_attributes[attribute_count++] = {
+                    data->location, 0,
+                    data->components == 2   ? SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2
+                    : data->components == 3 ? SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3
+                                            : SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4,
+                    data->offset};
+            }
+            load_pick_program(state, state.pick_discard_programs[index][pipeline],
+                              std::string(stem) + ".vert", std::string(stem) + ".frag",
+#if BBLITE_HAS_DETAILED_PICKING
+                              pick_discard_is_detailed(pipeline) ? detailed_info :
+#endif
+                                                                 info,
+                              discard_attributes.data(), attribute_count,
+                              "SDL_CreateGPUGraphicsPipeline discard pick");
+        }
     }
 #endif
 
@@ -325,6 +372,21 @@ void record_cloud_pick_draw(SDL_GPUCommandBuffer* command, SDL_GPURenderPass* pa
 #endif
 
 #if (BBLITE_HAS_PBR_RENDERER && BBLITE_HAS_PICKING)
+namespace {
+// The candidate's interleaved stream and 32-bit indices, drawn once per
+// instance it covers, under whichever pick program is bound.
+void draw_pick_candidate(SDL_GPURenderPass* pass, const GpuMesh& gpu,
+                         const PickMeshCandidate& candidate) {
+    SDL_GPUBufferBinding vertex_binding{};
+    vertex_binding.buffer = gpu.vertices;
+    SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
+    SDL_GPUBufferBinding index_binding{};
+    index_binding.buffer = gpu.indices;
+    SDL_BindGPUIndexBuffer(pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+    count_gpu_draw(SDL_DrawGPUIndexedPrimitives, pass, gpu.index_count,
+                   pick_candidate_instances(candidate), 0, 0, 0);
+}
+} // namespace
 #if BBLITE_VAT_PICKING
 namespace {
 // `bindVatPickingProjection` over this backend's reflected slots: the bake
@@ -377,18 +439,51 @@ void record_vat_pick_draw(GpuState& state, SDL_GPUCommandBuffer* command, SDL_GP
                                engine.assert_storage_buffer_handle(engine, handle.value);
                            return handle_at(state.storage_buffers, handle).buffer;
                        });
-    SDL_GPUBufferBinding vertex_binding{};
-    vertex_binding.buffer = gpu.vertices;
-    SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
-    SDL_GPUBufferBinding index_binding{};
-    index_binding.buffer = gpu.indices;
-    SDL_BindGPUIndexBuffer(pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
-    const std::uint32_t instances =
-#if BBLITE_GPU_INSTANCING
-        candidate.thin ? candidate.instance_count :
+    draw_pick_candidate(pass, gpu, candidate);
+}
+} // namespace
 #endif
-                       1u;
-    count_gpu_draw(SDL_DrawGPUIndexedPrimitives, pass, gpu.index_count, instances, 0, 0, 0);
+#if BBLITE_PICK_DISCARD
+namespace {
+// A composed `discard` rule's module over this backend's reflected slots:
+// the scene and mesh blocks, a thin candidate's instance rows, and the
+// rule's storage entries by their WGSL names.
+void record_discard_pick_draw(GpuState& state, SDL_GPUCommandBuffer* command,
+                              SDL_GPURenderPass* pass, const PickMeshCandidate& candidate,
+                              const GpuMesh& gpu, const PickSceneUniforms& scene_uniforms,
+                              const PickDiscardDraw& draw,
+                              const std::vector<SDL_GPUBuffer*>& storage) {
+    const auto variant_index = static_cast<std::size_t>(draw.variant);
+    const auto& variant = upstream::pick_discard_variants[variant_index];
+    const auto& program = state.pick_discard_programs[variant_index][draw.pipeline];
+    const char* what = "discard pick";
+    const std::string mesh_block = draw.pipeline == pick_discard_thin ? "tiMesh" : "mesh";
+    const auto blocks = [&](const std::string& name, std::size_t) -> PinnedStageBlock {
+        if (name == "scene")
+            return {&scene_uniforms, sizeof(scene_uniforms)};
+        if (name == mesh_block)
+            return {&candidate.uniforms, sizeof(candidate.uniforms)};
+        return {};
+    };
+    const auto buffers = [&](const std::string& name, std::size_t) -> SDL_GPUBuffer* {
+#if BBLITE_GPU_INSTANCING
+        if (name == "instances")
+            return gpu.instances;
+#endif
+        for (std::size_t entry = 0; entry < variant.storage_count; ++entry) {
+            if (name == variant.storage_names[entry])
+                return storage[entry];
+        }
+        return nullptr;
+    };
+    SDL_BindGPUGraphicsPipeline(pass, program.pipeline);
+    push_stage_uniforms(command, program.vertex_slots, false, what, blocks);
+    push_stage_uniforms(command, program.fragment_slots, true, what, blocks);
+    bind_stage_storage(pass, program.vertex_slots, false, what, state.storage_binding_scratch,
+                       buffers);
+    bind_stage_storage(pass, program.fragment_slots, true, what, state.storage_binding_scratch,
+                       buffers);
+    draw_pick_candidate(pass, gpu, candidate);
 }
 } // namespace
 #endif
@@ -398,7 +493,7 @@ PickingInfo pick_sdl_gpu_scene(GpuState& state, Engine& engine,
                                const std::vector<upstream::RenderPlan>& overlay_plans,
                                const std::vector<std::shared_ptr<Scene>>& active_registered_scenes,
                                [[maybe_unused]] GpuPickerHandle picker, double x, double y,
-                               const Engine::PickFilter* filter
+                               const Engine::PickOptions* options
 #if BBLITE_HAS_BILLBOARDS
                                ,
                                BillboardPickContributor& billboard_pick
@@ -455,9 +550,9 @@ PickingInfo pick_sdl_gpu_scene(GpuState& state, Engine& engine,
             const GpuMesh& gpu = pick_meshes[item_index];
             return gpu.vertices && gpu.indices;
         },
-        ranges, next_id, filter, detailed);
+        ranges, next_id, options, detailed);
     // `pickAsyncImpl` takes no pick source under a supplied filter.
-    [[maybe_unused]] const bool pick_sources = filter == nullptr;
+    [[maybe_unused]] const bool pick_sources = !options || !options->filter;
     validate_pick_contributors(engine, scene, detailed, pick_sources);
 
 #if BBLITE_DEFORM_PICKING
@@ -487,6 +582,28 @@ PickingInfo pick_sdl_gpu_scene(GpuState& state, Engine& engine,
         write_pinned_vat_texture(
             state, pick_meshes[candidate.item_index],
             handle_at(engine.meshes, render_plan.items[candidate.item_index].mesh), engine);
+    }
+#endif
+
+    // The rule's storage per admitted candidate, asked in draw order and
+    // uploaded before the pick records (`createMappedBuffer`).
+    [[maybe_unused]] const std::vector<PickDiscardDraw> discard_draws =
+        prepare_pick_discard(engine, render_plan, candidates, ranges, options, detailed);
+#if BBLITE_PICK_DISCARD
+    std::vector<OwnedSdlBuffer> discard_storage;
+    std::vector<std::vector<SDL_GPUBuffer*>> discard_buffers(discard_draws.size());
+    if (!discard_draws.empty()) {
+        GpuBufferUploadBatch uploads(state.device);
+        for (std::size_t slot = 0; slot < discard_draws.size(); ++slot) {
+            for (const std::vector<std::uint8_t>& bytes : discard_draws[slot].storage) {
+                discard_storage.push_back(
+                    OwnedSdlBuffer{uploads.upload(SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
+                                                  bytes.data(), bytes.size()),
+                                   {state.device}});
+                discard_buffers[slot].push_back(discard_storage.back().get());
+            }
+        }
+        uploads.submit();
     }
 #endif
 
@@ -565,10 +682,12 @@ PickingInfo pick_sdl_gpu_scene(GpuState& state, Engine& engine,
 #endif
                  0u;
 #endif
-#if BBLITE_VAT_PICKING
-    bool vat_program_bound = false;
+#if BBLITE_VAT_PICKING || BBLITE_PICK_DISCARD
+    // Whether a VAT or discard program, which pushes its own blocks, is bound.
+    bool program_bound = false;
 #endif
-    for (const PickMeshCandidate& candidate : candidates) {
+    for (std::size_t slot = 0; slot < candidates.size(); ++slot) {
+        const PickMeshCandidate& candidate = candidates[slot];
         const GpuMesh& gpu = pick_meshes[candidate.item_index];
 #if BBLITE_VAT_PICKING
         if (candidate.vat >= 0) {
@@ -576,10 +695,20 @@ PickingInfo pick_sdl_gpu_scene(GpuState& state, Engine& engine,
                 state, command, pass, engine, candidate, gpu,
                 handle_at(engine.meshes, render_plan.items[candidate.item_index].mesh),
                 scene_uniforms);
-            vat_program_bound = true;
+            program_bound = true;
             continue;
         }
-        if (vat_program_bound) {
+#endif
+#if BBLITE_PICK_DISCARD
+        if (!discard_draws.empty() && discard_draws[slot].variant >= 0) {
+            record_discard_pick_draw(state, command, pass, candidate, gpu, scene_uniforms,
+                                     discard_draws[slot], discard_buffers[slot]);
+            program_bound = true;
+            continue;
+        }
+#endif
+#if BBLITE_VAT_PICKING || BBLITE_PICK_DISCARD
+        if (program_bound) {
             // Back to the affine program and the scene block it reads.
             SDL_BindGPUGraphicsPipeline(pass,
 #if BBLITE_HAS_DETAILED_PICKING
@@ -589,7 +718,7 @@ PickingInfo pick_sdl_gpu_scene(GpuState& state, Engine& engine,
             SdlGpuWriteDevice{}.write_vertex_uniform(command, static_cast<Uint32>(mesh_scene_slot),
                                                      &scene_uniforms, sizeof(scene_uniforms));
             push_stage_uniform(command, frag_scene_slot, &scene_uniforms, sizeof(scene_uniforms));
-            vat_program_bound = false;
+            program_bound = false;
 #if BBLITE_GPU_INSTANCING
             regular_pick_pipeline_bound = true;
 #endif
@@ -621,14 +750,7 @@ PickingInfo pick_sdl_gpu_scene(GpuState& state, Engine& engine,
                                sizeof(candidate.uniforms));
             SDL_GPUBuffer* instance_storage = gpu.instances;
             SDL_BindGPUVertexStorageBuffers(pass, 0, &instance_storage, 1);
-            SDL_GPUBufferBinding vertex_binding{};
-            vertex_binding.buffer = gpu.vertices;
-            SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
-            SDL_GPUBufferBinding index_binding{};
-            index_binding.buffer = gpu.indices;
-            SDL_BindGPUIndexBuffer(pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
-            count_gpu_draw(SDL_DrawGPUIndexedPrimitives, pass, gpu.index_count,
-                           candidate.instance_count, 0, 0, 0);
+            draw_pick_candidate(pass, gpu, candidate);
             regular_pick_pipeline_bound = false;
             continue;
         }
@@ -692,13 +814,7 @@ PickingInfo pick_sdl_gpu_scene(GpuState& state, Engine& engine,
                                                  &candidate.uniforms, sizeof(candidate.uniforms));
         push_stage_uniform(command, frag_mesh_slot, &candidate.uniforms,
                            sizeof(candidate.uniforms));
-        SDL_GPUBufferBinding vertex_binding{};
-        vertex_binding.buffer = gpu.vertices;
-        SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
-        SDL_GPUBufferBinding index_binding{};
-        index_binding.buffer = gpu.indices;
-        SDL_BindGPUIndexBuffer(pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
-        count_gpu_draw(SDL_DrawGPUIndexedPrimitives, pass, gpu.index_count, 1, 0, 0, 0);
+        draw_pick_candidate(pass, gpu, candidate);
     }
 #if BBLITE_HAS_SPLATS
     for (const SplatPass& splat : state.splat_passes) {

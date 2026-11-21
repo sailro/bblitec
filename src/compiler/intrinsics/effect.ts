@@ -21,7 +21,7 @@ import {
     type Value,
 } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
-import { renderTargetColorViewTexture } from "../data-sinks/resources.js";
+import { texture2DFromRecord } from "../data-sinks/resources.js";
 import { compileBlendState, type BlendStateContext } from "../blend-state.js";
 import {
     compileStaticNumber,
@@ -241,22 +241,51 @@ function compileBindings(
                 manifest.textureSampleType = type;
             }
             const dimension = context.objectProperty(entry, "viewDimension");
-            if (dimension && context.compileStaticString(dimension) !== "2d") {
-                context.fail(dimension, "Effect textures require a 2d view.");
+            const view = dimension && context.compileStaticString(dimension);
+            if (
+                dimension &&
+                view !== "2d" &&
+                view !== "2d-array" &&
+                view !== "3d"
+            ) {
+                context.fail(
+                    dimension,
+                    "Effect textures take a 2d, a 2d-array or a 3d view.",
+                );
+            }
+            // A Texture3D fills a 3d view and only a CSM receiver texture, a
+            // depth array, fills a 2d-array one.
+            if (dimension && view === "3d") {
+                if (manifest.textureSampleType === "depth") {
+                    context.fail(
+                        dimension,
+                        "A depth effect texture takes a 2d or a 2d-array view.",
+                    );
+                }
+                manifest.viewDimension = "3d";
+            }
+            if (dimension && view === "2d-array") {
+                if (manifest.textureSampleType !== "depth") {
+                    context.fail(
+                        dimension,
+                        "A 2d-array effect texture is a depth texture: only getCsmReceiverTexture fills one.",
+                    );
+                }
+                manifest.viewDimension = "2d-array";
             }
         }
         bindings.push(manifest);
         if (kind === "sampler") {
             const samplerType = context.objectProperty(entry, "samplerType");
-            if (
-                samplerType &&
-                context.compileStaticString(samplerType) !== "filtering"
-            ) {
+            const type =
+                samplerType && context.compileStaticString(samplerType);
+            if (samplerType && type !== "filtering" && type !== "comparison") {
                 context.fail(
                     samplerType,
-                    "Effect samplers require the filtering binding type.",
+                    "Effect samplers take the filtering or the comparison binding type.",
                 );
             }
+            if (type === "comparison") manifest.comparison = true;
             samplers.push({
                 entry,
                 reference: context.objectProperty(entry, "textureBinding"),
@@ -297,10 +326,19 @@ function compileBindings(
                     "no texture slot to fall back to.",
             );
         }
-        if (match.textureSampleType === "depth") {
+        // The pin binds the texture's own sampler (`bindGroupEntry`), and the
+        // only depth texture whose sampler compares is a CSM receiver
+        // texture, which is a 2d-array view.
+        if (
+            manifest.comparison
+                ? match.viewDimension !== "2d-array"
+                : match.textureSampleType === "depth"
+        ) {
             context.fail(
                 reference ?? entry,
-                "Depth effect textures support textureLoad; sampler bindings to them are not lowered.",
+                manifest.comparison
+                    ? "A comparison effect sampler samples a 2d-array depth texture, the CSM receiver texture whose sampler compares."
+                    : "A depth effect texture supports textureLoad or, as a 2d-array CSM receiver texture, a comparison sampler; a filtering sampler over it is not lowered.",
             );
         }
         // The ORDINAL, not the binding number: a PAL holds its uploaded
@@ -499,14 +537,12 @@ export function compileEffectIntrinsic(
                         ));
             const given = context.compileValue(argumentAt(call, 2));
             const texture =
-                renderTargetColorViewTexture(
-                    context,
-                    given,
-                    argumentAt(call, 2),
-                ) ?? given;
+                texture2DFromRecord(context, given, argumentAt(call, 2)) ??
+                given;
             if (texture.kind !== "render-texture") {
                 context.expectKind(texture, "texture", argumentAt(call, 2));
                 if (
+                    !texture.csmReceiverTexture &&
                     texture.textureStorage !== "solid" &&
                     texture.textureStorage !== "pixels" &&
                     texture.textureStorage !== "stored" &&
@@ -517,15 +553,16 @@ export function compileEffectIntrinsic(
                 ) {
                     context.fail(
                         argumentAt(call, 2),
-                        "Reached effect textures come from createSolidTexture2D, createTexture2DFromPixels or a render target.",
+                        "Reached effect textures come from createSolidTexture2D, createTexture2DFromPixels, createTexture3DFromPixels, getCsmReceiverTexture or a render target.",
                     );
                 }
             }
             context.expectSameEngine(wrapper, texture, call);
+            // A CSM receiver texture's native value is its generator.
             return {
                 kind: "void",
                 cpp:
-                    `bbl::set_effect_texture(` +
+                    `bbl::${texture.csmReceiverTexture ? "set_effect_csm_texture" : "set_effect_texture"}(` +
                     `${context.requireEngine(wrapper, call)}, ` +
                     `${wrapper.cpp}, ${keyCpp}, ${texture.cpp})`,
             };

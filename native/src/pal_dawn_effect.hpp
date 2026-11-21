@@ -34,17 +34,34 @@
 
 namespace bbl::pal {
 
-/** Upload factory pixels or the already-rounded texel of a solid texture. */
+/** Upload factory pixels (2D or 3D) or the already-rounded texel of a solid texture. */
 inline DawnTexture upload_dawn_effect_image(WGPUDevice device, WGPUQueue queue,
                                             const EffectTextureSlot& slot) {
     if (slot.pixels_texture) {
         const auto& texture = *slot.pixels_texture;
+        if (texture.depth)
+            return DawnTexture{upload_dawn_rgba_volume(
+                device, queue, texture.rgba.data(), texture.rgba.size(), texture.width,
+                texture.height, *texture.depth, texture.srgb)};
         return DawnTexture{upload_dawn_rgba_texture(device, queue, texture.rgba.data(),
                                                     texture.rgba.size(), texture.width,
                                                     texture.height, 1, texture.srgb)};
     }
     return DawnTexture{upload_dawn_rgba_texture(device, queue, slot.texture.texel.data(),
                                                 slot.texture.texel.size(), 1, 1)};
+}
+
+/** The WebGPU view dimension of an effect texture layout's `viewDimension`. */
+inline WGPUTextureViewDimension dawn_effect_view_dimension(EffectViewDimension dimension) {
+    switch (dimension) {
+    case EffectViewDimension::texture_2d:
+        return WGPUTextureViewDimension_2D;
+    case EffectViewDimension::texture_2d_array:
+        return WGPUTextureViewDimension_2DArray;
+    case EffectViewDimension::texture_3d:
+        return WGPUTextureViewDimension_3D;
+    }
+    throw std::runtime_error("Unknown effect texture view dimension.");
 }
 
 /** One `EffectWrapper` as GPU state, for one target signature. */
@@ -57,8 +74,11 @@ struct DawnEffectPass {
     std::uint32_t uniform_bytes = 0;
     std::vector<DawnSampledTexture> textures;
     EffectTextureImages<DawnTexture> texture_images;
-    /** Bind-group entries a render target fills at record time: entry index, binding number. */
-    std::vector<std::pair<std::size_t, std::uint32_t>> render_textures;
+    /**
+     * Bind-group entries a render target or a CSM receiver texture fills at
+     * record time: entry index, binding number.
+     */
+    std::vector<std::pair<std::size_t, std::uint32_t>> per_draw_textures;
     /** The entries the group was last built from, kept to rebuild it on a new view. */
     std::vector<WGPUBindGroupEntry> group_entries;
 };
@@ -87,14 +107,16 @@ inline DawnEffectPass create_dawn_effect_pass(DawnDevice& device_state, const En
     DawnEffectPass pass;
 
     // The descriptor's own layout, entry for entry: `bindingLayoutEntry`
-    // gives a uniform `{ type: "uniform" }`, a texture float or depth/2d, and a
-    // sampler `filtering`, all at fragment visibility unless the descriptor
-    // named another — and the reached slice names none.
-    // The textures first, in their declared order: a sampler can precede the
-    // texture it samples in binding order. The lookup and its not-set refusal
-    // are the shared `effect_texture_slot`; a render target's view is bound
-    // when the pass records, since a rebuilt target replaces it.
-    std::vector<std::uint32_t> render_bindings;
+    // gives a uniform `{ type: "uniform" }`, a texture float or depth over a
+    // 2d, 2d-array or 3d view, and a sampler `filtering` or `comparison`,
+    // all at fragment visibility unless the descriptor named another — and
+    // the reached slice names none. The textures first, in their declared
+    // order: a sampler can precede the texture it samples in binding order.
+    // The lookup and its not-set refusal are the shared
+    // `effect_texture_slot`; a render target's or a CSM receiver texture's
+    // view is bound when the pass records, since a rebuilt target or shadow
+    // map replaces it.
+    std::vector<std::uint32_t> per_draw_bindings;
     for (std::size_t index = 0; index < entry.binding_count; ++index) {
         const upstream::EffectVariantBinding& binding =
             upstream::effect_variant_bindings.at(entry.first_binding + index);
@@ -113,8 +135,8 @@ inline DawnEffectPass create_dawn_effect_pass(DawnDevice& device_state, const En
         sampled.sampler =
             create_texture_sampler(device_state.device, effect_slot_sampler(engine, slot));
         pass.textures.push_back(std::move(sampled));
-        if (slot.render_texture)
-            render_bindings.push_back(binding.binding);
+        if (effect_slot_binds_per_draw(slot))
+            per_draw_bindings.push_back(binding.binding);
     }
     std::vector<WGPUBindGroupLayoutEntry> layout_entries;
     std::vector<WGPUBindGroupEntry> group_entries;
@@ -141,17 +163,18 @@ inline DawnEffectPass create_dawn_effect_pass(DawnDevice& device_state, const En
         } else if (binding.kind == upstream::EffectBindingKind::texture) {
             layout.texture.sampleType =
                 binding.depth_texture ? WGPUTextureSampleType_Depth : WGPUTextureSampleType_Float;
-            layout.texture.viewDimension = WGPUTextureViewDimension_2D;
-            if (std::find(render_bindings.begin(), render_bindings.end(), binding.binding) !=
-                render_bindings.end())
-                pass.render_textures.emplace_back(group_entries.size(), binding.binding);
+            layout.texture.viewDimension = dawn_effect_view_dimension(binding.view_dimension);
+            if (std::find(per_draw_bindings.begin(), per_draw_bindings.end(), binding.binding) !=
+                per_draw_bindings.end())
+                pass.per_draw_textures.emplace_back(group_entries.size(), binding.binding);
             const DawnSampledTexture& sampled = pass.textures.at(texture_position++);
             WGPUBindGroupEntry group = WGPU_BIND_GROUP_ENTRY_INIT;
             group.binding = binding.binding;
             group.textureView = sampled.view;
             group_entries.push_back(group);
         } else {
-            layout.sampler.type = WGPUSamplerBindingType_Filtering;
+            layout.sampler.type = binding.comparison_sampler ? WGPUSamplerBindingType_Comparison
+                                                             : WGPUSamplerBindingType_Filtering;
             // Generation already performed the pin's own lookup and its
             // fallback, and published the result as a position in this
             // effect's texture rows -- so the sampler indexes what was
@@ -182,7 +205,7 @@ inline DawnEffectPass create_dawn_effect_pass(DawnDevice& device_state, const En
         require_dawn_resource(wgpuDeviceCreatePipelineLayout(device_state.device, &pipeline_layout),
                               "effect pipeline layout");
     pass.group_entries = group_entries;
-    if (!group_entries.empty() && pass.render_textures.empty()) {
+    if (!group_entries.empty() && pass.per_draw_textures.empty()) {
         WGPUBindGroupDescriptor group_descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
         group_descriptor.layout = pass.group_layout;
         group_descriptor.entryCount = group_entries.size();
@@ -236,7 +259,8 @@ inline void upload_dawn_effect_pass(DawnDevice& device, Engine& engine, DawnEffe
             sampled.texture = image ? image->retain() : DawnTexture{};
             sampled.view =
                 image ? create_dawn_texture_view(sampled.texture, nullptr) : DawnTextureView{};
-            sampled.sampler = create_texture_sampler(device.device, effect_slot_sampler(engine, slot));
+            sampled.sampler =
+                create_texture_sampler(device.device, effect_slot_sampler(engine, slot));
             const auto& variant = upstream::effect_variants.at(wrapper.variant);
             std::size_t texture_position = 0;
             for (std::size_t index = 0; index < variant.binding_count; ++index) {
@@ -246,10 +270,10 @@ inline void upload_dawn_effect_pass(DawnDevice& device, Engine& engine, DawnEffe
                 if (binding.kind == upstream::EffectBindingKind::texture) {
                     if (texture_position++ == position) {
                         entry.textureView = sampled.view;
-                        std::erase_if(pass.render_textures,
+                        std::erase_if(pass.per_draw_textures,
                                       [&](const auto& row) { return row.first == index; });
-                        if (slot.render_texture)
-                            pass.render_textures.emplace_back(index, slot.binding);
+                        if (effect_slot_binds_per_draw(slot))
+                            pass.per_draw_textures.emplace_back(index, slot.binding);
                     }
                 } else if (binding.kind == upstream::EffectBindingKind::sampler &&
                            binding.texture == position) {
@@ -270,7 +294,7 @@ inline void upload_dawn_effect_pass(DawnDevice& device, Engine& engine, DawnEffe
             DawnGpuDevice{device.queue}.write_texture(&destination, texels.data(), texels.size(),
                                                       &layout, &size);
         });
-    if (!pass.group && pass.render_textures.empty() && !pass.group_entries.empty()) {
+    if (!pass.group && pass.per_draw_textures.empty() && !pass.group_entries.empty()) {
         WGPUBindGroupDescriptor descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
         descriptor.layout = pass.group_layout;
         descriptor.entryCount = pass.group_entries.size();
@@ -292,26 +316,58 @@ inline void upload_dawn_effect_pass(DawnDevice& device, Engine& engine, DawnEffe
 
 /** A frame graph's render-target view for an effect binding. */
 using DawnEffectRenderTextureSource = std::function<WGPUTextureView(const RenderTextureRef&)>;
+/** A scene's CSM receiver texture (`getCsmReceiverTexture`) for an effect binding. */
+using DawnEffectCsmTextureSource = std::function<DawnCsmReceiverBinding(ShadowGeneratorHandle)>;
 
-/** Bind each render target's current view, rebuilding the group when one changed. */
-inline void bind_dawn_effect_render_textures(WGPUDevice device, const Engine& engine,
-                                             DawnEffectPass& pass, EffectWrapperHandle handle,
-                                             const DawnEffectRenderTextureSource& source) {
-    if (pass.render_textures.empty())
+/**
+ * Bind each render target's and CSM receiver texture's current view,
+ * rebuilding the group when one changed. A CSM receiver texture brings its
+ * own comparison sampler, which the pin binds to every sampler naming it
+ * (`bindGroupEntry`: `textureSlot.texture.sampler`).
+ */
+inline void bind_dawn_effect_per_draw_textures(WGPUDevice device, const Engine& engine,
+                                               DawnEffectPass& pass, EffectWrapperHandle handle,
+                                               const DawnEffectRenderTextureSource& source,
+                                               const DawnEffectCsmTextureSource& csm_source = {}) {
+    if (pass.per_draw_textures.empty())
         return;
-    if (!source)
-        throw std::runtime_error(
-            "An effect renderer samples render-target textures only in a frame graph.");
     const EffectWrapperRecord& wrapper = handle_at(engine.effect_wrappers, handle);
+    const upstream::EffectVariantEntry& variant = upstream::effect_variants.at(wrapper.variant);
     bool changed = !pass.group;
-    for (const auto& [entry, binding] : pass.render_textures) {
+    const auto set = [&](auto& field, auto value) {
+        changed = changed || field != value;
+        field = value;
+    };
+    for (const auto& [entry, binding] : pass.per_draw_textures) {
         const EffectTextureSlot& slot = effect_texture_slot(wrapper, binding);
-        if (!slot.render_texture)
+        if (slot.render_texture) {
+            if (!source)
+                throw std::runtime_error(
+                    "An effect renderer samples render-target textures only in a frame graph.");
+            set(pass.group_entries[entry].textureView, source(*slot.render_texture));
+        } else if (slot.csm_texture) {
+            if (!csm_source)
+                throw std::runtime_error("An effect renderer samples a CSM receiver texture only "
+                                         "in a scene's frame graph.");
+            const DawnCsmReceiverBinding csm = csm_source(*slot.csm_texture);
+            set(pass.group_entries[entry].textureView, csm.view);
+            // Entries follow the variant's bindings one for one; the
+            // samplers name the texture by its position among the textures.
+            std::size_t position = 0;
+            for (std::size_t index = 0; index < entry; ++index)
+                if (upstream::effect_variant_bindings.at(variant.first_binding + index).kind ==
+                    upstream::EffectBindingKind::texture)
+                    ++position;
+            for (std::size_t index = 0; index < variant.binding_count; ++index) {
+                const auto& row =
+                    upstream::effect_variant_bindings.at(variant.first_binding + index);
+                if (row.kind == upstream::EffectBindingKind::sampler && row.texture == position)
+                    set(pass.group_entries[index].sampler, csm.sampler);
+            }
+        } else {
             throw std::runtime_error(
                 "An effect binding changed texture kind after its first draw.");
-        const WGPUTextureView view = source(*slot.render_texture);
-        changed = changed || pass.group_entries[entry].textureView != view;
-        pass.group_entries[entry].textureView = view;
+        }
     }
     if (!changed)
         return;
@@ -325,9 +381,9 @@ inline void bind_dawn_effect_render_textures(WGPUDevice device, const Engine& en
 
 /** `_record`: the pin's own three-vertex draw, into an already-open pass. */
 inline void record_dawn_effect_pass(WGPURenderPassEncoder render_pass, const DawnEffectPass& pass) {
-    if (!pass.render_textures.empty() && !pass.group)
-        throw std::runtime_error(
-            "An effect renderer samples render-target textures only in a frame graph.");
+    if (!pass.per_draw_textures.empty() && !pass.group)
+        throw std::runtime_error("An effect renderer samples render-target or CSM receiver "
+                                 "textures only in a frame graph.");
     wgpuRenderPassEncoderSetPipeline(render_pass, pass.pipeline);
     if (pass.group) {
         wgpuRenderPassEncoderSetBindGroup(render_pass, 0, pass.group, 0, nullptr);

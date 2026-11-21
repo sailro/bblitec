@@ -76,9 +76,9 @@ test("the depth-resolve module, pass and refusals are read off the pin's own run
     // The packaged factory throws its codes for three refusals and the
     // size mismatch as written.
     for (const [refusal, code] of [
-        ["depth_resolve_source_without_depth", 116],
-        ["depth_resolve_single_sample_source", 117],
-        ["depth_resolve_target_without_depth", 118],
+        ["depth_resolve_source_without_depth", 123],
+        ["depth_resolve_single_sample_source", 124],
+        ["depth_resolve_target_without_depth", 125],
     ] as const)
         assert.match(
             header,

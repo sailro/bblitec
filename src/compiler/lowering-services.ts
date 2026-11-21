@@ -399,9 +399,14 @@ export interface LoweringServices {
     ): ts.ObjectLiteralExpression;
     /**
      * The plain data a value holds when generation knows all of it and its
-     * facts are current; undefined otherwise. `expression` reads the value.
+     * facts are current; undefined otherwise. `expression` reads the value;
+     * `leaf` reads a part as the plain data it answers, where it answers any.
      */
-    staticLiteralData(value: Value, expression: ts.Expression): unknown;
+    staticLiteralData(
+        value: Value,
+        expression: ts.Expression,
+        leaf?: (part: Value) => unknown,
+    ): unknown;
     /**
      * An application function run once at generation per declaration and
      * arguments; its plain-data result. `pinnedStandIn` binds pinned imports
@@ -419,6 +424,12 @@ export interface LoweringServices {
      * as the run's realm holds it. The run reads no module constant the
      * program writes through (`written`).
      */
+    /**
+     * A model run of a call (`model`): what its first evaluation settles
+     * with, its engine and platform values opaque; the caller checks what
+     * it reads against the program's own values.
+     */
+    runModelCall(call: ts.CallExpression, label: string): ExecutedResult;
     runCallOverHeldData(
         call: ts.CallExpression,
         held: (identifier: ts.Identifier) => ExecutedArgument | undefined,
@@ -429,6 +440,12 @@ export interface LoweringServices {
         expression: ts.Expression,
         stage: ShaderStage,
     ): ShaderSourceText;
+    /**
+     * Registers the programs a previous compile attempt's
+     * `createShaderMaterial` calls created (`reachLedgerProgram`), once
+     * per attempt; a rolled-back probe's registration does not count.
+     */
+    reachShaderCreations(): void;
     resolveStaticExpression(
         expression: ts.Expression,
         resolving?: ReadonlySet<ts.Symbol>,
@@ -479,6 +496,9 @@ export interface LoweringServices {
     executedInitializerElements(
         identifier: ts.Identifier,
     ): readonly Value[] | undefined;
+    settledCallInitializer(
+        identifier: ts.Identifier,
+    ): ts.CallExpression | undefined;
     /**
      * The numbers or booleans (`scalar`) an expression reads when the
      * documents the package serves are the ones generation holds, spelled.

@@ -9,7 +9,7 @@ const labDeployment = { publicUrl: pinnedLabPublicUrl() };
 const prefix = `import {createEngine, createSceneContext, createRenderTarget, createRenderTask,
     createTaaPostProcessTask, createBlackAndWhitePostProcessTask, registerScene, createPbrMaterial,
     createGridMaterial, createStandardMaterial, createStandardNoColorMaterialView, loadSplat,
-    loadEnvironment, setEnvironmentRotation} from "@babylonjs/lite";
+    loadEnvironment, setEnvironmentRotation, createCopyToTextureTask, addTask} from "@babylonjs/lite";
     const engine=await createEngine({});
     const scene=createSceneContext(engine,{defaultRenderTask:false});
     const rt=createRenderTarget({format:engine.format,dFormat:"depth24plus-stencil8",samples:1,size:engine});
@@ -172,19 +172,16 @@ test("TAA preparation requires one proven registered scene while preserving same
     );
 });
 
-test("TAA pass signatures refuse missing depth, alternate depth and multisampled or unproven sampling", () => {
+test("TAA pass signatures admit the target's own attachments and refuse multisampled or unproven sampling", () => {
     for (const source of [
         prefix.replace('dFormat:"depth24plus-stencil8",', ""),
         prefix.replace('"depth24plus-stencil8"', '"depth32float"'),
-        prefix.replace("format:engine.format,", ""),
         prefix.replace("format:engine.format", 'format:"rgba16float"'),
-    ]) {
-        assert.doesNotThrow(() => compileSource(source));
-        assert.throws(
-            () => compileSource(source + taa),
-            /engine color format and depth24plus-stencil8/,
-        );
-    }
+        // A colourless source pass is admitted; sampling it is refused where
+        // the pass builds its GPU state, as the pin's is.
+        prefix.replace("format:engine.format,", ""),
+    ])
+        assert.doesNotThrow(() => compileSource(source + taa));
     const multisampled = prefix.replace("samples:1", "samples:4");
     assert.doesNotThrow(() => compileSource(multisampled));
     assert.throws(
@@ -216,5 +213,73 @@ test("TAA pass signatures refuse missing depth, alternate depth and multisampled
                     "createRenderTask({rt,rst:resolved}",
                 ) + taa.replace("sourceTexture:rt", "sourceTexture:resolved"),
         ),
+    );
+});
+
+test("TAA admits copy tasks in its frame graph, on either side of the TAA task and as its source", () => {
+    // A temporal accumulator's history update: its own target, owned by the copy.
+    const history = `const history=createRenderTarget({format:"rgba16float",samples:1,size:engine});`;
+    const copy = `addTask(scene,createCopyToTextureTask({name:"keep",sourceTexture:rt,targetTexture:history,ownsTargetTexture:true},engine,scene));`;
+    for (const body of [
+        history + copy + taa,
+        history + taa + copy,
+        history.replace('"rgba16float"', "engine.format") +
+            copy +
+            taa.replace("sourceTexture:rt", "sourceTexture:history"),
+    ]) {
+        assert.doesNotThrow(() => compileSource(prefix + body));
+    }
+});
+
+/** A normal pre-pass beside the TAA source, as an app's SSAO source builds it. */
+const ownTargetPass = (
+    format: string,
+) => `import {createEngine, createSceneContext, createRenderTarget, createRenderTask,
+    createTaaPostProcessTask, createArcRotateCamera, createSurfaceRenderTargetTexture, withSampledDepthTexture,
+    enableRenderTaskMeshRefresh, addTaskAtStart} from "@babylonjs/lite";
+const engine=await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+const scene=createSceneContext(engine,{defaultRenderTask:false});
+const camera=createArcRotateCamera(0,1,6,{x:0,y:0,z:0});
+scene.camera=camera;
+const rt=createRenderTarget({format:engine.format,dFormat:"depth24plus-stencil8",samples:1,size:engine});
+const source=createRenderTask({rt},engine,scene);
+const normals=createSurfaceRenderTargetTexture(engine,{${format}dFormat:"depth24plus",depthCompare:"greater-equal",
+    depthClearValue:0,samples:1,size:{surface:engine,scale:.5}},withSampledDepthTexture);
+const pass=createRenderTask({name:"normals",rt:normals.rt,clrColor:{r:0,g:0,b:0,a:1},clr:true,cam:camera,cs:true,
+    autoMirror:false},engine,scene);
+enableRenderTaskMeshRefresh(pass);
+addTaskAtStart(scene,pass);`;
+
+test("TAA admits another render task drawing into its own target formats, colour or depth-only", () => {
+    for (const format of ['format:"rgba8unorm",', ""]) {
+        const own = ownTargetPass(format);
+        assert.doesNotThrow(() => compileSource(own));
+        assert.doesNotThrow(() => compileSource(own + taa));
+    }
+});
+
+test("TAA admits a multisampled depth-only render task, as an app's mesh-blending visibility pass builds it", () => {
+    const direct = `const visibility=createRenderTarget({lbl:"visibility",dFormat:"depth24plus-stencil8",samples:4,size:engine});
+const visibilityTask=createRenderTask({name:"visibility",rt:visibility,cam:camera,autoMirror:false},engine,scene);
+enableRenderTaskMeshRefresh(visibilityTask);`;
+    // A runtime-selected target keeps its attachment signature through the
+    // optional storage its selection fills.
+    const selected = `const sceneSamples:1|4=Math.random()<2?4:1;
+const visibility=sceneSamples>1?createRenderTarget({lbl:"visibility",dFormat:"depth24plus-stencil8",samples:4,size:engine}):null;
+const visibilityTask=visibility?createRenderTask({name:"visibility",rt:visibility,cam:camera,autoMirror:false},engine,scene):null;
+if(visibilityTask)enableRenderTaskMeshRefresh(visibilityTask);`;
+    for (const visibility of [direct, selected]) {
+        const source = ownTargetPass('format:"rgba8unorm",') + visibility;
+        assert.doesNotThrow(() => compileSource(source));
+        assert.doesNotThrow(() => compileSource(source + taa));
+    }
+    // A reassignable slot may hold another target: its signature is unproven.
+    const reassignable =
+        ownTargetPass('format:"rgba8unorm",') +
+        selected.replace("const visibility=", "let visibility=");
+    assert.doesNotThrow(() => compileSource(reassignable));
+    assert.throws(
+        () => compileSource(reassignable + taa),
+        /render task whose target has no proven attachment signature/,
     );
 });

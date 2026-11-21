@@ -9,6 +9,7 @@
 #include <bblite/features/has_splats.hpp>
 #include <bblite/features/has_sprites.hpp>
 
+#include <bblite/js_data.hpp>
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
 #include <array>
@@ -17,6 +18,7 @@
 #include <memory>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <vector>
 #if BBLITE_HAS_PICKING
 #include <bblite/upstream/picking_math.hpp>
@@ -25,6 +27,9 @@
 #endif
 #if BBLITE_VAT_PICKING
 #include <bblite/upstream/picking_vat_projection.hpp>
+#endif
+#if BBLITE_PICK_DISCARD
+#include <bblite/upstream/picking_discard.hpp>
 #endif
 #if BBLITE_HAS_PBR_RENDERER
 #include <bblite/upstream/renderer_plan.hpp>
@@ -81,7 +86,14 @@ struct PickRange {
     std::uint32_t count = 1;
     /** A mesh candidate's handle generation (`MeshHandle::generation`). */
     std::uint32_t generation = 0;
+    /** A thin-instanced mesh's range: one id per instance (`range.thin`). */
+    bool thin = false;
+    /** The pin's `worldAdjusted`: drawn through a rule whose `worldAdjustWgsl` moved it. */
+    bool world_adjusted = false;
 };
+
+/** The range that drew `pick_id`, or null for the cleared id (`resolve_pick_result`). */
+const PickRange* pick_range(const std::vector<PickRange>& ranges, std::uint32_t pick_id);
 
 /**
  * The id the one-pixel target held, resolved against what was drawn.
@@ -344,6 +356,15 @@ struct PickMeshCandidate {
 #endif
 };
 
+/** The instances, and so the ids, a candidate's draw covers: its thin rows, or one. */
+inline std::uint32_t pick_candidate_instances([[maybe_unused]] const PickMeshCandidate& candidate) {
+#if BBLITE_GPU_INSTANCING
+    return candidate.thin ? candidate.instance_count : 1u;
+#else
+    return 1u;
+#endif
+}
+
 /**
  * The render-plan walk both pick passes share: which meshes are drawn, in
  * which order, under which id, and with which world matrix.
@@ -361,12 +382,39 @@ struct PickMeshCandidate {
 std::optional<std::size_t> picker_scene_index(const Engine& engine, GpuPickerHandle picker,
                                               const std::vector<std::shared_ptr<Scene>>& scenes);
 
+/** The first `ignore` entry naming `mesh` (`picking-ignore.ts` `forMesh`), if any. */
+inline const Engine::PickIgnore* pick_ignore_entry(const Engine::PickOptions* options,
+                                                   MeshHandle mesh) {
+    if (!options)
+        return nullptr;
+    for (const Engine::PickIgnore& entry : options->ignore)
+        if (entry.mesh == mesh)
+            return &entry;
+    return nullptr;
+}
+
+/**
+ * The first thin instance an entry skips and how many, as
+ * `picking-advanced-draw.ts` `ignoredRange` reads them: a range over an
+ * index, each lane ToInt32 and at least zero.
+ */
+inline std::array<std::uint32_t, 2> pick_ignored_range(const Engine::PickIgnore& entry) {
+    const auto lane = [](double value) {
+        return static_cast<std::uint32_t>(std::max(0, js::to_int32(value)));
+    };
+    if (entry.thin_instance_range)
+        return {lane((*entry.thin_instance_range)[0]), lane((*entry.thin_instance_range)[1])};
+    if (entry.thin_instance_index)
+        return {lane(*entry.thin_instance_index), 1u};
+    return {0u, 0u};
+}
+
 template <typename HasGeometry>
 inline std::vector<PickMeshCandidate>
 collect_pick_mesh_candidates(const Engine& engine, [[maybe_unused]] const Scene& scene,
                              const upstream::RenderPlan& render_plan, std::size_t gpu_mesh_count,
                              const HasGeometry& has_geometry, std::vector<PickRange>& ranges,
-                             std::uint32_t& next_id, const Engine::PickFilter* filter = nullptr,
+                             std::uint32_t& next_id, const Engine::PickOptions* options = nullptr,
                              [[maybe_unused]] bool detailed = false) {
     std::vector<PickMeshCandidate> candidates;
     for (std::size_t item_index = 0;
@@ -382,9 +430,14 @@ collect_pick_mesh_candidates(const Engine& engine, [[maybe_unused]] const Scene&
         if (!upstream::pick_candidate(handle_at(engine.meshes, handle))) {
             continue;
         }
+        // `prepareIgnoredCandidates`: an entry naming no thin instance skips
+        // the whole mesh before the filter is asked about it.
+        [[maybe_unused]] const Engine::PickIgnore* ignored = pick_ignore_entry(options, handle);
+        if (ignored && !ignored->thin_instance_index && !ignored->thin_instance_range)
+            continue;
         // The pin's `pickFilter` arm: a mesh the supplied filter refuses
         // neither answers nor occludes, and consumes no id.
-        if (filter && !(*filter)(handle)) {
+        if (options && options->filter && !options->filter(handle)) {
             continue;
         }
         PickMeshCandidate candidate;
@@ -397,6 +450,13 @@ collect_pick_mesh_candidates(const Engine& engine, [[maybe_unused]] const Scene&
             if (pool.count <= 0 || !pool.gpu_buffer)
                 continue;
             candidate.instance_count = gpu_u32(gpu_size(pool.count));
+            // The thin-instance pick shader discards the ignored instances,
+            // which then neither answer nor occlude; their ids stay assigned.
+            if (ignored) {
+                const auto [start, count] = pick_ignored_range(*ignored);
+                candidate.uniforms.excluded_thin_instance_start = start;
+                candidate.uniforms.excluded_thin_instance_count = count;
+            }
             if (detailed)
                 throw std::runtime_error(
                     "Detailed picking requires the selected thin-instance world matrix.");
@@ -427,17 +487,114 @@ collect_pick_mesh_candidates(const Engine& engine, [[maybe_unused]] const Scene&
         candidate.uniforms.world = upstream::mesh_world_matrix(engine, pick_mesh);
         candidate.uniforms.pick_id = next_id;
         candidates.push_back(candidate);
-        const std::uint32_t id_count =
+        const std::uint32_t id_count = pick_candidate_instances(candidate);
+        ranges.push_back({next_id, PickedNodeKind::mesh, handle.value, id_count, handle.generation,
 #if BBLITE_GPU_INSTANCING
-            candidate.thin ? candidate.instance_count :
+                          candidate.thin
+#else
+                          false
 #endif
-                           1u;
-        ranges.push_back(
-            {next_id, PickedNodeKind::mesh, handle.value, id_count, handle.generation});
+        });
         next_id += id_count;
     }
     return candidates;
 }
+
+/**
+ * One candidate's `discard` draw: the composed rule it draws through, -1
+ * for the default pipeline, which of the rule's pipelines it draws through
+ * (`pick_discard_stem`), and its storage entries' bytes in binding order,
+ * each padded to `createMappedBuffer`'s size: at least 4 bytes, 4-aligned.
+ */
+struct PickDiscardDraw {
+    int variant = -1;
+    std::size_t pipeline = 0;
+    std::vector<std::vector<std::uint8_t>> storage;
+};
+
+/**
+ * A composed rule's pipelines, in `pickDiscardPipelines` order: regular,
+ * thin-instance, detailed, and the regular and detailed ones for a mesh
+ * without the rule's `vertexData` attribute.
+ */
+enum PickDiscardPipeline : std::size_t {
+    pick_discard_regular,
+    pick_discard_thin,
+    pick_discard_detailed,
+    pick_discard_regular_bare,
+    pick_discard_detailed_bare,
+    pick_discard_pipelines,
+};
+
+/** Whether a rule pipeline draws the detailed pick's three attachments. */
+inline bool pick_discard_is_detailed(std::size_t pipeline) {
+    return pipeline == pick_discard_detailed || pipeline == pick_discard_detailed_bare;
+}
+
+#if BBLITE_PICK_DISCARD
+static_assert(std::tuple_size_v<decltype(upstream::PickDiscardVariant::stems)> ==
+                  pick_discard_pipelines,
+              "the generated discard table names another pipeline set");
+
+/** The deployed stem of a rule's module for one of its pipelines; null where not composed. */
+inline const char* pick_discard_stem(const upstream::PickDiscardVariant& variant,
+                                     std::size_t pipeline) {
+    return variant.stems.at(pipeline);
+}
+
+/**
+ * Whether a mesh's source supplied a rule's `vertexData` attribute: the pin
+ * draws one that did not through the pipeline without it
+ * (`getPickVertexDataBinding` answers null).
+ */
+bool pick_vertex_data_present(const Engine& engine, const MeshRecord& mesh,
+                              std::string_view attribute);
+#endif
+
+/** A rule pipeline's `vertexData` vertex attribute: its location, components and lane offset. */
+struct PickVertexDataAttribute {
+    std::uint32_t location = 0;
+    std::uint32_t components = 0;
+    std::uint32_t offset = 0;
+};
+
+#if BBLITE_PICK_DISCARD
+/**
+ * The attribute a rule pipeline reads (`vertexDataLayout`): the regular and
+ * detailed pipelines of a rule with `vertexData`; none for the others.
+ */
+inline std::optional<PickVertexDataAttribute>
+pick_discard_vertex_data(const upstream::PickDiscardVariant& variant, std::size_t pipeline) {
+    if (variant.vertex_data_components == 0 ||
+        (pipeline != pick_discard_regular && pipeline != pick_discard_detailed))
+        return std::nullopt;
+    // The interleaved vertex lane the attribute reads (`getPickVertexDataBinding`).
+    const PinnedVertexInput lane = pinned_vertex_input(variant.vertex_data);
+    if (!lane.mapped || lane.stream != VertexInputStream::vertex)
+        throw std::runtime_error("A pick discard rule reads vertex data '" +
+                                 std::string(variant.vertex_data) +
+                                 "', which no vertex lane carries.");
+    return PickVertexDataAttribute{variant.vertex_data_location,
+                                   static_cast<std::uint32_t>(variant.vertex_data_components),
+                                   static_cast<std::uint32_t>(lane.offset)};
+}
+#endif
+
+/**
+ * Each candidate's `discard` draw, asked in draw order as the pin's draw
+ * loop asks it (`createPickDiscardBindGroup`): a rule without storage draws
+ * every candidate through its pipelines, and the first entry whose `data`
+ * returns null sends that mesh to the default pipeline unasked of the rest.
+ * A candidate the rule draws marks its range world-adjusted where the rule
+ * adjusts the world. Empty without a rule; throws for a rule generation did
+ * not compose, or a candidate whose pipeline the rule was not composed for.
+ */
+std::vector<PickDiscardDraw> prepare_pick_discard(const Engine& engine,
+                                                  const upstream::RenderPlan& render_plan,
+                                                  const std::vector<PickMeshCandidate>& candidates,
+                                                  std::vector<PickRange>& ranges,
+                                                  const Engine::PickOptions* options,
+                                                  bool detailed);
 
 #if BBLITE_HAS_DETAILED_PICKING
 /**

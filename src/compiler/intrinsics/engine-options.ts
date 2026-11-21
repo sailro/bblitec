@@ -19,6 +19,7 @@ import type { LoweringServices } from "../lowering-services.js";
 // through its context.
 import ts from "typescript";
 import { selectionArms } from "../syntax.js";
+import { renderTargetStandIn } from "./render-target-stand-in.js";
 import { ApplicationRealmRequired } from "../worker-modules.js";
 import { handleCppType } from "../data-types.js";
 import type {
@@ -147,6 +148,15 @@ export interface EngineOptionContext
             | "bindings"
             | "conditions"
             | "dataTypes"
+            | "checker"
+            | "libraryGlobal"
+            | "browserErasure"
+            | "canvasSizeProperty"
+            | "withRecordScopes"
+            | "requireDefaultEngine"
+            | "reachJsData"
+            | "sharedClosures"
+            | "sameEngineOwner"
         > {}
 
 /**
@@ -173,12 +183,13 @@ function compileRenderTargetDimension(
     return `bbl::render_target_dimension(${context.compileNumber(expression, "double")})`;
 }
 
-/** One size a render-target descriptor states: fixed extents, or a surface and its scale. */
+/** Fixed extents, a scaled surface, or pure getters of its backing extents. */
 interface RenderTargetSize {
     width: string;
     height: string;
     surface?: Value;
     scale?: string;
+    resolver?: string;
 }
 
 /**
@@ -277,11 +288,24 @@ function renderTargetSize(
         } else {
             // `resolveDirectRenderTargetSize`: an object with a `canvas`
             // stands in for a surface, and every build reads its extents.
-            if (context.objectProperty(unwrappedSize, "canvas"))
-                context.fail(
+            const canvas = context.objectProperty(unwrappedSize, "canvas");
+            if (canvas) {
+                validateObjectProperties(
+                    context,
                     unwrappedSize,
-                    "A render target sized by a surface stand-in (`size: { canvas }`) reads canvas.width and canvas.height again at every build; a native target takes fixed extents, the engine's surface, or a surface and its scale.",
+                    ["canvas"],
+                    "A render target surface stand-in supports canvas only.",
                 );
+                return {
+                    width,
+                    height,
+                    ...renderTargetStandIn(
+                        context,
+                        context.compileValue(canvas),
+                        canvas,
+                    ),
+                };
+            }
             validateObjectProperties(
                 context,
                 unwrappedSize,
@@ -331,6 +355,17 @@ function renderTargetSize(
                 { kind: "number" },
                 unwrappedSize,
             );
+        } else if (built && "canvas" in built) {
+            if (Object.keys(built).length !== 1)
+                context.fail(
+                    unwrappedSize,
+                    "A render target surface stand-in supports canvas only.",
+                );
+            return {
+                width,
+                height,
+                ...renderTargetStandIn(context, built.canvas, unwrappedSize),
+            };
         } else {
             const extents = fixedSizeExtents(context, value, unwrappedSize);
             if (extents) ({ width, height } = extents);
@@ -351,6 +386,15 @@ function renderTargetSize(
 /** The descriptor fields a surface scale sets, after validating it as the pin does. */
 function surfaceScaleCpp(surface: Value, scale: string): string {
     return `const double scale = ${scale}; (void)bbl::resolve_surface_render_target_size(1.0, 1.0, scale); options.scale_source = bbl::swapchain_render_target(${surface.cpp}); options.width_ratio = scale; options.height_ratio = scale; options.resolve_surface_size = bbl::resolve_surface_render_target_size;`;
+}
+
+function surfaceSizeCpp(size: RenderTargetSize): string {
+    if (!size.surface) return "";
+    if (size.resolver)
+        return `options.scale_source = bbl::swapchain_render_target(${size.surface.cpp}); options.resolve_surface_size = ${size.resolver};`;
+    return size.scale !== undefined
+        ? surfaceScaleCpp(size.surface, size.scale)
+        : "";
 }
 
 export function compileRenderTargetOptions(
@@ -414,15 +458,13 @@ export function compileRenderTargetOptions(
                 "A selected render target size selects between surface sizes.",
             );
         context.expectSameEngine(first.surface, second.surface, selection);
-        const armScale = (arm: RenderTargetSize, surface: Value): string =>
-            arm.scale !== undefined ? surfaceScaleCpp(surface, arm.scale) : "";
         sized = { width: "0u", height: "0u", surface: first.surface };
-        selectedScale = `if (${context.conditions.compileCondition(selection.condition)}) { ${armScale(first, first.surface)} } else { ${armScale(second, second.surface)} }`;
+        selectedScale = `if (${context.conditions.compileCondition(selection.condition)}) { ${surfaceSizeCpp(first)} } else { ${surfaceSizeCpp(second)} }`;
     } else sized = renderTargetSize(context, size);
-    const { width, height, surface, scale } = sized;
+    const { width, height, surface } = sized;
     const sampleCount = samples
         ? compileRenderTargetSampleCount(context, samples)
-        : "1u";
+        : { cpp: "1u", count: 1 as const };
     const format = colorFormat && context.unwrap(colorFormat);
     const surfaceFormat =
         !!format &&
@@ -441,7 +483,7 @@ export function compileRenderTargetOptions(
         colorFormat && !surfaceFormat
             ? staticTableEntry(context, renderTargetColorFormat, colorFormat)
             : undefined;
-    let cpp = `bbl::RenderTargetOptions{${sampleCount}, ${colorFormat ? "true" : "false"}, ${depthFormat ? "true" : "false"}, false, ${width}, ${height}}`;
+    let cpp = `bbl::RenderTargetOptions{${sampleCount.cpp}, ${colorFormat ? "true" : "false"}, ${depthFormat ? "true" : "false"}, false, ${width}, ${height}}`;
     if (depthCompareCpp)
         cpp = `[&]() { auto options = ${cpp}; options.depth_compare = ${depthCompareCpp}; return options; }()`;
     if (colorClass || depthClass) {
@@ -449,17 +491,16 @@ export function compileRenderTargetOptions(
     }
     if (selectedScale)
         cpp = `[&]() { auto options = ${cpp}; ${selectedScale} return options; }()`;
-    else if (scale !== undefined && surface)
-        cpp = `[&]() { auto options = ${cpp}; ${surfaceScaleCpp(surface, scale)} return options; }()`;
+    else if (sized.scale !== undefined || sized.resolver)
+        cpp = `[&]() { auto options = ${cpp}; ${surfaceSizeCpp(sized)} return options; }()`;
     return {
         cpp,
         hasColor: colorFormat !== undefined,
         ...(surface ? { surface } : {}),
         signature: {
-            surfaceFormat,
             hasColor: colorFormat !== undefined,
             ...(depth ? { depthFormat: depth } : {}),
-            samples: Number.parseInt(sampleCount),
+            samples: sampleCount.count,
         },
     };
 }
@@ -467,7 +508,7 @@ export function compileRenderTargetOptions(
 export function compileRenderTaskOptions(
     context: EngineOptionContext,
     expression: ts.Expression,
-): string {
+): { cpp: string; singleSampleTarget: boolean } {
     const object = context.expectObjectLiteral(expression);
     validateObjectProperties(
         context,
@@ -495,14 +536,12 @@ export function compileRenderTaskOptions(
     const target = context.compileValue(targetExpression);
     context.expectKind(target, "render-target", targetExpression);
     const signature = target.renderTargetSignature;
-    if (
-        !signature?.surfaceFormat ||
-        !signature.hasColor ||
-        signature.depthFormat !== "depth24plus-stencil8"
-    ) {
+    // A temporal frame prepares every render task's pass, colour or
+    // depth-only, against the attachments its target is proven to have.
+    if (!signature) {
         context.admissions.noteTemporalRecordBoundary(
             expression,
-            "TAA source preparation requires the engine color format and depth24plus-stencil8 attachment",
+            "a render task whose target has no proven attachment signature",
             "always",
         );
     }
@@ -552,8 +591,15 @@ export function compileRenderTaskOptions(
             ? context.compileStringLiteral(nameExpression)
             : "render-task",
     )}, ${target.cpp}, ${clearColor ? context.compileColor4(clearColor) : "std::nullopt"}, ${clear ? context.compileBoolean(clear) : "true"}, ${camera?.cpp ?? `${handleCppType("camera")}{}`}, ${camera ? "true" : "false"}, ${canvasSize ? context.compileBoolean(canvasSize) : "false"}, ${autoMirror ? context.compileBoolean(autoMirror) : "true"}, false, ${depth}, ${resolve.cpp}}`;
-    if (!depthClear && !sharedTarget) return options;
-    return `[&]() { auto options = ${options}; ${depthClear ? `options.depth_clear = ${context.compileBoolean(depthClear)};` : ""} ${sharedTarget ? `options.shared_target = ${context.compileBoolean(sharedTarget)};` : ""} return options; }()`;
+    // Whether the task's target is proven single-sample, whose grab reads no
+    // multisampled attachment.
+    const singleSampleTarget = signature?.samples === 1;
+    if (!depthClear && !sharedTarget)
+        return { cpp: options, singleSampleTarget };
+    return {
+        cpp: `[&]() { auto options = ${options}; ${depthClear ? `options.depth_clear = ${context.compileBoolean(depthClear)};` : ""} ${sharedTarget ? `options.shared_target = ${context.compileBoolean(sharedTarget)};` : ""} return options; }()`,
+        singleSampleTarget,
+    };
 }
 
 export function compileGeometryTaskOptions(
@@ -695,7 +741,7 @@ export function compileGeometryTaskOptions(
             nameExpression
                 ? context.compileStringLiteral(nameExpression)
                 : `geometry-${manifest.shaderIndex}`,
-        )}, ${manifest.shaderIndex}u, ${samplesExpression ? compileRenderTargetSampleCount(context, samplesExpression) : "1u"}, {${compiledDescriptions.join(", ")}}, ${target?.cpp ?? "bbl::RenderTargetHandle{}"}, ${clearColorExpression ? "true" : "false"}, ${clearColorExpression ? context.compileColor4(clearColorExpression) : "bbl::Color4{}"}, {}}`,
+        )}, ${manifest.shaderIndex}u, ${samplesExpression ? compileRenderTargetSampleCount(context, samplesExpression).cpp : "1u"}, {${compiledDescriptions.join(", ")}}, ${target?.cpp ?? "bbl::RenderTargetHandle{}"}, ${clearColorExpression ? "true" : "false"}, ${clearColorExpression ? context.compileColor4(clearColorExpression) : "bbl::Color4{}"}, {}}`,
         manifest,
     };
 }
@@ -895,34 +941,57 @@ export function optionalRenderTarget(
  * there — a scene wanting depth values reads them out of the colour
  * attachment the geometry task writes them to, which is what the pin does.
  * Refusing it here names the property; the backend would only fail the pipeline.
+ *
+ * `passSource`: the texture is a post-process pass's `sourceTexture`
+ * (`noteSampledTextureSamples`).
  */
 export function compileTextureReference(
     context: EngineOptionContext,
     object: ts.ObjectLiteralExpression,
     property: string,
     sampling: "color" | "any" = "any",
+    passSource = false,
 ): string {
     const expression = context.objectProperty(object, property);
     if (!expression) {
         context.fail(object, `Frame-graph task requires ${property}.`);
     }
     const value = context.compileValue(expression);
-    if (
-        !value.renderTargetSignature ||
-        value.renderTargetSignature.samples !== 1
-    ) {
-        context.admissions.noteTemporalRecordBoundary(
-            expression,
-            "TAA post-process sampling requires a proven single-sample source texture as required by the pinned GPU state",
-            "always",
-        );
-    }
+    noteSampledTextureSamples(context, expression, value, passSource);
     return compileRenderTextureValue(
         context,
         expression,
         value,
         `Frame-graph ${property}`,
         { sampling },
+    );
+}
+
+/**
+ * TAA's temporal frames sample a texture only at one sample. A post-process
+ * pass's source (`passSource`) is checked where the pass builds its GPU
+ * state, as the pin's `createPostProcessGpuState` refuses a multisampled one
+ * (`upstream::require_post_process_source`), so a render
+ * target whose count the run decides is admitted; any other sampled texture,
+ * and any count known at generation, must be proven single-sample here.
+ */
+export function noteSampledTextureSamples(
+    context: EngineOptionContext,
+    expression: ts.Expression,
+    value: Value,
+    passSource: boolean,
+): void {
+    const signature = value.renderTargetSignature;
+    if (
+        signature &&
+        (signature.samples === 1 ||
+            (passSource && signature.samples === undefined))
+    )
+        return;
+    context.admissions.noteTemporalRecordBoundary(
+        expression,
+        "TAA post-process sampling requires a proven single-sample source texture as required by the pinned GPU state",
+        "always",
     );
 }
 

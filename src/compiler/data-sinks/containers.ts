@@ -19,7 +19,6 @@ import { writable } from "../emission-transaction.js";
 
 import {
     DynamicBindingStorageRequired,
-    initializedVariableDeclaration,
     requireHeldRecordStorage,
 } from "../dynamic-binding-storage.js";
 import { unaliasedValue } from "./aliasing.js";
@@ -557,6 +556,7 @@ function convertedElementsCopy(
                 );
             // A binding takes the elements an assigned array keeps.
             lowerer.requireArrayBindingElements(
+                value,
                 element,
                 dataType.element,
                 node,
@@ -617,15 +617,8 @@ function requireGrowableTuple(
             storedAsReadonlyArray(lowerer.context.checker, converted))
     )
         return;
-    const declaration =
-        (expression && ts.isIdentifier(expression)
-            ? initializedVariableDeclaration(
-                  lowerer.context.checker,
-                  expression,
-              )
-            : undefined) ??
-        lowerer.context.bindings.variableDeclarationOf(value.cpp);
-    if (declaration && !lowerer.context.dynamicBindings.has(declaration))
+    const declaration = lowerer.readLocal(value, node);
+    if (declaration)
         throw new DynamicBindingStorageRequired(declaration, "array");
     // A record property's tuples take growable array storage likewise.
     requireTupleArraySlot(lowerer.context.tupleArraySlots, value);

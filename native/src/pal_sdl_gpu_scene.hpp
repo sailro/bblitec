@@ -120,6 +120,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_gpu.h>
 #include "pal_sdl_gpu_shared.hpp"
+#include "pal_sdl_gpu_commands.hpp"
 #include <bblite/pal_gpu_task_timing.hpp>
 #include "pal_sdl_gpu_timestamp.hpp"
 #if BBLITE_HAS_TAA
@@ -912,6 +913,9 @@ struct GpuState : SdlGpuDevice {
     /** The pin's single-sample `BLIT_SHADER` and `DEPTH_GRAB_SHADER` passes. */
     SDL_GPUGraphicsPipeline* task_grab_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* task_depth_grab_pipeline = nullptr;
+    /** Their multisampled arms, `BLIT_MSAA_SHADER` and `DEPTH_GRAB_MSAA_SHADER`. */
+    SDL_GPUGraphicsPipeline* task_grab_msaa_pipeline = nullptr;
+    SDL_GPUGraphicsPipeline* task_depth_grab_msaa_pipeline = nullptr;
     /** The depth grab's nearest sampler. */
     SDL_GPUSampler* task_depth_grab_sampler = nullptr;
 #endif
@@ -1171,14 +1175,23 @@ struct GpuState : SdlGpuDevice {
     std::array<std::array<PickDeformProgram, 2>, upstream::pick_deform_variants.size()>
         pick_deform_programs{};
 #endif
-#if BBLITE_VAT_PICKING
-    /** One advanced module per VAT arm, both stages read by name. */
-    struct PickVatProgram {
+#if BBLITE_VAT_PICKING || BBLITE_PICK_DISCARD
+    /** A pick module whose stages are both read by name. */
+    struct PickStageProgram {
         SDL_GPUGraphicsPipeline* pipeline = nullptr;
         PinnedStageSlots vertex_slots{};
         PinnedStageSlots fragment_slots{};
     };
-    std::array<PickVatProgram, upstream::pick_vat_variants.size()> pick_vat_programs{};
+#endif
+#if BBLITE_VAT_PICKING
+    /** One advanced module per VAT arm. */
+    std::array<PickStageProgram, upstream::pick_vat_variants.size()> pick_vat_programs{};
+#endif
+#if BBLITE_PICK_DISCARD
+    /** A composed `discard` rule's module per pipeline (regular, thin, detailed). */
+    std::array<std::array<PickStageProgram, pick_discard_pipelines>,
+               upstream::pick_discard_variants.size()>
+        pick_discard_programs{};
 #endif
 #if BBLITE_HAS_SPLATS
     SDL_GPUGraphicsPipeline* pick_cloud_pipeline = nullptr;
@@ -1359,9 +1372,9 @@ SDL_GPUBuffer* shader_storage_buffer(GpuState& state, const Engine& engine,
 
 /** Bind ordinary shader textures and resolve CSM pseudo-textures live. */
 void bind_shader_material_textures(GpuState& state, SDL_GPURenderPass* pass,
-                                   [[maybe_unused]] const Scene& scene,
-                                   [[maybe_unused]] const Engine& engine, MaterialHandle material,
-                                   std::uint32_t variant, const GpuMesh& mesh);
+                                   [[maybe_unused]] const Scene& scene, const Engine& engine,
+                                   MaterialHandle material, std::uint32_t variant,
+                                   const GpuMesh& mesh);
 
 // Geometry-task helpers shared by the PBR and Standard variant
 // pipelines; the definitions sit with the transmission helpers below.
@@ -1878,6 +1891,14 @@ void run_esm_blur(GpuState& state, SDL_GPUCommandBuffer* command, std::uint32_t 
 #endif
 
 void update_shadow_generators(GpuState& state, const Scene& scene, Engine& engine);
+
+/**
+ * A CSM receiver texture as a binding (`getCsmReceiverTexture`): the
+ * generator's depth array and its comparison sampler (`sg._depthSampler`),
+ * which shader materials and effects bind.
+ */
+SDL_GPUTextureSamplerBinding csm_receiver_binding(const GpuState& state,
+                                                  ShadowGeneratorHandle generator);
 #endif
 
 #if BBLITE_STANDARD_VARIANTS > 0
@@ -2099,8 +2120,8 @@ inline SDL_FColor geometry_clear_color(GeometryTextureType type) {
 
 // Metal's float view of depth expands to (d,d,d,1). Material slots need
 // (d,0,0,1), matching the shared R32 depth-copy contract used by Dawn.
-void encode_metal_depth_copy(GpuState& state, SDL_GPUCommandBuffer* command,
-                             const GpuRenderTarget& target);
+void encode_metal_depth_copy(GpuState& state, SDL_GPUCommandBuffer* command, SDL_GPUTexture* depth,
+                             SDL_GPUTexture* depth_copy);
 
 void release_render_target(SDL_GPUDevice* device, GpuRenderTarget& target);
 
@@ -2174,9 +2195,8 @@ struct PreparedSdlPostProcessPass {
     std::size_t child = 0;
     SDL_GPUGraphicsPipeline* pipeline = nullptr;
     SDL_GPUColorTargetInfo target{}, present_target{};
-    SDL_GPUViewport viewport{};
-    SDL_Rect scissor{};
-    bool has_viewport = false, presents = false;
+    std::optional<PixelViewport> viewport{};
+    bool presents = false;
     bool vertex_uniforms = false, fragment_uniforms = false;
     std::array<SDL_GPUTextureSamplerBinding, max_post_process_textures> textures{};
     Uint32 texture_count = 0;
@@ -2223,6 +2243,7 @@ prepare_post_process_pass(GpuState& state, Engine& engine, TaskHandle handle,
         // (the circle-of-confusion map is r16) or follow its source's. The
         // pin builds the pipeline against that target's own sample count and
         // resolves nothing; what it refuses is a multisampled *source*.
+        upstream::require_post_process_source(engine, pass);
         gpu.program =
             post_process_program(state, shader_info.module_index,
                                  handle_at(state.render_targets, pass.output_target).color_format,
@@ -2262,25 +2283,9 @@ prepare_post_process_pass(GpuState& state, Engine& engine, TaskHandle handle,
     pass_target.load_op = pass.clear ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
     pass_target.clear_color = SDL_FColor{0.0f, 0.0f, 0.0f, 0.0f};
     pass_target.store_op = SDL_GPU_STOREOP_STORE;
-    prepared.has_viewport = pass.has_viewport;
-    if (pass.has_viewport) {
-        const PixelViewport rectangle =
+    if (pass.has_viewport)
+        prepared.viewport =
             upstream::resolve_post_process_viewport(pass.viewport, output_width, output_height);
-        prepared.viewport = SDL_GPUViewport{
-            static_cast<float>(rectangle.x),
-            static_cast<float>(rectangle.y),
-            static_cast<float>(rectangle.width),
-            static_cast<float>(rectangle.height),
-            0.0f,
-            1.0f,
-        };
-        prepared.scissor = SDL_Rect{
-            rectangle.x,
-            rectangle.y,
-            rectangle.width,
-            rectangle.height,
-        };
-    }
     // The pin binds one sampler for every texture the
     // stage reads; this backend pairs each with its own
     // texture, so the pair repeats the same sampler.
@@ -2322,6 +2327,65 @@ void record_post_process_pass(GpuState& state, Engine& engine, TaskHandle handle
         prepare_post_process_pass(state, engine, handle, swapchain, swapchain_format, width, height,
                                   index, source_texture, target_texture);
     encode_post_process_pass(state, command, prepared, capture_texture);
+}
+#endif
+
+/**
+ * One copy task's pass, its textures resolved while the task runs: the texture
+ * copy a single-sample resolve degrades to, a draw-less resolve pass, or the
+ * blit draw with the present blit of a copy into a viewport of the swapchain.
+ * A temporal frame encodes it in task order with the passes it queues.
+ */
+struct PreparedSdlCopyPass {
+    struct TextureCopy {
+        SDL_GPUTextureLocation source{}, destination{};
+        Uint32 width = 0, height = 0;
+    };
+    std::optional<TextureCopy> texture_copy{};
+    SDL_GPUColorTargetInfo target{};
+    /** Null for the draw-less resolve pass. */
+    SDL_GPUGraphicsPipeline* pipeline = nullptr;
+    SDL_GPUTextureSamplerBinding source{};
+    std::optional<PixelViewport> viewport{};
+    std::optional<SDL_GPUBlitInfo> present{};
+    /** What the frame's capture reads after the copy, when the copy changes it. */
+    SDL_GPUTexture* capture = nullptr;
+};
+
+inline void encode_sdl_copy_pass(SDL_GPUCommandBuffer* command, const PreparedSdlCopyPass& copy,
+                                 SDL_GPUTexture*& capture_texture) {
+    if (copy.texture_copy) {
+        SdlCopyPass pass{SDL_BeginGPUCopyPass(command)};
+        SDL_CopyGPUTextureToTexture(pass, &copy.texture_copy->source,
+                                    &copy.texture_copy->destination, copy.texture_copy->width,
+                                    copy.texture_copy->height, 1, false);
+        pass.end();
+        return;
+    }
+    SdlRenderPass pass{SDL_BeginGPURenderPass(command, &copy.target, 1, nullptr)};
+    if (copy.pipeline) {
+        SDL_BindGPUGraphicsPipeline(pass, copy.pipeline);
+        set_pass_viewport(pass, copy.viewport);
+        SDL_BindGPUFragmentSamplers(pass, 0, &copy.source, 1);
+        count_gpu_draw(SDL_DrawGPUPrimitives, pass, 3, 1, 0, 0);
+    }
+    pass.end();
+    if (copy.present)
+        SDL_BlitGPUTexture(command, &*copy.present);
+    if (copy.capture)
+        capture_texture = copy.capture;
+}
+
+#if BBLITE_HAS_TAA
+inline void encode_sdl_gpu_prepared_scene(SDL_GPUCommandBuffer* command,
+                                          const PreparedSdlScenePass& scene) {
+    SdlRenderPass pass{SDL_BeginGPURenderPass(command, scene.target ? &*scene.target : nullptr,
+                                              scene.target ? 1u : 0u,
+                                              scene.depth ? &*scene.depth : nullptr)};
+    set_pass_viewport(pass, scene.viewport);
+    for (const auto& draw : scene.draws)
+        encode_sdl_gpu_prepared_draw(command, pass, draw);
+    pass.end();
 }
 #endif
 
@@ -2479,7 +2543,7 @@ PickingInfo pick_sdl_gpu_scene(GpuState& state, Engine& engine,
                                const std::vector<upstream::RenderPlan>& overlay_plans,
                                const std::vector<std::shared_ptr<Scene>>& active_registered_scenes,
                                [[maybe_unused]] GpuPickerHandle picker, double x, double y,
-                               const Engine::PickFilter* filter
+                               const Engine::PickOptions* options
 #if BBLITE_HAS_BILLBOARDS
                                ,
                                BillboardPickContributor& billboard_pick

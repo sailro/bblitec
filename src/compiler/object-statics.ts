@@ -2,15 +2,19 @@ import { writable } from "./emission-transaction.js";
 import { knownCondition, presentCopy } from "./values/model.js";
 import {
     compileShaderMaterialViewDefinitions,
+    nativeShaderViewRevision,
     shaderMaterialViewTarget,
     type ShaderMaterialViewContext,
+    type ViewDefinitionCondition,
 } from "./shader-material-views.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import {
     argumentAt,
+    conditionalExpression,
     propertyKey,
     isSupportedFunction,
+    selectionArms,
     outermostWrapper,
     statementsBeside,
     unwrapExpression,
@@ -1258,6 +1262,8 @@ interface PropertyDefinition {
     descriptor: ts.ObjectLiteralExpression;
     /** The attributes the descriptor gives, each a literal boolean. */
     attributes: ReadonlyMap<string, boolean>;
+    /** A ShaderMaterial view's definition a conditional spread holds (`definedProperties`). */
+    condition?: ViewDefinitionCondition;
     members: Array<
         | { name: "value"; expression: ts.Expression }
         | {
@@ -1857,12 +1863,16 @@ function applyDocumentDefinitions(
 /**
  * Each property a definition call defines, its descriptor parsed: the key
  * `Object.defineProperty` names, or each member of the descriptor map
- * `Object.defineProperties` takes.
+ * `Object.defineProperties` takes. On a ShaderMaterial view, `native`
+ * takes the definitions the view holds natively, and the map may open with
+ * a spread of `test ? { ...descriptors } : {}` (either arm empty): each of
+ * its keys is defined only where `test` selects that arm.
  */
 function definedProperties(
     context: ObjectStaticContext,
     call: ts.CallExpression,
     operation: DefinitionOperation,
+    view?: { native(key: string, expression: ts.Expression): boolean },
 ): PropertyDefinition[] {
     if (operation === "defineProperty") {
         const key = context.compileValue(argumentAt(call, 1)).staticString;
@@ -1871,6 +1881,7 @@ function definedProperties(
                 call,
                 "Object.defineProperty needs a property key known at generation.",
             );
+        if (view?.native(key, argumentAt(call, 2))) return [];
         return [
             propertyDefinition(
                 context,
@@ -1888,7 +1899,10 @@ function definedProperties(
             "Object.defineProperties needs a literal descriptor map.",
         );
     const keys = new Set<string>();
-    return descriptors.properties.map((property) => {
+    const defined = (
+        property: ts.ObjectLiteralElementLike,
+        condition?: ViewDefinitionCondition,
+    ): PropertyDefinition[] => {
         const key = property.name && propertyKey(property.name);
         if (
             !ts.isPropertyAssignment(property) ||
@@ -1901,12 +1915,50 @@ function definedProperties(
                 "Object.defineProperties needs distinct literal property keys without spreads, methods or accessors.",
             );
         keys.add(key);
-        return propertyDefinition(
-            context,
-            operation,
-            key,
-            property.initializer,
-            property,
+        if (view?.native(key, property.initializer)) return [];
+        return [
+            {
+                ...propertyDefinition(
+                    context,
+                    operation,
+                    key,
+                    property.initializer,
+                    property,
+                ),
+                ...(condition ? { condition } : {}),
+            },
+        ];
+    };
+    return descriptors.properties.flatMap((property, index) => {
+        if (!view || !ts.isSpreadAssignment(property)) return defined(property);
+        // The test is evaluated before every other descriptor, so the
+        // spread opens the map.
+        const selection = conditionalExpression(
+            context.unwrap(property.expression),
+        );
+        const arms = selection
+            ? selectionArms(selection).map((arm) => context.unwrap(arm))
+            : [];
+        const empty = arms.findIndex(
+            (arm) =>
+                ts.isObjectLiteralExpression(arm) &&
+                arm.properties.length === 0,
+        );
+        const spread = arms[1 - empty];
+        if (
+            index > 0 ||
+            !selection ||
+            empty < 0 ||
+            !spread ||
+            !ts.isObjectLiteralExpression(spread)
+        )
+            return context.fail(
+                property,
+                "Object.defineProperties on a ShaderMaterial view spreads only, as the map's first member, a conditional between a literal descriptor map and {}.",
+            );
+        const condition = { test: selection.condition, holds: empty === 1 };
+        return spread.properties.flatMap((member) =>
+            defined(member, condition),
         );
     });
 }
@@ -1927,21 +1979,64 @@ function compileObjectDefinitions(
     const view = global ? undefined : shaderMaterialViewTarget(context, call);
     const target =
         global || view ? undefined : definitionTarget(context, call, operation);
-    const definitions = definedProperties(context, call, operation);
+    const definitions = definedProperties(
+        context,
+        call,
+        operation,
+        view && {
+            native: (key, expression) =>
+                nativeShaderViewRevision(
+                    context,
+                    view,
+                    key,
+                    expression,
+                    (descriptor) => {
+                        const parsed = propertyDefinition(
+                            context,
+                            operation,
+                            key,
+                            descriptor,
+                            call,
+                        );
+                        const getter = parsed.members.find(
+                            (member) => member.name === "get",
+                        );
+                        const setter = parsed.members.find(
+                            (member) => member.name === "set",
+                        );
+                        return {
+                            get:
+                                getter?.name === "get"
+                                    ? getter.callback
+                                    : undefined,
+                            set:
+                                setter?.name === "set"
+                                    ? setter.callback
+                                    : undefined,
+                            attributes: parsed.attributes,
+                            data: !parsed.accessor,
+                        };
+                    },
+                ),
+        },
+    );
     if (view)
         return compileShaderMaterialViewDefinitions(
             context,
             call,
             view,
-            definitions.map(({ key, site, node, descriptor, members }) => ({
-                key,
-                site,
-                node,
-                descriptor,
-                value: members.flatMap((member) =>
-                    member.name === "value" ? [member.expression] : [],
-                )[0],
-            })),
+            definitions.map(
+                ({ key, site, node, descriptor, members, condition }) => ({
+                    key,
+                    site,
+                    node,
+                    descriptor,
+                    value: members.flatMap((member) =>
+                        member.name === "value" ? [member.expression] : [],
+                    )[0],
+                    ...(condition ? { condition } : {}),
+                }),
+            ),
         );
     return applyDefinitions(
         context,

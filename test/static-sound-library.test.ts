@@ -169,9 +169,9 @@ test("the pinned audio fetch reads packaged responses and rejects a failed statu
             PATH: `${join(nativeFixtureVcpkgRoot, "bin")};${process.env.PATH ?? ""}`,
         },
     });
-    // Each line whole (the empty statusText leaves the message's last space).
+    // Each line whole: a failed status throws the pin's code.
     assert.deepEqual(stdout.replaceAll("\r\n", "\n").split("\n").slice(0, -1), [
         "packaged 6 82",
-        `missing HTTP 404 loading '${base}/missing.wav': `,
+        "missing #29",
     ]);
 });

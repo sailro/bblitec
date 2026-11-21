@@ -53,20 +53,21 @@ inline void write_sdl_gpu_buffer(SDL_GPUDevice* device, SDL_GPUBuffer* buffer, s
 /**
  * Copy bytes into a texture that already exists.
  *
- * The upload half of `upload_2d_texture` (pal_sdl_gpu_shared.hpp), split out because a payload
- * that changes per frame -- the clustered light field's three data textures --
- * needs the copy without a second allocation.
+ * The upload half of `upload_2d_texture` and `upload_3d_texture` (pal_sdl_gpu_shared.hpp), split
+ * out because a payload that changes per frame -- the clustered light field's three data
+ * textures -- needs the copy without a second allocation. A `volume` texture takes the extent's
+ * depth of slices from z = 0; any other takes one image.
  */
 inline void write_sdl_gpu_texture(SDL_GPUDevice* device, SDL_GPUTexture* texture,
                                   std::span<const std::uint8_t> bytes,
                                   const GpuTextureWriteLayout& layout, const GpuWriteExtent& extent,
                                   std::uint32_t mip_levels = 1,
-                                  SdlTextureTransferCache* cache = nullptr) {
+                                  SdlTextureTransferCache* cache = nullptr, bool volume = false) {
     if (!device || !texture)
         throw std::runtime_error("SDL texture write has no resource.");
     if (!extent.width || !extent.height || !extent.depth_or_array_layers)
         return;
-    if (extent.depth_or_array_layers != 1)
+    if (extent.depth_or_array_layers != 1 && !volume)
         throw std::runtime_error("This SDL texture destination accepts one image per write.");
     const auto count = gpu_u32(bytes.size());
     SDL_GPUTransferBufferCreateInfo info{};
@@ -104,7 +105,8 @@ inline void write_sdl_gpu_texture(SDL_GPUDevice* device, SDL_GPUTexture* texture
         gpu_error("SDL_BeginGPUCopyPass texture write");
     const SDL_GPUTextureTransferInfo source{transfer, gpu_u32(layout.offset), extent.width,
                                             layout.rows_per_image.value_or(extent.height)};
-    const SDL_GPUTextureRegion destination{texture, 0, 0, 0, 0, 0, extent.width, extent.height, 1};
+    const SDL_GPUTextureRegion destination{
+        texture, 0, 0, 0, 0, 0, extent.width, extent.height, extent.depth_or_array_layers};
     SDL_UploadToGPUTexture(copy, &source, &destination, cache != nullptr);
     copy.end();
     generate_texture_mipmaps(device, command, texture, extent.width, extent.height, mip_levels);
@@ -128,14 +130,16 @@ struct SdlTextureDestination final : GpuObject {
     SDL_GPUTexture* texture;
     std::uint32_t mip_levels;
     SdlTextureTransferCache* cache;
+    /** An `SDL_GPU_TEXTURETYPE_3D` texture, whose writes span slices. */
+    bool volume;
     SdlTextureDestination(SDL_GPUDevice* owner, SDL_GPUTexture* value, std::uint32_t levels = 1,
-                          SdlTextureTransferCache* storage = nullptr)
-        : device(owner), texture(value), mip_levels(levels), cache(storage) {}
+                          SdlTextureTransferCache* storage = nullptr, bool slices = false)
+        : device(owner), texture(value), mip_levels(levels), cache(storage), volume(slices) {}
     const void* device_identity() const override { return device; }
     void write_texture_bytes(std::span<const std::uint8_t> bytes,
                              const GpuTextureWriteLayout& layout,
                              const GpuWriteExtent& extent) override {
-        write_sdl_gpu_texture(device, texture, bytes, layout, extent, mip_levels, cache);
+        write_sdl_gpu_texture(device, texture, bytes, layout, extent, mip_levels, cache, volume);
     }
 };
 /** SDL binds written uniform bytes in the active command buffer. */

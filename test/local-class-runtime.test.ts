@@ -537,19 +537,33 @@ test("keeps two instantiations of one generic interface apart", () => {
     assert.deepEqual([hits[0]![2], hits[1]![2]].sort(), ["Block", "Marker"]);
 });
 
-test("refuses a stored class whose hoisted field differs per construction", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-                ${workspaceOverParts}
-                const one = new Renderer();
-                const two = new Renderer();
-                const workspace = new Workspace();
-                new Part(one, workspace, false);
-                new Part(two, workspace, false);
-                const unused = workspace.parts.length;
-            `),
-        /is not the same at every construction/,
+test("stores a local class a stored class's field binds to different instances", (t) => {
+    const result = compileSource(`
+        ${workspaceOverParts}
+        const one = new Renderer();
+        const two = new Renderer();
+        const workspace = new Workspace();
+        new Part(one, workspace, false);
+        new Part(two, workspace, false);
+        workspace.parts[0]!.destroy();
+        workspace.parts[0]!.destroy();
+        if (one.freed !== 1 || two.freed !== 1)
+            throw new Error("each part frees its own renderer");
+        if (workspace.parts.length !== 0) throw new Error("both parts removed");
+    `);
+
+    // The renderer is a shared object and the part's field a slot naming
+    // it; the workspace, the same at both constructions, stays hoisted.
+    assert.match(result.cpp, /using Renderer = bbl::js::Ref<RendererData>;/);
+    assert.match(
+        result.cpp,
+        /struct PartData \{\s*bool locked\{\};\s*bblscene::Renderer _renderer;\s*bbl::js::Tuple<3> _size;/,
+    );
+    if (!nativeTools) return t.skip("native compiler unavailable");
+    runGeneratedProgram(
+        nativeTools,
+        "stored-class-field-instances",
+        result.cpp,
     );
 });
 

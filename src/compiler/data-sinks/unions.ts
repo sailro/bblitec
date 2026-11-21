@@ -56,36 +56,39 @@ function unionValue(
             : undefined) ??
         valueDataType(value) ??
         (ts.isExpression(node) ? lowerer.dataTypeAt(node) : undefined);
-    let memberIndex = type.members.findIndex(
-        (member) =>
-            source &&
-            (dataTypesEqual(source, member) ||
-                lowerer.spanCompatible(source, member) ||
-                (source.kind === "enum" && member.kind === "string")),
-    );
+    // A callback keeps its declaration's checked signature even when a
+    // container stores it without an expression or contextual type of its
+    // own. Reads and writes select the same arm even when equivalent
+    // declarations carry different completion proofs.
+    let memberIndex: number;
+    if (
+        (value.kind === "callback" && value.callbackDeclaration) ||
+        value.dataType?.kind === "function"
+    ) {
+        memberIndex = functionArmIndex(type, () => {
+            const declaration = value.callbackDeclaration;
+            return declaration
+                ? lowerer.context.dataTypes.fromStoredTsType(
+                      lowerer.context.checker.getTypeAtLocation(declaration),
+                      declaration,
+                  )
+                : value.dataType;
+        });
+        if (memberIndex < 0) return undefined;
+    } else
+        memberIndex = type.members.findIndex(
+            (member) =>
+                source &&
+                (dataTypesEqual(source, member) ||
+                    lowerer.spanCompatible(source, member) ||
+                    (source.kind === "enum" && member.kind === "string")),
+        );
     // Record literals and arrays can have a contextual union type. Select the
     // arm through the normal sinks so field conversion and escape rules agree.
     if (memberIndex < 0)
         memberIndex = type.members.findIndex((member) =>
             lowerer.knownValueFitsSink(value, member, node),
         );
-    // A function is the union's one function arm, lowered into its storage;
-    // beside others, the arm of the signature its place in the program
-    // gives it (a record property's declared method).
-    if (
-        memberIndex < 0 &&
-        ((value.kind === "callback" && value.callbackDeclaration) ||
-            value.dataType?.kind === "function")
-    ) {
-        memberIndex = functionArmIndex(type, () => {
-            const contextual =
-                expression &&
-                lowerer.context.checker.getContextualType(expression);
-            return contextual
-                ? lowerer.context.dataTypes.fromStoredTsType(contextual, node)
-                : undefined;
-        });
-    }
     // A promise is the union's one promise arm, stored as that arm stores
     // one (`T | Promise<T>` returning what an async call returned).
     if (memberIndex < 0 && value.kind === "promise")

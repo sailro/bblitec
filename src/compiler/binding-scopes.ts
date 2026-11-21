@@ -77,10 +77,12 @@ import { isNativeOwnerRecord } from "./native-owner-carrier.js";
 import { recordPropertyKeys } from "./object-statics.js";
 import { parameterProjectionIsReadOnly } from "./parameter-projection-effects.js";
 import { recordFieldIsWritten } from "./record-observations.js";
+import { nullability, type Nullability } from "./type-facts.js";
 import { loopBoundMayChange, walkReachedLoopNodes } from "./resource-loops.js";
 import { calledFunction } from "./symbols.js";
 import {
     handleFoundCpp,
+    holdsUnreadable,
     knownCondition,
     presentCopy,
     rebaseSpelling,
@@ -1426,35 +1428,46 @@ export class BindingScopes {
                         declaration,
                         "source",
                     );
-                const properties = this.recordPropertiesAreCurrent(narrowed)
-                    ? narrowed.recordProperties
+                const record = narrowed;
+                const properties = this.recordPropertiesAreCurrent(record)
+                    ? record.recordProperties
                     : undefined;
                 // Methods and accessors are own keys as data properties are.
                 const ownKeys =
-                    narrowed.recordOwnKeys ?? recordPropertyKeys(narrowed);
-                narrowed = presentCopy(
-                    this.pinValueToTemporary(
-                        this.context.dataLowerer.leafValue(
-                            this.context.dataLowerer.compileKnownValueForSink(
-                                narrowed,
-                                represented,
-                                argument ?? identifier,
+                    record.recordOwnKeys ?? recordPropertyKeys(record);
+                const node = argument ?? identifier;
+                narrowed = this.context.dataLowerer.withRetainedArraySinks(
+                    record,
+                    this.retainedArrayFields(record, node),
+                    () => {
+                        const projected = presentCopy(
+                            this.pinValueToTemporary(
+                                this.context.dataLowerer.leafValue(
+                                    this.context.dataLowerer.compileKnownValueForSink(
+                                        record,
+                                        represented,
+                                        node,
+                                    ),
+                                    represented,
+                                ),
+                                "parameter_object",
+                                identifier,
                             ),
-                            represented,
-                        ),
-                        "parameter_object",
-                        identifier,
-                    ),
-                    narrowed,
+                            record,
+                        );
+                        if (properties) {
+                            writable(projected).recordProperties =
+                                Object.fromEntries(
+                                    Object.entries(properties).filter(
+                                        ([, propertyValue]) =>
+                                            keepsStaticMember(propertyValue),
+                                    ),
+                                );
+                            writable(projected).recordOwnKeys = ownKeys;
+                        }
+                        return projected;
+                    },
                 );
-                if (properties) {
-                    writable(narrowed).recordProperties = Object.fromEntries(
-                        Object.entries(properties).filter(([, propertyValue]) =>
-                            keepsStaticMember(propertyValue),
-                        ),
-                    );
-                    writable(narrowed).recordOwnKeys = ownKeys;
-                }
             }
         }
         if (
@@ -1673,6 +1686,7 @@ export class BindingScopes {
                                 path[0]!,
                             ))),
                 true,
+                this.context.checker.getTypeAtLocation(identifier),
             );
         }
         if (value.kind === "void") {
@@ -1873,12 +1887,15 @@ export class BindingScopes {
                 `std::shared_ptr<${resourceType}>`,
             );
         const storedCpp = cell?.cpp ?? cppName;
+        // A read-only parameter keeps what generation knows of its argument:
+        // its scalar, or the record facts its argument carries.
         const constantParameter =
             readOnlyParameter &&
             ((value.kind === "number" && value.staticNumber !== undefined) ||
                 (isStringValue(value) && value.staticString !== undefined) ||
                 (value.kind === "boolean" &&
-                    value.staticBoolean !== undefined)) &&
+                    value.staticBoolean !== undefined) ||
+                value.recordProperties !== undefined) &&
             !value.parameterBinding;
         const storedType = resourceStorage?.type ?? value.dataType;
         const bound =
@@ -2231,12 +2248,22 @@ export class BindingScopes {
         delete writable(value).recordProperties;
     }
 
-    /** Materialize mutable members when a compile-time value escapes. */
+    /**
+     * Materialize mutable members when a compile-time value escapes into a
+     * holder of type `declared`; a field of its records, or of its
+     * tuple's, that `isUnchangedField` answers keeps its value
+     * (`materializeRecordScalars`).
+     */
     public materializeEscapingValue(
         value: Value,
         label: string,
         node?: ts.Expression,
+        isUnchangedField?: (path: readonly string[], member: Value) => boolean,
+        declared?: ts.Type,
     ): Value {
+        // A value holding a part generation cannot read has no native
+        // storage: it escapes as generation holds it.
+        if (holdsUnreadable(value)) return value;
         if (value.ownedCpp !== undefined || isNativeOwnerRecord(value)) {
             return this.pinValueToTemporary(value, label, node);
         }
@@ -2265,13 +2292,27 @@ export class BindingScopes {
             ) {
                 return value;
             }
-            return this.materializeRecordScalars(value, label, true, node);
+            return this.materializeRecordScalars(
+                value,
+                label,
+                true,
+                node,
+                undefined,
+                isUnchangedField,
+                false,
+                declared,
+            );
         }
         if (value.kind === "tuple" && value.tupleElements) {
             return {
                 ...value,
                 tupleElements: value.tupleElements.map((element, index) =>
-                    this.materializeEscapingValue(element, `${label}_${index}`),
+                    this.materializeEscapingValue(
+                        element,
+                        `${label}_${index}`,
+                        undefined,
+                        isUnchangedField,
+                    ),
                 ),
             };
         }
@@ -3023,6 +3064,38 @@ export class BindingScopes {
         return value;
     }
 
+    /**
+     * The fresh array members of an object literal's record whose element
+     * facts its native object keeps while the projection retains them
+     * (`DataLowerer.withRetainedArraySinks`).
+     */
+    private retainedArrayFields(
+        value: Value,
+        node: ts.Expression,
+    ): { key: string; value: Value; node: ts.Expression }[] {
+        return ts.isObjectLiteralExpression(unwrapExpression(node)) &&
+            this.recordPropertiesAreCurrent(value) &&
+            !Object.keys(value.recordMethods ?? {}).length &&
+            !Object.keys(value.recordGetters ?? {}).length &&
+            !Object.keys(value.recordSetters ?? {}).length
+            ? Object.entries(value.recordProperties ?? {}).flatMap(
+                  ([key, member]) =>
+                      member.freshData &&
+                      !member.conditionalOwnKey &&
+                      member.dataType?.kind === "vector" &&
+                      member.staticElements
+                          ? [
+                                {
+                                    key,
+                                    value: member,
+                                    node: literalMember(node, key) ?? node,
+                                },
+                            ]
+                          : [],
+              )
+            : [];
+    }
+
     /** Project a stored plain object once, preserving replacement of its members. */
     public referenceRecordValue(
         value: Value,
@@ -3068,33 +3141,9 @@ export class BindingScopes {
             return projected;
         };
         const projectRecord = (type: DataType<"struct">): Value => {
-            const fields =
-                ts.isObjectLiteralExpression(unwrapExpression(node)) &&
-                this.recordPropertiesAreCurrent(value) &&
-                !Object.keys(value.recordMethods ?? {}).length &&
-                !Object.keys(value.recordGetters ?? {}).length &&
-                !Object.keys(value.recordSetters ?? {}).length
-                    ? Object.entries(value.recordProperties ?? {}).flatMap(
-                          ([key, member]) =>
-                              member.freshData &&
-                              !member.conditionalOwnKey &&
-                              member.dataType?.kind === "vector" &&
-                              member.staticElements
-                                  ? [
-                                        {
-                                            key,
-                                            value: member,
-                                            node:
-                                                literalMember(node, key) ??
-                                                node,
-                                        },
-                                    ]
-                                  : [],
-                      )
-                    : [];
             return this.context.dataLowerer.withRetainedArraySinks(
                 value,
-                fields,
+                this.retainedArrayFields(value, node),
                 () =>
                     retainFields(
                         this.context.dataLowerer.leafValue(
@@ -3365,6 +3414,7 @@ export class BindingScopes {
         materialized = new Map<object, Value>(),
         isUnchangedField?: (path: readonly string[], member: Value) => boolean,
         snapshotScalarData = false,
+        declared?: ts.Type,
     ): Value {
         if (
             record.retainedNativeRecord ||
@@ -3490,6 +3540,7 @@ export class BindingScopes {
                         ((path, member) =>
                             isUnchangedField([name, ...path], member)),
                     snapshotScalarData,
+                    declared && this.declaredFieldType(declared, name),
                 );
                 continue;
             }
@@ -3499,17 +3550,30 @@ export class BindingScopes {
                 !property.nativeBinding &&
                 this.isMutableRecordContainer(property.dataType)
             ) {
+                // A container slot the program can empty holds the absent
+                // value its declared field admits beside the one it holds.
+                const absence = declared && this.writtenAbsence(declared, name);
+                const nullable =
+                    absence &&
+                    this.context.dataTypes.nullableType(
+                        property.dataType,
+                        !absence.null,
+                    );
+                const dataType =
+                    nullable?.kind === "optional"
+                        ? nullable
+                        : property.dataType;
+                if (dataType !== property.dataType) this.context.reachJsData();
                 properties[name] = {
                     ...property,
+                    dataType,
                     ...emitSharedCell(
                         this.context,
                         this.context.allocateTemporaryCppName(
                             `${label}_${name}`,
                         ),
                         {
-                            type: this.context.dataTypes.cppType(
-                                property.dataType,
-                            ),
+                            type: this.context.dataTypes.cppType(dataType),
                             initializer: property.cpp,
                             attributes: "[[maybe_unused]] ",
                         },
@@ -3681,6 +3745,37 @@ export class BindingScopes {
             );
         }
         return result;
+    }
+
+    /** The present type `declared` gives its field `name`, if it declares one. */
+    private declaredFieldType(
+        declared: ts.Type,
+        name: string,
+    ): ts.Type | undefined {
+        const field = this.context.checker.getPropertyOfType(declared, name);
+        return (
+            field &&
+            this.context.checker.getNonNullableType(
+                this.context.checker.getTypeOfSymbol(field),
+            )
+        );
+    }
+
+    /**
+     * The absent values `declared` admits in its field `name`, when a write
+     * in the program can store one there.
+     */
+    private writtenAbsence(
+        declared: ts.Type,
+        name: string,
+    ): Nullability | undefined {
+        const field = this.context.checker.getPropertyOfType(declared, name);
+        if (!field) return undefined;
+        const absent = nullability(this.context.checker.getTypeOfSymbol(field));
+        return (absent.null || absent.undefined) &&
+            recordFieldIsWritten(this.context, declared, name, true)
+            ? absent
+            : undefined;
     }
 
     private isMutableRecordContainer(dataType: DataType): boolean {

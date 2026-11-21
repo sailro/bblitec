@@ -158,6 +158,8 @@ export const featureSources: Record<Feature, string[]> = {
     "material:shader": [],
     "material:shader-uniform-ranges": [],
     "material:shader-declaration-lists": [],
+    "material:shader-uniform-creation-lanes": [],
+    "material:shader-slot-maps": [],
     // Storage buffers are owned by the common runtime record and uploaded by
     // whichever already-reached scene renderer is selected.
     "material:shader-storage": [],
@@ -271,6 +273,7 @@ export const featureSources: Record<Feature, string[]> = {
     "texture:ktx2": [],
     "texture:pixels": [],
     "texture:pixels-writes": [],
+    "texture:pixels-3d": [],
     "sprite:billboard": [],
     // A frozen node-particle system draws through the billboard family; the
     // simulation itself is baked at generation, so nothing of the pin's own
@@ -363,6 +366,7 @@ export const featureSources: Record<Feature, string[]> = {
     "frame-graph:task-mesh-removal": [],
     "frame-graph:task-mesh-refresh": [],
     "frame-graph:render-task-transmission": [],
+    "frame-graph:multisampled-task-transmission": [],
     "frame-graph:depth-resolve": [],
     "frame-graph:color-texture-identity": [],
     "frame-graph:task-material-override": [],
@@ -444,6 +448,11 @@ export function asFeatures(names: readonly string[]): Feature[] {
  * same site, and its own implications follow in turn.
  */
 const featureImplications: Partial<Record<Feature, readonly Feature[]>> = {
+    "frame-graph:task-method-slots": [
+        "effect:wrapper",
+        "frame-graph:task-disposal",
+        "frame-graph:target-disposal",
+    ],
     // The seam's fetch runs over the native HTTP transport.
     "platform:web-platform": ["platform:http"],
     "mesh:thin-instances": ["engine:gpu-retirement"],

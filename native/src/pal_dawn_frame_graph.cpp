@@ -275,6 +275,7 @@ void record_post_process(State& state, Engine& engine, TaskHandle task_handle,
         source_height = source.height;
     }
     if (gpu.program == npos) {
+        upstream::require_post_process_source(engine, pass);
         gpu.program =
             post_process_program(state, info, output.format, target_samples(state, output_record),
                                  pass.alpha_mode, pass.extra_textures.size());
@@ -457,7 +458,7 @@ public:
                                                    target_samples(state, record));
                 }
                 upload_dawn_effect_pass(state, engine, pass, task.effect.effect);
-                bind_dawn_effect_render_textures(
+                bind_dawn_effect_per_draw_textures(
                     state.device, engine, pass, task.effect.effect,
                     [&](const RenderTextureRef& source) -> WGPUTextureView {
                         if (source.depth_only)

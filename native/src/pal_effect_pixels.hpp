@@ -6,18 +6,23 @@
 namespace bbl::pal {
 
 /** The sampler the pin's bind group takes from a slot's texture (`texture.sampler`). */
-inline TextureSamplerState effect_slot_sampler(const Engine& engine, const EffectTextureSlot& slot) {
+inline TextureSamplerState effect_slot_sampler(const Engine& engine,
+                                               const EffectTextureSlot& slot) {
     if (slot.pixels_texture)
         return slot.pixels_texture->sampler;
     if (slot.render_texture)
-        if (const TextureSamplerState* sampler = render_texture_sampler(engine, *slot.render_texture))
+        if (const TextureSamplerState* sampler =
+                render_texture_sampler(engine, *slot.render_texture))
             return *sampler;
     return effect_texture_sampler();
 }
 
-/** Images owned by one effect pass; render targets remain borrowed at draw time. */
+/**
+ * Images owned by one effect pass; render targets and CSM receiver textures
+ * remain borrowed at draw time.
+ */
 template <typename Image> class EffectTextureImages {
-    enum class Kind { solid, pixels, render };
+    enum class Kind { solid, pixels, per_draw };
     struct Binding {
         std::uint32_t binding = 0;
         std::size_t position = 0;
@@ -31,17 +36,17 @@ template <typename Image> class EffectTextureImages {
     TextureUploadCache<Image> images_;
 
     static Kind kind(const EffectTextureSlot& slot) {
-        return slot.render_texture   ? Kind::render
-               : slot.pixels_texture ? Kind::pixels
-                                     : Kind::solid;
+        return effect_slot_binds_per_draw(slot) ? Kind::per_draw
+               : slot.pixels_texture            ? Kind::pixels
+                                                : Kind::solid;
     }
 
     template <typename Upload>
     std::shared_ptr<Image> acquire(const EffectTextureSlot& slot, Upload upload) {
-        if (slot.render_texture)
+        if (effect_slot_binds_per_draw(slot))
             return {};
         if (slot.pixels_texture) {
-            const TextureData source = pixels_texture_data(*slot.pixels_texture);
+            const TextureData source = pixels_texture_image(*slot.pixels_texture);
             return images_.acquire(source, source.srgb, {}, [&] { return upload(slot); });
         }
         return images_.acquire({}, false, slot.texture.texel, [&] { return upload(slot); });
@@ -51,13 +56,15 @@ public:
     template <typename Upload>
     std::shared_ptr<Image> add(const Engine& engine, const EffectTextureSlot& slot,
                                std::size_t position, Upload upload) {
-        Binding binding{slot.binding,
-                        position,
-                        kind(slot),
-                        slot.pixels_texture ? slot.pixels_texture->identity : 0,
-                        slot.texture.texel,
-                        effect_slot_sampler(engine, slot),
-                        acquire(slot, upload)};
+        Binding binding{
+            slot.binding,
+            position,
+            kind(slot),
+            slot.pixels_texture ? slot.pixels_texture->identity : 0,
+            slot.texture.texel,
+            effect_slot_sampler(engine, slot),
+            acquire(slot, upload),
+        };
         bindings_.push_back(binding);
         return binding.image;
     }
@@ -71,7 +78,7 @@ public:
             const auto identity = slot.pixels_texture ? slot.pixels_texture->identity : 0;
             const TextureSamplerState sampler = effect_slot_sampler(engine, slot);
             if (current == binding.kind && sampler == binding.sampler &&
-                (current == Kind::render ||
+                (current == Kind::per_draw ||
                  (current == Kind::pixels && identity == binding.identity) ||
                  (current == Kind::solid && slot.texture.texel == binding.solid)))
                 continue;

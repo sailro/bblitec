@@ -30,6 +30,8 @@ import {
     isTypedArrayType,
 } from "./data-types/typed-arrays.js";
 import {
+    completionFacts,
+    withoutCompletionFacts,
     dataTypeChildren,
     dataTypeCppType,
     dataTypeKey,
@@ -75,6 +77,7 @@ export {
     passesByReferenceKind,
     presentDataType,
     soleMemberIndex,
+    soleArrayArmIndex,
     isOpaqueReference,
     isNativeStructuralView,
     isScalarDataType,
@@ -394,6 +397,8 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
     // model rather than produced by an intrinsic.
     GaussianSplattingMesh: "splat-mesh",
     Texture2D: "texture",
+    // `Texture2D & { depth }`, named by its alias.
+    Texture3D: "texture",
     TransformNode: "transform-node",
     Skeleton: "skeleton",
     Bone: "bone",
@@ -901,6 +906,16 @@ function binaryLibraryClass(type: ts.Type): boolean {
     );
 }
 
+/** The pin's `Mat4`: the reached native matrix producers own its F32 storage. */
+function pinnedMatrix(type: ts.Type): boolean {
+    return isPinnedType(type, ["Mat4"]);
+}
+
+/** A binary library class or a pinned matrix: a member stored as its binary storage. */
+function binaryStorageMember(type: ts.Type): boolean {
+    return binaryLibraryClass(type) || pinnedMatrix(type);
+}
+
 /** A typed array of numbers, or an array whose elements are numbers. */
 function numericArrayMember(checker: ts.TypeChecker, type: ts.Type): boolean {
     if (
@@ -1255,6 +1270,31 @@ function fieldStorage(type: DataType): DataType {
           : type;
 }
 
+/** Whether storage is an array or a map, which a document can hold as one. */
+function isContainerStorage(type: DataType): boolean {
+    return (
+        type.kind === "vector" || type.kind === "span" || type.kind === "map"
+    );
+}
+
+/**
+ * The side storing a field as an array or a map where the other side holds
+ * it as a document: JavaScript holds one object under both, which a native
+ * copy splits.
+ */
+function typedSideOfDocument(
+    held: DataType,
+    stored: DataType,
+): "held" | "stored" | undefined {
+    const from = fieldStorage(held),
+        to = fieldStorage(stored);
+    return from.kind === "json" && isContainerStorage(to)
+        ? "stored"
+        : to.kind === "json" && isContainerStorage(from)
+          ? "held"
+          : undefined;
+}
+
 /** Whether field storage holds records, directly or in an array. */
 function holdsRecordStorage(type: DataType): boolean {
     return (
@@ -1262,23 +1302,6 @@ function holdsRecordStorage(type: DataType): boolean {
         ((type.kind === "vector" || type.kind === "span") &&
             holdsRecordStorage(fieldStorage(type.element)))
     );
-}
-
-/** The completion facts a function type's declaration proves. */
-const completionFacts = [
-    "undefinedCompletion",
-    "awaitedUndefinedCompletion",
-    "nonThenableCompletion",
-    "freshCompletion",
-] as const;
-
-/** A function type without its declaration site and completion facts. */
-function withoutCompletionFacts(
-    type: DataType<"function">,
-): DataType<"function"> {
-    const { signatureSite: _site, ...signature } = type;
-    for (const fact of completionFacts) delete signature[fact];
-    return signature;
 }
 
 /** One fact two shapes give: shapes that disagree leave `conflict`. */
@@ -2879,6 +2902,42 @@ export class DataTypeRegistry {
         return { ...source, documentFields: [field] };
     }
 
+    /**
+     * One layout storing property `name` that one record type stores as a
+     * document and another as an array or map holds one value: each record
+     * type storing it typed stores it as a document too (`documentFields`),
+     * as `requireSharedValueViews` rules for the fields of shared records.
+     */
+    private requireDocumentProperty(
+        name: string,
+        [left, right]: readonly [DataType, DataType],
+        declared: readonly { readonly owner: ts.Type }[],
+        values: readonly { readonly mapped: DataType | undefined }[],
+        node: ts.Node,
+    ): void {
+        if (
+            !(left.kind === "json" && isContainerStorage(right)) &&
+            !(right.kind === "json" && isContainerStorage(left))
+        )
+            return;
+        for (const [index, { mapped }] of values.entries()) {
+            if (!mapped || !isContainerStorage(fieldStorage(mapped))) continue;
+            const owner = declared[index]!.owner;
+            const property = this.checker.getPropertyOfType(owner, name);
+            if (
+                !property ||
+                (property.declarations ?? []).some((declaration) =>
+                    this.documentProperties.has(declaration),
+                )
+            )
+                continue;
+            throw new NativeRecordStorageRequired({
+                ...this.recordDemand(owner, node),
+                documentFields: [name],
+            });
+        }
+    }
+
     /** The document demand naming record type `record` itself; undefined where it has the layout. */
     private ownDocumentDemand(
         record: ts.Type,
@@ -3630,10 +3689,15 @@ export class DataTypeRegistry {
             : type;
     }
 
-    public requireEngineParameterStorage(
-        declaration: ts.ParameterDeclaration | undefined,
+    /** A parameter or field whose resources need their engine stores it. */
+    public requireEngineOwnerStorage(
+        declaration: ts.Declaration | undefined,
     ): void {
-        if (declaration && !this.requiresEngineParameterStorage(declaration))
+        if (
+            declaration &&
+            isEngineOwnerStorageDeclaration(declaration) &&
+            !this.storage.engineOwners.has(declaration)
+        )
             this.requireEngineOwner(declaration);
     }
 
@@ -4156,38 +4220,50 @@ export class DataTypeRegistry {
             target && this.checker.getNonNullableType(target.type);
         const union = targetRecord?.isUnion() === true;
         const lacked = lackedField(sourceFields, targetFields);
+        const split = targetFields.find((field) => {
+            const from = sourceFields.find(
+                (candidate) => candidate.sourceName === field.sourceName,
+            );
+            return (
+                from !== undefined &&
+                typedSideOfDocument(from.type, field.type) !== undefined
+            );
+        });
         // A union view of a stored record always shares its layout.
         const observed =
             !source || !target
                 ? "its record types have no checked source"
                 : lacked
                   ? `its records lack '${lacked.sourceName}'`
-                  : sharedArray
-                    ? "the array holding them is one shared array"
-                    : sourceType.name !== targetType.name &&
-                        [...sourceFields, ...targetFields].some(
-                            (field) => field.accessorReceiver,
-                        )
-                      ? "receiver-aware property slots retain their owner"
-                      : union && this.isReferenceStruct(sourceType.name)
-                        ? "a union view shares its arm's storage"
-                        : recordCopyObservation(
-                              observation,
-                              source.type,
-                              target.type,
-                              targetFields.map((field) => field.sourceName),
-                              sourceFields.some(
-                                  (field) =>
-                                      !targetFields.some(
-                                          (candidate) =>
-                                              candidate.sourceName ===
-                                              field.sourceName,
-                                      ),
-                              ),
-                              argument,
-                          );
+                  : split
+                    ? `a copy splits the one object '${split.sourceName}' holds`
+                    : sharedArray
+                      ? "the array holding them is one shared array"
+                      : sourceType.name !== targetType.name &&
+                          [...sourceFields, ...targetFields].some(
+                              (field) => field.accessorReceiver,
+                          )
+                        ? "receiver-aware property slots retain their owner"
+                        : union && this.isReferenceStruct(sourceType.name)
+                          ? "a union view shares its arm's storage"
+                          : recordCopyObservation(
+                                observation,
+                                source.type,
+                                target.type,
+                                targetFields.map((field) => field.sourceName),
+                                sourceFields.some(
+                                    (field) =>
+                                        !targetFields.some(
+                                            (candidate) =>
+                                                candidate.sourceName ===
+                                                field.sourceName,
+                                        ),
+                                ),
+                                argument,
+                            );
         // A copy lent to a callee that only reads it lives for the call.
-        if (observed === undefined || (lentForCall && !lacked)) return;
+        if (observed === undefined || (lentForCall && !lacked && !split))
+            return;
         this.requireSharedValueViews(sourceType, targetType);
         const sourceByName = new Map(
             sourceFields.map((field) => [field.sourceName, field]),
@@ -4448,10 +4524,6 @@ export class DataTypeRegistry {
                     compare(left.result, right.result);
             }
         };
-        const container = (type: DataType): boolean =>
-            type.kind === "vector" ||
-            type.kind === "span" ||
-            type.kind === "map";
         const fields = (
             left: readonly DataStructField[],
             right: readonly DataStructField[],
@@ -4464,12 +4536,11 @@ export class DataTypeRegistry {
             for (const field of right) {
                 const from = sources.get(field.sourceName);
                 if (!from) continue;
-                const held = fieldStorage(from.type);
-                const stored = fieldStorage(field.type);
+                const side = typedSideOfDocument(from.type, field.type);
                 const typed =
-                    held.kind === "json" && container(stored)
+                    side === "stored"
                         ? rightRecord
-                        : stored.kind === "json" && container(held)
+                        : side === "held"
                           ? leftRecord
                           : undefined;
                 // A document holds no method or accessor: a record type
@@ -5709,10 +5780,10 @@ export class DataTypeRegistry {
         if (typedArray) {
             return { kind: typedArray };
         }
-        if (isPinnedType(type, ["Mat4"])) {
-            // The reached native matrix producers own F32 storage. Keep the pin's
-            // opaque, numerically indexed interface through parameters and returns;
-            // ordinary data sinks still refuse incompatible F64 producers.
+        if (pinnedMatrix(type)) {
+            // Keep the pin's opaque, numerically indexed interface through
+            // parameters and returns; ordinary data sinks still refuse
+            // incompatible F64 producers.
             return { kind: "f32array" };
         }
         const pinnedHandle = this.nativeHandleKind(type);
@@ -7180,11 +7251,12 @@ export class DataTypeRegistry {
             type.types.some((member) => !binaryLibraryClass(member))
         )
             return { kind: "numberindex" };
-        // Opaque handles and library binary classes retain their alternatives;
-        // a common-field record would discard their owners and identities.
+        // Opaque handles, library binary classes and pinned matrices retain
+        // their alternatives (`Mat4 | Float32Array` is one F32 storage); a
+        // common-field record would discard their owners and identities.
         if (
             handles.every((kind) => kind !== undefined) ||
-            type.types.every(binaryLibraryClass)
+            type.types.every(binaryStorageMember)
         )
             return this.fromMixedUnion(type, node);
         // A record union whose component stores shapes its own layout does
@@ -7401,7 +7473,7 @@ export class DataTypeRegistry {
             ) &&
             !callablePair() &&
             !arrays &&
-            !type.types.every(binaryLibraryClass) &&
+            !type.types.every(binaryStorageMember) &&
             !type.types.every(
                 (member) => this.nativeHandleKind(member) !== undefined,
             )
@@ -9178,8 +9250,16 @@ export class DataTypeRegistry {
                     stored = next;
                     continue;
                 }
-                if (mapped)
+                if (mapped) {
                     this.requireSharedValueViews(stored, storage(mapped));
+                    this.requireDocumentProperty(
+                        name,
+                        [stored, storage(mapped)],
+                        declared.slice(0, index + 1),
+                        values.slice(0, index + 1),
+                        node,
+                    );
+                }
                 const storedValues = values.filter(storing);
                 unionField =
                     this.unionFieldStorage(
@@ -10914,8 +10994,24 @@ export class DataTypeRegistry {
         this.structsByName.set(definition.name, definition);
     }
 
-    /** An owned result's field layout, without changing how its source type specializes elsewhere. */
+    /**
+     * An owned result's field layout, without changing how its source type
+     * specializes elsewhere. A layout retaining a declared record (`retains`)
+     * keeps that record's checked source, so stores join it as they join
+     * the declared record.
+     */
     public ownedRecordType(
+        fields: readonly Omit<DataStructField, "name">[],
+        retains?: DataType<"struct">,
+    ): DataType<"struct"> {
+        const layout = this.ownedLayout(fields);
+        const source = retains && this.nativeRecordSources.get(retains.name);
+        if (source && !this.nativeRecordSources.has(layout.name))
+            this.nativeRecordSources.set(layout.name, source);
+        return layout;
+    }
+
+    private ownedLayout(
         fields: readonly Omit<DataStructField, "name">[],
     ): DataType<"struct"> {
         const stored = fields.map((field) => ({
@@ -11836,7 +11932,50 @@ export class DataTypeRegistry {
         return this.jsonValueCpp(field.type, cpp, node);
     }
 
-    /** Native object views retain the original reference and read its live fields. */
+    /**
+     * Whether values of `type` hold a native object (a handle, an event
+     * target or another native carrier, `isNativeStructuralView`), in place
+     * or through their containers and record fields: no document has a form
+     * for one.
+     */
+    public holdsNativeHandle(
+        type: DataType,
+        seen: Set<string> = new Set(),
+    ): boolean {
+        if (isNativeStructuralView(type)) return true;
+        switch (type.kind) {
+            case "optional":
+            case "tagged":
+                return this.holdsNativeHandle(type.inner, seen);
+            case "vector":
+            case "set":
+                return this.holdsNativeHandle(type.element, seen);
+            case "map":
+                return (
+                    this.holdsNativeHandle(type.key, seen) ||
+                    this.holdsNativeHandle(type.value, seen)
+                );
+            case "union":
+                return type.members.some((member) =>
+                    this.holdsNativeHandle(member, seen),
+                );
+            case "struct":
+                if (seen.has(type.name)) return false;
+                seen.add(type.name);
+                return (this.structsByName.get(type.name)?.fields ?? []).some(
+                    (field) => this.holdsNativeHandle(field.type, seen),
+                );
+            default:
+                return false;
+        }
+    }
+
+    /**
+     * Native object views retain the original reference and read its live
+     * fields; a field holding a native handle reads undefined or null while
+     * it holds none, and refuses a held one (`native_handle_field_json`), as
+     * no document holds the handle.
+     */
     public markJsonBoxed(type: DataType<"struct">, node: ts.Node): void {
         if (!this.isReferenceStruct(type.name)) {
             const demand = this.nativeRecordSources.get(type.name);
@@ -11885,7 +12024,8 @@ export class DataTypeRegistry {
             this.ownPresence(type.name, field, "value", "->", node);
             if (
                 this.jsonFieldValueCpp(type.name, field, "value", node) ===
-                undefined
+                    undefined &&
+                !this.holdsNativeHandle(field.type)
             )
                 this.fail(
                     node,
@@ -11915,12 +12055,13 @@ export class DataTypeRegistry {
             );
             fields.forEach((field, index) => {
                 const property = `value->${field.name}${field.accessor ? ".get()" : ""}`;
-                const cpp = this.jsonFieldValueCpp(
-                    name,
-                    field,
-                    property,
-                    node,
-                )!;
+                const cpp = this.jsonFieldValueCpp(name, field, property, node);
+                if (cpp === undefined) {
+                    lines.push(
+                        `    if (key == ${stringLiteral(field.sourceName)}) return bbl::js::native_handle_field_json(key, ${property});`,
+                    );
+                    return;
+                }
                 // An absent shared object reads undefined, not its null, and
                 // a nullable field's empty storage refuses to guess.
                 const presence = presences[index];

@@ -311,7 +311,7 @@ inline std::size_t thin_instance_active_count(const MeshRecord& record) {
     return count > 0 ? static_cast<std::size_t>(std::ceil(count)) : 0;
 }
 
-#if BBLITE_PINNED_MATERIALS
+#if BBLITE_PINNED_MATERIALS || BBLITE_PICK_DISCARD
 /**
  * Where one of Babylon Lite's own vertex-input names sits in our vertex.
  *
@@ -326,7 +326,8 @@ inline std::size_t thin_instance_active_count(const MeshRecord& record) {
  * fragment names two instance-stepped groups -- `ti-matrix` at stride 64
  * for the four world columns and `ti-color` at stride 16 for the RGBA lane
  * -- so an input is in the vertex, in the matrix stream, or in the colour
- * stream, and those are the slots both backends already bind.
+ * stream, and those are the slots both backends already bind. A pick
+ * discard rule's `vertexData` attribute resolves through the same table.
  */
 enum class VertexInputLane {
     float2,
