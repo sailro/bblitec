@@ -259,7 +259,8 @@ inline void upload_dawn_effect_pass(DawnDevice& device, Engine& engine, DawnEffe
             sampled.texture = image ? image->retain() : DawnTexture{};
             sampled.view =
                 image ? create_dawn_texture_view(sampled.texture, nullptr) : DawnTextureView{};
-            sampled.sampler = create_texture_sampler(device.device, effect_slot_sampler(engine, slot));
+            sampled.sampler =
+                create_texture_sampler(device.device, effect_slot_sampler(engine, slot));
             const auto& variant = upstream::effect_variants.at(wrapper.variant);
             std::size_t texture_position = 0;
             for (std::size_t index = 0; index < variant.binding_count; ++index) {

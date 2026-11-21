@@ -43,9 +43,8 @@ int main(int argc, char** argv) {
             const auto expected_exponential = line.substr(start, end - start);
             const auto exponential = bbl::js::number_to_exponential(value, digits);
             if (exponential != expected_exponential) {
-                std::cerr << line.substr(0, first) << ".toExponential(" << digits
-                          << "): expected " << expected_exponential << ", received " << exponential
-                          << '\n';
+                std::cerr << line.substr(0, first) << ".toExponential(" << digits << "): expected "
+                          << expected_exponential << ", received " << exponential << '\n';
                 return 1;
             }
             start = end == std::string::npos ? line.size() : end + 1;

@@ -174,8 +174,9 @@ inline EffectPass create_effect_pass(SDL_GPUDevice* device, const Engine& engine
         const auto image = pass.texture_images.add(
             engine, slot, pass.textures.size(),
             [&](const EffectTextureSlot& current) { return upload_effect_image(device, current); });
-        pass.textures.push_back({image ? image->get() : nullptr,
-                                 create_texture_sampler(device, effect_slot_sampler(engine, slot))});
+        pass.textures.push_back(
+            {image ? image->get() : nullptr,
+             create_texture_sampler(device, effect_slot_sampler(engine, slot))});
         if (effect_slot_binds_per_draw(slot))
             pass.per_draw_textures.emplace_back(pass.textures.size() - 1, slot.binding);
     }

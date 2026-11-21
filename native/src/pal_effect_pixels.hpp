@@ -6,11 +6,13 @@
 namespace bbl::pal {
 
 /** The sampler the pin's bind group takes from a slot's texture (`texture.sampler`). */
-inline TextureSamplerState effect_slot_sampler(const Engine& engine, const EffectTextureSlot& slot) {
+inline TextureSamplerState effect_slot_sampler(const Engine& engine,
+                                               const EffectTextureSlot& slot) {
     if (slot.pixels_texture)
         return slot.pixels_texture->sampler;
     if (slot.render_texture)
-        if (const TextureSamplerState* sampler = render_texture_sampler(engine, *slot.render_texture))
+        if (const TextureSamplerState* sampler =
+                render_texture_sampler(engine, *slot.render_texture))
             return *sampler;
     return effect_texture_sampler();
 }
@@ -54,13 +56,15 @@ public:
     template <typename Upload>
     std::shared_ptr<Image> add(const Engine& engine, const EffectTextureSlot& slot,
                                std::size_t position, Upload upload) {
-        Binding binding{slot.binding,
-                        position,
-                        kind(slot),
-                        slot.pixels_texture ? slot.pixels_texture->identity : 0,
-                        slot.texture.texel,
-                        effect_slot_sampler(engine, slot),
-                        acquire(slot, upload)};
+        Binding binding{
+            slot.binding,
+            position,
+            kind(slot),
+            slot.pixels_texture ? slot.pixels_texture->identity : 0,
+            slot.texture.texel,
+            effect_slot_sampler(engine, slot),
+            acquire(slot, upload),
+        };
         bindings_.push_back(binding);
         return binding.image;
     }
