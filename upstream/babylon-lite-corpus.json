@@ -1,8 +1,8 @@
 {
   "package": "@babylonjs/lite",
-  "version": "1.40.0",
+  "version": "1.40.2",
   "repository": "https://github.com/BabylonJS/Babylon-Lite.git",
-  "sourceVersion": "f7e737ec7bc9740f2487b1994ffba82639934a0a",
+  "sourceVersion": "2b85d3dfe169ebd7bce470a0523e9f19e0d47f79",
   "scenes": [
     {
       "id": "scene1",
@@ -230,7 +230,7 @@
       "id": "scene123",
       "upstreamPath": "lab/lite/src/lite/scene123.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene123.ts",
-      "sha256": "b7ad0f7dfcfdaab1475c6d581fd3c60b3c5a2caa0b987a6d6c27a0cd72d15615"
+      "sha256": "c698418f3cde6f9f10d7295e263452a86dd535511e0c9f45a3d064596d4fadca"
     },
     {
       "id": "scene124",
@@ -302,7 +302,7 @@
       "id": "scene146",
       "upstreamPath": "lab/lite/src/lite/scene146.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene146.ts",
-      "sha256": "a4bdcc4e89890db61e21e5db3ad5dd1537d375bd4b99eb2d46783d9dc7bd3b46"
+      "sha256": "1ab672ecc5272fe244e7157108d381c130a1ed39b47bc6e88d177688d34cbb0b"
     },
     {
       "id": "scene150",
@@ -458,7 +458,7 @@
       "id": "scene212",
       "upstreamPath": "lab/lite/src/lite/scene212.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene212.ts",
-      "sha256": "913e802b63191520df2a2d5df09e758fbc55e5730f0c3fbe8003d9480b8a30f3"
+      "sha256": "958e866bbf50bc1903c5091b955555eba5317d84bfff64a32c1c0ed48f6f60a2"
     },
     {
       "id": "scene213",
@@ -1298,13 +1298,13 @@
       "id": "scene224",
       "upstreamPath": "lab/lite/src/lite/scene224.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene224.ts",
-      "sha256": "1d326fb237dcc0de76a81ac13a021668e7efcd3539ebed7a70ff3576ff961fbd"
+      "sha256": "05422a2de9c3512d0552c37db04bb8283ed9ac21371632d2d89ae44fb5679f32"
     },
     {
       "id": "scene222",
       "upstreamPath": "lab/lite/src/lite/scene222.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene222.ts",
-      "sha256": "8c5960082f755570a571c7403b693b6041039b99babc35748e5c37d6c103da85"
+      "sha256": "eab69777e3ee04acd17865d83d394b9ce12f1a5e121005091f5a471310e30faf"
     },
     {
       "id": "scene86",
@@ -1322,13 +1322,13 @@
       "id": "scene221",
       "upstreamPath": "lab/lite/src/lite/scene221.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene221.ts",
-      "sha256": "9e858a700bd2b609884a27564038ed829aa637ca33f982c693043961f56b546a"
+      "sha256": "9cd1860185962c41a4858db4c44da5e2bead5aa1239a0b2c346e36f42b62ff3d"
     },
     {
       "id": "scene223",
       "upstreamPath": "lab/lite/src/lite/scene223.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene223.ts",
-      "sha256": "c4261526f2057ece1281b86c5fd083986c0bce56cc9316844dbf4fbae2c9fafd"
+      "sha256": "92cc36d73226c33d710557700f5ac588e2d3c19e43129bef611f34e19c2c2a5f"
     },
     {
       "id": "scene305",
@@ -1340,7 +1340,7 @@
       "id": "scene73",
       "upstreamPath": "lab/lite/src/lite/scene73.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene73.ts",
-      "sha256": "459de40173b1ccaf4d620f5e8766b56b2b8288c93fdced4e9a5572edc450727a"
+      "sha256": "0e4c09575dc5db568395d2a1947aaa59fe66d1a9ec30fa35b2773cbdd21ceba0"
     },
     {
       "id": "scene187",
@@ -1412,7 +1412,7 @@
       "id": "scene49",
       "upstreamPath": "lab/lite/src/lite/scene49.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene49.ts",
-      "sha256": "2cee0325e5dd9cf1ece776eba23bded322a304c1f04c482405a18a1a581d7a9e"
+      "sha256": "9400d5397be520be9673a7f01844142eb018459381440a64aff536583bffef4b"
     },
     {
       "id": "scene122",
@@ -1745,7 +1745,7 @@
       "id": "scene348",
       "upstreamPath": "lab/lite/src/lite/scene348.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene348.ts",
-      "sha256": "9f8ff38cfc2a893bb86c6e5b6e8441edee3f002d188b40bc568dde66e1319df9"
+      "sha256": "420b7a7752c6ab157dd3afe32db7880074673af03686159821eeb94b0b2922af"
     },
     {
       "id": "scene349",
@@ -2117,6 +2117,11 @@
       "upstreamPath": "lab/lite/src/shared/scene349-parallax-ui.ts",
       "source": "corpus/babylon-lite/lab/lite/src/shared/scene349-parallax-ui.ts",
       "sha256": "8774b904e3cf8366da8d8ffb04792f5daa5d8968d4726eb0306885a35e25a8c4"
+    },
+    {
+      "upstreamPath": "lab/lite/src/shared/ssao-scene.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/shared/ssao-scene.ts",
+      "sha256": "ea088a515c649ef98111d5e33b2a4c669e25ad9506270542b90d45d217d92003"
     }
   ],
   "staged": [
@@ -2129,6 +2134,36 @@
       "upstreamPath": "lab/lite/src/lite/scene187-debug.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene187-debug.ts",
       "sha256": "285c0899039f0eead5d7a0d9465b7186c2cd39a17e6abfa8664fb0f9d5c1af63"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene355.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene355.ts",
+      "sha256": "874cf78de85af0c16ab2654eada4b90862456ca878347ab9268eabde655d708f"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene356.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene356.ts",
+      "sha256": "1ccc154859a7a6231ea41a02ef496f09654110fa02b00c742c53c37f4ad63883"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene357.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene357.ts",
+      "sha256": "2055e0e554cb0f90019c75c02a5e1694a51ff49efa20f5a417bea86c1f2962ac"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene358.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene358.ts",
+      "sha256": "9ff1ce741511a8751ed92efaaae7658c0ef2e1d7ba4372036d2ecbd5fe595831"
+    },
+    {
+      "upstreamPath": "lab/lite/src/shared/scene356-glow.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/shared/scene356-glow.ts",
+      "sha256": "5d8e2b97fe54999a6b2a2ba190cb1f0f16679d4650a4aa27319a8c588032c4fb"
+    },
+    {
+      "upstreamPath": "lab/lite/src/shared/scene356-nme.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/shared/scene356-nme.ts",
+      "sha256": "4f776e4d55c5b02531257ae77bafe6698f4eb91d5a3e948f5c740dd9346f4b70"
     },
     {
       "upstreamPath": "LICENSE",
@@ -3520,7 +3555,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/antigravity-racer/editor.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/editor.ts",
-          "sha256": "f64ddffb80f7c9f5ac8215f17dc4ede1b386d6aebb2af32f95e2b06c9cc79446"
+          "sha256": "57d6849551b74d4be157885ecb999ef226e1297bb48c9f40bc4ca90055eb2598"
         },
         {
           "upstreamPath": "lab/lite/src/demos/antigravity-racer/environment.ts",
@@ -3530,7 +3565,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/antigravity-racer/game.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/game.ts",
-          "sha256": "ac353c4b41f86c63a012848aeb94e9d1f3dba54f6b5d1a560d85e4324d44b090"
+          "sha256": "1c14603c296fe70165fec0be4f68f03c6e5607ef095df3cf92789082614b7175"
         },
         {
           "upstreamPath": "lab/lite/src/demos/antigravity-racer/gamepad-list-nav.ts",
@@ -3991,10 +4026,10 @@
       "entry": "corpus/babylon-lite/lab/lite/src/demos/ocean.ts",
       "reference": {
         "source": "reference/ocean/babylon-lite-golden.png",
-        "sha256": "59a72ee1a63d744ab062582cf72f47356996f878c50edbafc27108189d8e42b7",
+        "sha256": "07974d86e76cc792c5f5661d9f3a00d3fb793189fcc413899d99eb2fdf9b9303",
         "provenance": {
           "source": "reference/ocean/provenance.json",
-          "sha256": "dd9954b30d317bf5807256e9d1c8891fa3efab5fc3f11f05a6ffa10a8d63ce37"
+          "sha256": "2c02a58b3b44fec68a84481ca6335d5c42b322a4e452a201eb692dc95b75ae54"
         }
       },
       "files": [
@@ -4115,7 +4150,7 @@
       "entry": "corpus/babylon-lite/lab/lite/src/demos/sandblox.ts",
       "reference": {
         "source": "reference/sandblox/babylon-lite-golden.png",
-        "sha256": "d68d79d4296f414af1782300626c2496411c96a94038674b089b268efe9a6cc0"
+        "sha256": "573f5d44f1f2f9a46b25c970f1aa784c432eca431bf26942ed5cf016dc0c9744"
       },
       "files": [
         {
@@ -4201,7 +4236,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/sandblox/part-renderer.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/part-renderer.ts",
-          "sha256": "20ee749bfdfa2363900ebe7acf7935c0f24b9cd1f5b119a15224bb785b35d305"
+          "sha256": "6d9586b0992524843b97dda9f016175655fb0cb261e53ca880103a9998372664"
         },
         {
           "upstreamPath": "lab/lite/src/demos/sandblox/part.ts",
@@ -4892,10 +4927,10 @@
       "entry": "corpus/babylon-lite/lab/lite/src/demos/playroom.ts",
       "reference": {
         "source": "reference/playroom/babylon-lite-golden.png",
-        "sha256": "0ff7af399b66ece8cf728f810d7643ac0f03a9fae1b54d01c7eead70d5b464b2",
+        "sha256": "1a2710deb9df92870b24b84eca18383235c0d781b142a81b8bc0a4870fb35983",
         "provenance": {
           "source": "reference/playroom/provenance.json",
-          "sha256": "4e047e5910290298bfbac0ba7b4bb3c7bc02125004e5da25413f30d3386475c7"
+          "sha256": "6c68fb6e5ee7cd6c01583a29e6276beca15c570761d6564af3447aff669e78b1"
         }
       },
       "files": [

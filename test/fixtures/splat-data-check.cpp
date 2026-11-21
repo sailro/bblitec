@@ -2,6 +2,7 @@
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/splat_geometry.hpp>
 #include <bblite/upstream/splat_bake.hpp>
+#include <bblite/upstream/pinned_errors.hpp>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -130,7 +131,8 @@ int main(int argc, char** argv) {
                 require(std::string(error.what()) == "GS vertex count mismatch",
                         "count diagnostic");
             if (length == 0u)
-                require(std::string(error.what()) == "#335", "empty diagnostic");
+                require(std::string(error.what()) == pinned_errors::empty_splat,
+                        "empty diagnostic");
         }
         require(caught, "invalid update accepted");
         require(mesh.data_version == 2 && mesh.splats_data->data() == replacement.data(),

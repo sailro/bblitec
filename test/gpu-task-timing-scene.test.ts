@@ -86,7 +86,7 @@ test("timing respects disabled default tasks and remains isolated when unreached
     assert.match(timed.cpp, /configure_scene_render_defaults\([^\n]+, false,/);
     assert.match(
         timed.cpp,
-        /if \(scene\.state->default_render_task && !scene\.state->default_render_task_created\)/,
+        /if \(scene\.state->default_render_task && scene\.state->default_render_task_handle\.value == bbl::invalid_handle\)/,
     );
     const plain = compileSource(`${imports}
         const scene=createSceneContext(engine);

@@ -1339,6 +1339,11 @@ struct RenderTaskOptions {
     bool shadow_cache_static = false;
 };
 
+/** The effective depth RT (`config.depth ?? config.rt`) for a pass not borrowing geometry depth. */
+inline RenderTargetHandle render_task_depth_target(const RenderTaskOptions& render) {
+    return render.depth.target.value != invalid_handle ? render.depth.target : render.target;
+}
+
 struct RenderTaskMesh {
     MeshHandle mesh{};
     MaterialHandle material{};
@@ -1750,6 +1755,9 @@ struct SsaoTaskState {
     double intensity = 0.0;
     double tan_x = 0.0;
     double tan_y = 0.0;
+    double offset_x = 0.0;
+    double offset_y = 0.0;
+    bool orthographic = false;
     double near_plane = 0.0;
     double far_plane = 0.0;
     std::string quality;
@@ -1996,7 +2004,7 @@ struct RenderTargetRecord {
     TargetAllocation allocation = TargetAllocation::record;
     /**
      * A shader reads the depth attachment without a sampled facade (a
-     * depth-resolve source): the pin's every depth attachment carries
+     * depth resolve or a render-task grab): the pin's every depth attachment carries
      * `TEXTURE_BINDING`.
      */
     bool depth_binding = false;
@@ -2050,6 +2058,8 @@ struct FrameTaskRecord {
     bool render_mesh_refresh = false;
     FrameTaskRecordState record_state = FrameTaskRecordState::queued;
     std::optional<RenderTaskTransmission> transmission;
+    /** The borrowed geometry wrapper has published its depth at record or a later grab. */
+    mutable bool transmission_geometry_depth_ready = false;
     bool render_meshes_dirty = false;
     /** A backend built this task's draw lists once: the recorded generation is drawn. */
     bool render_generation_built = false;
@@ -2991,7 +3001,12 @@ struct MeshCpuStreams {
     std::optional<js::U32Array> indices;
 };
 
+namespace upstream {
+struct ShadowBoundsCache;
+}
+
 struct MeshRecord {
+    mutable std::shared_ptr<upstream::ShadowBoundsCache> shadow_bounds_cache;
     std::shared_ptr<MeshCpuStreams> cpu_streams;
     /** The compiled factory accepts optional streams resolved at runtime. */
     bool runtime_attribute_features = false;
@@ -5792,6 +5807,21 @@ inline DomEventTargetValue dom_target_value(Engine& engine, DomEventTarget targe
     return {&engine, target, engine.lifetime.token()};
 }
 
+/** The other admitted `config.depth` is a geometry task's wrapper, not a render-target handle. */
+inline bool transmission_uses_geometry_depth(const FrameTaskRecord& task) {
+    return task.render.depth.source == RenderTextureSource::geometry_depth;
+}
+
+/** The controller syncs after record and just before a grab, not on a texture getter. */
+inline void sync_transmission_geometry_depth(const Engine& engine, const FrameTaskRecord& task) {
+    if (!task.transmission || !task.transmission->grab_depth.value_or(false) ||
+        !transmission_uses_geometry_depth(task))
+        return;
+    task.transmission_geometry_depth_ready =
+        handle_at(engine.frame_tasks, task.render.depth.task).record_state ==
+        FrameTaskRecordState::recorded;
+}
+
 /** Preserve the Texture2D identity when a render-target facade enters plain data. */
 inline FileTexture retained_render_texture(Engine& engine, RenderTextureRef reference) {
     const bool transmission = reference.source == RenderTextureSource::transmission_color ||
@@ -5802,7 +5832,10 @@ inline FileTexture retained_render_texture(Engine& engine, RenderTextureRef refe
         const auto& task = handle_at(engine.frame_tasks, reference.task);
         if (!task.transmission)
             throw std::runtime_error("A transmission texture names a task without transmission.");
-        reference.target = task.render.target;
+        reference.target = reference.source == RenderTextureSource::transmission_depth &&
+                                   !transmission_uses_geometry_depth(task)
+                               ? render_task_depth_target(task.render)
+                               : task.render.target;
     }
     const auto& target = handle_at(engine.render_targets, reference.target);
     if (!transmission && !target.has_color)
@@ -5820,6 +5853,12 @@ inline FileTexture retained_render_texture(Engine& engine, RenderTextureRef refe
     facade.identity = engine.next_file_texture_identity++;
     facade.width = target.width;
     facade.height = target.height;
+    if (reference.source == RenderTextureSource::transmission_depth &&
+        transmission_uses_geometry_depth(handle_at(engine.frame_tasks, reference.task))) {
+        // Geometry attachments are built at the frame extent, not the colour target's descriptor size.
+        facade.width = static_cast<std::uint32_t>(engine.options.width);
+        facade.height = static_cast<std::uint32_t>(engine.options.height);
+    }
     if (reference.source == RenderTextureSource::transmission_color) {
         // createRenderTaskTransmission's square grab, sampled without a Y flip.
         const auto& grab = handle_at(engine.frame_tasks, reference.task).transmission;
@@ -5840,12 +5879,30 @@ inline FileTexture retained_render_texture(Engine& engine, RenderTextureRef refe
     return facade;
 }
 
+/** A pass samples the depth attachment itself, without requesting a separate material texture facade. */
+inline void require_render_target_depth_binding(Engine& engine, RenderTargetHandle handle) {
+    auto& depth = handle_at(engine.render_targets, handle);
+    if (depth.has_depth && !depth.depth_binding) {
+        depth.depth_binding = true;
+        ++engine.render_targets_version;
+    }
+}
+
 /** `enableRenderTaskTransmission`: the settings a later call merges, as the pin's `applyTransmissionOptions`. */
 inline TransmissionGrab enable_render_task_transmission(Engine& engine, TaskHandle task,
                                                         RenderTaskTransmission options) {
     auto& record = handle_at(engine.frame_tasks, task);
     if (record.kind != FrameTaskKind::render)
         throw std::runtime_error("enableRenderTaskTransmission requires a render task.");
+    if (options.grab_depth.value_or(false) && transmission_uses_geometry_depth(record)) {
+        if (!record.transmission || !record.transmission->grab_depth.value_or(false)) {
+            if (record.record_state == FrameTaskRecordState::recorded)
+                throw std::runtime_error(
+                    "enableRenderTaskTransmission's grabDepth must precede the task's recording.");
+            // Both backends allocate geometry depths with sampled usage only when reached.
+            ++engine.render_targets_version;
+        }
+    }
     if (!record.transmission) {
         record.transmission = options;
     } else {
@@ -5861,14 +5918,15 @@ inline TransmissionGrab enable_render_task_transmission(Engine& engine, TaskHand
     }
     // grabDepth samples the task's depth attachment at the pass break.
     if (record.transmission->grab_depth.value_or(false) &&
-        record.render.target.value != invalid_handle) {
-        auto& target = handle_at(engine.render_targets, record.render.target);
-        if (target.has_depth && !target.sampled_depth) {
-            if (record.record_state == FrameTaskRecordState::recorded)
-                throw std::runtime_error(
-                    "enableRenderTaskTransmission's grabDepth must precede the task's recording.");
-            target.sampled_depth = true;
-        }
+        !transmission_uses_geometry_depth(record) &&
+        render_task_depth_target(record.render).value != invalid_handle) {
+        const auto owner = render_task_depth_target(record.render);
+        const auto& target = handle_at(engine.render_targets, owner);
+        if (target.has_depth && !target.depth_binding && !target.sampled_depth &&
+            record.record_state == FrameTaskRecordState::recorded)
+            throw std::runtime_error(
+                "enableRenderTaskTransmission's grabDepth must precede the task's recording.");
+        require_render_target_depth_binding(engine, owner);
     }
     // A multisampled target's grab averages its colour samples.
     if (record.render.target.value != invalid_handle) {
@@ -5901,7 +5959,10 @@ inline js::Nullable<StoredTexture> transmission_grab_depth_texture(Engine& engin
     const auto& record = handle_at(engine.frame_tasks, grab.task);
     if (record.record_state != FrameTaskRecordState::recorded || !record.transmission ||
         !record.transmission->grab_depth.value_or(false) ||
-        !handle_at(engine.render_targets, record.render.target).has_depth)
+        !(transmission_uses_geometry_depth(record)
+              ? record.transmission_geometry_depth_ready
+              : handle_at(engine.render_targets, render_task_depth_target(record.render))
+                    .has_depth))
         return {};
     RenderTextureRef reference;
     reference.source = RenderTextureSource::transmission_depth;
@@ -7221,6 +7282,11 @@ struct SceneLibraryMember {
     virtual void gc_trace(const js::TraceVisitor& visitor) const = 0;
 };
 
+struct OverlayTargets {
+    RenderTargetHandle rt{};
+    RenderTargetHandle rst{};
+};
+
 struct SceneState {
     bool source_material_publication = false;
     SourceMaterialOutputs material_outputs;
@@ -7228,7 +7294,7 @@ struct SceneState {
     std::exception_ptr material_runtime_error;
     Engine* engine = nullptr;
     bool default_render_task = true;
-    bool default_render_task_created = false;
+    TaskHandle default_render_task_handle{};
     std::uint32_t default_render_task_samples = 4;
     /** Canvas identity when this scene belongs to an auxiliary surface. */
     std::optional<UiElementHandle> surface_canvas;
@@ -7726,12 +7792,8 @@ frame_has_temporal_task(const Engine& engine, const std::vector<std::shared_ptr<
  */
 inline TaskHandle create_depth_resolve_task(Engine& engine, Scene&,
                                             DepthResolveTaskOptions options) {
-    RenderTargetRecord& source = handle_at(engine.render_targets, options.source);
     (void)handle_at(engine.render_targets, options.target);
-    if (source.has_depth && !source.depth_binding) {
-        source.depth_binding = true;
-        ++engine.render_targets_version;
-    }
+    require_render_target_depth_binding(engine, options.source);
     FrameTaskRecord task;
     task.kind = FrameTaskKind::depth_resolve;
     task.depth_resolve = std::move(options);
@@ -7781,23 +7843,6 @@ template <class Visit> void visit_composited_scenes(const Engine& engine, Visit 
     return shown;
 }
 
-/** How an overlay layer composites in one frame. */
-enum class OverlayComposite {
-    /** MSAA: the root's swapchain task did not render or resolves elsewhere. */
-    skipped,
-    /** MSAA: into the root's swapchain task's colour attachment, resolved again. */
-    root_attachment,
-    /** One sample: loading the swapchain. */
-    swapchain,
-};
-
-/** An overlay layer's composite and the root task it composites into. */
-struct OverlayComposition {
-    OverlayComposite mode = OverlayComposite::skipped;
-    /** `root_attachment` over a root with a frame graph: its swapchain task. */
-    TaskHandle task{};
-};
-
 /** Whether `target` names the swapchain's render target. */
 [[nodiscard]] inline bool is_swapchain_target(const Engine& engine, RenderTargetHandle target) {
     const RenderTargetRecord* record = handle_find(engine.render_targets, target);
@@ -7817,136 +7862,38 @@ struct OverlayComposition {
     return static_cast<double>(height ? engine.options.height : engine.options.width);
 }
 
-/** Only a render task can supply an admitted overlay attachment. */
-[[nodiscard]] inline const FrameTaskRecord* find_overlay_render_task(const Engine& engine,
-                                                                     TaskHandle handle) {
-    const auto* task = handle_find(engine.frame_tasks, handle);
-    return task && task->kind == FrameTaskKind::render ? task : nullptr;
+/** Handle indices are local to their engine, including when stored in an options record. */
+[[nodiscard]] inline RenderTargetHandle
+overlay_target_for_engine(const Engine& base, const Engine& owner, RenderTargetHandle target) {
+    if (&base != &owner)
+        throw std::runtime_error("Overlay color targets must belong to the base scene's engine.");
+    return target;
 }
 
-/** The default scene pass presents through native copies, not a direct resolve. */
-[[nodiscard]] inline bool resolves_to_swapchain(const Engine& engine, const Scene& scene,
-                                                const RenderTaskOptions& render) {
-    return (render.scene_stages && !scene.transmission_enabled) ||
-           is_swapchain_target(engine, render.resolve_target);
+/** The live public config's color outputs, independent of execution gates. */
+[[nodiscard]] inline OverlayTargets render_task_targets(const Engine& engine, TaskHandle handle) {
+    const auto& task = handle_at(engine.frame_tasks, handle);
+    if (task.kind != FrameTaskKind::render)
+        throw std::runtime_error("Only a render task publishes color target config.");
+    // The readable scene pass uses two internal copies. Its public config still
+    // names the swapchain as its one-sample output.
+    if (task.render.scene_stages && task.source_scene)
+        return task.source_scene->default_render_task_samples > 1
+                   ? OverlayTargets{task.render.target, engine.swapchain_target}
+                   : OverlayTargets{engine.swapchain_target, {}};
+    return {task.render.target, task.render.resolve_target};
 }
 
-/**
- * swapchain-overlay.ts `getDefaultSwapchainTask` over a scene's own tasks
- * (it reads RenderTasks only): the first render task drawing or resolving
- * into the swapchain. The compiler's scene pass resolves through its own
- * copies unless transmission retargets it to a linear target that resolves
- * nowhere.
- */
-[[nodiscard]] inline std::optional<TaskHandle> default_swapchain_task(const Engine& engine,
-                                                                      const Scene& scene) {
-    for (const TaskHandle handle : scene.tasks) {
-        const auto* task = find_overlay_render_task(engine, handle);
-        if (task && (resolves_to_swapchain(engine, scene, task->render) ||
-                     is_swapchain_target(engine, task->render.target)))
-            return handle;
-    }
-    return std::nullopt;
-}
-
-/**
- * swapchain-overlay.ts `configureSwapchainOverlayScene`'s record over the
- * overlays of `root`, a native seam whose pinned shape
- * overlay-scene-lowerer.ts asserts. For a root without a frame graph its
- * swapchain task is the renderer's own scene pass, which always runs and
- * resolves unless the root has no default render task or transmission
- * retargets it; else the last active multisample resolver. Each overlay records after
- * the root's whole frame, so at one sample it loads what the root's image
- * processing or last task wrote.
- */
-[[nodiscard]] inline OverlayComposition overlay_composition(const Engine& engine, const Scene& root,
-                                                            bool multisampled) {
-    if (!multisampled)
-        return {OverlayComposite::swapchain};
-    if (!root.has_frame_passes())
-        return {root.state->default_render_task && !root.transmission_enabled
-                    ? OverlayComposite::root_attachment
-                    : OverlayComposite::skipped};
-    // getActiveSwapchainResolver: admitted post-process outputs have no resolve texture.
-    for (auto at = root.tasks.rbegin(); at != root.tasks.rend(); ++at) {
-        const auto* task = find_overlay_render_task(engine, *at);
-        if (!task || !frame_task_executes(*task) ||
-            !resolves_to_swapchain(engine, root, task->render))
-            continue;
-        const auto* color = handle_find(engine.render_targets, task->render.target);
-        if (color && color->samples > 1)
-            return {OverlayComposite::root_attachment, *at};
-    }
-    return {};
-}
-
-/**
- * Whether a resolve copy of `source` keeps its samples: an overlay
- * composites into that attachment after the root's copies.
- */
-[[nodiscard]] inline bool overlay_keeps_samples(const Engine& engine,
-                                                const OverlayComposition& composition,
-                                                RenderTargetHandle source) {
-    const FrameTaskRecord* task = handle_find(engine.frame_tasks, composition.task);
-    return composition.mode == OverlayComposite::root_attachment && task &&
-           task->render.target.value == source.value;
-}
-
-/**
- * An overlay's swapchain task whose own target does not match the root
- * attachment it composites into: the pin's pass would bind attachments
- * WebGPU refuses together.
- */
-inline constexpr const char* overlay_task_attachment_mismatch =
-    "An overlay's swapchain task composites into its root's attachment only when its own target "
-    "has that attachment's format, sample count and size.";
-
-/**
- * Whether `pass` is one of the copies through which `scene`'s swapchain task
- * resolves: an overlay's task resolves in its own pass, so they do not run.
- */
-[[nodiscard]] inline bool swapchain_task_copy(const Scene& scene, TaskHandle current,
-                                              TaskHandle pass) {
-    return std::ranges::any_of(scene.state->internal_passes,
-                               [&](const SceneInternalPass& internal) {
-                                   return internal.after == current && internal.task == pass;
-                               });
-}
-
-/** Whether a run's composited scenes draw overlay layers over their root. */
-[[nodiscard]] inline bool composites_overlays(const std::vector<std::shared_ptr<Scene>>& scenes) {
-    return std::ranges::any_of(scenes, [](const std::shared_ptr<Scene>& scene) {
-        return scene->state->overlay_base != nullptr;
-    });
-}
-
-/** An attachment's extent and sample count. */
-struct OverlayAttachmentExtent {
-    std::uint32_t width = 0;
-    std::uint32_t height = 0;
-    std::uint32_t samples = 1;
-    friend bool operator==(const OverlayAttachmentExtent&,
-                           const OverlayAttachmentExtent&) = default;
-};
-
-/**
- * Whether an overlay layer composited into a root task's `target` clears
- * that target's own depth rather than the surface's: the surface depth does
- * not fit it, and its task clears its own again before drawing.
- * `target_depth` says the target has a depth in the frame's depth format.
- */
-[[nodiscard]] inline bool overlay_lends_target_depth(const FrameTaskRecord& task,
-                                                     const OverlayAttachmentExtent& target,
-                                                     const OverlayAttachmentExtent& surface_depth,
-                                                     bool target_depth) {
-    if (target == surface_depth)
-        return false;
-    if (!target_depth || !task.render.depth_clear)
-        throw std::runtime_error(
-            "Overlay layers composite into a root swapchain task whose target has neither the "
-            "surface depth's size and sample count nor a cleared depth of its own in the "
-            "frame's depth format.");
-    return true;
+/** Color targets a following overlay loads after a native resolve copy in this frame. */
+[[nodiscard]] inline std::unordered_set<std::uint32_t>
+overlay_color_targets(const std::vector<std::shared_ptr<Scene>>& scenes) {
+    std::unordered_set<std::uint32_t> targets;
+    for (const auto& scene : scenes)
+        if (scene->state->overlay_base)
+            targets.insert(
+                render_task_targets(*scene->engine, scene->state->default_render_task_handle)
+                    .rt.value);
+    return targets;
 }
 
 /**
@@ -8954,7 +8901,7 @@ void push_transform_node_child(Engine& engine, TransformNodeHandle node, MeshHan
 void push_transform_node_child(Engine& engine, TransformNodeHandle node, TransformNodeHandle child);
 // src/gizmo/*: the display-gizmo family. Every one of these is generated
 // into upstream/src/gizmo.cpp from the pinned modules that declare it.
-UtilityLayerHandle create_utility_layer(Scene& main_scene);
+UtilityLayerHandle create_utility_layer(Scene& main_scene, OverlayTargets targets);
 void register_utility_layer(Engine& engine, UtilityLayerHandle layer);
 Scene& utility_layer_scene(Engine& engine, UtilityLayerHandle layer);
 void dispose_utility_layer(Engine& engine, UtilityLayerHandle layer);
@@ -9682,7 +9629,7 @@ void unregister_scene(Scene& scene);
 void dispose_scene(Scene& scene);
 void rebuild_scene_renderables(Scene& scene);
 /** overlay-scene.ts `createOverlayScene`. */
-Scene create_overlay_scene(const Scene& base_scene);
+Scene create_overlay_scene(const Scene& base_scene, OverlayTargets targets);
 /** overlay-scene.ts `moveSwapchainOverlaysAfterBase`. */
 void move_swapchain_overlays_after_base(const Scene& scene);
 void on_frame_graph_update(FrameGraphContext& context, js::Callback<void(float)> callback);

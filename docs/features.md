@@ -409,7 +409,8 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
   declaration, in its block or that block's `if` branches and before any other use of the view on their path, redefine
   its sources, `attributes`, declaration lists and pipeline state; the view draws a program compiled per source variant and
   branch, selected at run time. Synchronous helpers without explicit returns may make these definitions through one
-  unreassigned parameter used only for definitions; subsequent caller definitions read the helper's resulting programs.
+  unreassigned parameter used only for definitions. To rule out intervening uses, the compiler follows fixed positional
+  arguments through helpers called only directly. Subsequent caller definitions see the resulting programs.
   A `defineProperties` map may open with a spread of `test ? { descriptors } : {}` (either arm empty): both definition
   sets compile, and the one the test selects applies at run time; other spreads refuse.
   Native revision descriptors (`_uniformVersion`, `_resourceVersion`, `_uboVersion`) follow their source's revision in
@@ -528,7 +529,8 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
 
 ## Shadows and navigation
 
-- PCF spot/directional, ESM directional, CSM. Thin-instance contracts refuse.
+- PCF spot/directional, ESM directional, CSM. Directional fits use the world bounds of active thin instances; empty or
+  fully parked pools contribute no bounds.
 - Shadow generators and caster lists can be prepared without scene scheduling; `registerSceneWithShadowSupport`
   activates shadow passes. Registered empty caster lists clear the shadow map.
 - `generator._config._forceRefreshEveryFrame` reads and writes the flag the render gate tests each frame.
@@ -547,9 +549,9 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
   task name takes another task. A render task's `rst` held as optional data is absent when unset; other target options
   refuse it.
 - A scene-less `FrameGraphContext` refuses in an application realm: the engine holds it by address.
-- Overlay scenes (`createOverlayScene`, `createUtilityLayer`) draw as layers after their root's whole frame graph.
-  Own frame-graph tasks and GPU task timing are supported; at one sample overlays composite onto the swapchain,
-  including after transmission. A base on an auxiliary surface, TAA and `moveRenderingContext` refuse.
+- Overlay scenes (`createOverlayScene`, `createUtilityLayer`) load the supplied `rt`, resolve into the optional `rst`,
+  and clear their own depth after their base's frame graph. A render task publishes both targets through `config`;
+  the scene's default producer is `scene.defaultRenderTask`. A base on an auxiliary surface, TAA and `moveRenderingContext` refuse.
 - Render targets accept explicit pinned-default `depthCompare` and `depthClearValue`; other values refuse.
   Explicit `depthCompare` overrides ShaderMaterial depth state. `scene.surface` reads require a known primary-surface scene.
 - `size: { canvas: standIn }` accepts pure width/height getters over the engine canvas's corresponding backing extent
@@ -597,9 +599,10 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
   through the pinned module, refusing as the pin's build does. A source the multisample gate draws single-sampled, and
   a target with stencil or more than one layer, refuse.
 - `enableRenderTaskTransmission` with `linear: false` on a non-swapchain render task: the pass breaks before
-  transmissive transparent draws (`copyCount`) to grab colour, and with `grabDepth` depth (set before recording; a
-  multisampled target's grab too), a multisampled target through the pin's averaging blit and sample-0 depth;
-  `grab.texture`/`depthTexture` read live for `setShaderTexture`. The linear arm refuses.
+  transmissive transparent draws (`copyCount`) to grab colour from `rt`. With `grabDepth`, it snapshots the attached
+  depth (`depth ?? rt`, including geometry and overlay depth; null without depth). Multisampled grabs average colour
+  and take depth sample 0. Enable depth or multisample grabs before recording; `grab.texture` and `depthTexture` read
+  live for `setShaderTexture`. The per-task linear arm refuses. Automatic scene transmission cannot retarget shared colour.
 - Contact shadows, one-bounce GI, screen-space ambient occlusion
   (`createScreenSpaceAmbientOcclusionPostProcessTask`), EffectWrapper/EffectRenderer with bounded layouts and an
   add-equation blend state over `zero`, `one`, `src-alpha`, `one-minus-src-alpha`, `dst` and `dst-alpha`; custom
@@ -610,12 +613,12 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
   `comparison` over a `viewDimension: "2d-array"` depth layout, which takes only `getCsmReceiverTexture` and samples
   its comparison sampler in a scene frame graph's effect task.
   `viewDimension: "3d"` float layouts take `createTexture3DFromPixels` textures, which bind nowhere else.
-- `createSsaoTask` (XeGTAO): every quality, view normals from a geometry task or reconstructed from depth, temporal
+- `createSsaoTask` (XeGTAO): perspective and orthographic cameras, every quality, view normals from a geometry task or reconstructed from depth, temporal
   reconstruction with a geometry `velocityTexture` (and `velocityHasPreviousDepth`), `resetSsaoTemporal`,
   `enableSsaoHalfResolution`, `enableSsaoMotionPruning`, live `enabled`/`radius`/`intensity`/`historySamples`.
   Live `quality`, `normalTexture` (one attachment, or none), `temporal.enabled` and pruning `enabled` writes, and a
-  normal input chosen at run time, compose every mode they select. `enablePbrSsao` feeds PBR diffuse IBL in passes of
-  the task camera (neutral elsewhere). A setting written by a computed key needs a string-literal-typed key.
+  normal input chosen at run time, compose every mode they select. `enablePbrSsao` feeds diffuse IBL in the task camera's
+  PBR color passes; alpha-tested materials keep their discard in non-color passes. A setting written by a computed key needs a string-literal-typed key.
 - `setEffectTexture` takes solid, pixel or render-target textures by binding name or number, including cached pixel
   textures and live changes between these kinds. Pixel bindings preserve sampler/sRGB settings, replacement identities
   and live region writes. Render targets bind in frame-graph effect tasks only, through the bound texture's `sampler`.

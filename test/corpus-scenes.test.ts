@@ -152,7 +152,7 @@ test("keeps staged corpus files byte-identical to the pin", () => {
     for (const file of manifest.staged ?? []) {
         assert.match(
             file.upstreamPath,
-            /^(?:LICENSE|lab\/lite\/src\/lite\/scene\d+(?:-debug)?\.ts|lab\/lite\/src\/demos\/(?:[\w-]+\/)*[\w-]+\.ts|lab\/lite\/demo-[\w-]+\.html|lab\/public\/(?:[\w-]+\/)+[\w.-]+)$/,
+            /^(?:LICENSE|lab\/lite\/src\/lite\/scene\d+(?:-debug)?\.ts|lab\/lite\/src\/(?:demos|shared)\/(?:[\w-]+\/)*[\w-]+\.ts|lab\/lite\/demo-[\w-]+\.html|lab\/public\/(?:[\w-]+\/)+[\w.-]+)$/,
         );
         assert.equal(file.source, `corpus/babylon-lite/${file.upstreamPath}`);
         // A staged row that registers moves to `scenes`; a copy left

@@ -17,6 +17,8 @@ import {
     type EngineContext,
     type Mesh,
     type NormalizedViewport,
+    type OverlaySceneOptions,
+    type RenderTarget,
     registerScene,
     type SceneContext,
     startEngine,
@@ -38,7 +40,7 @@ export function createOverlayRoot(engine: EngineContext, defaultRenderTask = fal
 }
 
 /** A black-and-white pass writing `viewport` of the swapchain from an offscreen draw of `box`. */
-export function addBlackAndWhitePass(engine: EngineContext, root: SceneContext, box: Mesh, viewport: NormalizedViewport): void {
+export function addBlackAndWhitePass(engine: EngineContext, root: SceneContext, box: Mesh, viewport: NormalizedViewport): RenderTarget {
     const source = createRenderTarget({
         lbl: "overlay-root-source",
         format: engine.format,
@@ -64,11 +66,12 @@ export function addBlackAndWhitePass(engine: EngineContext, root: SceneContext, 
             root,
         ),
     );
+    return source;
 }
 
 /** An overlay of `root` holding one sphere, seen through the root's camera. */
-export function createOverlaySphere(engine: EngineContext, root: SceneContext): SceneContext {
-    const overlay = createOverlayScene(root);
+export function createOverlaySphere(engine: EngineContext, root: SceneContext, targets: OverlaySceneOptions): SceneContext {
+    const overlay = createOverlayScene(root, targets);
     overlay.camera = root.camera;
     addToScene(overlay, createHemisphericLight([0, 1, 0], 1));
     const sphere = createSphere(engine, { diameter: 1 });
@@ -81,10 +84,10 @@ export function createOverlaySphere(engine: EngineContext, root: SceneContext): 
 }
 
 /** The post-process regressions' frame: the root presents through a whole-surface black-and-white pass under an overlay sphere. */
-export async function startOverlayOverPostProcess(engine: EngineContext): Promise<void> {
+export async function startOverlayOverPostProcess(engine: EngineContext, presentOverlay: boolean): Promise<void> {
     const { root, box } = createOverlayRoot(engine);
-    addBlackAndWhitePass(engine, root, box, { x: 0, y: 0, width: 1, height: 1 });
-    const overlay = createOverlaySphere(engine, root);
+    const source = addBlackAndWhitePass(engine, root, box, { x: 0, y: 0, width: 1, height: 1 });
+    const overlay = createOverlaySphere(engine, root, { rt: presentOverlay ? engine.scRT : source });
     await registerScene(root);
     await registerScene(overlay);
     await startEngine(engine);

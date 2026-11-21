@@ -1327,9 +1327,6 @@ void encode_depth_resolve(GpuState& state, const Engine& engine, SDL_GPUCommandB
 #endif
 
 #if BBLITE_RENDER_TASK_TRANSMISSION
-/** Create or resize a render task's grab textures for its target, before its pass or a bind. */
-GpuState::TaskTransmission& prepare_task_transmission(GpuState& state, const Engine& engine,
-                                                      TaskHandle task);
 /**
  * `updateTransmissionTexture` at a pass break: blit the target's colour into
  * the grab's top level, build its mip chain when it has one, and snapshot the

@@ -91,6 +91,17 @@ upstream::SceneUniforms billboard_scene_block(const Scene& scene, const Engine& 
 
 #if BBLITE_EXTERNAL_RENDERABLES
 class ExternalRenderablePass;
+
+/** _buildBindings takes the update extent from config.depth ?? config.rt.
+ * A geometry wrapper's texture is allocated at the frame-graph extent. */
+template <class State, class Target>
+GpuDrawUpdateContext task_draw_update_context(const FrameTaskRecord& task, const State& state,
+                                              const Target& pass_depth,
+                                              std::optional<CameraHandle> camera) {
+    const bool geometry = task.render.depth.source == RenderTextureSource::geometry_depth;
+    return {static_cast<double>(geometry ? state.frame_graph_width : pass_depth.width),
+            static_cast<double>(geometry ? state.frame_graph_height : pass_depth.height), camera};
+}
 /**
  * The engine's scene layout rows (`Engine::webgpu_scene_uniform_bindings`):
  * the pin's `getSceneBindGroupLayout` rows its composed shaders declare, set

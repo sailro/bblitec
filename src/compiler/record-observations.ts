@@ -42,7 +42,6 @@ import {
 } from "./symbols.js";
 import {
     expressionMayRunCode,
-    isAssignmentExpression,
     isOperandSelection,
     outermostWrapper,
     unwrapExpression,
@@ -1163,7 +1162,7 @@ function identityUses(
             );
             if (parameter) follow(parameter.name);
             else if (array) reason = storedIdentity(context, use);
-        } else if (array && !onlyReads(use, parent)) {
+        } else if (array && !onlyReads(use)) {
             const member = handedMemberReads(context, use);
             if (member) add(member);
             else reason = storedIdentity(context, use);
@@ -1464,26 +1463,29 @@ function isIdentityComparison(node: ts.Node): node is ts.BinaryExpression {
  * destructuring, a statement of its own, or an operator reading it as a
  * primitive.
  */
-function onlyReads(use: ts.Expression, parent: ts.Node): boolean {
-    return (
-        ((ts.isPropertyAccessExpression(parent) ||
-            ts.isElementAccessExpression(parent)) &&
-            parent.expression === use) ||
-        ((ts.isForOfStatement(parent) || ts.isForInStatement(parent)) &&
-            parent.expression === use) ||
-        ts.isSpreadElement(parent) ||
-        ts.isSpreadAssignment(parent) ||
-        ts.isExpressionStatement(parent) ||
-        ts.isTypeOfExpression(parent) ||
-        ts.isVoidExpression(parent) ||
-        ts.isTemplateSpan(parent) ||
-        ts.isPrefixUnaryExpression(parent) ||
-        writeSiteOf(use) !== undefined ||
-        (ts.isVariableDeclaration(parent) && !ts.isIdentifier(parent.name)) ||
-        (ts.isBinaryExpression(parent) &&
-            !isAssignmentExpression(parent) &&
-            parent.operatorToken.kind !== ts.SyntaxKind.CommaToken)
-    );
+function onlyReads(use: ts.Expression): boolean {
+    const consumer = valueConsumer(use);
+    switch (consumer.kind) {
+        case "member":
+        case "keyed":
+        case "iterated":
+        case "enumerated":
+        case "spread":
+        case "discarded":
+        case "tested":
+        case "stringified":
+        case "operator":
+        case "operand":
+            return true;
+        case "initializer":
+            return !ts.isIdentifier(consumer.declaration.name);
+        default: {
+            // Rebinding the variable (including a destructuring target)
+            // does not hand its previous object to the assignment.
+            const write = writeSiteOf(use);
+            return write?.kind === "assign" || write?.kind === "loop";
+        }
+    }
 }
 
 /** The expression a reference's value flows on as, past wrappers and the operators that yield it. */

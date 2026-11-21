@@ -13,7 +13,8 @@ import {
 import type { Feature, Value, ValueKind } from "../types.js";
 import { handleCppType } from "../data-types.js";
 import type { IntrinsicCallContext } from "./context.js";
-import { compileOverlayBase } from "./engine.js";
+import type { RetainedOptionsContext } from "./retained-options.js";
+import { compileOverlayBase, compileOverlayTargets } from "./engine.js";
 import {
     compilePointerDragRegistration,
     pointerDispatcherCpp,
@@ -37,6 +38,7 @@ export interface GizmoIntrinsicContext
     extends
         IntrinsicCallContext,
         CameraDeferralContext,
+        RetainedOptionsContext,
         Pick<
             LoweringServices,
             | "emit"
@@ -49,6 +51,7 @@ export interface GizmoIntrinsicContext
             | "useNativeValue"
             | "requireEngine"
             | "requireDefaultEngine"
+            | "dataValue"
             | "expectSameEngine"
             | "compileVec3"
             | "compileNumber"
@@ -57,7 +60,7 @@ export interface GizmoIntrinsicContext
 /**
  * The options bag each factory takes, refused rather than half-supported.
  *
- * Every member of `UtilityLayerOptions`, `CameraGizmoOptions` and
+ * Every member of `CameraGizmoOptions` and
  * `LightGizmoOptions` changes what the generated family unit BUILDS -- a
  * colour, a light intensity, whether the body or the frustum exists at all
  * -- and the unit is emitted from the pin's defaults. A scene supplying one
@@ -67,10 +70,8 @@ function refuseOptions(
     context: GizmoIntrinsicContext,
     call: ts.CallExpression,
     factory: string,
-    index = 2,
 ): void {
-    // The gizmo factories take their options bag third; createUtilityLayer, second.
-    const options = call.arguments[index];
+    const options = call.arguments[2];
     if (options) {
         context.fail(
             options,
@@ -751,10 +752,13 @@ export function compileGizmoIntrinsic(
             return compileBoundingBoxAttach(context, call);
 
         case "createUtilityLayer": {
-            context.expectArgumentCount(call, 1, 2);
-            // `createOverlayScene(mainScene)`.
+            context.expectArgumentCount(call, 2, 2);
             const scene = compileOverlayBase(context, argumentAt(call, 0));
-            refuseOptions(context, call, "createUtilityLayer", 1);
+            const targets = compileOverlayTargets(
+                context,
+                scene,
+                argumentAt(call, 1),
+            );
             context.reachFeature("gizmo:utility-layer", call);
             // The pin's own default light, created by this factory.
             context.reachFeature("light:hemispheric", call);
@@ -764,7 +768,7 @@ export function compileGizmoIntrinsic(
             context.reachFeature("mesh:parenting", call);
             return {
                 kind: "utility-layer",
-                cpp: `bbl::create_utility_layer(${scene.cpp})`,
+                cpp: `bbl::create_utility_layer(${scene.cpp}, ${targets})`,
                 engineCpp: context.requireEngine(scene, call),
             };
         }

@@ -1,11 +1,6 @@
 import ts from "typescript";
-import { doubleLiteral } from "../../cpp-literals.js";
-import {
-    cppPrimary,
-    numericLogicalValueCpp,
-    renderPinnedArithmetic,
-    type RenderedCpp,
-} from "../../lowering/pinned-numeric-expression.js";
+import { PinnedNumericLowerer } from "../../lowering/pinned-numeric-lowerer.js";
+import { PINNED_ARITHMETIC_OPERATORS } from "../../lowering/pinned-operators.js";
 import type { LoweringServices } from "../lowering-services.js";
 import {
     MATH_MEMBERS,
@@ -13,7 +8,7 @@ import {
     mathMemberAccess,
 } from "../math-intrinsics.js";
 import { namedMember } from "../symbols.js";
-import { truthinessSelection } from "../syntax.js";
+import { soleReturnedExpression, truthinessSelection } from "../syntax.js";
 import type { Value } from "../types.js";
 
 type Context = Pick<
@@ -31,6 +26,42 @@ type Context = Pick<
     | "bindings"
     | "sameEngineOwner"
 >;
+
+/** A getter's canvas must still be the engine's primary backing store. */
+function readsEngineCanvas(
+    context: Context,
+    member: ts.PropertyAccessExpression,
+    engine: string,
+): boolean {
+    const source = context.unwrap(member.expression);
+    if (
+        !ts.isIdentifier(source) ||
+        context.sharedClosures.identifierIsRebound(source)
+    )
+        return false;
+    const identity =
+        context.bindings.lookupOptional(source)?.canvasEngineIdentity;
+    if (
+        identity !== undefined &&
+        context.bindings.variableScopes.some((scope) =>
+            [...scope.values()].some(
+                ({ value }) =>
+                    value.kind === "engine" &&
+                    context.sameEngineOwner(value.cpp, engine) &&
+                    value.engineIdentity === identity,
+            ),
+        )
+    )
+        return true;
+    const canvas = context.browserErasure.evaluateBrowserValue(source);
+    return (
+        canvas?.kind === "object" &&
+        canvas.primaryCanvas === true &&
+        context.canvasSizeProperty(member) === member.name.text
+    );
+}
+
+const extentMath = new Set(["max", "min", "floor", "ceil", "trunc", "abs"]);
 
 /**
  * A direct target's stand-in is read by buildRenderTarget, not its factory.
@@ -60,120 +91,70 @@ export function renderTargetStandIn(
     const engine = context.requireDefaultEngine(node);
     const dimensions = ["width", "height"].map((axis) => {
         const getter = value.recordGetters?.[axis];
-        const statement = getter?.body?.statements[0];
-        if (
-            !getter ||
-            getter.body?.statements.length !== 1 ||
-            !statement ||
-            !ts.isReturnStatement(statement) ||
-            !statement.expression
-        )
-            return refuse(getter ?? node);
+        const returned = getter?.body && soleReturnedExpression(getter.body);
+        if (!getter || !returned) return refuse(getter ?? node);
         let readsExtent = false;
-        let logicalIndex = 0;
-        const render = (expression: ts.Expression): RenderedCpp => {
-            const part = context.unwrap(expression);
-            if (
-                ts.isPropertyAccessExpression(part) &&
-                part.name.text === axis
-            ) {
-                const source = context.unwrap(part.expression);
+        const lowerer = new PinnedNumericLowerer(getter.getSourceFile(), {
+            bindings: new Map(),
+            calls: new Map(),
+            foldConditions: false,
+            expression(part, numeric) {
                 if (
-                    !ts.isIdentifier(source) ||
-                    context.sharedClosures.identifierIsRebound(source)
-                )
-                    return refuse(part);
-                const canvas =
-                    context.browserErasure.evaluateBrowserValue(source);
-                const identity =
-                    context.bindings.lookupOptional(
-                        source,
-                    )?.canvasEngineIdentity;
-                const retained =
-                    identity !== undefined &&
-                    context.bindings.variableScopes.some((scope) =>
-                        [...scope.values()].some(
-                            ({ value }) =>
-                                value.kind === "engine" &&
-                                context.sameEngineOwner(value.cpp, engine) &&
-                                value.engineIdentity === identity,
-                        ),
-                    );
-                if (
-                    !retained &&
-                    !(
-                        canvas?.kind === "object" &&
-                        canvas.primaryCanvas &&
-                        context.canvasSizeProperty(part) === axis
-                    )
-                )
-                    return refuse(part);
-                readsExtent = true;
-                return cppPrimary(axis);
-            }
-            if (ts.isNumericLiteral(part)) {
-                const number = Number(part.text);
-                if (!Number.isFinite(number)) return refuse(part);
-                return cppPrimary(doubleLiteral(number));
-            }
-            const logical = truthinessSelection(part);
-            if (logical && ts.isBinaryExpression(part)) {
-                context.reachJsData();
-                return cppPrimary(
-                    numericLogicalValueCpp(
-                        render(part.left).text,
-                        render(part.right).text,
-                        logical === "||",
-                        `extent_${logicalIndex++}`,
-                    ),
-                );
-            }
-            if (
-                (ts.isBinaryExpression(part) &&
-                    [
-                        ts.SyntaxKind.PlusToken,
-                        ts.SyntaxKind.MinusToken,
-                        ts.SyntaxKind.AsteriskToken,
-                        ts.SyntaxKind.SlashToken,
-                    ].includes(part.operatorToken.kind)) ||
-                (ts.isPrefixUnaryExpression(part) &&
-                    (part.operator === ts.SyntaxKind.PlusToken ||
-                        part.operator === ts.SyntaxKind.MinusToken))
-            ) {
-                const lowered = renderPinnedArithmetic(part, render);
-                if (lowered) return lowered;
-            }
-            if (ts.isCallExpression(part)) {
-                const access = mathMemberAccess(
-                    context.unwrap(part.expression),
-                    (candidate) => context.libraryGlobal(candidate),
-                    (candidate) => namedMember(context.checker, candidate),
-                );
-                const name = access?.name;
-                const member = name && MATH_MEMBERS.get(name);
-                if (
-                    name &&
-                    member &&
-                    ["max", "min", "floor", "ceil", "trunc", "abs"].includes(
-                        name,
-                    ) &&
-                    mathArityAccepts(member, part.arguments.length)
+                    ts.isPropertyAccessExpression(part) &&
+                    part.name.text === axis
                 ) {
-                    if (member.reach === "js-data") context.reachJsData();
-                    return cppPrimary(
-                        member.cpp(
-                            part.arguments.map(
-                                (argument) => render(argument).text,
-                            ),
-                        ),
-                    );
+                    if (!readsEngineCanvas(context, part, engine))
+                        return refuse(part);
+                    readsExtent = true;
+                    return axis;
                 }
-            }
-            return refuse(part);
-        };
+                if (ts.isNumericLiteral(part)) {
+                    if (!Number.isFinite(Number(part.text)))
+                        return refuse(part);
+                    return undefined;
+                }
+                if (truthinessSelection(part)) {
+                    context.reachJsData();
+                    return undefined;
+                }
+                if (
+                    (ts.isBinaryExpression(part) &&
+                        PINNED_ARITHMETIC_OPERATORS.has(
+                            part.operatorToken.kind,
+                        )) ||
+                    (ts.isPrefixUnaryExpression(part) &&
+                        (part.operator === ts.SyntaxKind.PlusToken ||
+                            part.operator === ts.SyntaxKind.MinusToken))
+                )
+                    return undefined;
+                if (ts.isCallExpression(part)) {
+                    const access = mathMemberAccess(
+                        context.unwrap(part.expression),
+                        (candidate) => context.libraryGlobal(candidate),
+                        (candidate) => namedMember(context.checker, candidate),
+                    );
+                    const name = access?.name;
+                    const member = name && MATH_MEMBERS.get(name);
+                    if (
+                        name &&
+                        member &&
+                        extentMath.has(name) &&
+                        mathArityAccepts(member, part.arguments.length)
+                    ) {
+                        if (member.reach === "js-data") context.reachJsData();
+                        return member.cpp(
+                            part.arguments.map((arg) =>
+                                numeric.expression(arg),
+                            ),
+                        );
+                    }
+                }
+                return refuse(part);
+            },
+        });
         const result = context.withRecordScopes(
             value,
-            () => render(statement.expression!).text,
+            () => lowerer.expression(returned),
             getter,
         );
         if (!readsExtent) return refuse(getter);

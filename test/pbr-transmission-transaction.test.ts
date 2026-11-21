@@ -46,7 +46,7 @@ function sourceOracle(
         const retireGpuResources = (_engine, callback) => callback();
         const _registerPbrExt = () => {}, makeRefractionRttExt = () => ({}), _dispersionSampleWgsl = undefined;
         ${rebuild}
-        ${["_t", "markPbrMaterialsLinear", "enableSceneTransmission"].map((name) => declaration(transmissionModule, name)).join("\n")}
+        ${["_t", "enableSceneTransmission"].map((name) => declaration(transmissionModule, name)).join("\n")}
         ${declaration("src/material/pbr/pbr-transmission-ext.ts", "registerPbrTransmission")}
         ${sceneContextSource(context)}
         function enableSceneTransmissionTasks(scene) {
@@ -220,8 +220,8 @@ test("transmission specialization refuses runtime state outside the precomposed 
         ),
         doctoredContext(
             transmissionModule,
-            "() => enableSceneTransmissionTasks(scene, engine)",
-            "() => enableSceneTransmissionTasks(otherScene, engine)",
+            "enableSceneTransmissionTasks(scene, engine);",
+            "enableSceneTransmissionTasks(otherScene, engine);",
         ),
     ])
         assert.throws(

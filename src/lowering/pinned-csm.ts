@@ -107,16 +107,9 @@ const lightShape = record({
     },
     direction: record({ x: number, y: number, z: number }),
 });
-const thinShape = record({ count: number, matrices: f64 });
-const boundsShape = record({ _bounds: f64 });
 const casterShape = record({
-    worldMatrix: field(f64, "world"),
-    boundMin: field(f32, "bounds_min"),
-    boundMax: field(f32, "bounds_max"),
-    thinInstances: {
-        shape: { kind: "optional", value: thinShape },
-        cpp: (owner) => `csm_thin_instance_input(${owner})`,
-    },
+    min: field(f64, "bounds_min"),
+    max: field(f64, "bounds_max"),
 });
 
 /**
@@ -134,7 +127,11 @@ class CsmNumericAdapter extends PinnedNumericLowerer {
         numeric: PinnedNumericScope,
         private readonly aggregateCalls: ReadonlyMap<
             string,
-            { shape: Shape; cpp: (args: readonly string[]) => string }
+            {
+                shape: Shape;
+                cpp: (args: readonly string[]) => string;
+                borrowed?: true;
+            }
         > = new Map(),
     ) {
         for (const name of ["near", "far"]) {
@@ -208,7 +205,7 @@ class CsmNumericAdapter extends PinnedNumericLowerer {
                             this.expression(argument),
                         ),
                     ),
-                    temporary: true,
+                    ...(call.borrowed ? {} : { temporary: true }),
                 };
         }
         if (
@@ -741,178 +738,6 @@ function assertStorageContracts(context: LoweringContext): void {
     );
 }
 
-/**
- * The flattened native caster carrier is current at each refit. Extract the
- * cold-cache kernel, erasing only cache identity/version bookkeeping; every
- * arithmetic statement, parked-instance test and result store is translated.
- */
-function lowerThinBounds(context: LoweringContext): string {
-    const { file, declaration } = context.functionDeclaration(
-        modulePath,
-        "_thinInstanceWorldAabb",
-    );
-    const statements = [...declaration.body!.statements];
-    const [cache, worldVersion, lookup, hit, allocate] = statements;
-    if (
-        !cache ||
-        !worldVersion ||
-        !lookup ||
-        !hit ||
-        !allocate ||
-        !ts.isVariableStatement(cache) ||
-        !ts.isVariableStatement(worldVersion) ||
-        !ts.isVariableStatement(lookup) ||
-        !ts.isIfStatement(hit) ||
-        !ts.isIfStatement(allocate)
-    ) {
-        return context.contractError(
-            declaration,
-            "Expected the pinned thin-caster cache prelude.",
-        );
-    }
-    for (const statement of [cache, worldVersion, lookup]) {
-        if (statement.declarationList.declarations.length !== 1) {
-            context.contractError(
-                statement,
-                "Unexpected work in the pinned CSM cache prelude.",
-            );
-        }
-    }
-    if (hit.elseStatement || allocate.elseStatement) {
-        context.contractError(declaration, "Unexpected CSM cache else branch.");
-    }
-    context.assertExpressionShape(
-        cache.declarationList.declarations[0]!.initializer!,
-        "_getThinCasterAabbCache()",
-        "CSM cache owner",
-    );
-    context.assertExpressionShape(
-        worldVersion.declarationList.declarations[0]!.initializer!,
-        "mesh.worldMatrixVersion",
-        "CSM cached world version",
-    );
-    context.assertExpressionShape(
-        lookup.declarationList.declarations[0]!.initializer!,
-        "cache.get(mesh)",
-        "CSM cache lookup",
-    );
-    context.assertExpressionShape(
-        hit.expression,
-        "entry && entry._version === ti._version && entry._worldVersion === worldVersion",
-        "CSM cache hit",
-    );
-    context.assertStatementInventory(
-        hit,
-        ts.isBlock(hit.thenStatement)
-            ? hit.thenStatement.statements
-            : [hit.thenStatement],
-        "CSM cache hit",
-        "only cache hits are omitted",
-        ["return statement"],
-    );
-    context.expectShapeCount(
-        hit,
-        "Number.isFinite(entry._bounds[0]) ? entry : null",
-        "CSM cached result",
-    );
-    context.assertExpressionShape(
-        allocate.expression,
-        "!entry",
-        "CSM cache allocation",
-    );
-    if (
-        !ts.isBlock(allocate.thenStatement) ||
-        allocate.thenStatement.statements.length !== 2
-    ) {
-        return context.contractError(
-            allocate,
-            "Expected the CSM cache entry and registration.",
-        );
-    }
-    const assignment = allocate.thenStatement.statements[0];
-    if (
-        !assignment ||
-        !ts.isExpressionStatement(assignment) ||
-        !ts.isBinaryExpression(assignment.expression) ||
-        assignment.expression.operatorToken.kind !==
-            ts.SyntaxKind.EqualsToken ||
-        !ts.isIdentifier(assignment.expression.left) ||
-        !ts.isObjectLiteralExpression(assignment.expression.right)
-    ) {
-        return context.contractError(
-            allocate,
-            "Expected the pinned CSM cache entry literal.",
-        );
-    }
-    context.expectShapeCount(
-        allocate.thenStatement.statements[1]!,
-        "cache.set(mesh, entry)",
-        "CSM cache registration",
-    );
-    const initialBounds = context.unwrapExpression(
-        context.propertyInitializer(assignment.expression.right, "_bounds"),
-    );
-    if (
-        !ts.isArrayLiteralExpression(initialBounds) ||
-        initialBounds.elements.length !== 6
-    ) {
-        return context.contractError(
-            initialBounds,
-            "Expected six pinned CSM bound lanes.",
-        );
-    }
-    const kernel = statements.slice(5).filter((statement) => {
-        if (
-            !ts.isExpressionStatement(statement) ||
-            !ts.isBinaryExpression(statement.expression) ||
-            !ts.isPropertyAccessExpression(statement.expression.left) ||
-            !["_version", "_worldVersion"].includes(
-                statement.expression.left.name.text,
-            )
-        )
-            return true;
-        context.assertExpressionShape(
-            statement.expression,
-            statement.expression.left.name.text === "_version"
-                ? "entry._version = ti._version"
-                : "entry._worldVersion = worldVersion",
-            "CSM cache version publication",
-        );
-        return false;
-    });
-    const scope = numericScope();
-    const lowerer = new CsmNumericAdapter(context, file, scope);
-    bindParameters(context, lowerer, declaration, [
-        { name: "mesh", annotation: "Mesh", cpp: "mesh", shape: casterShape },
-        {
-            name: "ti",
-            annotation: 'NonNullable<Mesh["thinInstances"]>',
-            cpp: "ti",
-            shape: thinShape,
-        },
-    ]);
-    lowerer.bind(assignment.expression.left, {
-        shape: boundsShape,
-        cpp: "entry",
-    });
-    scope.returnValue = (expression) =>
-        expression
-            ? lowerer.expression(expression)
-            : context.contractError(
-                  declaration,
-                  "Expected a CSM bounds result.",
-              );
-    const initial = initialBounds.elements
-        .map((lane) => lowerer.expression(lane))
-        .join(", ");
-    return `// ${context.provenance(modulePath, "_thinInstanceWorldAabb")}
-inline std::optional<CsmThinBounds> csm_thin_instance_world_aabb(
-    const ShadowCaster& mesh, const CsmThinInstanceInput& ti) {
-    CsmThinBounds entry{{${initial}}};
-${kernel.flatMap((statement) => lowerer.statement(statement, "    ")).join("\n")}
-}`;
-}
-
 function lowerCasterBounds(context: LoweringContext): string {
     const { file, declaration } = context.functionDeclaration(
         modulePath,
@@ -925,11 +750,11 @@ function lowerCasterBounds(context: LoweringContext): string {
         scope,
         new Map([
             [
-                "_thinInstanceWorldAabb",
+                "getShadowCasterWorldBounds",
                 {
-                    shape: { kind: "optional", value: boundsShape },
-                    cpp: (args: readonly string[]) =>
-                        `csm_thin_instance_world_aabb(${args.join(", ")})`,
+                    shape: casterShape,
+                    cpp: ([prepared]) => prepared!,
+                    borrowed: true,
                 },
             ],
         ]),
@@ -959,57 +784,6 @@ function lowerCasterBounds(context: LoweringContext): string {
 inline bool csm_casters_world_aabb_into(
     const std::vector<ShadowCaster>& casters, CsmCascadeScratch& scratch) {
 ${declaration.body!.statements.flatMap((statement) => lowerer.statement(statement, "    ")).join("\n")}
-}`;
-}
-
-function lowerInstancePredicate(context: LoweringContext): string {
-    const { file, declaration } = context.functionDeclaration(
-        modulePath,
-        "_thinInstanceWorldAabb",
-    );
-    const magnitude = context.variableInitializer(declaration, "lin").parent;
-    if (
-        !ts.isVariableDeclaration(magnitude) ||
-        !ts.isIdentifier(magnitude.name) ||
-        !ts.isVariableDeclarationList(magnitude.parent) ||
-        !ts.isVariableStatement(magnitude.parent.parent)
-    ) {
-        return context.contractError(
-            magnitude,
-            "Expected the pinned instance linear-magnitude declaration.",
-        );
-    }
-    const statement = magnitude.parent.parent;
-    if (!ts.isBlock(statement.parent))
-        return context.contractError(
-            statement,
-            "Expected the pinned instance loop.",
-        );
-    const guard =
-        statement.parent.statements[
-            statement.parent.statements.indexOf(statement) + 1
-        ];
-    if (
-        !guard ||
-        !ts.isIfStatement(guard) ||
-        guard.elseStatement ||
-        !ts.isBlock(guard.thenStatement) ||
-        guard.thenStatement.statements.length !== 1 ||
-        !ts.isContinueStatement(guard.thenStatement.statements[0]!)
-    ) {
-        return context.contractError(
-            statement,
-            "Expected the pinned parked-instance continue guard.",
-        );
-    }
-    const scope = numericScope();
-    scope.bindings.set("mats", { cpp: "instance", type: "f64-buffer" });
-    scope.bindings.set("o", { cpp: "0.0", type: "scalar" });
-    const lowerer = new PinnedNumericLowerer(file, scope);
-    return `// ${context.provenance(modulePath, "_thinInstanceWorldAabb", "its parked-instance guard")}
-inline bool csm_instance_contributes(const std::array<double, 16>& instance) {
-${lowerer.statement(statement, "    ").join("\n")}
-    return !(${lowerer.expression(guard.expression)});
 }`;
 }
 
@@ -1318,27 +1092,12 @@ struct CsmCascadeScratch {
     CsmCascadeScratch& operator=(const CsmCascadeScratch&) = delete;
 };
 
-struct CsmThinInstanceInput {
-    const std::array<double, 16>& matrices;
-    double count;
-};
-struct CsmThinBounds { std::array<double, 6> _bounds{}; };
-
-inline std::optional<CsmThinInstanceInput> csm_thin_instance_input(const ShadowCaster& caster) {
-    if (!caster.has_instance) return std::nullopt;
-    return CsmThinInstanceInput{caster.instance, 1.0};
-}
-
 // ${context.provenance(modulePath, "FRUSTUM_NDC")}
 inline constexpr std::array<std::array<double, 3>, 8> csm_frustum_ndc{{
 ${ndc.values.map((row) => `    {{${row.map((lane) => context.doubleLiteral(lane)).join(", ")}}},`).join("\n")}
 }};
 
 ${lowerCsmMatrixHelpers(context)}
-
-${lowerThinBounds(context)}
-
-${lowerInstancePredicate(context)}
 
 ${lowerCasterBounds(context)}
 

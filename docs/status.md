@@ -116,7 +116,7 @@ include Bullet/Havok solver differences ([contract](fidelity.md#physics-contract
 | 105 | <img src="images/scenes/scene105.png" alt="Scene 105 rendering" width="160"> | 0.034/0.026 | 0.034/0.026 | Havok Character Moving Platform; Character movement and animated platform |
 | 106 | <img src="images/scenes/scene106.png" alt="Scene 106 rendering" width="160"> | 0.019/0.104 | 0.019/0.104 | Physics Motion and Prestep Grid; geometry and solver residual at frame 20. |
 | 110 | <img src="images/scenes/scene110.png" alt="Scene 110 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Render Target Diffuse Texture |
-| 111 | <img src="images/scenes/scene111.png" alt="Scene 111 rendering" width="160"> | 0.000/0.001 | 0.000/0.001 | Scene-Wide Light UBO Stress |
+| 111 | <img src="images/scenes/scene111.png" alt="Scene 111 rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | Scene-Wide Light UBO Stress |
 | 112 | <img src="images/scenes/scene112.png" alt="Scene 112 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Flight Helmet KTX2 |
 | 113 | <img src="images/scenes/scene113.png" alt="Scene 113 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Picking Precision |
 | 114 | <img src="images/scenes/scene114.png" alt="Scene 114 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Morph and Skeleton Picking |

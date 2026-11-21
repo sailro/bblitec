@@ -1,6 +1,10 @@
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { engineSampleCountCpp } from "../engine-samples.js";
+import {
+    retainedOptions,
+    type RetainedOptionsContext,
+} from "./retained-options.js";
 import { overlayRefusals } from "../../lowering/overlay-scene-lowerer.js";
 import { argumentAt } from "../syntax.js";
 import {
@@ -158,7 +162,12 @@ import {
     compileScreenshotIntrinsic,
     type ScreenshotIntrinsicContext,
 } from "./screenshot.js";
-import { knownCondition } from "../values/model.js";
+import {
+    absenceOf,
+    knownCondition,
+    optionalPresentCpp,
+    optionalValueCpp,
+} from "../values/model.js";
 
 export interface EngineIntrinsicContext
     extends
@@ -166,6 +175,7 @@ export interface EngineIntrinsicContext
         GpuTaskTimingIntrinsicContext,
         ScreenshotIntrinsicContext,
         EngineOptionContext,
+        RetainedOptionsContext,
         Pick<
             LoweringServices,
             | "admissions"
@@ -178,6 +188,7 @@ export interface EngineIntrinsicContext
             | "requireEngine"
             | "allocateTemporaryCppName"
             | "compileEngineCreation"
+            | "dataValue"
             | "intrinsicOptions"
             | "sceneManifest"
             | "expectObjectLiteral"
@@ -344,7 +355,71 @@ export function compileOverlayBase(
     if (base.surfaceCanvas)
         context.fail(argument, overlayRefusals.auxiliarySurface);
     context.reachFeature("scene:overlay", argument);
+    context.reachFeature("renderer:geometry-output", argument);
+    context.reachFeature("frame-graph:resources", argument);
+    context.reachFeature("frame-graph:target-disposal", argument);
     return base;
+}
+
+/** Borrow the caller's named color attachments; the native seam validates their ownership. */
+export function compileOverlayTargets(
+    context: RetainedOptionsContext &
+        Pick<LoweringServices, "compileValue" | "dataValue" | "requireEngine">,
+    base: Value,
+    site: ts.Expression,
+): string {
+    const members = retainedOptions(context, context.compileValue(site), site);
+    const baseEngine = context.requireEngine(base, site);
+    let rt: string | undefined;
+    let rst = "bbl::RenderTargetHandle{}";
+    for (const member of members) {
+        if (member.name !== "rt" && member.name !== "rst")
+            return context.fail(
+                site,
+                `Overlay options support only rt and rst, not '${member.name}'.`,
+            );
+        if (
+            member.name === "rst" &&
+            member.value &&
+            absenceOf(member.value) === "undefined"
+        )
+            continue;
+        const optional = member.type?.kind === "optional";
+        const type =
+            member.type?.kind === "optional" ? member.type.inner : member.type;
+        if (
+            member.value?.kind !== "render-target" &&
+            !(type?.kind === "handle" && type.handle === "render-target")
+        )
+            return context.fail(
+                site,
+                `Overlay ${member.name} requires a render target.`,
+            );
+        if (optional && member.name === "rt")
+            return context.fail(site, "Overlay rt must be present.");
+        const target =
+            member.value?.kind === "render-target"
+                ? member.value
+                : context.dataValue(
+                      optional ? optionalValueCpp(member.cpp) : member.cpp,
+                      type!,
+                  );
+        const cpp =
+            !target.engineCpp || baseEngine === target.engineCpp
+                ? target.cpp
+                : `bbl::overlay_target_for_engine(${baseEngine}, ${target.engineCpp}, ${target.cpp})`;
+        if (member.name === "rt") rt = cpp;
+        else
+            rst = optional
+                ? `(${optionalPresentCpp(member.cpp)} ? ${cpp} : bbl::RenderTargetHandle{})`
+                : cpp;
+    }
+    if (!rt)
+        return context.fail(
+            site,
+            "Overlay options require a color target (rt).",
+        );
+    return `bbl::OverlayTargets{${rt}, ${rst}}`;
 }
 
 export function compileEngineIntrinsic(
@@ -547,25 +622,25 @@ export function compileEngineIntrinsic(
         }
 
         case "createOverlayScene": {
-            // `createSceneContext(baseScene.surface)`: its default render
-            // task, at the base surface's sample count.
-            context.expectArgumentCount(call, 1, 1);
+            context.expectArgumentCount(call, 2, 2);
             const base = compileOverlayBase(context, argumentAt(call, 0));
+            const targets = compileOverlayTargets(
+                context,
+                base,
+                argumentAt(call, 1),
+            );
             context.admissions.noteTemporalRecordBoundary(
                 call,
                 "implicit default scene passes",
                 "always",
             );
-            const create = `bbl::create_overlay_scene(${base.cpp})`;
+            const create = `bbl::create_overlay_scene(${base.cpp}, ${targets})`;
             return {
                 kind: "scene",
                 ...(base.scenePrimarySurface
                     ? { scenePrimarySurface: true as const }
                     : {}),
-                cpp:
-                    (base.msaaSamples ?? 4) === 4
-                        ? create
-                        : `bbl::configure_scene_render_defaults(${create}, true, ${engineSampleCountCpp(base)})`,
+                cpp: create,
                 sceneEnvironmentState: {
                     rotationSet: false,
                     hasTexturedSkybox: false,

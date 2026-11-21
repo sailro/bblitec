@@ -33,8 +33,9 @@ Scene create_scene_context(Engine& engine) {
     scene.engine = &engine;
     return scene;
 }
+RenderTargetHandle swapchain_render_target(Engine&) { return {0}; }
 // Graphics factories expose only engine/scene association at this seam.
-UtilityLayerHandle create_utility_layer(Scene& main_scene) {
+UtilityLayerHandle create_utility_layer(Scene& main_scene, OverlayTargets) {
     Engine& engine = *main_scene.engine;
     auto layer = std::make_unique<UtilityLayerRecord>();
     layer->scene = create_scene_context(engine);

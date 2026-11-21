@@ -613,11 +613,13 @@ class SdlSceneRun {
         if (task && task->kind == FrameTaskKind::render && !shadow) {
             const auto& record = handle_at(engine.render_targets, task->render.target);
             const auto& gpu = handle_at(state.render_targets, task->render.target);
+            const auto& depth =
+                handle_at(state.render_targets, render_task_depth_target(task->render));
             target =
                 ShaderTaskTarget{gpu.color_format,
                                  task->render.depth.source == RenderTextureSource::geometry_depth
                                      ? state.depth_format
-                                     : gpu.depth_format,
+                                     : depth.depth_format,
                                  target_sample_count(state, record), record.depth_compare};
         }
         [[maybe_unused]] const auto samples =
@@ -895,8 +897,7 @@ public:
         const bool use_shader_materials = render_features.shader_material;
         state.depth_only_fragment_shader =
             use_no_color_material || use_shader_shadow_material ||
-                    (use_shader_materials && (scenes_run_frame_graphs(active_registered_scenes) ||
-                                              composites_overlays(active_registered_scenes)))
+                    (use_shader_materials && scenes_run_frame_graphs(active_registered_scenes))
                 ? load_shader(state.device, "depth-only.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 0,
                               "mainFragment")
                 : nullptr;
@@ -1255,9 +1256,7 @@ public:
                 }
                 if (!variant_fragment_shader)
                     continue;
-                // An overlay pass may draw into an attachment of its own formats.
-                if (scenes_run_frame_graphs(active_registered_scenes) ||
-                    composites_overlays(active_registered_scenes)) {
+                if (scenes_run_frame_graphs(active_registered_scenes)) {
                     state.shader_task_pipelines[variant] = ShaderTaskPipeline{
                         std::move(shader_vertex_shaders[variant]),
                         std::move(shader_fragment_shaders[variant]), shader_pipeline_info,
@@ -2180,11 +2179,7 @@ public:
 #endif
         if (!engine.render_targets.empty())
             create_frame_graph_textures(state, engine, swapchain_format, width, height);
-        // The root's overlay composite, which each overlay records at its turn.
-        const OverlayComposition frame_overlays =
-            composites_overlays(data_.active_registered_scenes)
-                ? overlay_composition(engine, scene, state.sample_count != SDL_GPU_SAMPLECOUNT_1)
-                : OverlayComposition{};
+
         // Every registered scene's frame graph (`whole_frame`), or, after a
         // direct scene pass, what each later scene records.
         const auto encode_frame_graphs = [&](bool whole_frame) {
@@ -2202,15 +2197,14 @@ public:
                 temporal_passes;
             {
 #endif
+                const auto overlay_targets = overlay_color_targets(data_.active_registered_scenes);
                 // Each registered context owns its tasks, camera and draw indices.
                 // Finish its graph before composing the next context's surface.
                 for (std::size_t graph_layer = 0;
                      graph_layer < data_.active_registered_scenes.size(); ++graph_layer) {
                     const Scene& graph_scene = *data_.active_registered_scenes[graph_layer];
-                    // After a direct pass, each later scene records its own
-                    // frame graph or, for an overlay without one, its own pass.
-                    if (!whole_frame && !graph_scene.has_frame_passes() &&
-                        (graph_layer == 0 || !graph_scene.state->overlay_base))
+                    // After a direct pass, each later scene records its own graph.
+                    if (!whole_frame && !graph_scene.has_frame_passes())
                         continue;
                     auto& graph_meshes =
                         graph_layer == 0 ? state.meshes : state.overlay_meshes[graph_layer - 1];
@@ -2872,117 +2866,6 @@ public:
                         }
                     };
 
-                    // The colour an overlay composites into
-                    // (`configureSwapchainOverlayScene`): at MSAA its root
-                    // swapchain task's attachment, resolved into the
-                    // swapchain again; at one sample the swapchain, loaded.
-                    // A capture composes it into the texture it reads, as
-                    // the native UI does.
-                    struct OverlayAttachment {
-                        SDL_GPUColorTargetInfo color{};
-                        ShaderTaskTarget target{};
-                        std::uint32_t width = 0, height = 0;
-                        const FrameTaskRecord* root_task = nullptr;
-                        const GpuRenderTarget* root_target = nullptr;
-                    };
-                    const auto overlay_attachment = [&] {
-                        SDL_GPUTexture* const surface =
-                            capture_frame && capture_texture ? capture_texture : swapchain;
-                        OverlayAttachment attachment{};
-                        attachment.color.texture = surface;
-                        attachment.color.load_op = SDL_GPU_LOADOP_LOAD;
-                        attachment.color.store_op = SDL_GPU_STOREOP_STORE;
-                        attachment.target = ShaderTaskTarget{swapchain_format, state.depth_format,
-                                                             SDL_GPU_SAMPLECOUNT_1};
-                        attachment.width = width;
-                        attachment.height = height;
-                        if (frame_overlays.mode != OverlayComposite::root_attachment)
-                            return attachment;
-                        attachment.color.store_op = SDL_GPU_STOREOP_RESOLVE_AND_STORE;
-                        attachment.color.resolve_texture = surface;
-                        attachment.color.texture = state.msaa_color;
-                        attachment.target.color = state.frame_color_format;
-                        attachment.target.samples = state.sample_count;
-                        attachment.root_task = handle_find(engine.frame_tasks, frame_overlays.task);
-                        if (attachment.root_task) {
-                            const RenderTargetRecord& record = pal::resolve_render_target(
-                                engine, attachment.root_task->render.target, target_user);
-                            const GpuRenderTarget& target = pal::resolve_gpu_target(
-                                engine, state.render_targets, attachment.root_task->render.target,
-                                target_user);
-                            attachment.root_target = &target;
-                            attachment.color.texture = target.color;
-                            attachment.target.color = target.color_format;
-                            attachment.target.samples = target_sample_count(state, record);
-                            attachment.width = target.width;
-                            attachment.height = target.height;
-                        }
-                        return attachment;
-                    };
-                    // An overlay without tasks of its own records its scene
-                    // pass at its turn, with a FRESH depth buffer.
-                    const auto encode_overlay_layer = [&] {
-                        if (frame_overlays.mode == OverlayComposite::skipped)
-                            return;
-                        if (graph_layer - 1 < overlay_topology_versions.size() &&
-                            graph_scene.render_topology_version !=
-                                overlay_topology_versions[graph_layer - 1])
-                            gpu_error("A swapchain overlay changed its renderables after "
-                                      "resource synchronization.");
-                        const OverlayAttachment attachment = overlay_attachment();
-                        create_depth(state, width, height);
-                        SDL_GPUTexture* depth_texture = state.depth;
-                        if (attachment.root_task &&
-                            overlay_lends_target_depth(
-                                *attachment.root_task,
-                                {attachment.width, attachment.height,
-                                 gpu_sample_count_value(attachment.target.samples)},
-                                {width, height, gpu_sample_count_value(state.sample_count)},
-                                attachment.root_target->depth &&
-                                    attachment.root_target->depth_format == state.depth_format))
-                            depth_texture = attachment.root_target->depth;
-                        SDL_GPUDepthStencilTargetInfo depth{};
-                        depth.texture = depth_texture;
-                        depth.clear_depth = upstream::pinned_depth_clear;
-                        depth.load_op = SDL_GPU_LOADOP_CLEAR;
-                        depth.store_op = SDL_GPU_STOREOP_DONT_CARE;
-                        depth.stencil_load_op = SDL_GPU_LOADOP_CLEAR;
-                        depth.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
-                        SdlRenderPass layer_pass{
-                            SDL_BeginGPURenderPass(command, &attachment.color, 1, &depth)};
-                        set_pass_camera_viewport(layer_pass, graph_scene, engine, graph_pass.camera,
-                                                 attachment.width, attachment.height);
-                        auto& layer_lists = overlay_plans[graph_layer - 1].draw_lists;
-                        upstream::sort_transparent_draws(layer_lists.transparent, engine,
-                                                         graph_pass.camera);
-                        // The frame's own pipelines unless the attachment differs.
-                        const bool frame_attachment =
-                            attachment.target.color == state.frame_color_format &&
-                            attachment.target.samples == state.sample_count;
-                        draw_scene(graph_scene, graph_meshes, layer_pass, state.shader_pipelines,
-                                   state.shader_a2c_pipelines, graph_matrix, graph_pass.camera,
-                                   graph_pass.pass(), std::nullopt, layer_lists, nullptr, nullptr,
-                                   nullptr, nullptr, nullptr, false
-#if BBLITE_HAS_TAA
-                                   ,
-                                   nullptr, {}
-#endif
-                                   ,
-                                   frame_attachment
-                                       ? std::nullopt
-                                       : std::optional<ShaderTaskTarget>{attachment.target});
-                        layer_pass.end();
-                    };
-                    if (graph_scene.state->overlay_base && !graph_scene.has_frame_passes()) {
-                        encode_overlay_layer();
-                        continue;
-                    }
-                    // An overlay's own swapchain task composites in its pass
-                    // instead of resolving through its copies.
-                    const std::optional<TaskHandle> overlay_task =
-                        graph_scene.state->overlay_base
-                            ? default_swapchain_task(engine, graph_scene)
-                            : std::nullopt;
 #if BBLITE_HAS_TAA
                     if (graph_layer == 0) {
                         for (const auto& registered : data_.active_registered_scenes) {
@@ -3014,11 +2897,7 @@ public:
                             handle_at(engine.frame_tasks, handle);
                         if (!frame_task_executes(task))
                             continue;
-                        if (overlay_task &&
-                            (swapchain_task_copy(graph_scene, *overlay_task, handle) ||
-                             (handle == *overlay_task &&
-                              frame_overlays.mode == OverlayComposite::skipped)))
-                            continue;
+
                         const pal::ScopedTargetUser task_target_user(target_user,
                                                                      pal::task_target_user(task));
                         const auto timing_scope = timing_sequence.scoped_task(engine, handle);
@@ -3343,16 +3222,17 @@ public:
                                 target_info.resolve_texture =
                                     target_texture(task.render.resolve_target, false);
                             }
-                            if (overlay_task && handle == *overlay_task) {
-                                const OverlayAttachment attachment = overlay_attachment();
-                                if (attachment.target.color != target.color_format ||
-                                    attachment.target.samples !=
-                                        target_sample_count(state, target_record) ||
-                                    attachment.width != target.width ||
-                                    attachment.height != target.height)
-                                    throw std::runtime_error(overlay_task_attachment_mismatch);
-                                target_info = attachment.color;
+                            if (graph_scene.state->overlay_base &&
+                                handle == graph_scene.state->default_render_task_handle &&
+                                capture_frame && capture_texture) {
+                                if (target_record.swapchain)
+                                    target_info.texture = capture_texture;
+                                if (target_info.resolve_texture &&
+                                    is_swapchain_target(engine, task.render.resolve_target))
+                                    target_info.resolve_texture = capture_texture;
                             }
+                            const auto& pass_depth = handle_at(
+                                state.render_targets, render_task_depth_target(task.render));
                             SDL_GPUDepthStencilTargetInfo task_depth{};
                             SDL_GPUDepthStencilTargetInfo* task_depth_pointer = nullptr;
                             // The pin's external-depth arm: a task handed another
@@ -3366,8 +3246,8 @@ public:
                                 task_depth.stencil_load_op = SDL_GPU_LOADOP_LOAD;
                                 task_depth.stencil_store_op = SDL_GPU_STOREOP_STORE;
                                 task_depth_pointer = &task_depth;
-                            } else if (target_record.has_depth && target.depth) {
-                                task_depth.texture = target.depth;
+                            } else if (pass_depth.depth) {
+                                task_depth.texture = pass_depth.depth;
                                 // Its own layer, as the two passes above take
                                 // theirs; zero for every target but a layered
                                 // one, and an ordinary pass into a layered
@@ -3391,7 +3271,7 @@ public:
                                 task_depth_pointer ? (task.render.depth.source ==
                                                               RenderTextureSource::geometry_depth
                                                           ? state.depth_format
-                                                          : target.depth_format)
+                                                          : pass_depth.depth_format)
                                                    : SDL_GPU_TEXTUREFORMAT_INVALID,
                                 target_sample_count(state, target_record),
                                 target_record.depth_compare};
@@ -3427,21 +3307,17 @@ public:
                                           GpuRenderTargetSignature{
                                               sdl_webgpu_format_name(target.color_format),
                                               task_depth_pointer
-                                                  ? js::Nullable<
-                                                        std::string>(sdl_webgpu_format_name(
-                                                        task.render.depth.source ==
-                                                                RenderTextureSource::geometry_depth
-                                                            ? state.depth_format
-                                                            : target.depth_format))
+                                                  ? js::Nullable<std::string>(
+                                                        sdl_webgpu_format_name(
+                                                            task_shader_target.depth))
                                                   : js::Nullable<std::string>(),
                                               {},
                                               static_cast<double>(gpu_sample_count_value(
                                                   target_sample_count(state, target_record)))},
                                           pass_blocks.task(handle),
-                                          GpuDrawUpdateContext{
-                                              static_cast<double>(target.width),
-                                              static_cast<double>(target.height),
-                                              task_pass_camera_handle(engine, task)},
+                                          task_draw_update_context(
+                                              task, state, pass_depth,
+                                              task_pass_camera_handle(engine, task)),
                                           open_task_frame);
                             if (task_frame)
                                 task_frame->encode(command);
@@ -3856,8 +3732,7 @@ public:
                                 prepared.target.texture = target_texture(copy.source.target, false);
                                 prepared.target.load_op = SDL_GPU_LOADOP_LOAD;
                                 prepared.target.store_op =
-                                    overlay_keeps_samples(engine, frame_overlays,
-                                                          copy.source.target)
+                                    overlay_targets.contains(copy.source.target.value)
                                         ? SDL_GPU_STOREOP_RESOLVE_AND_STORE
                                         : SDL_GPU_STOREOP_RESOLVE;
                                 prepared.target.resolve_texture =
@@ -4054,14 +3929,9 @@ public:
             color_info.load_op = SDL_GPU_LOADOP_CLEAR;
             // Transmission reads the multisampled attachment itself (its
             // grab and its per-sample image processing load each sample), so
-            // that frame stores the samples and resolves nothing. An overlay
-            // layer preserves them too: "every overlay in a chain composites
-            // into the root scene's MSAA colour texture"
-            // (scene/swapchain-overlay.ts).
+            // that frame stores the samples and resolves nothing.
             const bool resolves = multisampled && !transmission_enabled;
-            color_info.store_op = !resolves                ? SDL_GPU_STOREOP_STORE
-                                  : !overlay_plans.empty() ? SDL_GPU_STOREOP_RESOLVE_AND_STORE
-                                                           : SDL_GPU_STOREOP_RESOLVE;
+            color_info.store_op = resolves ? SDL_GPU_STOREOP_RESOLVE : SDL_GPU_STOREOP_STORE;
             color_info.resolve_texture =
                 resolves ? capture_frame ? state.color : swapchain : nullptr;
             SDL_GPUDepthStencilTargetInfo depth_info{};

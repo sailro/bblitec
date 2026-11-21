@@ -408,33 +408,14 @@ int main() {
     );
 });
 
-test("fits CSM casters to every active non-degenerate thin instance", () => {
-    const shared = sharedGpuSource();
+test("directional fits collect world bounds for every thin pool, including empty ones", () => {
     assert.match(
-        shared,
-        /const std::size_t active_instances =\s*thin_instance_active_count\(record\);/,
+        sharedGpuSource(),
+        /if \(record\.thin_instances \|\| generator\.filter == ShadowFilter::csm_directional\) \{[\s\S]*?if \(!upstream::fit_shadow_caster_world_bounds\([\s\S]*?continue;/,
     );
-    assert.match(
-        shared,
-        /generator\.filter == ShadowFilter::csm_directional &&\s*record\.thin_instances &&\s*active_instances > 0/,
-    );
-    assert.match(
-        shared,
-        /caster\.instance = instance;\s*caster\.has_instance = true;\s*casters\.push_back\(caster\);/,
-    );
-    assert.doesNotMatch(shared, /A thin-instanced mesh is a caster/);
-
-    const context = new LoweringContext();
-    const header =
-        pinnedShadowHeader(context, ["shadow:csm"]) + csmShadowHeader(context);
     assert.match(
         header,
-        /std::array<double, 16> instance\{\};\s*bool has_instance = false;/,
-    );
-    assert.match(header, /inline bool csm_instance_contributes\(/);
-    assert.match(
-        header,
-        /csm-shadow-task-hooks\.ts#_thinInstanceWorldAabb[\s\S]*const double ix =[\s\S]*const double wx = [^\n]*\* ix/,
+        /thin-instance-shadow-bounds\.ts#getShadowCasterWorldBounds/,
     );
 });
 

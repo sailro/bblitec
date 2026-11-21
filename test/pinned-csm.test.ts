@@ -5,6 +5,9 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
+import { doctoredContext } from "./doctored-store.js";
+import { lowerShadowCasterBounds } from "../src/lowering/directional-shadow-bounds.js";
+import { pinnedMatrixHeader } from "../src/lowering/pinned-matrix.js";
 import { LightLowerer } from "../src/lowering/light-lowerer.js";
 import { csmCoverageKernel } from "../src/lowering/csm-static-cache.js";
 import { pinnedCsmFunctions } from "../src/lowering/pinned-csm.js";
@@ -51,7 +54,6 @@ test("CSM emits the pinned fitting, coordinate, caster and receiver bodies", () 
         "_computeCsmCascades",
         "transformCoordInto",
         "_castersWorldAabbInto",
-        "_thinInstanceWorldAabb",
         "_writeCsmUbo",
         "_biasViewProjection",
     ])
@@ -86,16 +88,14 @@ test("CSM lowers changed arithmetic and renamed aliases instead of asserting a t
     );
     assert.notEqual(changed, original);
     assert.match(changed, /const double d = .*0\.125/);
-    const geometry = pinnedCsmFunctions(
-        new ChangedCsmContext((source) =>
-            source.replace(
-                "const ix = mats[o]! * lx",
-                "const ix = 1.125 * mats[o]! * lx",
-            ),
+    const geometry = lowerShadowCasterBounds(
+        doctoredContext(
+            "src/shadow/thin-instance-shadow-bounds.ts",
+            "if (linearSize < 1e-9)",
+            "if (linearSize < 1e-6)",
         ),
     );
-    assert.notEqual(geometry, original);
-    assert.match(geometry, /const double ix = .*1\.125/);
+    assert.notEqual(geometry, lowerShadowCasterBounds(context));
     assert.throws(
         () =>
             pinnedCsmFunctions(
@@ -125,15 +125,14 @@ test("CSM rejects changed storage widths and unlowered cache-side work", () => {
     );
     assert.throws(
         () =>
-            pinnedCsmFunctions(
-                new ChangedCsmContext((source) =>
-                    source.replace(
-                        "const cache = _getThinCasterAabbCache();",
-                        "const cache = _getThinCasterAabbCache(), extra = adjustBounds(mesh);",
-                    ),
+            lowerShadowCasterBounds(
+                doctoredContext(
+                    "src/shadow/thin-instance-shadow-bounds.ts",
+                    "cache.set(mesh, entry);",
+                    "adjustBounds(mesh); cache.set(mesh, entry);",
                 ),
             ),
-        /Unexpected work.*cache prelude/,
+        /Shadow cache entry/,
     );
 });
 
@@ -233,16 +232,22 @@ function cppArray(
         .join(", ")}}`;
 }
 
-function casterInput(caster: PinCaster): string[] {
-    const matrices = caster.thinInstances;
-    const base = `${cppArray(caster.worldMatrix)}, `;
-    const bounds = `, ${cppArray(caster.boundMin, "float")}, ${cppArray(caster.boundMax, "float")}`;
-    if (!matrices) return [`ShadowCaster{${base}{}, false${bounds}}`];
-    return Array.from(
-        { length: matrices.count },
-        (_, index) =>
-            `ShadowCaster{${base}${cppArray(matrices.matrices.subarray(index * 16, index * 16 + 16))}, true${bounds}}`,
-    );
+function casterInput(caster: PinCaster): string {
+    const ti = caster.thinInstances;
+    return `{
+        ShadowCaster mesh{${cppArray(caster.worldMatrix)}, ${cppArray(caster.boundMin)}, ${cppArray(caster.boundMax)}};
+        ShadowBoundsCache cache;
+        ${
+            ti
+                ? `bbl::ThinInstancePoolData pool;
+        bbl::js::F32Array data(${ti.matrices.length});
+        const auto values = ${cppArray(ti.matrices, "float")};
+        for (std::size_t i = 0; i < values.size(); i++) data.store(i, values[i]);
+        pool.matrices = data; pool.count = ${cppNumber(ti.count)};`
+                : ""
+        }
+        if (fit_shadow_caster_world_bounds(mesh, ${ti ? "&pool" : "nullptr"}, 1.0, cache)) inputs.push_back(mesh);
+    }`;
 }
 
 function casters(parked = false): PinCaster[] {
@@ -316,7 +321,7 @@ function casters(parked = false): PinCaster[] {
     return [first, second];
 }
 
-const nativeTools = optionalNativeFixtureTools();
+const nativeTools = optionalNativeFixtureTools(false);
 test(
     "compiled CSM matches the executed pin across fitting, widths and degenerate boundaries",
     {
@@ -444,7 +449,8 @@ test(
                 .join("\n");
             cases.push(`{
     case_number = ${index};
-    const std::vector<ShadowCaster> inputs{${inputs.flatMap(casterInput).join(", ")}};
+    std::vector<ShadowCaster> inputs;
+    ${inputs.map(casterInput).join("\n")}
     const CsmConfig cfg{${config._numCascades}, ${cppNumber(config._lambda)}, ${cppNumber(config._cascadeBlendPercentage)},
         ${config._stabilizeCascades}, ${config._shadowMaxZ === null ? "std::nullopt" : cppNumber(config._shadowMaxZ)},
         ${cppNumber(config._bias)}, ${config._worldSpaceBias === null ? "std::nullopt" : cppNumber(config._worldSpaceBias)},
@@ -521,7 +527,7 @@ test(
                 pin._createCascadeScratch(1),
             );
             cases.push(
-                `assert(csm_instance_contributes(${cppArray(instance)}) == ${expected});`,
+                `{ std::vector<ShadowCaster> inputs; ${casterInput(mesh)} assert(!inputs.empty() == ${expected}); }`,
             );
         }
         const point: [number, number, number] = [
@@ -584,15 +590,14 @@ test(
 #include <span>
 #include <stdexcept>
 #include <vector>
-#include <bblite/js_data.hpp>
+#include <bblite/runtime.hpp>
 struct FixtureCaster {
     std::array<double, 16> world{};
-    std::array<double, 16> instance{};
-    bool has_instance = false;
-    std::array<float, 3> bounds_min{}, bounds_max{};
+    std::array<double, 3> bounds_min{}, bounds_max{};
 };
 namespace bbl::upstream {
 using ShadowCaster = ::FixtureCaster;
+${lowerShadowCasterBounds(context)}
 inline constexpr std::size_t csm_max_cascades = 4;
 #define near
 #define far
@@ -704,6 +709,10 @@ test(
         const output = resolve("artifacts\\pinned-csm-header-check");
         const rendererIncludes = join(output, "bblite", "upstream");
         mkdirSync(rendererIncludes, { recursive: true });
+        writeFileSync(
+            join(rendererIncludes, "pinned_matrix.hpp"),
+            pinnedMatrixHeader(context),
+        );
         writeFileSync(
             join(rendererIncludes, "light_matrix.hpp"),
             new LightLowerer(context).lowerMatrix().header,
@@ -948,6 +957,10 @@ test(
         const output = resolve("artifacts\\pinned-csm-coverage-check");
         const rendererIncludes = join(output, "bblite", "upstream");
         mkdirSync(rendererIncludes, { recursive: true });
+        writeFileSync(
+            join(rendererIncludes, "pinned_matrix.hpp"),
+            pinnedMatrixHeader(context),
+        );
         writeFileSync(
             join(rendererIncludes, "light_matrix.hpp"),
             new LightLowerer(context).lowerMatrix().header,

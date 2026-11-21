@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { pinnedErrorCode } from "../src/lowering/pinned-error.js";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import {
@@ -337,7 +338,7 @@ int main() {
         out += std::string(out.empty() ? "" : "|") + name + ":" + released + ":" + std::to_string(record.render_meshes.size()) + ":" +
                refusal([&] { add_render_task_mesh(engine, handle, {0}, {0}, false); }) + ":" +
                // The record's first statement (build_frame_graph_task).
-               refusal([&] { if (record.disposed) throw std::runtime_error("#167"); });
+               refusal([&] { if (record.disposed) throw std::runtime_error("#${pinnedErrorCode(context, context.propertyFunction("src/frame-graph/render-task-base.ts", "_createAutomaticRenderTask", "record", { unique: true }).declaration)}"); });
     }
     std::cout << out;
 }

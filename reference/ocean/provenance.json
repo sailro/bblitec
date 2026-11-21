@@ -3,12 +3,12 @@
   "scene": "ocean",
   "pin": {
     "package": "@babylonjs/lite",
-    "version": "1.40.0",
-    "sourceVersion": "f7e737ec7bc9740f2487b1994ffba82639934a0a"
+    "version": "1.40.2",
+    "sourceVersion": "2b85d3dfe169ebd7bce470a0523e9f19e0d47f79"
   },
   "reference": {
     "source": "reference/ocean/babylon-lite-golden.png",
-    "sha256": "59a72ee1a63d744ab062582cf72f47356996f878c50edbafc27108189d8e42b7"
+    "sha256": "07974d86e76cc792c5f5661d9f3a00d3fb793189fcc413899d99eb2fdf9b9303"
   },
   "entry": "corpus/babylon-lite/lab/lite/src/demos/ocean.ts",
   "hostPage": "corpus/babylon-lite/lab/lite/demo-ocean.html",
@@ -20,19 +20,19 @@
     "referenceFrame": 30
   },
   "readiness": {
+    "fixedAnimationFrame": "65",
+    "fixedCaptureFrame": "30",
+    "fixedAnimationCallbacks": "1",
+    "fixedEngineStarting": "true",
     "loadingSize": "Estimated demo assets: 6.1 MB",
     "progress": "100",
-    "engine": "Babylon Lite v1.40.0",
+    "engine": "Babylon Lite v1.40.2",
     "loadingDetail": "Preparing scene…",
     "animationFrozen": "true",
     "seekWarmupFrames": "6",
     "seekWarmupMode": "compute-only",
     "oceanStage": "complete",
-    "ready": "true",
-    "fixedAnimationFrame": "70",
-    "fixedCaptureFrame": "30",
-    "fixedAnimationCallbacks": "1",
-    "fixedEngineStarting": "true"
+    "ready": "true"
   },
   "moduleSha256": "b518d19afb681d86f032d34d5fbef22fd668af1a58b202101b4b2a9a0c162184",
   "sourceFiles": [
@@ -159,10 +159,10 @@
         "texture-compression-unaligned",
         "depth-clip-control",
         "texture-compression-bc-sliced-3d",
+        "shader-f16",
         "timestamp-query",
         "texture-formats-tier2",
         "clip-distances",
-        "shader-f16",
         "primitive-index",
         "texture-component-swizzle",
         "subgroups"
@@ -178,5 +178,5 @@
     }
   ],
   "canvasSha256": "31f18e7d4e424fea5249fd99d221b3e3054dc053f536cedce5092e1c943a4582",
-  "capturedAt": "2026-11-18T06:44:32.087Z"
+  "capturedAt": "2026-11-21T08:51:10.255Z"
 }

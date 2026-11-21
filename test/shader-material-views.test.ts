@@ -274,6 +274,36 @@ test("an unentered definition-only helper branch does not make the later view de
     );
 });
 
+test("an unentered view helper observes its argument after an erased this parameter or a spread", () => {
+    for (const [helper, call] of [
+        [
+            "function inspect(this: void, material: ShaderMaterial): void { console.log(material.name); }",
+            "inspect(view)",
+        ],
+        [
+            "function inspect(material: ShaderMaterial, unused?: ShaderMaterial): void { console.log(material.name); }",
+            "inspect(...([] as []), view)",
+        ],
+    ] as const) {
+        assert.throws(
+            () =>
+                compileSource(`${prelude}
+                ${helper}
+                async function main(): Promise<void> {
+                    const engine = await createEngine({});
+                    const ground = createShaderMaterial(${groundOptions});
+                    const view = createMaterialView(ground, { features: 0 }) as ShaderMaterial;
+                    if (false) ${call};
+                    Object.defineProperty(view, "transmissive", { value: false });
+                    draw(engine, view);
+                }
+                void main();
+            `),
+            /before any other use of the view/,
+        );
+    }
+});
+
 test("a helper installs native revisions and exact cache resets before the caller's next definition", () => {
     const compiled = compileSource(`${prelude}${revisionHelper}
     type Decl = { name: string; type: "vec4<f32>" };
@@ -1108,6 +1138,16 @@ test("ShaderMaterial registrations refuse hidden control flow, early completion 
             "if (geometry) declareGeometry",
             "escaped = material; if (geometry) declareGeometry",
             /the material escapes before its side-table entry is set/,
+        ],
+        [
+            "if (geometry) declareGeometry",
+            "function read(...materials: ShaderMaterial[]) { return materials.length; } read(material); if (geometry) declareGeometry",
+            /the material escapes before its side-table entry is set/,
+        ],
+        [
+            "if (geometry) declareGeometry(material",
+            "if (geometry) declareGeometry(...([] as []), material",
+            /material argument is not a fixed positional argument/,
         ],
     ];
     for (const [from, to, refusal] of cases)

@@ -299,18 +299,6 @@ inline void release_all_shared(Cache& cache, Release release) {
     cache.clear();
 }
 
-/** The rows visited by `_thinInstanceWorldAabb`'s bounded `i < count` loop. */
-inline std::size_t thin_instance_active_count(const MeshRecord& record) {
-    if (!record.thin_instances)
-        return 0;
-    const auto& pool = *record.thin_instances;
-    const double rows =
-        std::visit([](const auto& values) { return static_cast<double>(values.size()) / 16.0; },
-                   pool.matrices);
-    const double count = std::min(pool.count, static_cast<double>(js::to_int32(rows)));
-    return count > 0 ? static_cast<std::size_t>(std::ceil(count)) : 0;
-}
-
 #if BBLITE_PINNED_MATERIALS || BBLITE_PICK_DISCARD
 /**
  * Where one of Babylon Lite's own vertex-input names sits in our vertex.

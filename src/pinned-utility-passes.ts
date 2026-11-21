@@ -5,11 +5,8 @@
  *
  * Each is one WGSL module carrying both stages, handed to WebGPU whole with
  * the pin's own groups and bindings, so it is deployed whole: nothing is
- * split, renamed or re-addressed. The blits are module constants and are read
- * as such; the image-processing module is composed at run time
- * (`common` + the arm's texture declaration + the arm's fragment), so the
- * pin's own `createImageProcessingState` runs against the recording device
- * and its `createShaderModule` call is what is deployed.
+ * split, renamed or re-addressed. Module constants are read from the package;
+ * composed modules are captured from the pin's own createShaderModule calls.
  */
 import {
     extractPackagedTemplateLiteral,
@@ -20,6 +17,7 @@ import {
     createRecordingDevice,
     RecordedTexture,
     type DescriptorShapes,
+    type RecordingContract,
 } from "./recording-device.js";
 import { sharedUpstreamStore } from "./upstream-source.js";
 
@@ -57,8 +55,39 @@ function packagedShader(
     };
 }
 
-interface ImageProcessingShapes extends DescriptorShapes {
+interface UtilityShaderShapes extends DescriptorShapes {
     shaderModule: { code: string };
+}
+
+/** Run the pin's producer and deploy the one module it handed to the device. */
+function recordedShader(
+    stem: string,
+    modulePath: string,
+    symbolName: string,
+    methods: RecordingContract["device"],
+    argumentsFor: (device: object) => readonly unknown[],
+): PinnedUtilityModule {
+    const { device, recorder } = createRecordingDevice<UtilityShaderShapes>({
+        producer: stem,
+        device: methods,
+    });
+    pinnedModuleFunction(modulePath, symbolName)(...argumentsFor(device));
+    const [module, ...rest] = recorder.shaderModules;
+    if (!module || rest.length)
+        throw new Error(
+            `Pinned ${symbolName} must produce one shader module for ${stem}.`,
+        );
+    return { stem, modulePath, symbolName, wgsl: module.code };
+}
+
+function transmissionGrab(multisampled: boolean): PinnedUtilityModule {
+    return recordedShader(
+        multisampled ? "transmission-grab" : "transmission-grab-single",
+        transmissionModule,
+        "createBlitShader",
+        ["createShaderModule"],
+        (device) => [device, multisampled],
+    );
 }
 
 /**
@@ -68,11 +97,11 @@ interface ImageProcessingShapes extends DescriptorShapes {
  * over is what selects the arm, exactly as a render target would.
  */
 function imageProcessingModule(multisampled: boolean): PinnedUtilityModule {
-    const symbolName = "createImageProcessingState";
-    const create = pinnedModuleFunction(imageProcessingTask, symbolName);
-    const { device, recorder } = createRecordingDevice<ImageProcessingShapes>({
-        producer: `image-processing-task (${multisampled ? "multisampled" : "single-sample"})`,
-        device: [
+    return recordedShader(
+        multisampled ? "image-processing" : "image-processing-single",
+        imageProcessingTask,
+        "createImageProcessingState",
+        [
             "createBuffer",
             "createBindGroupLayout",
             "createShaderModule",
@@ -80,30 +109,18 @@ function imageProcessingModule(multisampled: boolean): PinnedUtilityModule {
             "createRenderPipeline",
             "createBindGroup",
         ],
-    });
-    const source = new RecordedTexture({
-        size: [1, 1],
-        format: "rgba16float",
-        usage: 0,
-        sampleCount: multisampled ? 4 : 1,
-    });
-    create(
-        { _device: device, format: "rgba8unorm" },
-        { _colorTexture: source },
+        (device) => [
+            { _device: device, format: "rgba8unorm" },
+            {
+                _colorTexture: new RecordedTexture({
+                    size: [1, 1],
+                    format: "rgba16float",
+                    usage: 0,
+                    sampleCount: multisampled ? 4 : 1,
+                }),
+            },
+        ],
     );
-    const modules = recorder.shaderModules;
-    if (modules.length !== 1) {
-        throw new Error(
-            `Pinned ${symbolName} created ${modules.length} shader modules; ` +
-                "the image-processing pass deploys one.",
-        );
-    }
-    return {
-        stem: multisampled ? "image-processing" : "image-processing-single",
-        wgsl: modules[0]!.code,
-        modulePath: imageProcessingTask,
-        symbolName,
-    };
 }
 
 /** The mip generator's blit, which every renderer scene deploys. */
@@ -112,22 +129,12 @@ export function pinnedMipBlitModule(): PinnedUtilityModule {
 }
 
 /**
- * What a transmission scene adds: the grab in both of the pin's arms --
- * `BLIT_MSAA_SHADER` for a multisampled source, the module's own
- * `BLIT_SHADER` otherwise -- and the image processing in both arms.
+ * Scene transmission deploys the grab and image processing in both sample modes.
  */
 export function pinnedTransmissionModules(): PinnedUtilityModule[] {
     return [
-        packagedShader(
-            "transmission-grab",
-            transmissionModule,
-            "BLIT_MSAA_SHADER",
-        ),
-        packagedShader(
-            "transmission-grab-single",
-            transmissionModule,
-            "BLIT_SHADER",
-        ),
+        transmissionGrab(true),
+        transmissionGrab(false),
         imageProcessingModule(true),
         imageProcessingModule(false),
     ];
@@ -140,11 +147,7 @@ export function pinnedTransmissionModules(): PinnedUtilityModule[] {
  */
 export function pinnedTaskTransmissionModules(): PinnedUtilityModule[] {
     return [
-        packagedShader(
-            "transmission-grab-single",
-            transmissionModule,
-            "BLIT_SHADER",
-        ),
+        transmissionGrab(false),
         packagedShader(
             "transmission-depth-grab-single",
             depthGrabModule,
@@ -159,11 +162,7 @@ export function pinnedTaskTransmissionModules(): PinnedUtilityModule[] {
  */
 export function pinnedMultisampledTaskTransmissionModules(): PinnedUtilityModule[] {
     return [
-        packagedShader(
-            "transmission-grab",
-            transmissionModule,
-            "BLIT_MSAA_SHADER",
-        ),
+        transmissionGrab(true),
         packagedShader(
             "transmission-depth-grab",
             depthGrabModule,

@@ -233,7 +233,6 @@ struct SdlStages : Stages {
     SDL_GPUTexture* swapchain = nullptr;
     SDL_GPUTexture* visible_color = nullptr;
     bool capture_frame = false, transmission_enabled = false, has_scene_sprite_pass = true;
-    std::vector<int> overlay_plans;
     int scene_sprite_pass = 0;
     std::vector<int> sprite_passes{10, 20, 30};
     std::vector<SDL_GPUTexture*> sprite_render_textures;
@@ -386,7 +385,7 @@ struct DawnGraph : Graph {
     struct {
         std::optional<DepthCompare> depth_compare;
     } target_record;
-    bool borrowed_depth_view = false;
+    WGPUTextureFormat pass_depth_format = WGPUTextureFormat_Depth32Float;
     DawnRenderPass task_pass;
     unsigned samples = 4;
     // What the split hook resumes, which these passes never call.
@@ -437,26 +436,23 @@ int main() {
     sdl.swapchain = &swapchain;
     for (bool sampled : {false, true})
         for (bool transmission : {false, true})
-            for (bool captured : {false, true})
-                for (bool overlay : {false, true}) {
-                    sdl.state.sample_count =
-                        sampled ? SDL_GPU_SAMPLECOUNT_4 : SDL_GPU_SAMPLECOUNT_1;
-                    sdl.transmission_enabled = transmission;
-                    sdl.capture_frame = captured;
-                    sdl.overlay_plans.resize(overlay ? 1 : 0);
-                    const auto target = sdl.color_target();
-                    assert(target.load_op == SDL_GPU_LOADOP_CLEAR);
-                    assert(target.texture == (sampled                    ? &msaa
-                                              : transmission || captured ? &resolved
-                                                                         : &swapchain));
-                    // Transmission reads the multisampled attachment itself.
-                    const bool resolves = sampled && !transmission;
-                    assert(target.resolve_texture ==
-                           (resolves ? captured ? &resolved : &swapchain : nullptr));
-                    assert(target.store_op == (!resolves ? SDL_GPU_STOREOP_STORE
-                                               : overlay ? SDL_GPU_STOREOP_RESOLVE_AND_STORE
-                                                         : SDL_GPU_STOREOP_RESOLVE));
-                }
+            for (bool captured : {false, true}) {
+                sdl.state.sample_count = sampled ? SDL_GPU_SAMPLECOUNT_4 : SDL_GPU_SAMPLECOUNT_1;
+                sdl.transmission_enabled = transmission;
+                sdl.capture_frame = captured;
+                const auto target = sdl.color_target();
+                assert(target.load_op == SDL_GPU_LOADOP_CLEAR);
+                assert(target.texture == (sampled                    ? &msaa
+                                          : transmission || captured ? &resolved
+                                                                     : &swapchain));
+                // Transmission reads the multisampled attachment itself.
+                const bool resolves = sampled && !transmission;
+                assert(target.resolve_texture ==
+                       (resolves ? captured ? &resolved : &swapchain : nullptr));
+                // Explicit overlays use frame-graph targets, not this direct scene attachment.
+                assert(target.store_op ==
+                       (resolves ? SDL_GPU_STOREOP_RESOLVE : SDL_GPU_STOREOP_STORE));
+            }
     DawnStages dawn;
     for (bool sprites : {true, false}) {
         sdl.has_scene_sprite_pass = dawn.state.has_scene_sprite_pass = sprites;

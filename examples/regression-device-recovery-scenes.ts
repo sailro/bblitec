@@ -75,7 +75,8 @@ async function main(): Promise<void> {
 
     const left = createSceneContext(engine);
     // The right half composites over the left scene; a second ordinary scene would clear the whole canvas.
-    const right = createOverlayScene(left);
+    const { rt, rst } = left.defaultRenderTask!.config;
+    const right = createOverlayScene(left, { rt, rst });
     left.clearColor = { r: 0.08, g: 0.09, b: 0.14, a: 1 };
     half(engine, left, 0, [0.85, 0.3, 0.2], false);
     half(engine, right, 0.5, [0.2, 0.7, 0.35], true);

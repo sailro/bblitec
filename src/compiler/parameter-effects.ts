@@ -12,6 +12,8 @@ import {
     type Projection,
 } from "./projections.js";
 import { bindingIsOnlyCalledDirectly } from "./binding-rebinds.js";
+import { bindingReferences } from "./binding-references.js";
+import { onlyDirectCalls } from "./written-holders.js";
 import { forEachAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
 import { engineBodies, isEngineDeclaration } from "./engine-bodies.js";
 import {
@@ -52,6 +54,7 @@ import {
     patternSlots,
     equalityOperator,
     parameterForArgument,
+    ownParameters,
     functionKind,
     functionOfDeclaration,
     isMemberAccess,
@@ -272,10 +275,77 @@ function argumentBinding(
     index: number,
 ): ts.Identifier | undefined {
     // A spread at or before it leaves its parameter to the run time.
-    const bound = parameterForArgument(call, fn, index);
+    const bound = parameterForArgument(
+        call,
+        { parameters: ownParameters(fn) },
+        index,
+    );
     return bound !== "unknown" && bound && ts.isIdentifier(bound.parameter.name)
         ? bound.parameter.name
         : undefined;
+}
+
+/** One synchronous program body receiving this argument itself, not a rest container. */
+export function directArgumentBinding(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression,
+    index: number,
+):
+    | { body: EffectFunction; binding: ts.Identifier; argument: ts.Expression }
+    | undefined {
+    const argument = call.arguments[index];
+    if (!argument) return undefined;
+    const target = callTarget(checker, call);
+    if (target.kind !== "bodies" || target.engine || target.bodies.length !== 1)
+        return undefined;
+    const body = target.bodies[0]!;
+    const binding = argumentBinding(call, body, index);
+    return binding && !isRestBinding(binding) && functionKind(body) === "plain"
+        ? { body, binding, argument }
+        : undefined;
+}
+
+/**
+ * Check every use of a value through closed direct helper calls. A leaf gives
+ * its verdict, or leaves a call argument to be followed into its parameter.
+ * A captured parameter or a cycle is not a proof.
+ */
+export function everyForwardedArgumentUse(
+    context: { program: ts.Program; checker: ts.TypeChecker },
+    reference: ts.Expression,
+    leaf: (use: ts.Expression) => boolean | undefined,
+): boolean {
+    const { program, checker } = context;
+    const active = new Set<EffectFunction>();
+    const visit = (use: ts.Expression): boolean => {
+        const verdict = leaf(use);
+        if (verdict !== undefined) return verdict;
+        const argument = outermostWrapper(use);
+        const call = argument.parent;
+        if (!ts.isCallExpression(call)) return false;
+        const bound = directArgumentBinding(
+            checker,
+            call,
+            call.arguments.indexOf(argument),
+        );
+        if (
+            !bound ||
+            active.has(bound.body) ||
+            !onlyDirectCalls(program, checker, bound.body)?.includes(call)
+        )
+            return false;
+        const symbol = declaredSymbol(checker, bound.binding);
+        if (!symbol) return false;
+        active.add(bound.body);
+        const valid = bindingReferences(program, checker, symbol).every(
+            (read) =>
+                ts.findAncestor(read, ts.isFunctionLike) === bound.body &&
+                visit(read),
+        );
+        active.delete(bound.body);
+        return valid;
+    };
+    return visit(reference);
 }
 
 function summarize(

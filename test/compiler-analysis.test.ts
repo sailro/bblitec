@@ -348,7 +348,7 @@ test("an object a literal rebuilds at each read is told apart only by a read tha
     });
 });
 
-test("a tuple an options literal hands to a callee that only reads its elements keeps no identity", () => {
+test("a tuple keeps its identity where its consumer can retain or write it", () => {
     // The program compares number arrays by identity elsewhere; the callee
     // that keeps the options object whole may let its member reach that.
     const { program, checker, sourceFile } = createCompilerProgram(
@@ -360,7 +360,13 @@ test("a tuple an options literal hands to a callee that only reads its elements 
         function keep(opts: { dir: Vec3; k: number }): { dir: Vec3; k: number } { return opts; }
         export const read = (): number => { const d: Vec3 = [0, 1, 0]; return shade({ dir: d, k: 2 }); };
         export const held = (): Vec3 => { const e: Vec3 = [0, 1, 0]; return keep({ dir: e, k: 2 }).dir; };
-        console.log(kept.length, same(kept[0]!, kept[1]!), read(), held());
+        function tag(_strings: TemplateStringsArray, arg: Vec3): Vec3 { return arg; }
+        const text: Vec3 = [1, 2, 3];
+        const tagged: Vec3 = [2, 3, 4]; tag\`\${tagged}\`;
+        declare const numericArray: number & number[];
+        let updated = numericArray; ++updated;
+        const tested = numericArray; +tested;
+        console.log(kept.length, same(kept[0]!, kept[1]!), read(), held(), \`\${text}\`);
     `,
         "test/analysis-one-object-member.ts",
     );
@@ -369,7 +375,9 @@ test("a tuple an options literal hands to a callee that only reads its elements 
         if (
             ts.isVariableDeclaration(node) &&
             ts.isIdentifier(node.name) &&
-            (node.name.text === "d" || node.name.text === "e")
+            ["d", "e", "text", "tagged", "updated", "tested"].includes(
+                node.name.text,
+            )
         )
             identities[node.name.text] =
                 oneObjectObservation(
@@ -384,5 +392,9 @@ test("a tuple an options literal hands to a callee that only reads its elements 
     assert.deepEqual(identities, {
         d: "none",
         e: "the program compares such arrays by identity",
+        text: "none",
+        tagged: "the program compares such arrays by identity",
+        updated: "the program compares such arrays by identity",
+        tested: "none",
     });
 });

@@ -258,11 +258,12 @@ void create_frame_graph_textures(DawnState& state, const Engine& engine, std::ui
         // An SSAO task samples the depth through a depth-only view: the
         // pin's geometry depth is `depth32float`.
         const bool sampled = geometry_depth_is_sampled(engine, index);
-        task.depth = create_frame_texture(
-            state, sampled ? WGPUTextureFormat_Depth32Float : WGPUTextureFormat_Depth24PlusStencil8,
-            samples, width, height,
-            sampled ? WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding
-                    : WGPUTextureUsage_RenderAttachment);
+        task.depth_format =
+            sampled ? WGPUTextureFormat_Depth32Float : WGPUTextureFormat_Depth24PlusStencil8;
+        task.depth = create_frame_texture(state, task.depth_format, samples, width, height,
+                                          sampled ? WGPUTextureUsage_RenderAttachment |
+                                                        WGPUTextureUsage_TextureBinding
+                                                  : WGPUTextureUsage_RenderAttachment);
         task.depth_view = create_dawn_texture_view(task.depth, nullptr,
                                                    "wgpuTextureCreateView geometry task depth");
     }
@@ -805,8 +806,9 @@ void save_dawn_geometry_id_buffer(DawnState& state, std::uint32_t width, std::ui
 #endif
 
 #if BBLITE_RENDER_TASK_TRANSMISSION
-DawnState::TaskTransmission& prepare_task_transmission(DawnState& state, const Engine& engine,
-                                                       TaskHandle task) {
+static DawnState::TaskTransmission& prepare_task_transmission(DawnState& state,
+                                                              const Engine& engine, TaskHandle task,
+                                                              WGPUTextureView* source = nullptr) {
     const FrameTaskRecord& record = handle_at(engine.frame_tasks, task);
     if (!record.transmission)
         throw std::runtime_error("A transmission texture names a task without transmission.");
@@ -841,9 +843,12 @@ DawnState::TaskTransmission& prepare_task_transmission(DawnState& state, const E
         grab.mip_count = mips;
         grab.mips = prepare_mip_chain(state, grab.color, WGPUTextureFormat_RGBA16Float, mips);
     }
-    // transmission-depth-grab.ts: the target's own extent, r32float.
-    const bool depth = settings.grab_depth.value_or(false) && target_record.has_depth &&
-                       target.depth_sampled_view && target.width > 0 && target.height > 0;
+    const auto depth_texture = task_grab_depth_source<WGPUTextureView>(
+        engine, record, state, target, &DawnRenderTarget::depth_sampled_view,
+        &DawnGeometryTask::depth_view, source != nullptr);
+    if (source)
+        *source = depth_texture;
+    const bool depth = depth_texture && target.width > 0 && target.height > 0;
     if (!depth || grab.depth_width != target.width || grab.depth_height != target.height) {
         grab.depth_view.reset();
         grab.depth.reset();
@@ -861,7 +866,9 @@ DawnState::TaskTransmission& prepare_task_transmission(DawnState& state, const E
 
 void encode_task_transmission_grab(DawnState& state, const Engine& engine,
                                    WGPUCommandEncoder encoder, TaskHandle task) {
-    DawnState::TaskTransmission& grab = prepare_task_transmission(state, engine, task);
+    WGPUTextureView depth_texture = nullptr;
+    DawnState::TaskTransmission& grab =
+        prepare_task_transmission(state, engine, task, &depth_texture);
     const FrameTaskRecord& record = handle_at(engine.frame_tasks, task);
     const pal::TargetUser user = pal::task_target_user(record);
     const DawnRenderTarget& target =
@@ -908,13 +915,13 @@ void encode_task_transmission_grab(DawnState& state, const Engine& engine,
                                          multisampled ? "transmission-depth-grab.frag"
                                                       : "transmission-depth-grab-single.frag",
                                          WGPUTextureFormat_R32Float);
-        if (grab.depth_group_source != target.depth_sampled_view.get()) {
+        if (grab.depth_group_source != depth_texture) {
             std::array<WGPUBindGroupEntry, 1> entries{};
             entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
             entries[0].binding = 0;
-            entries[0].textureView = target.depth_sampled_view;
+            entries[0].textureView = depth_texture;
             grab.depth_group = create_grab_group(state, depth_pipeline, entries);
-            grab.depth_group_source = target.depth_sampled_view;
+            grab.depth_group_source = depth_texture;
         }
         encode_grab_pass(encoder, depth_pipeline, grab.depth_view, grab.depth_group);
     }

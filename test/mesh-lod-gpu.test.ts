@@ -152,7 +152,9 @@ function frames(run: BackendRun): (readonly [number, number])[] {
 /** The selection refines from the pinned coarse page as demanded pages stream in, then holds. */
 function assertConverges(run: BackendRun): void {
     const reported = frames(run);
-    assert.deepEqual(reported[0], [1, 2]);
+    // The first selection is coarse. By its asynchronous readback a demanded
+    // page may already be resident; the fixture checks bootstrap residency before submit.
+    assert.equal(reported[0]![0], 1);
     const [selected, resident] = reported.at(-1)!;
     assert.ok(
         selected > 1 && resident > 2,

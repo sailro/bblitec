@@ -1485,6 +1485,7 @@ ${lowerThinInstanceSync(context)}
                 ),
                 deformedPosition: features.includes("mesh:deformed-position"),
                 csmStaticCache: features.includes("shadow:csm-static-cache"),
+                sceneTransmission: features.includes("renderer:transmission"),
                 overlayScenes: features.includes("scene:overlay"),
                 meshOpacity: features.includes("mesh:opacity"),
                 geometryTaskPreload: standardVelocityPreload(features, options),

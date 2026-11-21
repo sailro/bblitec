@@ -745,14 +745,16 @@ export async function composeScreenSpaceTask(
             `Pinned module ${module} no longer exports ${request.intrinsic}.`,
         );
     }
-    const renderTargets = await pinnedRenderTargets();
+    const renderTargets = await pinnedRenderTargets<{
+        _colorView: RecordedTextureView;
+    }>();
     const cameras = await pinnedCameras();
     const canvas = { width: 1280, height: 720 };
     const { engine, recorder } = createRecordingEngine(
         SCREEN_SPACE_CONTRACT,
         canvas,
     );
-    const built = (label: string, depth: boolean): unknown =>
+    const built = (label: string, depth: boolean) =>
         builtRenderTarget(renderTargets, engine, {
             lbl: label,
             format: "bgra8unorm",
@@ -761,6 +763,7 @@ export async function composeScreenSpaceTask(
             size: { width: canvas.width, height: canvas.height },
         });
     const name = COMPOSITION_NAME;
+    const target = request.hasTarget ? built(TARGET_LABEL, false) : null;
     const config: Record<string, unknown> = {
         ...request.options,
         name,
@@ -768,7 +771,7 @@ export async function composeScreenSpaceTask(
         ...(request.hasDepthTexture
             ? { depthTexture: built(DEPTH_LABEL, true) }
             : {}),
-        targetTexture: request.hasTarget ? built(TARGET_LABEL, false) : null,
+        targetTexture: target,
         camera: cameras.createArcRotateCamera(0.4, 1.1, 8, {
             x: 0,
             y: 1,
@@ -883,6 +886,18 @@ export async function composeScreenSpaceTask(
         "clear-history",
         ...compositeLabels,
     ]);
+    if (
+        target &&
+        compositePass &&
+        [compositePass, disabled.at(-1)!].some(
+            (pass) =>
+                passAttachment(pass).texture !== target._colorView.texture,
+        )
+    ) {
+        throw new Error(
+            `Pinned ${request.intrinsic} did not composite into its explicit targetTexture.`,
+        );
+    }
     const intermediates = intermediateTargets(
         request.intrinsic,
         name,

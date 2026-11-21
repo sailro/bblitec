@@ -2123,8 +2123,7 @@ test("deploys the pin's utility passes whole, as the pin composes them", () => {
     const modules = new Map(
         pinnedTransmissionModules().map((module) => [module.stem, module]),
     );
-    // The transmission grab in both of the pin's arms: BLIT_MSAA_SHADER for
-    // a multisampled source, the module's own BLIT_SHADER otherwise.
+    // The module the pin's createBlitShader composes for each sample mode.
     const grab = modules.get("transmission-grab")!.wgsl;
     assert.match(grab, /var t:texture_multisampled_2d<f32>;/);
     assert.match(grab, /textureNumSamples\(t\)/);

@@ -9,7 +9,8 @@ async function main(): Promise<void> {
     const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
     const engine = await createEngine(canvas);
     const { root } = createOverlayRoot(engine, true);
-    const overlay = createOverlaySphere(engine, root);
+    const { rt, rst } = root.defaultRenderTask!.config;
+    const overlay = createOverlaySphere(engine, root, { rt, rst });
     await registerScene(root);
     await registerScene(overlay);
     await setRenderTaskGpuTimingEnabled(engine, true);

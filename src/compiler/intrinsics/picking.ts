@@ -1,12 +1,7 @@
 import { EmissionSet } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
-import {
-    argumentAt,
-    conditionalExpression,
-    selectionArms,
-    variableKind,
-} from "../syntax.js";
+import { argumentAt, conditionalExpression, selectionArms } from "../syntax.js";
 import { knownCondition, staticBooleanOf } from "../values/model.js";
 import { dataTypesEqual, handleCppType, type DataType } from "../data-types.js";
 import type { Value } from "../types.js";
@@ -21,11 +16,7 @@ import {
     type PickDiscardRuleManifest,
 } from "../types.js";
 import { CompileError } from "../compile-error.js";
-import {
-    isNullishLiteral,
-    resolvedSymbol,
-    typeMayHoldNullish,
-} from "../symbols.js";
+import { isNullishLiteral, typeMayHoldNullish } from "../symbols.js";
 import {
     compileNullableHitRecord,
     numberField,
@@ -911,29 +902,17 @@ function ruleLiteral(
     context: PickingIntrinsicContext,
     expression: ts.Expression,
 ): ts.Expression {
-    let resolved = context.evaluator.resolveStaticLiteral(expression);
-    for (const seen = new Set<ts.Symbol>(); ts.isIdentifier(resolved);) {
-        const symbol = resolvedSymbol(context.checker, resolved);
-        const declaration =
-            symbol?.declarations?.length === 1
-                ? symbol.declarations[0]
-                : undefined;
-        if (
-            !symbol ||
-            seen.has(symbol) ||
-            !declaration ||
-            !ts.isVariableDeclaration(declaration) ||
-            !declaration.initializer ||
-            variableKind(declaration) !== "const" ||
-            context.evaluator.isWrittenThrough(declaration)
-        )
-            break;
-        seen.add(symbol);
-        resolved = context.evaluator.resolveStaticLiteral(
-            declaration.initializer,
-        );
-    }
-    return resolved;
+    return context.evaluator.resolveStaticLiteral(expression, {
+        scope: "all",
+        readOnly(declaration) {
+            if (context.evaluator.isWrittenThrough(declaration))
+                return context.fail(
+                    expression,
+                    `A pickAsync \`discard\` rule reads '${declaration.name.getText()}', which the program writes through.`,
+                );
+            return true;
+        },
+    });
 }
 
 /** An array literal's elements through the constants that resolve to it, spreads inlined. */

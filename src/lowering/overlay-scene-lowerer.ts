@@ -38,6 +38,20 @@ export const overlayRefusals = {
  * not one builds an overlay.
  */
 export function assertOverlayComposition(context: LoweringContext): void {
+    const { declaration: create } = context.functionDeclaration(
+        CORE_MODULE,
+        "createSceneContext",
+    );
+    context.expectShapeCount(
+        create,
+        "Object.assign(ctx, { defaultRenderTask: task })",
+        "published default scene producer",
+    );
+    context.expectShapeCount(
+        create,
+        '_createAutomaticRenderTask({ name: "scene", rt, rst: msaa ? surface.scRT : undefined, depth }, eng, ctx)',
+        "default task color targets",
+    );
     for (const name of ["registerScene", "registerSceneWithShadowSupport"])
         context.expectShapeCount(
             context.functionDeclaration(CORE_MODULE, name).declaration,
@@ -415,22 +429,41 @@ function lowerListHelper(
  * after every insertion, as the installed `_overlaySceneRegistered` hook
  * does once an overlay exists (before one does, it moves nothing). The
  * overlay's suspended `_update` and `_record` are the renderers', which
- * consult `SceneState::overlay_suspended` (the lowered `isSuspended`), and
- * its `configureSwapchainOverlayScene` record is runtime.hpp
- * `overlay_composition` over its `default_swapchain_task`, which each frame
- * re-resolves, so the record's replaced-task restore has nothing to restore.
+ * consult `SceneState::overlay_suspended` (the lowered `isSuspended`).
  */
 export function lowerOverlayScenes(context: LoweringContext): string {
     context.assertFunctionContract(
         OVERLAY_MODULE,
         "createOverlayScene",
         `
-export function createOverlayScene(baseScene: SceneContext): SceneContext {
-    const scene = createSceneContext(baseScene.surface);
+export function createOverlayScene(baseScene: SceneContext, options: OverlaySceneOptions): SceneContext {
+    const { rt, rst } = options;
+    const desc = rt._descriptor;
+    if (!desc.format) {
+        throw new Error("createOverlayScene requires a color render target.");
+    }
+    if (rst && (desc.samples === 1 || rst === rt || rst._descriptor.samples !== 1 || rst._descriptor.format !== desc.format)) {
+        throw new Error("createOverlayScene requires a distinct single-sample resolve target matching its multisample color format.");
+    }
+    const scene = createSceneContext(baseScene.surface, { defaultRenderTask: false });
+    const depth = _createRenderTargetState(
+        {
+            dFormat: desc.dFormat ?? "depth24plus-stencil8",
+            depthCompare: desc.depthCompare,
+            depthClearValue: desc.depthClearValue,
+            samples: desc.samples,
+            get size() {
+                return rt === baseScene.surface.scRT ? baseScene.surface : desc.size;
+            },
+        },
+        rt._resolveSize
+    );
+    const task = _createAutomaticRenderTask({ name: "scene", rt, rst, depth, sharedRt: true, clr: false }, baseScene.surface.engine, scene);
+    Object.assign(scene, { defaultRenderTask: task });
+    _appendTask(scene._frameGraph, task);
     scene.clearColor = { r: 0, g: 0, b: 0, a: 0 };
     scene._overlayBase = baseScene;
     _installOverlaySceneRegistration(moveSwapchainOverlaysAfterBase);
-    configureSwapchainOverlayScene(scene);
 
     const update = scene._update;
     const record = scene._record;
@@ -456,82 +489,6 @@ export function _installOverlaySceneRegistration(registered: (scene: SceneContex
 }
 `,
         "scene-core._installOverlaySceneRegistration native contract",
-    );
-    context.assertFunctionContract(
-        "src/scene/swapchain-overlay.ts",
-        "getActiveSwapchainResolver",
-        `
-function getActiveSwapchainResolver(scene: SceneContext, surface: SurfaceContext): Task | undefined {
-    const tasks = scene._frameGraph._tasks;
-    for (let i = tasks.length - 1; i >= 0; i--) {
-        const task = tasks[i]!;
-        const output = task._getOutputInfo?.();
-        if (task.executionEnabled !== false && output?.resolveTexture === surface.scRT && (output.colorTexture._descriptor.samples ?? 1) > 1) {
-            return task;
-        }
-    }
-}
-`,
-        "swapchain-overlay.getActiveSwapchainResolver native contract",
-    );
-    const automatic = context.functionDeclaration(
-        "src/frame-graph/render-task-base.ts",
-        "_createAutomaticRenderTask",
-    ).declaration;
-    context.assertExpressionShape(
-        context.propertyInitializer(
-            context.objectInitializer(automatic, "task"),
-            "_getOutputInfo",
-        ),
-        "() => (task.enabled === false ? undefined : { colorTexture: config.rt, resolveTexture: config.rst })",
-        "Render task output",
-    );
-
-    context.assertFunctionContract(
-        "src/scene/swapchain-overlay.ts",
-        "configureSwapchainOverlayScene",
-        `
-export function configureSwapchainOverlayScene(overlay: SceneContext): void {
-    const surface = overlay.surface;
-    const record = overlay._record;
-    let task: RenderTask | undefined;
-    let clr: boolean | undefined;
-    overlay._record = () => {
-        const current = getDefaultSwapchainTask(overlay, surface);
-        if (current !== task) {
-            if (task) {
-                task._config.clr = clr;
-                task._colorAttachment.view = task._config.rt._colorView!;
-            }
-            task = current;
-            clr = current?._config.clr;
-        }
-        if (current) {
-            if (surface.msaaSamples > 1) {
-                let root = overlay._overlayBase!;
-                while (root._overlayBase) {
-                    root = root._overlayBase;
-                }
-                const rootTask = getActiveSwapchainResolver(root, surface);
-                const view = rootTask?._getOutputInfo?.()?.colorTexture._colorView;
-                if (!view) {
-                    const enabled = current.enabled;
-                    current.enabled = false;
-                    try {
-                        return record();
-                    } finally {
-                        current.enabled = enabled;
-                    }
-                }
-                current._colorAttachment.view = view;
-            }
-            current._config.clr = false;
-        }
-        return record();
-    };
-}
-`,
-        "swapchain-overlay.configureSwapchainOverlayScene native contract",
     );
     const moveContext: [string, PinnedCallSpelling] = [
         "moveRenderingContext",
@@ -664,7 +621,7 @@ ${moveSwapchainOverlaysAfterBase}
 }
 
 // ${context.provenance(OVERLAY_MODULE, "createOverlayScene")}
-Scene create_overlay_scene(const Scene& base_scene) {
+Scene create_overlay_scene(const Scene& base_scene, OverlayTargets targets) {
     require_scene_engine(base_scene);
     Engine& engine = *base_scene.engine;
 #if BBLITE_HAS_UI
@@ -674,9 +631,35 @@ Scene create_overlay_scene(const Scene& base_scene) {
 #endif
     if (!scene_on_surface(base_scene, primary))
         throw std::runtime_error(${stringLiteral(overlayRefusals.auxiliarySurface)});
-    // \`createSceneContext(baseScene.surface)\`: the engine's own surface.
+    const auto& rt = handle_at(engine.render_targets, targets.rt);
+    if (!rt.has_color)
+        throw std::runtime_error("createOverlayScene requires a color render target.");
+    if (targets.rst.value != invalid_handle) {
+        const auto& rst = handle_at(engine.render_targets, targets.rst);
+        if (rt.samples == 1 || targets.rst == targets.rt || rst.samples != 1 || !rst.has_color ||
+            rt.has_format != rst.has_format || (rt.has_format && rt.format != rst.format))
+            throw std::runtime_error("createOverlayScene requires a distinct single-sample resolve target matching its multisample color format.");
+    }
     Scene scene = create_scene_context(engine);
     scene.clear_color = Color4{0.0f, 0.0f, 0.0f, 0.0f};
+    scene.state->default_render_task_samples = rt.samples;
+    RenderTargetOptions depth{};
+    depth.has_color = false;
+    depth.has_depth = true;
+    depth.samples = rt.samples;
+    depth.scale_source = targets.rt;
+    depth.depth_format = rt.depth_format;
+    depth.depth_compare = rt.depth_compare;
+    const auto depth_target = create_render_target(engine, depth);
+    scene.disposables.emplace_back([owner = &engine, depth_target] { dispose_render_target(*owner, depth_target); });
+    RenderTaskOptions pass{};
+    pass.name = "scene";
+    pass.target = targets.rt;
+    pass.resolve_target = targets.rst;
+    pass.shared_target = true;
+    pass.depth.target = depth_target;
+    scene.state->default_render_task_handle = create_render_task(engine, scene, std::move(pass));
+    add_task(scene, scene.state->default_render_task_handle);
     scene.state->overlay_base = base_scene.state;
     scene.state->overlay_suspended = &is_suspended;
     return scene;

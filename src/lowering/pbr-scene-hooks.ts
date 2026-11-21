@@ -349,7 +349,8 @@ export function lowerPbrSceneHookRegistry(context: LoweringContext): string {
             calls: new Map([
                 [
                     "enableSceneTransmission",
-                    () => "(enable_scene_transmission(scene), false)",
+                    () =>
+                        "(make_pbr_transmission_transaction(scene).at(0)(), false)",
                 ],
             ]),
 

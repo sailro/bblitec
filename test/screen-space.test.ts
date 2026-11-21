@@ -216,6 +216,27 @@ test("ambient occlusion composes a producer, two blur passes over one pipeline a
     assert.deepEqual(ao.clamped, { resolutionScale: 0.5, temporalSamples: 64 });
 });
 
+test("ambient occlusion composites into the caller's color target and refuses an unsupported resolve", async () => {
+    const intrinsic = "createScreenSpaceAmbientOcclusionPostProcessTask";
+    const program = (extra: string) => `
+        import {createEngine,createSceneContext,createFreeCamera,createRenderTarget,${intrinsic}} from "@babylonjs/lite";
+        const engine = await createEngine({});
+        const scene = createSceneContext(engine);
+        const camera = createFreeCamera([0,0,-1], [0,0,0]);
+        const source = createRenderTarget({format:engine.format, dFormat:"depth24plus-stencil8",samples:1,size:engine});
+        const color = createRenderTarget({format:engine.format,samples:1,size:engine});
+        const task = ${intrinsic}({sourceTexture:source,camera,targetTexture:color${extra}},engine,scene);`;
+    const compiled = compileSource(program(""));
+    const task = compiled.manifest.screenSpaceTasks[0]!;
+    assert.equal(task.hasTarget, true);
+    assert.match(compiled.cpp, /create_screen_space_task_0\([^;]*v_color/);
+    assert.ok((await composeScreenSpaceTask(task)).composite);
+    assert.throws(
+        () => compileSource(program(",resolveTexture:engine.scRT")),
+        /requires a native post-process resolve attachment/,
+    );
+});
+
 test("only the ambient-occlusion task publishes a writable composition base", () => {
     const program = (factory: string) => `
         import {createEngine,createSceneContext,createFreeCamera,createRenderTarget,${factory}} from "@babylonjs/lite";

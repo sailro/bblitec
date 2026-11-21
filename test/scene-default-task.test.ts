@@ -90,7 +90,7 @@ for (const { name, source } of cases) {
         );
         assert.match(
             result.cpp,
-            /state->default_render_task && !\w+\.state->default_render_task_created/,
+            /state->default_render_task && \w+\.state->default_render_task_handle\.value == bbl::invalid_handle/,
         );
         assert.match(result.cpp, /default-present/);
         assert.equal(

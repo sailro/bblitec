@@ -8,6 +8,19 @@ import {
     runGeneratedProgram,
 } from "./native-fixture.js";
 
+test("array searches fold signed lanes in a selected literal returned by a helper", () => {
+    const { cpp } = compileSource(`
+        function lanes(): (number | string)[] { return [-2, "x", -2]; }
+        const last = (true ? lanes() : [4]).lastIndexOf(-2);
+        const values = [-2, 4];
+        function needle() { values[0] = 3; return -2; }
+        const found = values.includes(needle());
+        console.log(last, found);
+    `);
+    assert.match(cpp, /double v_last = 2\.0;/);
+    assert.match(cpp, /bool v_found = bbl::js::array_includes\(/);
+});
+
 test("array searches compare represented owners by identity and erased numbers by SameValueZero", (t) => {
     const source = `
         const row = [1, 2];
