@@ -20,16 +20,25 @@ const preamble = `
     const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
     const engine = await createEngine(canvas);
     const base = createSceneContext(engine);
+    const { rt, rst } = base.defaultRenderTask!.config;
+    const targets = { rt, rst };
 `;
 
 test("createOverlayScene builds a scene over its base", () => {
     const result = compileSource(`${preamble}
-        const overlay = createOverlayScene(base);
+        const overlay = createOverlayScene(base, targets);
         await registerScene(overlay);
         await registerScene(base);
     `);
-    assert.match(result.cpp, /bbl::create_overlay_scene\(v_base\)/);
+    assert.match(
+        result.cpp,
+        /bbl::create_overlay_scene\(v_base, bbl::OverlayTargets\{/,
+    );
     assert.ok(result.manifest.features.includes("scene:overlay"));
+    assert.throws(
+        () => compileSource(`${preamble}createOverlayScene(base);`),
+        /Expected 2 arguments/,
+    );
 });
 
 test("an overlay of an auxiliary surface's scene refuses", () => {
@@ -39,26 +48,29 @@ test("an overlay of an auxiliary surface's scene refuses", () => {
                 const other = document.getElementById("canvasB") as HTMLCanvasElement;
                 const surface = createSurface(engine, other);
                 const aux = createSceneContext(surface);
-                createOverlayScene(aux);
+                createOverlayScene(aux, targets);
             `),
         /An overlay of a scene on an auxiliary surface is not supported/,
     );
 });
 
-test("createUtilityLayer takes its main scene and refuses options", () => {
+test("createUtilityLayer borrows explicit targets and refuses unlowered light options", () => {
     const result = compileSource(`${preamble}
-        const layer = createUtilityLayer(base);
+        const layer = createUtilityLayer(base, targets);
         await registerScene(base);
         await registerUtilityLayer(layer);
     `);
-    assert.match(result.cpp, /bbl::create_utility_layer\(v_base\)/);
+    assert.match(
+        result.cpp,
+        /bbl::create_utility_layer\(v_base, bbl::OverlayTargets\{/,
+    );
     assert.ok(result.manifest.features.includes("scene:overlay"));
     assert.throws(
         () =>
             compileSource(`${preamble}
                 createUtilityLayer(base, { lightIntensity: 1 });
             `),
-        /createUtilityLayer options are not supported/,
+        /Overlay options support only rt and rst/,
     );
 });
 
@@ -81,9 +93,9 @@ test("moveRenderingContext and an engine-first utility layer refuse", () => {
 
 test("an overlay with tasks of its own or under GPU task timing compiles its own scene task", () => {
     for (const source of [
-        `const overlay = createOverlayScene(base);
+        `const overlay = createOverlayScene(base, targets);
         await registerSceneWithShadowSupport(overlay);`,
-        `const overlay = createOverlayScene(base);
+        `const overlay = createOverlayScene(base, targets);
         await registerScene(base);
         await registerScene(overlay);
         await setRenderTaskGpuTimingEnabled(engine, true);`,
@@ -139,6 +151,19 @@ test(
 #include <initializer_list>
 namespace bbl {
 ${registration}
+RenderTargetHandle create_render_target(Engine& engine, RenderTargetOptions options) {
+    assert(options.has_depth && !options.has_color && options.scale_source.value == 3 && options.samples == 4);
+    engine.render_targets.emplace_back();
+    return {static_cast<std::uint32_t>(engine.render_targets.size() - 1)};
+}
+void dispose_render_target(Engine& engine, RenderTargetHandle handle) { handle_at(engine.render_targets, handle).retired = true; }
+TaskHandle create_render_task(Engine& engine, Scene& scene, RenderTaskOptions options) {
+    FrameTaskRecord task;
+    task.render = options;
+    task.source_scene = scene.state;
+    return append_frame_task(engine, std::move(task));
+}
+void add_task(Scene& scene, TaskHandle handle) { scene.tasks.push_back(handle); }
 ${lowerOverlayScenes(context)}
 } // namespace bbl
 using bbl::Scene;
@@ -153,11 +178,32 @@ std::vector<std::shared_ptr<Scene>> registered(const bbl::Engine& engine) { retu
 int main() {
     bbl::Engine engine;
     Scene a = bbl::create_scene_context(engine);
-    Scene b = bbl::create_overlay_scene(a);
-    Scene c = bbl::create_overlay_scene(b);
-    Scene d = bbl::create_overlay_scene(a);
+    const bbl::OverlayTargets targets{{3}, {1}};
+    engine.render_targets.resize(4);
+    engine.render_targets[3].samples = 4;
+    Scene b = bbl::create_overlay_scene(a, targets);
+    Scene c = bbl::create_overlay_scene(b, targets);
+    Scene d = bbl::create_overlay_scene(a, targets);
     assert(b.clear_color.a == 0.0f && b.state->overlay_base == a.state);
+    const auto& pass = bbl::handle_at(engine.frame_tasks, b.state->default_render_task_handle).render;
+    assert(pass.target == targets.rt && pass.resolve_target == targets.rst && pass.shared_target && !pass.clear);
+    assert(pass.depth.target.value == 4);
+    const auto published = bbl::render_task_targets(engine, b.state->default_render_task_handle);
+    assert(published.rt == targets.rt && published.rst == targets.rst);
+    bbl::Engine other;
+    bool cross_engine = false;
+    try { (void)bbl::overlay_target_for_engine(engine, other, targets.rt); }
+    catch (const std::runtime_error&) { cross_engine = true; }
+    assert(cross_engine);
+    const auto retained = bbl::overlay_color_targets({std::make_shared<Scene>(a), std::make_shared<Scene>(b), std::make_shared<Scene>(c)});
+    assert(retained.size() == 1 && retained.contains(targets.rt.value) && !retained.contains(targets.rst.value));
+    for (const auto& dispose : b.disposables) dispose();
+    assert(engine.render_targets[4].retired && !engine.render_targets[3].retired && !engine.render_targets[1].retired);
     // Overlays registered before their base wait, suspended.
+    bool wrong_targets = false;
+    try { static_cast<void>(bbl::create_overlay_scene(a, {{1}, {3}})); }
+    catch (const std::runtime_error&) { wrong_targets = true; }
+    assert(wrong_targets);
     bbl::register_scene(c);
     bbl::register_scene(d);
     bbl::register_scene(b);
@@ -174,7 +220,7 @@ int main() {
     // A base on another surface refuses.
     bool refused = false;
     try {
-        static_cast<void>(bbl::create_overlay_scene(aux));
+        static_cast<void>(bbl::create_overlay_scene(aux, targets));
     } catch (const std::runtime_error&) {
         refused = true;
     }
@@ -203,122 +249,10 @@ test("an overlay over a root writing the swapchain itself or through transmissio
     ]) {
         const result = compileSource(`${preamble}
             ${shape}
-            const overlay = createOverlayScene(base);
+            const overlay = createOverlayScene(base, targets);
             await registerScene(base);
             await registerScene(overlay);
         `);
         assert.ok(result.manifest.features.includes("scene:overlay"));
     }
 });
-
-test(
-    "an overlay composites into its root's swapchain task at MSAA and loads the swapchain at one sample",
-    { skip: !tools },
-    () => {
-        runGeneratedProgram(
-            tools!,
-            "overlay-scene-composite",
-            `#include <bblite/runtime.hpp>
-#include <cassert>
-using bbl::OverlayComposite;
-using bbl::TaskHandle;
-int main() {
-    // A root without a frame graph: the renderer's own scene pass, which
-    // always runs and resolves into the swapchain.
-    bbl::Engine engine;
-    bbl::Scene root;
-    root.engine = &engine;
-    assert(bbl::overlay_composition(engine, root, true).mode == OverlayComposite::root_attachment);
-    assert(bbl::overlay_composition(engine, root, false).mode == OverlayComposite::swapchain);
-    // Transmission retargets the scene pass to a linear target that resolves
-    // nowhere: skipped at MSAA; at one sample the overlay loads the
-    // swapchain the image processing wrote.
-    root.transmission_enabled = true;
-    assert(bbl::overlay_composition(engine, root, true).mode == OverlayComposite::skipped);
-    assert(bbl::overlay_composition(engine, root, false).mode == OverlayComposite::swapchain);
-    root.transmission_enabled = false;
-    // Without its default render task and with no task of its own, it draws nothing.
-    root.state->default_render_task = false;
-    assert(bbl::overlay_composition(engine, root, true).mode == OverlayComposite::skipped);
-    assert(bbl::overlay_composition(engine, root, false).mode == OverlayComposite::swapchain);
-    root.state->default_render_task = true;
-    // The compiler's scene pass (0) with its resolve (1) and present (2)
-    // copies after it, and a later task (3) writing the swapchain.
-    for (int task = 0; task < 4; ++task) engine.frame_tasks.emplace_back();
-    engine.render_targets.emplace_back();
-    engine.render_targets[0].samples = 4;
-    engine.frame_tasks[0].render.target = bbl::RenderTargetHandle{0};
-    engine.frame_tasks[0].render.scene_stages = true;
-    engine.frame_tasks[1].kind = bbl::FrameTaskKind::copy;
-    engine.frame_tasks[2].kind = bbl::FrameTaskKind::copy;
-    engine.frame_tasks[3].kind = bbl::FrameTaskKind::post_process;
-    root.tasks.push_back(TaskHandle{0});
-    root.tasks.push_back(TaskHandle{3});
-    bbl::add_pass_after(*root.state, TaskHandle{1}, TaskHandle{0});
-    bbl::add_pass_after(*root.state, TaskHandle{2}, TaskHandle{0});
-    // MSAA: composited into, after the root's whole graph, and resolved again.
-    const auto msaa = bbl::overlay_composition(engine, root, true);
-    assert(msaa.mode == OverlayComposite::root_attachment && msaa.task.value == 0);
-    assert(bbl::overlay_composition(engine, root, false).mode == OverlayComposite::swapchain);
-    // A record the scene pass does not render skips the layers at MSAA.
-    engine.frame_tasks[0].render_enabled = false;
-    assert(bbl::default_swapchain_task(engine, root)->value == 0);
-    assert(bbl::overlay_composition(engine, root, true).mode == OverlayComposite::skipped);
-    assert(bbl::overlay_composition(engine, root, false).mode == OverlayComposite::swapchain);
-    engine.frame_tasks[0].render_enabled = true;
-    engine.frame_tasks[0].execution_enabled = false;
-    assert(bbl::overlay_composition(engine, root, true).mode == OverlayComposite::skipped);
-    // A first swapchain task drawing into the swapchain itself resolves
-    // nothing into it; one resolving into it is composited into.
-    bbl::Engine other;
-    bbl::Scene post;
-    post.engine = &other;
-    other.render_targets.emplace_back();
-    other.render_targets[0].swapchain = true;
-    other.render_targets.emplace_back();
-    other.frame_tasks.emplace_back();
-    other.frame_tasks.emplace_back();
-    other.frame_tasks[0].render.target = bbl::RenderTargetHandle{0};
-    other.frame_tasks[1].kind = bbl::FrameTaskKind::post_process;
-    post.tasks.push_back(TaskHandle{0});
-    post.tasks.push_back(TaskHandle{1});
-    assert(bbl::overlay_composition(other, post, true).mode == OverlayComposite::skipped);
-    other.frame_tasks[0].render.target = bbl::RenderTargetHandle{1};
-    other.frame_tasks[0].render.resolve_target = bbl::RenderTargetHandle{0};
-    assert(bbl::overlay_composition(other, post, true).mode == OverlayComposite::skipped);
-    other.render_targets[1].samples = 4;
-    const auto resolving = bbl::overlay_composition(other, post, true);
-    assert(resolving.mode == OverlayComposite::root_attachment && resolving.task.value == 0);
-    // The root selects the last active resolver, independently of the overlay's first swapchain task.
-    other.frame_tasks.emplace_back();
-    other.frame_tasks[2].render = other.frame_tasks[0].render;
-    post.tasks.push_back(TaskHandle{2});
-    assert(bbl::default_swapchain_task(other, post)->value == 0);
-    assert(bbl::overlay_composition(other, post, true).task.value == 2);
-    other.frame_tasks[2].execution_enabled = false;
-    assert(bbl::overlay_composition(other, post, true).task.value == 0);
-    // A root whose render tasks never reach the swapchain -- a post-process
-    // writes it -- has no swapchain task: skipped at MSAA, loaded at one sample.
-    other.frame_tasks[0].render.resolve_target = bbl::RenderTargetHandle{};
-    assert(bbl::overlay_composition(other, post, true).mode == OverlayComposite::skipped);
-    assert(bbl::overlay_composition(other, post, false).mode == OverlayComposite::swapchain);
-    // The layer clears the surface's depth while it fits the root task's
-    // target, else the target's own cleared depth; anything else refuses.
-    bbl::FrameTaskRecord task;
-    task.render.depth_clear = true;
-    const bbl::OverlayAttachmentExtent surface{1280, 720, 4};
-    assert(!bbl::overlay_lends_target_depth(task, surface, surface, false));
-    assert(bbl::overlay_lends_target_depth(task, {640, 360, 4}, surface, true));
-    assert(bbl::overlay_lends_target_depth(task, {1280, 720, 1}, surface, true));
-    bool refused = false;
-    try {
-        static_cast<void>(bbl::overlay_lends_target_depth(task, {640, 360, 4}, surface, false));
-    } catch (const std::runtime_error&) {
-        refused = true;
-    }
-    assert(refused);
-}
-`,
-        );
-    },
-);

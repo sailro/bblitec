@@ -6161,36 +6161,39 @@ export class ExpressionLowerer {
         return provenVoidAsUndefined(this.context, value, expression) ?? value;
     }
 
-    /**
-     * The resource facts every present arm of an optional handle selection
-     * shares (`flag ? createRenderTarget(...) : null` keeps its target's
-     * attachment signature), for the storage the selection fills.
-     */
-    private presentHandleTemplate(
-        unwrapped: ts.ConditionalExpression,
-        type: DataType<"handle">,
-    ): Value | undefined {
-        const present = [unwrapped.whenTrue, unwrapped.whenFalse].filter(
-            (arm) =>
-                !this.context.symbols.isNullishLiteral(
-                    this.context.unwrap(arm),
+    /** Store the selected handle once; retain only facts shared by its present arms. */
+    private optionalHandleConditional(
+        expression: ts.ConditionalExpression,
+        type: DataType<"optional">,
+        handle: DataType<"handle">["handle"],
+    ): Value {
+        const present: Value[] = [];
+        const cpp = this.context.dataLowerer.compileConditionalForSink(
+            expression,
+            type,
+            this.context.conditions.compileCondition(expression.condition),
+            undefined,
+            (branch) =>
+                this.context.dataLowerer.compileOptionalSink(
+                    branch,
+                    type,
+                    (value) => present.push(value),
                 ),
         );
-        const values = this.context.probeEmission(
-            () =>
-                unlessRefused(() =>
-                    present.map((arm) =>
-                        this.inRuntimeControlFlow(() => this.compileValue(arm)),
-                    ),
-                ),
-            () => false,
-        );
-        if (
-            !values?.length ||
-            values.some((value) => value.kind !== type.handle)
-        )
-            return undefined;
-        return commonResourceValue(values[0]!, values);
+        const first = present[0];
+        return {
+            kind: "data",
+            cpp,
+            dataType: type,
+            ...(first && present.every((value) => value.kind === handle)
+                ? {
+                      runtimeElementTemplate: commonResourceValue(
+                          first,
+                          present,
+                      ),
+                  }
+                : {}),
+        };
     }
 
     private compileConditionalValue(
@@ -6507,17 +6510,19 @@ export class ExpressionLowerer {
                 : this.context.dataValue(cpp, conditionalType);
         }
         if (conditionalType?.kind === "optional") {
+            const inner = conditionalType.inner;
+            if (inner.kind === "handle")
+                return this.inRuntimeControlFlow(() =>
+                    this.optionalHandleConditional(
+                        unwrapped,
+                        conditionalType,
+                        inner.handle,
+                    ),
+                );
             const objectIdentity =
                 conditionalType.inner.kind === "struct"
                     ? this.inRuntimeControlFlow(() =>
                           this.context.dataLowerer.objectIdentity(unwrapped),
-                      )
-                    : undefined;
-            const handleTemplate =
-                conditionalType.inner.kind === "handle"
-                    ? this.presentHandleTemplate(
-                          unwrapped,
-                          conditionalType.inner,
                       )
                     : undefined;
             return {
@@ -6536,9 +6541,6 @@ export class ExpressionLowerer {
                           objectIdentityCpp: objectIdentity,
                           optionalFoundCpp: `(${objectIdentity}) != nullptr`,
                       }
-                    : {}),
-                ...(handleTemplate
-                    ? { runtimeElementTemplate: handleTemplate }
                     : {}),
             };
         }

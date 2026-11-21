@@ -119,6 +119,14 @@ inline js::Promise<js::PromiseVoid> check_selection(std::shared_ptr<bbl::GpuDevi
     const auto state = gpu::create_mesh_lo_d_gpu_batch_state();
     // A camera 1.5 extents in front of the statue, culling by cone only.
     const auto& meta = asset->metadata;
+    const auto resident_pages = [&runtime] {
+        int count = 0;
+        for (const auto& page : runtime->gpu->pages)
+            count += page->state == "gpu-resident";
+        return count;
+    };
+    require(resident_pages() == meta.pinned_page_count,
+            "only pinned pages are resident before selection");
     bbl::MeshLoDGpuFrameParams frame;
     frame.camera_pos = {(meta.bounds_min[0] + meta.bounds_max[0]) / 2,
                         (meta.bounds_min[1] + meta.bounds_max[1]) / 2,
@@ -182,10 +190,7 @@ inline js::Promise<js::PromiseVoid> check_selection(std::shared_ptr<bbl::GpuDevi
         device->submit(js::Array<bbl::GpuHandle>{encoder->finish()});
         scope.submitted();
         const auto control = co_await read_words(*device, handles->control_buffer, 16);
-        int resident = 0;
-        for (const auto& page : runtime->gpu->pages)
-            resident += page->state == "gpu-resident";
-        std::printf("frame%d %u %d\n", index, control[0], resident);
+        std::printf("frame%d %u %d\n", index, control[0], resident_pages());
         co_await sleep(20);
     }
     bbl::dispose_mesh_lo_d_asset(asset);

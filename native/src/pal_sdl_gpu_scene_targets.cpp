@@ -709,8 +709,9 @@ SDL_GPUSampler* depth_grab_sampler(GpuState& state) {
 }
 } // namespace
 
-GpuState::TaskTransmission& prepare_task_transmission(GpuState& state, const Engine& engine,
-                                                      TaskHandle task) {
+static GpuState::TaskTransmission& prepare_task_transmission(GpuState& state, const Engine& engine,
+                                                             TaskHandle task,
+                                                             SDL_GPUTexture** source = nullptr) {
     const FrameTaskRecord& record = handle_at(engine.frame_tasks, task);
     if (!record.transmission)
         throw std::runtime_error("A transmission texture names a task without transmission.");
@@ -744,9 +745,12 @@ GpuState::TaskTransmission& prepare_task_transmission(GpuState& state, const Eng
             gpu_error("SDL_CreateGPUTexture render-task transmission");
         grab.mip_count = mips;
     }
-    // transmission-depth-grab.ts: the target's own extent, r32float.
-    const bool depth = settings.grab_depth.value_or(false) && target_record.has_depth &&
-                       target.depth && target.width > 0 && target.height > 0;
+    const auto depth_texture = task_grab_depth_source<SDL_GPUTexture*>(
+        engine, record, state, target, &GpuRenderTarget::depth, &GpuGeometryTask::depth,
+        source != nullptr);
+    if (source)
+        *source = depth_texture;
+    const bool depth = depth_texture && target.width > 0 && target.height > 0;
     if (!depth || grab.depth_width != target.width || grab.depth_height != target.height) {
         if (grab.depth)
             SDL_ReleaseGPUTexture(state.device, grab.depth);
@@ -765,7 +769,9 @@ GpuState::TaskTransmission& prepare_task_transmission(GpuState& state, const Eng
 
 void encode_task_transmission_grab(GpuState& state, const Engine& engine,
                                    SDL_GPUCommandBuffer* command, TaskHandle task) {
-    GpuState::TaskTransmission& grab = prepare_task_transmission(state, engine, task);
+    SDL_GPUTexture* depth_texture = nullptr;
+    GpuState::TaskTransmission& grab =
+        prepare_task_transmission(state, engine, task, &depth_texture);
     const FrameTaskRecord& record = handle_at(engine.frame_tasks, task);
     const pal::TargetUser user = pal::task_target_user(record);
     const GpuRenderTarget& target =
@@ -803,9 +809,9 @@ void encode_task_transmission_grab(GpuState& state, const Engine& engine,
                 state, multisampled ? "transmission-depth-grab" : "transmission-depth-grab-single",
                 SDL_GPU_TEXTUREFORMAT_R32_FLOAT,
                 "SDL_CreateGPUGraphicsPipeline render-task depth grab");
-        const SDL_GPUTextureSamplerBinding depth_source{target.depth, depth_grab_sampler(state)};
+        const SDL_GPUTextureSamplerBinding depth_source{depth_texture, depth_grab_sampler(state)};
         encode_grab_pass(command, depth_pipeline, grab.depth, &depth_source,
-                         multisampled ? target.depth : nullptr);
+                         multisampled ? depth_texture : nullptr);
     }
 }
 

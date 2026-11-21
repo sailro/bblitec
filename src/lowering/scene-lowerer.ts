@@ -162,6 +162,8 @@ interface SceneCoreOptions {
     deformedPosition?: boolean;
     /** A CSM generator keeps a static cache target (`enableCsmStaticCache`). */
     csmStaticCache?: boolean;
+    /** The program reaches the automatic linear transmission retarget. */
+    sceneTransmission?: boolean;
     /** The program builds an overlay scene (`scene:overlay`). */
     overlayScenes?: boolean;
     /** `setMeshOpacity`: its material validator joins the material setter. */
@@ -848,6 +850,7 @@ ${options.geometryAccess ? "#include <bblite/mesh_cpu_streams.hpp>" : ""}
 #endif
 #include <bblite/features/has_shadows.hpp>
 #include <bblite/features/has_sprites.hpp>
+#include <bblite/features/render_task_transmission.hpp>
 ${options.text ? "#include <bblite/upstream_text_records.hpp>" : ""}
 ${options.taskBuild && options.ssaoTasks ? "#include <bblite/upstream/frame_graph_ssao.hpp>" : ""}
 #include <bblite/upstream/pinned_matrix.hpp>
@@ -912,13 +915,49 @@ std::uint32_t scene_material_families(const Scene& scene) {
 ${lowerMeshMaterialSetter(this.context, options.meshOpacity === true)}
 ${this.sceneCreationSource(callbackDelta, value, clear, options)}${options.pbrSceneHooks ? lowerPbrMaterialGroups(this.context, options.gltfSceneHooks ?? options.pbrSceneHooks, options.thinBindings, options.pbrMaterials) : ""}${this.meshMembershipSource(options)}${this.assetCloneSource(cloneSuffix, nodeHierarchy)}${this.assetRootSource(nodeHierarchy, options.lightChildren === true)}${this.assetMembershipSource(options)}${this.eventRegistrationSource()}${this.sceneLifecycleSource(managerSeek, vatSeek, options)}${options.overlayScenes ? lowerOverlayScenes(this.context) : ""}void enable_scene_transmission(Scene& scene) {
     require_scene_engine(scene);
-    scene.transmission_enabled = true;
+${options.sceneTransmission ? this.rejectSharedTransmissionRetarget() : ""}    scene.transmission_enabled = true;
 }
 ${fogSource}${clipPlaneSource}${meshDirtySource}${visibilitySource}${transformNodeSource}${mirroredSource}${parentingSource}${geometryAccessSource}
 ${options.sceneNodeTransforms ? sceneNodeTransformsSource(options.transformNodes === true) + sceneNodeTraversalSource(this.context) + lowerSceneNodeRemoval(this.context) : ""}
 } // namespace bbl
 `,
         };
+    }
+
+    private rejectSharedTransmissionRetarget(): string {
+        const { file, declaration } = this.context.functionDeclaration(
+            "src/frame-graph/transmission.ts",
+            "retargetRenderTaskToLinearOffscreen",
+        );
+        const guard = declaration.body!.statements.find(
+            (s): s is ts.IfStatement =>
+                ts.isIfStatement(s) &&
+                this.context.expressionMatchesShape(
+                    s.expression,
+                    "cfg.sharedRt",
+                ),
+        );
+        if (!guard)
+            return this.context.contractError(
+                declaration,
+                "Expected the borrowed colour retarget guard.",
+            );
+        const lowerer = new PinnedNumericLowerer(file, {
+            bindings: new Map([
+                [
+                    "cfg.sharedRt",
+                    { cpp: "task.render.shared_target", type: "bool" },
+                ],
+            ]),
+            calls: new Map(),
+        });
+        return `    for (const TaskHandle handle : scene.frame_passes()) {
+        const auto& task = ${recordAt("scene.engine->frame_tasks", "handle")};
+        // enableTransmission returns before the retarget for an already wrapped task.
+        if (task.kind != FrameTaskKind::render || task.transmission) continue;
+${lowerer.statement(guard, "        ").join("\n")}
+    }
+`;
     }
 
     /**
@@ -2834,7 +2873,11 @@ ${options.thinBindings ? "            entry.thin_binding = create_thin_material_
         }
 ${options.meshOpacity ? "        resolve_render_task_mesh_extras(*scene.engine, task);\n" : ""}\
         task.shader_packet_scene_version = static_cast<double>(task_scene.state->renderable_version);
-        task.record_state = FrameTaskRecordState::recorded;`;
+        task.record_state = FrameTaskRecordState::recorded;
+#if BBLITE_RENDER_TASK_TRANSMISSION
+        sync_transmission_geometry_depth(*scene.engine, task);
+#endif
+`;
     }
 
     private sceneLifecycleSource(
@@ -2976,6 +3019,10 @@ ${
 `
         : ""
 }\
+#if BBLITE_RENDER_TASK_TRANSMISSION
+        if (task.kind == FrameTaskKind::geometry)
+            task.record_state = FrameTaskRecordState::recorded;
+#endif
         if (task.kind != FrameTaskKind::render || task.record_state == FrameTaskRecordState::recorded) continue;
 ${this.renderTaskRecordSource(options)}
     }

@@ -38,7 +38,11 @@ import {
 import { plannedLayoutEntryCpp } from "../recording-engine.js";
 import { geometryAttachmentDefaultFormat } from "../pinned-shader-composer.js";
 import type { ComposedShader } from "../upstream-lower.js";
-import { isOneOfSources, sameSource } from "../compiler/syntax.js";
+import {
+    isOneOfSources,
+    sameSource,
+    truthinessSelection,
+} from "../compiler/syntax.js";
 import type { LoweredSource, LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import {
@@ -142,6 +146,21 @@ const TEMPORAL_STATE: readonly {
         binding: { cpp: "task.state.tan_y", type: "scalar" },
     },
     {
+        name: "offsetX",
+        initializer: "0",
+        binding: { cpp: "task.state.offset_x", type: "scalar" },
+    },
+    {
+        name: "offsetY",
+        initializer: "0",
+        binding: { cpp: "task.state.offset_y", type: "scalar" },
+    },
+    {
+        name: "orthographic",
+        initializer: "false",
+        binding: { cpp: "task.state.orthographic", type: "bool" },
+    },
+    {
         name: "near",
         initializer: "0",
         binding: { cpp: "task.state.near_plane", type: "scalar" },
@@ -200,6 +219,9 @@ const PARAMS_MEMBERS: readonly (readonly [
     ["depthAdd", "depth_add", "scalar"],
     ["tanX", "tan_x", "scalar"],
     ["tanY", "tan_y", "scalar"],
+    ["offsetX", "offset_x", "scalar"],
+    ["offsetY", "offset_y", "scalar"],
+    ["orthographic", "orthographic", "bool"],
     ["radius", "radius", "scalar"],
     ["intensity", "intensity", "scalar"],
 ];
@@ -355,6 +377,23 @@ export class SsaoLowerer {
         private readonly context: LoweringContext,
         private readonly tasks: readonly SsaoLoweringInput[],
     ) {}
+
+    private parameterBindings(): Map<string, PinnedBinding> {
+        const orthographic = this.tasks[0]!.composed.orthographicCamera;
+        const bindings = new Map<string, PinnedBinding>([
+            [
+                "_orthoProjector",
+                {
+                    cpp: String(orthographic),
+                    type: "bool",
+                    staticBoolean: orthographic,
+                },
+            ],
+        ]);
+        for (const [pinned, native, type] of PARAMS_MEMBERS)
+            bindings.set(`params.${pinned}`, { cpp: `params.${native}`, type });
+        return bindings;
+    }
 
     /** The stem a program's stage deploys under. */
     private static stem(
@@ -895,6 +934,9 @@ struct SsaoGpuParameters {
     double depth_add = 0.0;
     double tan_x = 0.0;
     double tan_y = 0.0;
+    double offset_x = 0.0;
+    double offset_y = 0.0;
+    bool orthographic = false;
     double radius = 0.0;
     double intensity = 0.0;
     bool has_view = false;
@@ -1128,13 +1170,7 @@ ${this.tasks.map((task) => this.taskFactory(task)).join("\n\n")}
                     nullish: "!sampling_footprint.has_value()",
                 },
             ],
-            ...PARAMS_MEMBERS.map(
-                ([pinned, native, type]) =>
-                    [
-                        `params.${pinned}`,
-                        { cpp: `params.${native}`, type },
-                    ] as const,
-            ),
+            ...this.parameterBindings(),
             [
                 "params.view",
                 {
@@ -1316,8 +1352,7 @@ ${this.tasks.map((task) => this.taskFactory(task)).join("\n\n")}
                     type: "scalar",
                 },
             ],
-            ["params.tanX", { cpp: "params.tan_x", type: "scalar" }],
-            ["params.tanY", { cpp: "params.tan_y", type: "scalar" }],
+            ...this.parameterBindings(),
             ["params.phase", { cpp: "params.phase", type: "scalar" }],
             ["params.view", { cpp: "params.view", type: "f32" }],
         ]);
@@ -1877,15 +1912,43 @@ ${body}
             ["height", { cpp: "height", type: "scalar" }],
             ["device", { cpp: "static_cast<double>(device)", type: "scalar" }],
         ];
+        // Every native GPU owner is built from this scene's composed shader
+        // plan. Unlike a browser owner made before the projector was installed,
+        // it cannot lack the reached projection capability.
+        const replacementTest = (
+            lowerer: PinnedNumericLowerer,
+            statement: ts.IfStatement,
+            gpu: string,
+        ): string => {
+            const test = statement.expression;
+            if (
+                !ts.isBinaryExpression(test) ||
+                truthinessSelection(test) !== "||" ||
+                !sameSource(
+                    context.unwrapExpression(test.right),
+                    `_orthoProjector && task.camera.ortho && !${gpu}.orthographicProjection`,
+                )
+            )
+                return context.contractError(
+                    test,
+                    "Expected the late-installed SSAO projection capability guard.",
+                );
+            return lowerer.truthTest(test.left);
+        };
         const condition = (
             file: ts.SourceFile,
             statement: ts.IfStatement,
             bindings: [string, PinnedBinding][],
+            gpu: string,
         ): string =>
-            new PinnedNumericLowerer(file, {
-                bindings: new Map(bindings),
-                calls: new Map(),
-            }).expression(statement.expression);
+            replacementTest(
+                new PinnedNumericLowerer(file, {
+                    bindings: new Map(bindings),
+                    calls: new Map(),
+                }),
+                statement,
+                gpu,
+            );
         const { file, factory } = ssaoTaskObject(context);
         const prepare = context.findNodes(
             factory,
@@ -1913,6 +1976,7 @@ ${body}
                 ["depth._width", { cpp: "width", type: "scalar" }],
                 ["depth._height", { cpp: "height", type: "scalar" }],
             ],
+            "task._gpu",
         );
         const half = halfAdapter(context);
         const adapterPrepare = context.objectMethod(half.adapter, "prepare");
@@ -1932,6 +1996,7 @@ ${body}
                 ],
                 ...extent,
             ],
+            "gpu",
         );
         const replaced = creating(
             adapterPrepare,
@@ -2010,7 +2075,7 @@ ${body}
                 statement: (node, lowerer, indent) => {
                     if (node === replaced)
                         return [
-                            `${indent}return ${lowerer.expression(replaced.expression)};`,
+                            `${indent}return ${replacementTest(lowerer, replaced, "state.gpu")};`,
                         ];
                     // The input formats, strings the pipeline is made for.
                     const declaration = ts.isVariableStatement(node)
@@ -2199,13 +2264,16 @@ bool ssao_installs_transport(const SsaoTaskOptions& task) {
             ["camera.nearPlane", { cpp: "camera.near_plane", type: "scalar" }],
             ["camera.farPlane", { cpp: "camera.far_plane", type: "scalar" }],
             ["camera.fov", { cpp: "camera.fov", type: "scalar" }],
-            ...PARAMS_MEMBERS.map(
-                ([pinned, native, type]) =>
+            ["camera.ortho", { cpp: "camera.orthographic", type: "bool" }],
+            ["viewport", { cpp: "camera.viewport.has_value()", type: "bool" }],
+            ...["x", "y", "width", "height"].map(
+                (member) =>
                     [
-                        `params.${pinned}`,
-                        { cpp: `params.${native}`, type },
+                        `viewport.${member}`,
+                        { cpp: `camera.viewport->${member}`, type: "scalar" },
                     ] as const,
             ),
+            ...this.parameterBindings(),
             ["Math.PI", { cpp: "3.141592653589793", type: "scalar" }],
         ]);
         const statement = (
@@ -2271,20 +2339,6 @@ bool ssao_installs_transport(const SsaoTaskOptions& task) {
                         `${indent}const std::array<float, 16> projection = build_projection(camera, effective_aspect_ratio(camera, static_cast<double>(inputs.depth_width), static_cast<double>(inputs.depth_height)));`,
                     ];
                 }
-            }
-            if (
-                ts.isIfStatement(node) &&
-                sameSource(
-                    node.expression,
-                    "camera.ortho || (viewport && (viewport.x !== 0 || viewport.y !== 0 || viewport.width !== 1 || viewport.height !== 1))",
-                )
-            ) {
-                // The test reads the camera record's projection kind and
-                // optional viewport; the refusal is the pin's own statement.
-                return [
-                    `${indent}if (camera.orthographic || (camera.viewport && (camera.viewport->x != 0.0 || camera.viewport->y != 0.0 || camera.viewport->width != 1.0 || camera.viewport->height != 1.0)))`,
-                    ...lowerer.statement(node.thenStatement, indent),
-                ];
             }
             if (ts.isExpressionStatement(node)) {
                 const expression = context.unwrapExpression(node.expression);

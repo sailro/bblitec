@@ -498,11 +498,11 @@ export async function composeScenePipeline({
         ...(rectAreaLightings ? { rectAreaLightings } : {}),
     });
     // The pin's enableSceneTransmission marks every material in the scene
-    // `_linearImageProcessing` (markPbrMaterialsLinear), so each composed
+    // `_linearImageProcessing` in its transaction, so each composed
     // fragment wraps its processing tail in `if(scene.vImageInfos.w>=0.0)`
     // and the retargeted linear pass runs with w = -1. Transmission-capable
     // rendering alone does not imply that state: PBR skybox mode needs the
-    // same renderer but never calls markPbrMaterialsLinear.
+    // same renderer without that transaction.
     const linearImageProcessing = assetJoin.plan.linearImageProcessing.value;
     // The scene's clustered light field, if it added one. It travels beside
     // `linearImageProcessing` because it is the same kind of fact: a scene

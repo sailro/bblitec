@@ -1487,16 +1487,16 @@ void fitted_shadow_casters(const Engine& engine, const ShadowGeneratorRecord& ge
         // the bounds retirement left on its record.
         const MeshRecord& record = handle_at(engine.meshes, handle);
         upstream::ShadowCaster caster;
-        caster.bounds_min = upstream::shadow_caster_bounds_fallback_min;
-        caster.bounds_max = upstream::shadow_caster_bounds_fallback_max;
+        auto local_min = upstream::shadow_caster_bounds_fallback_min;
+        auto local_max = upstream::shadow_caster_bounds_fallback_max;
         if (record.geometry < engine.geometries.size()) {
             const ModelGeometry& geometry = engine.geometries[record.geometry];
-            caster.bounds_min = {
+            local_min = {
                 geometry.bounds_min.x,
                 geometry.bounds_min.y,
                 geometry.bounds_min.z,
             };
-            caster.bounds_max = {
+            local_max = {
                 geometry.bounds_max.x,
                 geometry.bounds_max.y,
                 geometry.bounds_max.z,
@@ -1525,54 +1525,35 @@ void fitted_shadow_casters(const Engine& engine, const ShadowGeneratorRecord& ge
                 upstream::expand_morph_caster_bounds(
                     geometry.morph_bounds,
                     uncapped ? storage_weights.data() : record.morph_weights.data(),
-                    uncapped ? storage_weights.size() : record.morph_weights.size(),
-                    caster.bounds_min, caster.bounds_max);
+                    uncapped ? storage_weights.size() : record.morph_weights.size(), local_min,
+                    local_max);
             }
 #endif
 #if BBLITE_SHADOW_SKELETON_BOUNDS
             // enableSkeletonShadows' provider: the bones' live boxes, since a
             // skinned caster moves through its palette, not its world matrix.
             if (generator.skeleton_shadow_bounds)
-                upstream::expand_skeleton_caster_bounds(geometry, record, morph_bounded,
-                                                        caster.bounds_min, caster.bounds_max);
+                upstream::expand_skeleton_caster_bounds(geometry, record, morph_bounded, local_min,
+                                                        local_max);
 #endif
         }
-        // `computeDirectionalLightMatrix` reads the mesh's live boundMin and
-        // boundMax properties, not the geometry record. Sandblox maintains
-        // those properties as the aggregate AABB of each thin-instance pool;
-        // ignoring them collapses the fit around the unit prototype and puts
-        // almost every receiver outside the shadow map.
-        Vec3 minimum{caster.bounds_min[0], caster.bounds_min[1], caster.bounds_min[2]};
-        Vec3 maximum{caster.bounds_max[0], caster.bounds_max[1], caster.bounds_max[2]};
+        Vec3 minimum{local_min[0], local_min[1], local_min[2]};
+        Vec3 maximum{local_max[0], local_max[1], local_max[2]};
         apply_mesh_bound_overrides(record, minimum, maximum);
         caster.bounds_min = {minimum.x, minimum.y, minimum.z};
         caster.bounds_max = {maximum.x, maximum.y, maximum.z};
-
-        // `_castersWorldAabb` gives a live CSM caster with an active
-        // ThinInstanceData pool to `_thinInstanceWorldAabb`: every active,
-        // non-degenerate matrix transforms the mesh bounds, and mesh.world
-        // transforms that result. One carrier per instance lets the pinned
-        // cascade fold perform those same two transforms without reducing
-        // rotated boxes to an intermediate AABB. The refresh gate already
-        // keys on the pool's version, so this work runs only when the pin's
-        // own cache would be invalidated.
-#if BBLITE_GPU_INSTANCING && BBLITE_SHADOWS_CSM
-        const std::size_t active_instances = thin_instance_active_count(record);
-        if (generator.filter == ShadowFilter::csm_directional && record.thin_instances &&
-            active_instances > 0) {
-            caster.world = upstream::mesh_world_matrix_f64(engine, record);
-            for (std::size_t index = 0; index < active_instances; ++index) {
-                const auto instance = thin_instance_matrix(*record.thin_instances, index);
-                if (!upstream::csm_instance_contributes(instance))
-                    continue;
-                caster.instance = instance;
-                caster.has_instance = true;
-                casters.push_back(caster);
-            }
-            continue;
-        }
-#endif
         caster.world = upstream::mesh_world_matrix_f64(engine, record);
+        if (record.thin_instances || generator.filter == ShadowFilter::csm_directional) {
+            // Copies of a MeshRecord are distinct WeakMap keys in the pin.
+            if (!record.shadow_bounds_cache || record.shadow_bounds_cache->owner != handle) {
+                record.shadow_bounds_cache = std::make_shared<upstream::ShadowBoundsCache>();
+                record.shadow_bounds_cache->owner = handle;
+            }
+            if (!upstream::fit_shadow_caster_world_bounds(
+                    caster, record.thin_instances.get(),
+                    static_cast<double>(record.transform_version), *record.shadow_bounds_cache))
+                continue;
+        }
         casters.push_back(caster);
     }
 }

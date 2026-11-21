@@ -545,7 +545,6 @@ function runPickCollector(name: string, body: string, discard?: string): void {
         );
     }
     const renderer = readFileSync("src/lowering/renderer-lowerer.ts", "utf8");
-    const activeCount = "inline std::size_t thin_instance_active_count(";
     runCpp(
         name,
         `
@@ -569,7 +568,6 @@ function runPickCollector(name: string, body: string, discard?: string): void {
         namespace bbl::pal {
             ${["struct PickMeshUniforms {", "struct PickRange {", "struct PickMeshCandidate {"].map((signature) => cppFunction(source, signature) + ";").join("\n")}
             ${cppFunction(source, "inline std::uint32_t pick_candidate_instances(")}
-            ${cppFunction(source.slice(source.lastIndexOf(activeCount)), activeCount)}
             ${cppFunction(source, "inline const Engine::PickIgnore* pick_ignore_entry(")}
             ${cppFunction(source, "inline std::array<std::uint32_t, 2> pick_ignored_range(")}
             template<class HasGeometry>

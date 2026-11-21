@@ -97,6 +97,8 @@ export const SSAO_INTRINSICS: ReadonlyMap<string, string> = new Map([
 
 /** What generation knows about one reached `createSsaoTask` call. */
 export interface SsaoCompositionRequest {
+    /** The scene reaches enableOrthographicCamera (its projector changes the WGSL). */
+    orthographicCamera?: boolean;
     /** The settings the scene wrote (radius, intensity, quality, normalSpace, temporal). */
     options: Readonly<Record<string, PostProcessOptionValue>>;
     /** The normal input's colour format when one is supplied, at creation or later. */
@@ -238,6 +240,8 @@ export interface SsaoModePlan {
 }
 
 export interface ComposedSsaoTask {
+    /** The projector capability of the shader programs in this plan. */
+    orthographicCamera: boolean;
     /** The live settings the factory published, after its defaults. */
     settings: {
         quality: string;
@@ -269,7 +273,12 @@ const VELOCITY_LABEL = "bblitec-ssao-velocity";
 
 interface PinnedSsaoTask {
     enabled: boolean;
-    _gpu: { samplingFootprint?: number; width: number; height: number } | null;
+    _gpu: {
+        samplingFootprint?: number;
+        width: number;
+        height: number;
+        orthographicProjection?: boolean;
+    } | null;
     temporal: { enabled: boolean; historySamples: number };
     quality: string;
     radius: number;
@@ -455,50 +464,76 @@ async function record(
         if (state.pruning !== undefined) settings.enabled = state.pruning;
         pruning = settings.enabled;
     }
-    task.record();
-    const frame = (): RecordedPass<SsaoShapes>[] => {
-        const before = recorder.passes.length;
-        task.execute();
-        return recorder.passes.slice(before);
-    };
-    const first = frame();
-    const second = frame();
-    const third = frame();
-    if (passSignature(third) !== passSignature(first)) {
-        throw new Error(
-            "Pinned createSsaoTask encodes a third frame unlike the first; the " +
-                "temporal history has more than two parities.",
+    // The pin's camera module is shared by all compositions. Its projector
+    // selects shader code at record/execute time; never yield with it installed.
+    const projection = requirePinnedModule<{
+        readonly _orthoProjector: unknown;
+        _installOrthographicProjector(writer: unknown): void;
+    }>("camera/camera.js");
+    const previous = projection._orthoProjector;
+    try {
+        if (request.orthographicCamera) {
+            requirePinnedModule<{
+                enableOrthographicCamera(camera: object): void;
+            }>("camera/orthographic.js").enableOrthographicCamera(camera);
+        } else if (previous) {
+            projection._installOrthographicProjector(null);
+        }
+        task.record();
+        const frame = (): RecordedPass<SsaoShapes>[] => {
+            const before = recorder.passes.length;
+            task.execute();
+            return recorder.passes.slice(before);
+        };
+        const first = frame();
+        const second = frame();
+        const third = frame();
+        if (
+            !!task._gpu?.orthographicProjection !== !!request.orthographicCamera
+        ) {
+            throw new Error(
+                "The recorded SSAO owner did not match the requested projection capability.",
+            );
+        }
+        if (passSignature(third) !== passSignature(first)) {
+            throw new Error(
+                "Pinned createSsaoTask encodes a third frame unlike the first; the " +
+                    "temporal history has more than two parities.",
+            );
+        }
+        const samplingFootprint = task._gpu?.samplingFootprint;
+        const workingWidth = task._gpu?.width ?? 0;
+        const workingHeight = task._gpu?.height ?? 0;
+        const chainLevels = new Set(
+            recorder.textures
+                .filter(
+                    (texture) =>
+                        !texture.destroyed && texture.mipLevelCount > 1,
+                )
+                .map((texture) => texture.mipLevelCount),
         );
+        if (chainLevels.size > 1) {
+            throw new Error(
+                `Pinned SSAO sizes its mip chains two ways at ${width}x${height}.`,
+            );
+        }
+        task.enabled = false;
+        const disabled = frame();
+        return {
+            width,
+            height,
+            recorder,
+            task,
+            frames: [first, second, disabled],
+            halfActive: settings?.active ?? false,
+            samplingFootprint,
+            workingWidth,
+            workingHeight,
+            pruning,
+        };
+    } finally {
+        projection._installOrthographicProjector(previous);
     }
-    const samplingFootprint = task._gpu?.samplingFootprint;
-    const workingWidth = task._gpu?.width ?? 0;
-    const workingHeight = task._gpu?.height ?? 0;
-    const chainLevels = new Set(
-        recorder.textures
-            .filter(
-                (texture) => !texture.destroyed && texture.mipLevelCount > 1,
-            )
-            .map((texture) => texture.mipLevelCount),
-    );
-    if (chainLevels.size > 1) {
-        throw new Error(
-            `Pinned SSAO sizes its mip chains two ways at ${width}x${height}.`,
-        );
-    }
-    task.enabled = false;
-    const disabled = frame();
-    return {
-        width,
-        height,
-        recorder,
-        task,
-        frames: [first, second, disabled],
-        halfActive: settings?.active ?? false,
-        samplingFootprint,
-        workingWidth,
-        workingHeight,
-        pruning,
-    };
 }
 
 function viewLabel(view: RecordedTextureView): string {
@@ -1796,6 +1831,7 @@ export async function composeSsaoTask(
                         });
                     }
     return {
+        orthographicCamera: !!request.orthographicCamera,
         settings,
         uniforms: tables.uniforms,
         programs: tables.programs,
@@ -1815,8 +1851,10 @@ const compositions = new Map<string, Promise<ComposedSsaoTask>>();
 /** A reached task's composition, its inputs' formats read from the pin's geometry table. */
 export function composeSsaoTaskManifest(
     manifest: SsaoTaskManifest,
+    orthographicCamera: boolean,
 ): Promise<ComposedSsaoTask> {
     const request: SsaoCompositionRequest = {
+        orthographicCamera,
         options: manifest.options,
         normalFormat:
             manifest.normalAttachment === undefined

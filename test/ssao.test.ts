@@ -1,14 +1,22 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { FactoryLowerer } from "../src/lowering/factory/material-factories.js";
-import { materialPluginListKey } from "../src/pinned-material-plugins.js";
+import {
+    enablePinnedMaterialPlugins,
+    materialPluginListKey,
+    pinnedPlugins,
+} from "../src/pinned-material-plugins.js";
+import { composePinnedPbrVariant } from "../src/pinned-pbr-variants.js";
+import { SsaoLowerer } from "../src/lowering/ssao-lowerer.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import {
     cppFunction,
     optionalNativeFixtureTools,
     runGeneratedProgram,
+    writeFixtureHeaders,
 } from "./native-fixture.js";
 import {
     composeSsaoTask,
@@ -24,6 +32,168 @@ function frameLabels(mode: SsaoModePlan, index: 0 | 1): string[] {
         (pass) => pass.label + (pass.repeat ? "*" : ""),
     );
 }
+
+test("SSAO composes orthographic programs only for a reached projector", async () => {
+    const compose = (orthographicCamera: boolean) =>
+        composeSsaoTask({
+            options: SCENE_OPTIONS,
+            initialNormal: true,
+            normalFormat: "rgba16float",
+            halfResolution: true,
+            orthographicCamera,
+        });
+    const [ortho, perspective] = await Promise.all([
+        compose(true),
+        compose(false),
+    ]);
+    const hasOrtho = (task: typeof ortho) =>
+        task.programs.some((p) => p.wgsl.includes("aoProjectedRadius("));
+    assert.equal(hasOrtho(ortho), true);
+    assert.equal(hasOrtho(perspective), false);
+    assert.equal(hasOrtho(await compose(false)), false);
+});
+
+test("orthographic offsets and history use the task projection without replacing a steady GPU owner", async (t) => {
+    const manifest = {
+        taskIndex: 0,
+        options: SCENE_OPTIONS,
+        initialNormal: false,
+        halfResolution: false,
+        live: [],
+        motionPruning: false,
+    };
+    const composed = await composeSsaoTask({
+        ...manifest,
+        normalFormat: undefined,
+        orthographicCamera: true,
+    });
+    const { source } = new SsaoLowerer(new LoweringContext(), [
+        { manifest, composed },
+    ]).lowerTaskRecords();
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) return t.skip("Native fixture compiler unavailable.");
+    runGeneratedProgram(
+        tools,
+        "ssao-orthographic-owner",
+        `#include <bblite/js_data.hpp>
+#include <bblite/runtime.hpp>
+#include <cassert>
+#include <bit>
+namespace bbl::upstream {
+// Supply exact camera matrices; run the generated SSAO frame, including temporal history.
+auto projection = ssao_identity_mat4;
+double effective_aspect_ratio(const CameraRecord&, double w, double h) { return w / h; }
+auto build_projection(const CameraRecord&, double) { return projection; }
+auto build_camera_view_matrix(const CameraRecord&) { return ssao_identity_mat4; }
+auto build_view_projection(const CameraRecord&, double) { return projection; }
+${cppFunction(source, "namespace {")}
+${cppFunction(source, "SsaoFrameDecision ssao_frame(")}
+${cppFunction(source, "bool ssao_owner_replaced(")}
+}
+int main() {
+    using namespace bbl;
+    Engine engine;
+    engine.cameras.emplace_back();
+    SsaoTaskOptions task;
+    task.camera = CameraHandle{0};
+    task.quality = "medium"; task.radius = 0.3; task.intensity = 1;
+    task.temporal.enabled = true; task.temporal.history_samples = 2;
+    auto& camera = handle_at(engine.cameras, task.camera);
+    camera.near_plane = 0.1; camera.far_plane = 20;
+    camera.orthographic = true; camera.fov = 0; // Ignored for ortho.
+    upstream::projection[0] = 0.25f; upstream::projection[5] = 0.5f;
+    upstream::projection[12] = -0.25f; upstream::projection[13] = 0.25f;
+    SsaoFrameInputs inputs{};
+    inputs.gpu = 1;
+    inputs.depth_width = inputs.working_width = inputs.output_width = 128;
+    inputs.depth_height = inputs.working_height = inputs.output_height = 96;
+    const auto frame = [&] { return upstream::ssao_frame(engine, task, inputs); };
+    const auto first = frame();
+    assert(first.params[10] == -3 && first.params[11] == 1.5f && first.params[24] == 1);
+    assert(first.temporal[48] == 1 && first.temporal[90] == 1 && first.temporal[91] == 0);
+    assert(frame().temporal[48] == 0);
+    upstream::projection[12] = 0.5f;
+    assert(frame().temporal[48] == 1 && frame().temporal[48] == 0);
+    camera.fov = 1; camera.orthographic = false;
+    const auto perspective = frame();
+    assert(perspective.params[24] == 0 && perspective.temporal[48] == 1);
+    camera.orthographic = true; upstream::projection[5] = -1.0f;
+    try { frame(); assert(false); } catch (const std::runtime_error&) {}
+    SsaoOwnerShape owner;
+    int generations = 0;
+    for (double width : {128., 128., 128., 256., 256., 256.}) {
+        if (upstream::ssao_owner_replaced(owner, 1, width, 96)) {
+            ++generations;
+            owner = {true, 1, "depth", width, 96};
+        }
+    }
+    assert(generations == 2);
+}`,
+        { flags: ["/DBBLITE_HAS_SSAO=1"] },
+    );
+});
+
+test("Dawn keeps steady PBR groups and only refreshes a group sampling the replaced AO output", (t) => {
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) return t.skip("Native fixture compiler unavailable.");
+    const name = "ssao-pbr-binding";
+    writeFixtureHeaders(name, {
+        "draw-cache.hpp":
+            cppFunction(
+                readFileSync("native/src/pal_dawn_scene.hpp", "utf8"),
+                "inline bool rows_declare(",
+            ) +
+            "\n" +
+            cppFunction(
+                readFileSync("native/src/pal_dawn_scene_variants.cpp", "utf8"),
+                "DawnDrawState& ensure_pinned_draw_bindings(",
+            ),
+    });
+    runGeneratedProgram(
+        tools,
+        name,
+        readFileSync("test/fixtures/ssao-pbr-binding-check.cpp", "utf8"),
+        { flags: ["/DBBLITE_HAS_MATERIAL_PLUGIN_TEXTURES=1"] },
+    );
+});
+
+test("alpha-tested materials keep discard in color and geometry passes, with SSAO only on IBL color", async () => {
+    const plugin = ssaoPbrPluginManifest();
+    await enablePinnedMaterialPlugins([]);
+    const { PBR_HAS_ENV } = await importPinnedModule<{ PBR_HAS_ENV: number }>(
+        "material/pbr/pbr-flag-bits.js",
+    );
+    const material = {
+        _alphaCutOff: 0.25,
+        plugins: pinnedPlugins([
+            {
+                name: "alpha-modifier",
+                fragment: { CUSTOM_FRAGMENT_MAIN_BEGIN: "alpha*=0.5;" },
+            },
+            plugin,
+        ]),
+    };
+    for (const options of [
+        { sceneFeatures: PBR_HAS_ENV },
+        {},
+        {
+            sceneFeatures: PBR_HAS_ENV,
+            geometry: { attachments: ["VIEW_NORMAL"], emitColor: false },
+        },
+        { esmShadowView: true },
+    ]) {
+        const { fragmentWgsl } = await composePinnedPbrVariant(
+            material,
+            options,
+        );
+        const modifier = fragmentWgsl.indexOf("alpha*=0.5;");
+        assert.ok(modifier >= 0 && modifier < fragmentWgsl.indexOf("discard;"));
+        assert.equal(
+            fragmentWgsl.includes("ssaoDiffuseVisibility"),
+            !!options.sceneFeatures && !options.geometry,
+        );
+    }
+});
 
 test("the pinned factory composes each working mode the task reaches, in its encoding order", async () => {
     const task = await composeSsaoTask({

@@ -312,9 +312,8 @@ export class AdmissionRecorder {
     }
 
     /**
-     * swapchain-overlay.ts composites an overlay after its root's frame:
-     * into the root's swapchain task at MSAA, over the swapchain at one
-     * sample. The renderers queue every temporal pass until each scene's
+     * An overlay loads the caller's target after its base's frame graph.
+     * The renderers queue every temporal pass until each scene's
      * frame graph has recorded, so a root's TAA pass would draw over an
      * overlay the pin records after it.
      */

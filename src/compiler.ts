@@ -4151,13 +4151,12 @@ class Compiler implements LoweringServices {
 
     /** List syntax may re-read an unwritten local under the current variant. */
     private resolveListExpression(expression: ts.Expression): ts.Expression {
-        return this.evaluator.resolveStaticExpression(
-            expression,
-            undefined,
-            (declaration) =>
+        return this.evaluator.resolveStaticExpression(expression, undefined, {
+            scope: "local",
+            readOnly: (declaration) =>
                 ts.isIdentifier(declaration.name) &&
                 !this.constArrayIsWritten(declaration.name),
-        );
+        });
     }
 
     private filteredListItems(
@@ -12026,7 +12025,7 @@ class Compiler implements LoweringServices {
                 [
                     "void bbl_ensure_default_render_task(bbl::Scene& scene) {",
                     '    if (!scene.engine) throw std::runtime_error("A scene render task requires its owning engine.");',
-                    "    if (scene.state->default_render_task && !scene.state->default_render_task_created) {",
+                    "    if (scene.state->default_render_task && scene.state->default_render_task_handle.value == bbl::invalid_handle) {",
                     "        auto& engine = *scene.engine;",
                     "        auto target = bbl::create_render_target(engine, " +
                         "bbl::RenderTargetOptions{scene.state->default_render_task_samples, true, true, false, 0u, 0u});",
@@ -12051,7 +12050,7 @@ class Compiler implements LoweringServices {
                         'bbl::CopyTaskOptions{"default-present", bbl::render_target_texture(resolve_target), ' +
                         "bbl::swapchain_render_target(engine), bbl::RenderTargetHandle{}, false, bbl::NormalizedViewport{}});",
                     "        bbl::add_pass_after(*scene.state, present_task, render_task);",
-                    "        scene.state->default_render_task_created = true;",
+                    "        scene.state->default_render_task_handle = render_task;",
                     "    }",
                     "}",
                 ],

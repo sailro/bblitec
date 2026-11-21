@@ -19,7 +19,7 @@ const preamble = `
     const scene = createSceneContext(engine);
     const cube = createBox(engine, 1);
     addToScene(scene, cube);
-    const layer = createUtilityLayer(scene);
+    const layer = createUtilityLayer(scene, scene.defaultRenderTask!.config);
 `;
 
 test("a lazily created gizmo held by a stored listener shares one cell", () => {

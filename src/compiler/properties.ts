@@ -2396,6 +2396,7 @@ interface PropertyAccessContext
         Pick<
             LoweringServices,
             | "captureManagedClosureLines"
+            | "ensureDefaultRenderTask"
             | "browserErasure"
             | "moduleNamespaces"
             | "classLowerer"
@@ -5056,6 +5057,48 @@ export class PropertyAccessLowerer {
             isEffectTaskMethodName(expression.name.text)
         )
             return this.effectTaskMethod(owner, expression);
+        if (
+            owner.kind === "scene" &&
+            expression.name.text === "defaultRenderTask"
+        ) {
+            const task = this.context.ensureDefaultRenderTask(
+                owner,
+                expression,
+            );
+            this.context.emit({ kind: "expression", code: `${task.setup};` });
+            const state = `${task.sceneCpp}.state`;
+            return {
+                kind: "task",
+                cpp: `${state}->default_render_task_handle`,
+                engineCpp: this.context.requireEngine(owner, expression),
+                optionalFoundCpp: handleFoundCpp(
+                    `${state}->default_render_task_handle`,
+                ),
+            };
+        }
+        if (owner.kind === "task" && expression.name.text === "config") {
+            const task = this.context.bindings.pinValueToTemporary(
+                owner,
+                "render_task_config",
+                expression.expression,
+            );
+            const engineCpp = this.context.requireEngine(task, expression);
+            const cpp = `bbl::render_task_targets(${engineCpp}, ${task.cpp})`;
+            const target = (field: "rt" | "rst"): Value => ({
+                kind: "render-target",
+                cpp: `${cpp}.${field}`,
+                dataType: { kind: "handle", handle: "render-target" },
+                engineCpp,
+                ...(field === "rst"
+                    ? { optionalFoundCpp: handleFoundCpp(`${cpp}.rst`) }
+                    : {}),
+            });
+            return {
+                kind: "record",
+                cpp: "",
+                recordProperties: { rt: target("rt"), rst: target("rst") },
+            };
+        }
         if (owner.kind === "task" && owner.geometryTask) {
             return this.readGeometryTaskProperty(
                 owner,

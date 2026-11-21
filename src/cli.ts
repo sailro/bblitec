@@ -1460,7 +1460,10 @@ async function main(): Promise<void> {
     const ssaoTasks = await Promise.all(
         result.manifest.ssaoTasks.map(async (manifest) => ({
             manifest,
-            composed: await composeSsaoTaskManifest(manifest),
+            composed: await composeSsaoTaskManifest(
+                manifest,
+                result.manifest.features.includes("camera:orthographic"),
+            ),
         })),
     );
     const screenSpaceTasks = await Promise.all(

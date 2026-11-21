@@ -56,13 +56,9 @@ import {
 } from "../shader-material-programs.js";
 import { bindingReferences } from "./binding-references.js";
 import { bindingRebinds } from "./binding-rebinds.js";
-import { callTarget } from "./parameter-effects.js";
+import { everyForwardedArgumentUse } from "./parameter-effects.js";
 import { someAnalysisNode } from "./analysis-walk.js";
-import {
-    declaredSymbol,
-    isGlobalUndefined,
-    isLibraryStatic,
-} from "./symbols.js";
+import { isGlobalUndefined, isLibraryStatic } from "./symbols.js";
 import {
     equalityOperator,
     isSupportedFunction,
@@ -1391,62 +1387,15 @@ function definitionReach(
 function definitionOnlyReference(
     context: Pick<LoweringServices, "checker" | "program">,
     reference: ts.Expression,
-    visiting = new Set<ts.Node>(),
 ): boolean {
-    if (definesOn(context.checker, reference)) return true;
-    const argument = outermostWrapper(reference);
-    const call = argument.parent;
-    if (!ts.isCallExpression(call) || !ts.isExpressionStatement(call.parent))
-        return false;
-    const index = call.arguments.findIndex((item) => item === argument);
-    const target = callTarget(context.checker, call);
-    if (
-        index < 0 ||
-        target.kind !== "bodies" ||
-        target.engine ||
-        target.bodies.length !== 1
-    )
-        return false;
-    const fn = target.bodies[0]!;
-    if (
-        !isSupportedFunction(fn) ||
-        visiting.has(fn) ||
-        functionKind(fn) !== "plain"
-    )
-        return false;
-    const parameter = fn.parameters[index];
-    if (
-        !parameter ||
-        !ts.isIdentifier(parameter.name) ||
-        parameter.dotDotDotToken
-    )
-        return false;
-    const callee = unwrapExpression(call.expression);
-    if (!ts.isIdentifier(callee)) return false;
-    const calleeSymbol = declaredSymbol(context.checker, callee);
-    if (
-        !calleeSymbol ||
-        bindingRebinds(
-            context.checker,
-            context.program.getSourceFiles(),
-            calleeSymbol,
-        ).length
-    )
-        return false;
-    const symbol = declaredSymbol(context.checker, parameter.name);
-    if (!symbol) return false;
-    visiting.add(fn);
-    const valid = bindingReferences(
-        context.program,
-        context.checker,
-        symbol,
-    ).every(
-        (read) =>
-            ts.findAncestor(read, ts.isFunctionLike) === fn &&
-            definitionOnlyReference(context, read, visiting),
-    );
-    visiting.delete(fn);
-    return valid;
+    return everyForwardedArgumentUse(context, reference, (use) => {
+        if (definesOn(context.checker, use)) return true;
+        const call = outermostWrapper(use).parent;
+        return ts.isCallExpression(call) &&
+            ts.isExpressionStatement(call.parent)
+            ? undefined
+            : false;
+    });
 }
 
 /** Record one definition (including an inlined helper), joining its enclosing branches. */

@@ -3,7 +3,6 @@
 #include <bblite/js_error.hpp>
 #include <bblite/thin_instance_data.hpp>
 
-#include <array>
 #include <cstddef>
 #include <type_traits>
 
@@ -18,18 +17,6 @@ inline ThinInstancePoolData& thin_instance_data(const std::shared_ptr<ThinInstan
 inline js::NumericArrayView thin_instance_matrix_values(const ThinInstancePoolData& pool) {
     return std::visit([](const auto& values) { return js::NumericArrayView(values); },
                       pool.matrices);
-}
-
-inline std::array<double, 16> thin_instance_matrix(const ThinInstancePoolData& pool,
-                                                   std::size_t index) {
-    return std::visit(
-        [index](const auto& values) {
-            std::array<double, 16> result{};
-            for (std::size_t lane = 0; lane < result.size(); ++lane)
-                result[lane] = static_cast<double>(values.load(index * 16 + lane));
-            return result;
-        },
-        pool.matrices);
 }
 
 /** Preserve the ordinary typed-array set conversion and overlap handling. */

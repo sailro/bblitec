@@ -21,7 +21,7 @@ async function main(): Promise<void> {
     addMeshToTask(sceneTask, box);
     addTask(root, sceneTask);
     addBlackAndWhitePass(engine, root, box, { x: 0, y: 0, width: 0.5, height: 1 });
-    const overlay = createOverlaySphere(engine, root);
+    const overlay = createOverlaySphere(engine, root, { rt: sceneTarget, rst: engine.scRT });
     await registerScene(root);
     await registerScene(overlay);
     await startEngine(engine);

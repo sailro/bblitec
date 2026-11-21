@@ -3,6 +3,7 @@ import { execFile, execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { pinnedError } from "./pinned-errors.js";
 import { promisify } from "node:util";
 import { sharedPinnedContext } from "../src/lowering/context.js";
 import {
@@ -172,6 +173,6 @@ test("the pinned audio fetch reads packaged responses and rejects a failed statu
     // Each line whole: a failed status throws the pin's code.
     assert.deepEqual(stdout.replaceAll("\r\n", "\n").split("\n").slice(0, -1), [
         "packaged 6 82",
-        "missing #29",
+        `missing ${pinnedError("HTTP ${a0} loading '${a1}': ${a2}")}`,
     ]);
 });

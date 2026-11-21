@@ -2,12 +2,12 @@
   "schemaVersion": 1,
   "pin": {
     "package": "@babylonjs/lite",
-    "version": "1.40.0",
-    "sourceVersion": "f7e737ec7bc9740f2487b1994ffba82639934a0a"
+    "version": "1.40.2",
+    "sourceVersion": "2b85d3dfe169ebd7bce470a0523e9f19e0d47f79"
   },
   "reference": {
     "source": "reference/playroom/babylon-lite-golden.png",
-    "sha256": "0ff7af399b66ece8cf728f810d7643ac0f03a9fae1b54d01c7eead70d5b464b2"
+    "sha256": "1a2710deb9df92870b24b84eca18383235c0d781b142a81b8bc0a4870fb35983"
   },
   "entry": "corpus/babylon-lite/lab/lite/src/demos/playroom.ts",
   "hostPage": "corpus/babylon-lite/lab/lite/demo-playroom.html",
@@ -432,10 +432,14 @@
     }
   ],
   "readiness": {
+    "fixedAnimationFrame": "206",
+    "fixedCaptureFrame": "180",
+    "fixedAnimationCallbacks": "1",
+    "fixedEngineStarting": "true",
     "uiOrientation": "landscape",
     "loadingSize": "Estimated demo assets: 26 MB",
     "progress": "100",
-    "engine": "Babylon Lite v1.40.0",
+    "engine": "Babylon Lite v1.40.2",
     "loadingDetail": "Preparing scene…",
     "gamePhase": "ready",
     "throwCount": "1",
@@ -445,11 +449,7 @@
     "sourceUiRevision": "d22ce23ef308e28d1f8b6598b4c72ea944205925",
     "initMs": "0",
     "assetCount": "80",
-    "ready": "true",
-    "fixedAnimationFrame": "202",
-    "fixedCaptureFrame": "180",
-    "fixedAnimationCallbacks": "1",
-    "fixedEngineStarting": "true"
+    "ready": "true"
   },
   "browser": {
     "version": "157.0.8103.79",
@@ -474,8 +474,8 @@
         "chromium-experimental-multi-draw-indirect",
         "texture-compression-bc",
         "dual-source-blending",
-        "core-features-and-limits",
         "chromium-experimental-sampling-resource-table",
+        "core-features-and-limits",
         "chromium-experimental-timestamp-query-inside-passes",
         "float32-filterable",
         "indirect-first-instance",
@@ -485,16 +485,16 @@
         "texture-compression-unaligned",
         "depth-clip-control",
         "texture-compression-bc-sliced-3d",
+        "shader-f16",
         "timestamp-query",
         "clip-distances",
         "texture-formats-tier2",
-        "shader-f16",
         "primitive-index",
         "texture-component-swizzle",
         "subgroups"
       ]
     }
   },
-  "capturedAt": "2026-11-18T06:46:02.674Z",
-  "canvasSha256": "48408eee75ba8fd01a3537d4e7ce0560899559a8703cfe57e84689f72a69fdd0"
+  "capturedAt": "2026-11-21T08:51:20.750Z",
+  "canvasSha256": "b9f7c7dd9478ab5af1c68868502591d2b929cbbd3ceea73b497ee51994f904be"
 }

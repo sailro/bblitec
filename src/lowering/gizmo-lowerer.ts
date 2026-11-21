@@ -5476,12 +5476,12 @@ void attach_light_gizmo_to_light(
         );
         this.context.assertParameterNames(
             utility.declaration,
-            ["mainScene", "options?"],
+            ["mainScene", "options"],
             "createUtilityLayer parameters",
         );
         this.context.assertExpressionShape(
             this.context.variableInitializer(utility.declaration, "scene"),
-            "createOverlayScene(mainScene)",
+            "createOverlayScene(mainScene, options)",
             "Utility layer scene",
         );
         this.context.assertFunctionContract(
@@ -5508,7 +5508,7 @@ export async function registerUtilityLayer(utility: UtilityLayer): Promise<void>
             .numericTuple(utilityLight.arguments[0]!, utilityFile)
             .map((component) => this.context.floatLiteral(component))
             .join(", ");
-        // `light.intensity = options?.lightIntensity ?? 2` -- the pin's own
+        // `light.intensity = options.lightIntensity ?? 2` -- the pin's own
         // default, read from the coalesce rather than restated.
         const utilityIntensity = pinnedOptionNumber(
             this.context,
@@ -5617,9 +5617,9 @@ ${boundingBox ? boundingBox.helpers : ""}
 
 } // namespace
 
-UtilityLayerHandle create_utility_layer(Scene& main_scene) {
+UtilityLayerHandle create_utility_layer(Scene& main_scene, OverlayTargets targets) {
     auto record = std::make_unique<UtilityLayerRecord>();
-    record->scene = create_overlay_scene(main_scene);
+    record->scene = create_overlay_scene(main_scene, targets);
     Engine& engine = *main_scene.engine;
     record->main_scene = std::make_shared<Scene>(main_scene);
     record->scene.camera = main_scene.camera;

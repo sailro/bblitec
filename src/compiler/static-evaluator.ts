@@ -134,10 +134,10 @@ import {
     writeSites,
     expressionHasEffects,
     functionKind,
+    isConstDeclaration,
     isModuleConstDeclaration,
     isModuleScopeFunction,
     regularExpressionParts,
-    variableKind,
     jsonScalarLiteral,
     notJson,
 } from "./syntax.js";
@@ -192,6 +192,11 @@ type Fail = (
 type Lookup = (identifier: ts.Identifier) => Value;
 type LookupOptional = (identifier: ts.Identifier) => Value | undefined;
 type OnAwait = (expression: ts.AwaitExpression) => void;
+interface InitializerProof {
+    /** Local proof supplements collected constants; all bindings must pass an all-scope proof. */
+    readonly scope: "local" | "all";
+    readOnly(declaration: ts.VariableDeclaration): boolean;
+}
 type ResolveSymbol = (identifier: ts.Identifier) => ts.Symbol | undefined;
 type ResolveProperty = (
     expression: ts.PropertyAccessExpression,
@@ -1750,15 +1755,13 @@ export class StaticEvaluator {
      *     use site, so a `const n = expensive()` would move the call and
      *     two use sites would run it twice; a literal has no such body.
      *   - and only one nothing writes through; see `isWrittenThrough`.
-     * A generation-only list reader may supply its read-only proof to
-     * admit other local initializers under its current bindings. Ordinary
-     * value lowering must not move those calls to their use sites.
+     * A generation-only reader may supply a proof for other initializers.
+     * Ordinary value lowering must not move calls to their use sites or
+     * restore a module initializer superseded by materialized storage.
      */
     private constLiteralInitializer(
         symbol: ts.Symbol,
-        localInitializerIsReadOnly?: (
-            declaration: ts.VariableDeclaration,
-        ) => boolean,
+        proof?: InitializerProof,
     ): ts.Expression | undefined {
         const declarations = symbol.declarations ?? [];
         if (declarations.length !== 1) {
@@ -1766,37 +1769,16 @@ export class StaticEvaluator {
         }
         const declaration = declarations[0]!;
         if (
-            !ts.isVariableDeclaration(declaration) ||
-            !ts.isVariableDeclarationList(declaration.parent) ||
-            variableKind(declaration.parent) !== "const"
-        ) {
+            !isConstDeclaration(declaration) ||
+            (proof?.scope !== "all" &&
+                ts.isSourceFile(declaration.parent.parent.parent))
+        )
             return undefined;
-        }
-        // Top-level declarations belong to the pre-pass, which also
-        // REMOVES them once a materialized module's storage supersedes the
-        // initializer. Answering for one here would restore exactly what
-        // that removal took away, so this fallback only ever adds scopes
-        // the pre-pass does not walk.
-        const statement = declaration.parent.parent;
-        if (
-            !ts.isVariableStatement(statement) ||
-            ts.isSourceFile(statement.parent)
-        ) {
-            return undefined;
-        }
-        const initializer = declaration.initializer;
-        // Ordinary resolution checks the literal shape before scanning a
-        // body for writes; generation-only readers supply their own proof.
-        if (
-            !initializer ||
-            (localInitializerIsReadOnly
-                ? !localInitializerIsReadOnly(declaration)
-                : !ts.isObjectLiteralExpression(initializer) ||
-                  this.isWrittenThrough(declaration))
-        ) {
-            return undefined;
-        }
-        return initializer;
+        const readOnly = proof
+            ? proof.readOnly(declaration)
+            : ts.isObjectLiteralExpression(declaration.initializer) &&
+              !this.isWrittenThrough(declaration);
+        return readOnly ? declaration.initializer : undefined;
     }
 
     /**
@@ -1900,9 +1882,7 @@ export class StaticEvaluator {
     public resolveStaticExpression(
         expression: ts.Expression,
         resolving: ReadonlySet<ts.Symbol> = new EmissionSet(),
-        localInitializerIsReadOnly?: (
-            declaration: ts.VariableDeclaration,
-        ) => boolean,
+        proof?: InitializerProof,
     ): ts.Expression {
         const unwrapped = this.unwrap(expression);
         if (
@@ -1915,11 +1895,7 @@ export class StaticEvaluator {
             // number then fails as that position, naming what it needed.
             const resolved = this.tryResolveNullish(unwrapped, true);
             if (resolved) {
-                return this.resolveStaticExpression(
-                    resolved,
-                    resolving,
-                    localInitializerIsReadOnly,
-                );
+                return this.resolveStaticExpression(resolved, resolving, proof);
             }
             return unwrapped;
         }
@@ -1931,8 +1907,10 @@ export class StaticEvaluator {
             return unwrapped;
         }
         const initializer =
-            this.staticConstants.get(symbol) ??
-            this.constLiteralInitializer(symbol, localInitializerIsReadOnly);
+            (proof?.scope === "all"
+                ? undefined
+                : this.staticConstants.get(symbol)) ??
+            this.constLiteralInitializer(symbol, proof);
         if (!initializer) {
             return unwrapped;
         }
@@ -1945,7 +1923,7 @@ export class StaticEvaluator {
         return this.resolveStaticExpression(
             initializer,
             new EmissionSet([...resolving, symbol]),
-            localInitializerIsReadOnly,
+            proof,
         );
     }
 
@@ -1955,12 +1933,17 @@ export class StaticEvaluator {
      */
     public resolveStaticLiteral(
         expression: ts.Expression,
+        proof?: InitializerProof,
         resolving: ReadonlySet<ts.Symbol> = new EmissionSet(),
     ): ts.Expression {
-        const resolved = this.resolveStaticExpression(expression, resolving);
+        const resolved = this.resolveStaticExpression(
+            expression,
+            resolving,
+            proof,
+        );
         return (
             (ts.isCallExpression(resolved)
-                ? this.returnedLiteral(resolved, resolving)
+                ? this.returnedLiteral(resolved, resolving, proof)
                 : undefined) ?? resolved
         );
     }
@@ -1980,6 +1963,7 @@ export class StaticEvaluator {
     private returnedLiteral(
         call: ts.CallExpression,
         resolving: ReadonlySet<ts.Symbol>,
+        proof?: InitializerProof,
     ): ts.Expression | undefined {
         if (call.questionDotToken) {
             return undefined;
@@ -2084,6 +2068,7 @@ export class StaticEvaluator {
         transformed.dispose();
         const resolved = this.resolveStaticLiteral(
             substituted,
+            proof,
             new EmissionSet([...resolving, symbol]),
         );
         return isStaticLiteral(resolved) ? resolved : undefined;

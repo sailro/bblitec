@@ -1,9 +1,12 @@
 import ts from "typescript";
 import { bindingReferences } from "./binding-references.js";
 import { bindingRebinds } from "./binding-rebinds.js";
+import {
+    directArgumentBinding,
+    everyForwardedArgumentUse,
+} from "./parameter-effects.js";
 import { onlyDirectCalls } from "./written-holders.js";
 import {
-    calledFunction,
     calledOrigin,
     declaredSymbol,
     libraryGlobal,
@@ -11,7 +14,6 @@ import {
     resolvedSymbol,
 } from "./symbols.js";
 import {
-    argumentForParameter,
     branchPath,
     functionKind,
     hasExportModifier,
@@ -240,11 +242,14 @@ export function shaderSideTable(
             const calls = onlyDirectCalls(context.program, context.checker, fn);
             if (!calls)
                 return "a set's registration helper escapes; its callers are not all direct";
-            const parameters = ownParameters(fn);
-            const index = parameters.indexOf(held);
+            const index = ownParameters(fn).indexOf(held);
             for (const call of calls) {
-                const input = argumentForParameter(call, { parameters }, index);
-                if (input.kind !== "argument")
+                const input = directArgumentBinding(
+                    context.checker,
+                    call,
+                    index,
+                );
+                if (input?.binding !== held.name)
                     return "a set's material argument is not a fixed positional argument";
                 const reason = trace(input.argument, call, set, tests, next);
                 if (reason) return reason;
@@ -275,7 +280,7 @@ export function shaderSideTable(
             if (reference.pos >= site.pos) continue;
             if (
                 enclosingFunction(reference) !== fn ||
-                !nonEscapingRead(context, reference, new Set())
+                !nonEscapingRead(context, reference)
             )
                 return "the material escapes before its side-table entry is set";
         }
@@ -432,47 +437,28 @@ export function sideTableStoreFact(
 }
 
 /** Read-only validation and other private side-table declarations do not expose the key. */
-function nonEscapingRead(
-    context: Context,
-    reference: ts.Expression,
-    visiting: ReadonlySet<ts.Node>,
-): boolean {
-    const node = outermostWrapper(reference);
-    const parent = node.parent;
-    if (ts.isPropertyAccessExpression(parent) && parent.expression === node)
-        return true;
-    if (!ts.isCallExpression(parent)) return false;
-    const member = namedMember(context.checker, parent.expression);
-    if (
-        member &&
-        calledOrigin(context.checker, parent) === "default-lib" &&
-        parent.arguments[0] === node
-    ) {
-        const receiver = unwrapExpression(member.expression);
-        const symbol = ts.isIdentifier(receiver)
-            ? resolvedSymbol(context.checker, receiver)
-            : undefined;
-        return (
-            !!symbol &&
-            typeof privateSideTableSets(context, symbol) !== "string"
-        );
-    }
-    const fn = calledFunction(context.checker, parent);
-    if (
-        !fn ||
-        visiting.has(fn) ||
-        !onlyDirectCalls(context.program, context.checker, fn)
-    )
-        return false;
-    const parameter = ownParameters(fn)[parent.arguments.indexOf(node)];
-    const symbol =
-        parameter && ts.isIdentifier(parameter.name)
-            ? declaredSymbol(context.checker, parameter.name)
-            : undefined;
-    return (
-        !!symbol &&
-        bindingReferences(context.program, context.checker, symbol).every(
-            (use) => nonEscapingRead(context, use, new Set([...visiting, fn])),
-        )
-    );
+function nonEscapingRead(context: Context, reference: ts.Expression): boolean {
+    return everyForwardedArgumentUse(context, reference, (use) => {
+        const node = outermostWrapper(use);
+        const parent = node.parent;
+        if (ts.isPropertyAccessExpression(parent) && parent.expression === node)
+            return true;
+        if (!ts.isCallExpression(parent)) return false;
+        const member = namedMember(context.checker, parent.expression);
+        if (
+            member &&
+            calledOrigin(context.checker, parent) === "default-lib" &&
+            parent.arguments[0] === node
+        ) {
+            const receiver = unwrapExpression(member.expression);
+            const symbol = ts.isIdentifier(receiver)
+                ? resolvedSymbol(context.checker, receiver)
+                : undefined;
+            return (
+                !!symbol &&
+                typeof privateSideTableSets(context, symbol) !== "string"
+            );
+        }
+        return undefined;
+    });
 }

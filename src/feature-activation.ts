@@ -1710,7 +1710,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     },
     "frame-graph:multisampled-task-transmission": {
         provenance:
-            "src/frame-graph/transmission.ts BLIT_MSAA_SHADER " +
+            "src/frame-graph/transmission.ts createBlitShader (multisampled) " +
             "(transmission-depth-grab.ts DEPTH_GRAB_MSAA_SHADER)",
         consumers: CMAKE,
     },
@@ -1807,7 +1807,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     },
     "material:pbr-linear-image-processing": {
         provenance:
-            "src/frame-graph/transmission.ts markPbrMaterialsLinear " +
+            "src/frame-graph/transmission.ts _t " +
             "(_linearImageProcessing on every reached PBR material)",
         consumers: ["variant table"],
     },
@@ -3613,7 +3613,7 @@ function compositionRows(
             inputs.activation.linearImageProcessing,
             "no transmission, so materials keep gamma-space image " +
                 "processing",
-            "src/frame-graph/transmission.ts markPbrMaterialsLinear: " +
+            "src/frame-graph/transmission.ts _t: " +
                 "enableSceneTransmission marks every material " +
                 "_linearImageProcessing, so each composed fragment wraps " +
                 "its processing tail in if(scene.vImageInfos.w >= 0.0) and " +

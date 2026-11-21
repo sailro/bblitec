@@ -6,7 +6,7 @@ import { startOverlayOverPostProcess } from "./regression-overlay-root.js";
 
 async function main(): Promise<void> {
     const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
-    await startOverlayOverPostProcess(await createEngine(canvas, { msaaSamples: 1 }));
+    await startOverlayOverPostProcess(await createEngine(canvas, { msaaSamples: 1 }), true);
     canvas.dataset.ready = "true";
 }
 

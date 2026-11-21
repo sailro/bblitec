@@ -40,6 +40,7 @@ import { pinnedCsmFunctions } from "./pinned-csm.js";
 import { lowerCsmStaticCacheEnable } from "./csm-static-cache.js";
 import { lowerComputeAabb, positionsView } from "./pinned-compute-aabb.js";
 import { lowerSkeletonShadowBounds } from "./skeleton-shadow-bounds.js";
+import { lowerShadowCasterBounds } from "./directional-shadow-bounds.js";
 import { lowerMorphShadowBounds } from "./morph-shadow-bounds.js";
 import type { ComposedEsmShadow } from "../pinned-esm-shadow.js";
 import { pinnedHeader } from "./pinned-header.js";
@@ -117,43 +118,50 @@ function lowerBuildLightViewMatrix(context: LoweringContext): string {
     );
 }
 
-/**
- * `multiply4x4`, whole.
- *
- * Its accumulator is `new F32(16)` — a constant length, so the translator
- * gives it the fixed matrix and the pin's own nested walk stores into that
- * directly.
- */
-function lowerMultiply4x4(context: LoweringContext): string {
-    const { declaration } = context.functionDeclaration(
-        baseModule,
-        "multiply4x4",
-    );
+/** Both spot and directional projections use the pin's world-space light view. */
+function lowerShadowLightView(context: LoweringContext): string {
     return lowerPinnedFunction(
         context,
         baseModule,
-        "multiply4x4",
-        ["a", "b"].map((pinned) => ({
-            pinned,
-            kind: "matrix" as const,
-            cpp: pinned,
-        })),
+        "getShadowLightView",
+        [
+            {
+                pinned: "light",
+                kind: "record",
+                annotation: "DirectionalLight | SpotLight",
+                cpp: "light",
+                cppType: "LightRecord",
+            },
+            ...["offX", "offY", "offZ"].map((pinned) => ({
+                pinned,
+                kind: "number" as const,
+                cpp: pinned,
+            })),
+        ],
         {
-            cppName: "multiply_4x4",
+            cppName: "shadow_light_view",
             inline: true,
-            calls: mathCalls,
+            memberBindings: new Map<string, PinnedBinding>([
+                ...vec3MemberBindings("light.direction"),
+                ["light.direction", { cpp: "light.direction", type: "vec3" }],
+                [
+                    "light.worldMatrix",
+                    {
+                        cpp: "light_world_matrix(light)",
+                        type: "f32",
+                        materializeAlias: true,
+                    },
+                ],
+            ]),
+            calls: new Map([
+                [
+                    "buildLightViewMatrix",
+                    (a) => `build_light_view_matrix(${a.join(", ")})`,
+                ],
+            ]),
             returns: {
                 type: "std::array<float, 16>",
-                value: (lowerer, expression) => {
-                    if (!expression || !ts.isIdentifier(expression)) {
-                        return context.contractError(
-                            declaration,
-                            "Expected pinned multiply4x4 to return its " +
-                                "accumulator.",
-                        );
-                    }
-                    return lowerer.expression(expression);
-                },
+                value: (lowerer, expr) => lowerer.expression(expr!),
             },
         },
     );
@@ -216,25 +224,50 @@ function matrixLiteral(
     return `std::array<float, 16>{\n        ${lowered.join(",\n        ")}}`;
 }
 
+const shadowViewCalls = new Map<string, PinnedCallSpelling>([
+    ["getShadowLightView", (args) => `shadow_light_view(${args.join(", ")})`],
+]);
+
+function shadowLightMatrixResult(
+    context: LoweringContext,
+    declaration: ts.FunctionDeclaration,
+) {
+    return {
+        type: "ShadowLightMatrix",
+        value(
+            lowerer: PinnedNumericLowerer,
+            expression: ts.Expression | undefined,
+        ) {
+            const result = expression && context.unwrapExpression(expression);
+            if (!result || !ts.isObjectLiteralExpression(result))
+                return context.contractError(
+                    declaration,
+                    "Expected the pinned light matrix result.",
+                );
+            const values = ["_view", "_viewProj", "_near", "_far"].map((name) =>
+                lowerer.expression(context.propertyInitializer(result, name)),
+            );
+            return `ShadowLightMatrix{\n        ${values.join(",\n        ")}}`;
+        },
+    };
+}
+
 function lowerComputeSpotLightMatrix(context: LoweringContext): string {
     const { declaration } = context.functionDeclaration(
         spotModule,
         "_computeSpotLightMatrix",
     );
+    const product = context.functionDeclaration(
+        baseModule,
+        "multiply4x4",
+    ).declaration;
+    context.assertStatementShapes(
+        product,
+        product.body!.statements,
+        "const out = new F32(16); multiplyMat4IntoBuffer(out, 0, a, 0, b, 0); return out;",
+        "Shared shadow matrix product",
+    );
     const bindings = new Map<string, PinnedBinding>([
-        ...vec3MemberBindings("light.direction"),
-        ...vec3MemberBindings("light.position"),
-        [
-            "light.worldMatrix",
-            { cpp: "light_world_matrix(light)", type: "f32" },
-        ],
-        [
-            "light.direction",
-            {
-                cpp: "Vec3d{light.direction.x, light.direction.y, light.direction.z}",
-                type: "vec3",
-            },
-        ],
         // `angle` is the full cone angle the pinned factory stored; the
         // native record keeps its cosine for shading and the angle itself
         // for this projection.
@@ -274,51 +307,12 @@ function lowerComputeSpotLightMatrix(context: LoweringContext): string {
             inline: true,
             trailingParameters: ["Vec3d eye"],
             memberBindings: bindings,
-            calls: new Map([
-                ...mathCalls,
-                [
-                    "buildLightViewMatrix",
-                    (a: readonly string[]): string =>
-                        `build_light_view_matrix(${a.join(", ")})`,
-                ],
-                [
-                    "multiply4x4",
-                    (a: readonly string[]): string =>
-                        `multiply_4x4(${a.join(", ")})`,
-                ],
+            calls: new Map<string, PinnedCallSpelling>([
+                ...shadowViewCalls,
+                ["multiply4x4", (a) => `matrix_product(${a.join(", ")})`],
             ]),
-            matrixCalls: new Set(["buildLightViewMatrix", "multiply4x4"]),
-            returns: {
-                type: "ShadowLightMatrix",
-                value: (lowerer, expression): string => {
-                    const returned = expression
-                        ? context.unwrapExpression(expression)
-                        : undefined;
-                    if (!returned || !ts.isObjectLiteralExpression(returned)) {
-                        return context.contractError(
-                            declaration,
-                            "Expected pinned _computeSpotLightMatrix to return an " +
-                                "object literal.",
-                        );
-                    }
-                    const fields: readonly (readonly [string, string])[] = [
-                        ["_view", "view"],
-                        ["_viewProj", "view_projection"],
-                        ["_near", "near_plane"],
-                        ["_far", "far_plane"],
-                    ];
-                    const values = fields.map(([pinned]) =>
-                        lowerer.expression(
-                            context.propertyInitializer(returned, pinned),
-                        ),
-                    );
-                    return (
-                        `ShadowLightMatrix{\n        ${values[0]},\n` +
-                        `        ${values[1]},\n        ${values[2]},\n` +
-                        `        ${values[3]}}`
-                    );
-                },
-            },
+            matrixCalls: new Set(["getShadowLightView", "multiply4x4"]),
+            returns: shadowLightMatrixResult(context, declaration),
         },
     );
 }
@@ -328,10 +322,8 @@ function lowerComputeSpotLightMatrix(context: LoweringContext): string {
  *
  * A directional light has no position to project from, so the pin sizes the
  * light-space volume to the casters themselves: it folds every caster's
- * eight world-space AABB corners into light space and fits X/Y to that
- * box. The fold walks meshes, which the translator has no types for, so the
- * caster carrier and its member spellings are supplied here while the
- * arithmetic stays the pin's.
+ * projected intervals into the X/Y range; the configured depth row stays
+ * unchanged. The PAL has already selected the ordinary or instanced carrier.
  */
 function lowerComputeDirectionalLightMatrix(context: LoweringContext): string {
     const { declaration } = context.functionDeclaration(
@@ -339,19 +331,6 @@ function lowerComputeDirectionalLightMatrix(context: LoweringContext): string {
         "computeDirectionalLightMatrix",
     );
     const bindings = new Map<string, PinnedBinding>([
-        ...vec3MemberBindings("light.direction"),
-        ...vec3MemberBindings("light.position"),
-        [
-            "light.worldMatrix",
-            { cpp: "light_world_matrix(light)", type: "f32" },
-        ],
-        [
-            "light.direction",
-            {
-                cpp: "Vec3d{light.direction.x, light.direction.y, light.direction.z}",
-                type: "vec3",
-            },
-        ],
         ["orthoMinZ", { cpp: "ortho_min_z", type: "scalar" }],
         ["orthoMaxZ", { cpp: "ortho_max_z", type: "scalar" }],
         ...eyeOffsetBindings,
@@ -374,25 +353,7 @@ function lowerComputeDirectionalLightMatrix(context: LoweringContext): string {
                 annotation: "readonly Mesh[]",
                 cpp: "casters",
                 cppType: "std::vector<ShadowCaster>",
-                // Each caster is read through its world matrix and bounds.
-                binding: collectionBinding(
-                    "casters",
-                    (element) =>
-                        new Map<string, PinnedBinding>([
-                            [
-                                `${element}.worldMatrix`,
-                                { cpp: `${element}.world`, type: "f32" },
-                            ],
-                            [
-                                `${element}.boundMin`,
-                                { cpp: `${element}.bounds_min`, type: "f32" },
-                            ],
-                            [
-                                `${element}.boundMax`,
-                                { cpp: `${element}.bounds_max`, type: "f32" },
-                            ],
-                        ]),
-                ),
+                binding: collectionBinding("casters"),
             },
             { pinned: "orthoMinZ", kind: "number", cpp: "ortho_min_z" },
             { pinned: "orthoMaxZ", kind: "number", cpp: "ortho_max_z" },
@@ -412,115 +373,73 @@ function lowerComputeDirectionalLightMatrix(context: LoweringContext): string {
             inline: true,
             trailingParameters: ["Vec3d eye"],
             memberBindings: bindings,
-            calls: new Map([
-                ...mathCalls,
-                [
-                    "buildLightViewMatrix",
-                    (a: readonly string[]): string =>
-                        `build_light_view_matrix(${a.join(", ")})`,
-                ],
-                [
-                    "multiply4x4",
-                    (a: readonly string[]): string =>
-                        `multiply_4x4(${a.join(", ")})`,
-                ],
-                [
-                    "Number.isFinite",
-                    (a: readonly string[]): string =>
-                        `std::isfinite(${a.join(", ")})`,
-                ],
-            ]),
-            matrixCalls: new Set(["buildLightViewMatrix", "multiply4x4"]),
-
-            returns: {
-                type: "ShadowLightMatrix",
-                value: (lowerer, expression): string => {
-                    const returned = expression
-                        ? context.unwrapExpression(expression)
-                        : undefined;
-                    if (!returned || !ts.isObjectLiteralExpression(returned)) {
-                        return context.contractError(
-                            declaration,
-                            "Expected pinned computeDirectionalLightMatrix to " +
-                                "return an object literal.",
-                        );
-                    }
-                    const fields = [
-                        "_view",
-                        "_viewProj",
-                        "_near",
-                        "_far",
-                    ] as const;
-                    const values = fields.map((pinned) =>
-                        lowerer.expression(
-                            context.propertyInitializer(returned, pinned),
-                        ),
+            statement(statement, lowerer) {
+                if (!ts.isVariableStatement(statement)) return undefined;
+                const [local] = statement.declarationList.declarations;
+                if (
+                    !local?.initializer ||
+                    !context.expressionMatchesShape(
+                        local.initializer,
+                        "directionalShadowCaster ? directionalShadowCaster(mesh) : mesh",
+                    )
+                )
+                    return undefined;
+                if (
+                    statement.declarationList.declarations.length !== 1 ||
+                    !ts.isIdentifier(local.name) ||
+                    !ts.isConditionalExpression(local.initializer)
+                )
+                    return context.contractError(
+                        statement,
+                        "Expected a fitted caster alias.",
                     );
-                    return (
-                        `ShadowLightMatrix{
-        ${values[0]},
-` +
-                        `        ${values[1]},
-        ${values[2]},
-` +
-                        `        ${values[3]}}`
-                    );
-                },
+                const owner = lowerer.expression(local.initializer.whenFalse);
+                // The collector resolved this proxy (and discarded null) once before the axis loop.
+                lowerer.bindPorts(
+                    [
+                        [
+                            local.name.text,
+                            { cpp: owner, type: "opaque", staticBoolean: true },
+                        ],
+                        [
+                            `${local.name.text}.worldMatrix`,
+                            { cpp: `${owner}.world`, type: "f64-buffer" },
+                        ],
+                        [
+                            `${local.name.text}.boundMin`,
+                            { cpp: `${owner}.bounds_min`, type: "f64-buffer" },
+                        ],
+                        [
+                            `${local.name.text}.boundMax`,
+                            { cpp: `${owner}.bounds_max`, type: "f64-buffer" },
+                        ],
+                    ],
+                    statement.parent,
+                );
+                return [];
             },
+            calls: new Map<string, PinnedCallSpelling>([
+                ...shadowViewCalls,
+                ["Number.isFinite", (a) => `std::isfinite(${a.join(", ")})`],
+            ]),
+            matrixCalls: new Set(["getShadowLightView"]),
+            returns: shadowLightMatrixResult(context, declaration),
         },
     );
 }
 
-/**
- * The receiver UBO's field order, asserted rather than restated.
- *
- * `writeShadowUboFields` is a copy into a flat 24-float array, and the
- * composed fragment declares the same bytes as
- * `{ lightMatrix, depthValues, shadowsInfo }`. What matters is that the two
- * agree, so the pinned writer's own index writes are checked against the
- * mirrored struct's offsets and the struct is what the runtime fills.
- */
+/** The native 24-float receiver block matches the pin's typed-array writes. */
 function assertShadowUboLayout(context: LoweringContext): void {
-    const { file, declaration } = context.functionDeclaration(
+    const { declaration } = context.functionDeclaration(
         baseModule,
         "writeShadowUboFields",
     );
-    const expected = new Map<number, string>([
-        [16, "sg._depthValues[0]!"],
-        [17, "sg._depthValues[1]!"],
-        [18, "0"],
-        [19, "0"],
-        [20, "sg._shadowsInfo[0]!"],
-        [21, "sg._shadowsInfo[1]!"],
-        [22, "sg._shadowsInfo[2]!"],
-        [23, "sg._shadowsInfo[3]!"],
-    ]);
-    for (const store of context.pinnedElementStores(declaration, "out")) {
-        const index = context.numericValue(store.left.argumentExpression, file);
-        const shape = expected.get(index);
-        if (shape === undefined) {
-            context.contractError(
-                store.left,
-                `Pinned writeShadowUboFields writes float ${index}, which ` +
-                    "the mirrored receiver block does not carry.",
-            );
-        }
-        context.assertExpressionShape(
-            store.right,
-            shape,
-            `Pinned shadow UBO float ${index}`,
-        );
-        expected.delete(index);
-    }
-    if (expected.size !== 0) {
-        context.contractError(
-            declaration,
-            "Pinned writeShadowUboFields no longer writes floats " +
-                `${[...expected.keys()].join(", ")}.`,
-        );
-    }
-    // The light matrix takes the first sixteen through the shared packer.
-    context.callExpression(declaration, "packMat4IntoF32");
+    context.assertStatementShapes(
+        declaration,
+        declaration.body!.statements,
+        "out.set(sg._lightMatrix); out.set(sg._depthValues, 16); out.fill(0, 18, 20); out.set(sg._shadowsInfo, 20);",
+        "Shadow UBO layout",
+    );
 }
 
 /** The pinned ESM-directional defaults, each read from its own `??`. */
@@ -1683,6 +1602,7 @@ export function pinnedShadowHeader(
 #include <bblite/runtime.hpp>
 #include <bblite/features/shadows_csm.hpp>
 #include <bblite/upstream/pinned_world_transform.hpp>
+#include <bblite/upstream/pinned_matrix.hpp>
 #include <bblite/upstream/light_matrix.hpp>
 #include <bblite/upstream/renderer_plan.hpp>
 
@@ -1806,8 +1726,7 @@ struct ShadowLightMatrix {
  */
 struct ShadowCaster {
     /**
-     * The caster's \`mesh.worldMatrix\`, which the fold multiplies each AABB
-     * corner through: \`mesh_world_matrix_f64\`, kept at the composition's
+     * The caster's \`mesh.worldMatrix\`, kept at the composition's
      * own DOUBLE width, unlike the narrowed world every GPU consumer takes.
      * The fit's first act is to subtract the eye from cell 12, and
      * \`MeshRecord::position\` is a \`Vec3d\` precisely so that large-minus-
@@ -1816,17 +1735,8 @@ struct ShadowCaster {
      * shadow-volume placement.
      */
     std::array<double, 16> world{};
-    /**
-     * One active thin-instance matrix for the CSM caster fold. The pin
-     * transforms a bound corner through this matrix and only then through
-     * mesh.world; retaining both preserves that exact two-step arithmetic.
-     */
-#if BBLITE_SHADOWS_CSM
-    std::array<double, 16> instance{};
-    bool has_instance = false;
-#endif
-    std::array<float, 3> bounds_min{};
-    std::array<float, 3> bounds_max{};
+    std::array<double, 3> bounds_min{};
+    std::array<double, 3> bounds_max{};
 };
 
 /** The pin's own \`mesh.boundMin ?? [...]\` fallback, for a caster with none. */
@@ -1834,6 +1744,8 @@ inline constexpr std::array<float, 3> shadow_caster_bounds_fallback_min{
     ${floats(casterFallback.min)}};
 inline constexpr std::array<float, 3> shadow_caster_bounds_fallback_max{
     ${floats(casterFallback.max)}};
+
+${lowerShadowCasterBounds(context)}
 
 ${
     morphBounds
@@ -1894,7 +1806,7 @@ inline void ensure_morph_target_ranges(const ModelGeometry& geometry) {
         : ""
 }${skeletonBounds ? lowerSkeletonShadowBounds(context) : ""}${lowerBuildLightViewMatrix(context)}
 
-${lowerMultiply4x4(context)}
+${lowerShadowLightView(context)}
 
 ${lowerComputeSpotLightMatrix(context)}
 
@@ -2139,8 +2051,7 @@ inline void fit_directional_shadow(
     generator.light_matrix = matrix.view_projection;
     generator.caster_view = matrix.view;
     generator.caster_view_projection = matrix.view_projection;
-    // A directional light has no position to project from, so the near and
-    // far planes come back OUT of the caster fit rather than going in.
+    // The pinned fitter returns the configured orthographic depth range.
     generator.near_plane = matrix.near_plane;
     generator.far_plane = matrix.far_plane;
 }
@@ -2182,9 +2093,7 @@ inline void update_pcf_spot_shadow(
  * \`createPcfDirectionalShadowGenerator\` hands \`renderPcfShadowMap\` a
  * builder that calls \`computeDirectionalLightMatrix\` instead of the spot
  * volume, and nothing else about the generator changes -- so this is the
- * ESM's matrix source under the PCF's bias split. A directional light has
- * no position to project from, so the near and far planes come back OUT of
- * the caster fit rather than going in.
+ * ESM's matrix source under the PCF's bias split.
  */
 inline void update_pcf_directional_shadow(
     ShadowGeneratorRecord& generator,

@@ -718,6 +718,7 @@ struct DawnGeometryTask {
     std::vector<DawnTextureView> sampled_views;
     DawnTexture depth;
     DawnTextureView depth_view;
+    WGPUTextureFormat depth_format = WGPUTextureFormat_Undefined;
     // The pin's gpUniforms for the task's MRT arms: previous-frame
     // view-projection and the camera near/far.
     DawnBuffer pinned_geometry_params;
@@ -3451,9 +3452,6 @@ WGPURenderPipeline depth_only_pipeline_for(DawnState& state, bool double_sided,
 void encode_transmission_grab(DawnState& state, WGPUCommandEncoder encoder);
 
 #if BBLITE_RENDER_TASK_TRANSMISSION
-/** Create or resize a render task's grab textures for its target, before its pass or a bind. */
-DawnState::TaskTransmission& prepare_task_transmission(DawnState& state, const Engine& engine,
-                                                       TaskHandle task);
 /**
  * `updateTransmissionTexture` at a pass break: blit the target's colour into
  * the grab's top level, build its mip chain when it has one, and snapshot the

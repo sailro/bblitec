@@ -785,9 +785,15 @@ DawnDrawState& ensure_pinned_draw_bindings(DawnState& state, DawnMesh& mesh, std
     DawnDrawState& draw_state = mesh.pinned_states.try_emplace(material, state).first->second;
     std::vector<std::uint32_t> allocations;
 #if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES
+    const auto rows = pbr_variant_rows(variant);
     if (record)
         for (const auto& binding : record->plugin_textures) {
             if (const auto& source = binding.data.render_source) {
+                // The pin selects plugins per pass. An alpha-tested non-IBL pass
+                // neither prepares SSAO nor keys its group on the AO output.
+                if (!rows_declare(rows, binding.texture_name) &&
+                    !rows_declare(rows, binding.sampler_name))
+                    continue;
                 // What the pass selects, which a held group may no longer bind.
                 const auto allocation =
                     source->reference.source == RenderTextureSource::task_output

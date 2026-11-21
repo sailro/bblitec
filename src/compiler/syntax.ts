@@ -1140,7 +1140,7 @@ export function positionalParameter(
  */
 export function parameterForArgument(
     call: ts.CallExpression | ts.NewExpression,
-    declaration: Pick<ts.SignatureDeclarationBase, "parameters">,
+    declaration: { readonly parameters: readonly ts.ParameterDeclaration[] },
     argumentIndex: number,
 ):
     | { readonly parameter: ts.ParameterDeclaration; readonly rest: boolean }
@@ -1157,9 +1157,9 @@ export function parameterForArgument(
 }
 
 /** The index of a declaration's rest parameter, when it declares one. */
-export function restParameterIndex(
-    declaration: Pick<ts.SignatureDeclarationBase, "parameters">,
-): number | undefined {
+export function restParameterIndex(declaration: {
+    readonly parameters: readonly ts.ParameterDeclaration[];
+}): number | undefined {
     const index = declaration.parameters.findIndex(
         (parameter) => parameter.dotDotDotToken !== undefined,
     );
@@ -2623,7 +2623,7 @@ export type ConstDeclaration = ts.VariableDeclaration & {
     };
 };
 
-function isConstDeclaration(
+export function isConstDeclaration(
     declaration: ts.Node | undefined,
 ): declaration is ConstDeclaration {
     const statement = declaration?.parent?.parent;

@@ -5,6 +5,7 @@
 #include <bblite/features/live_task_add.hpp>
 #include <bblite/features/render_target_disposal.hpp>
 #include <bblite/features/task_disposal.hpp>
+#include <bblite/features/render_task_transmission.hpp>
 #include <bblite/runtime.hpp>
 #include <cstddef>
 #include <stdexcept>
@@ -118,6 +119,43 @@ auto& resolve_gpu_target(const Engine& engine, Targets& targets, RenderTargetHan
     return handle_at(targets, handle);
 }
 
+#if BBLITE_RENDER_TASK_TRANSMISSION
+/** The sampled attachment for a depth grab; render passes require matching extents and samples. */
+template <class Texture, class State, class Target, class OwnedDepth, class GeometryDepth>
+Texture task_grab_depth_source(const Engine& engine, const FrameTaskRecord& record,
+                               const State& state, const Target& color, OwnedDepth owned_depth,
+                               GeometryDepth geometry_depth, bool at_grab) {
+    if (!record.transmission || !record.transmission->grab_depth.value_or(false))
+        return nullptr;
+    if (at_grab)
+        sync_transmission_geometry_depth(engine, record);
+    const auto require_match = [&](std::uint32_t width, std::uint32_t height, auto samples) {
+        if (color.width != width || color.height != height ||
+            target_sample_count(state, handle_at(engine.render_targets, record.render.target)) !=
+                samples)
+            throw std::runtime_error(
+                "A depth grab requires matching color and depth extents and sample counts.");
+    };
+    if (transmission_uses_geometry_depth(record)) {
+        if (!record.transmission_geometry_depth_ready)
+            return nullptr;
+        const TaskHandle producer = record.render.depth.task;
+        require_match(
+            state.frame_graph_width, state.frame_graph_height,
+            task_sample_count(state, handle_at(engine.frame_tasks, producer).geometry.samples));
+        return (handle_at(state.geometry_tasks, producer).*geometry_depth);
+    }
+    const auto owner = render_task_depth_target(record.render);
+    if (owner == record.render.target)
+        return (color.*owned_depth);
+    const auto& depth =
+        resolve_gpu_target(engine, state.render_targets, owner, task_target_user(record));
+    require_match(depth.width, depth.height,
+                  target_sample_count(state, handle_at(engine.render_targets, owner)));
+    return (depth.*owned_depth);
+}
+#endif
+
 /**
  * The textures a task's own record reads (`sampled`), and the depth a
  * render task attaches (`attached`), each as the reference it names.
@@ -134,6 +172,11 @@ void visit_task_textures(const FrameTaskRecord& task, Sampled&& sampled, Attache
     switch (task.kind) {
     case FrameTaskKind::render:
         attached(task.render.depth);
+#if BBLITE_RENDER_TASK_TRANSMISSION
+        if (task.transmission && task.transmission->grab_depth.value_or(false) &&
+            transmission_uses_geometry_depth(task))
+            sampled(task.render.depth);
+#endif
         return;
     case FrameTaskKind::copy:
         sampled(task.copy.source);

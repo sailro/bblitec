@@ -25,7 +25,7 @@ import {createEngine,createSceneContext,createUtilityLayer,createGpuPicker,pickA
  type EngineContext,type SceneContext,type PickingInfo,type Mesh} from "@babylonjs/lite";
 async function directPicks(engine:EngineContext):Promise<void> {
  const scene=createSceneContext(engine);
- const layer=createUtilityLayer(scene);
+ const layer=createUtilityLayer(scene, {rt: engine.scRT});
  const picker=createGpuPicker(layer.scene);
  let calls=0;
  const run=async():Promise<void>=>{
@@ -651,6 +651,35 @@ test("a pick's discard rule reaches the native pick with each storage entry's da
 `,
         ),
         /picking-discard-check: ok/,
+    );
+});
+
+test("a pick rule follows read-only constant aliases but not writes through an alias", () => {
+    const program = (write: string) => `
+        import {createEngine,createSceneContext,createGpuPicker,pickAsync,type PickDiscardRule} from "@babylonjs/lite";
+        const base: PickDiscardRule = { key: "hide", wgsl: "discard" };
+        function read() { return base; }
+        async function main() {
+            const engine = await createEngine({});
+            const rule = read();
+            const alias = rule;
+            ${write}
+            await pickAsync(createGpuPicker(createSceneContext(engine)), 0, 0, {discard: rule});
+        }
+        void main();
+    `;
+    assert.deepEqual(compileSource(program("")).manifest.pickDiscardRules, [
+        { key: "hide", wgsl: "discard", storage: [] },
+    ]);
+    assert.throws(
+        () => compileSource(program("alias.key = String(Date.now());")),
+        /rule reads 'rule', which the program writes through/,
+    );
+    // Returning a mutable module constant cannot turn its initializer back
+    // into a read-only rule by model-running the getter.
+    assert.throws(
+        () => compileSource(program("base.key = String(Date.now());")),
+        /rule reads 'base', which the program writes through/,
     );
 });
 

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { pinnedError } from "./pinned-errors.js";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import {
@@ -75,17 +76,28 @@ test("the depth-resolve module, pass and refusals are read off the pin's own run
     );
     // The packaged factory throws its codes for three refusals and the
     // size mismatch as written.
-    for (const [refusal, code] of [
-        ["depth_resolve_source_without_depth", 123],
-        ["depth_resolve_single_sample_source", 124],
-        ["depth_resolve_target_without_depth", 125],
-    ] as const)
+    for (const [refusal, message] of [
+        [
+            "depth_resolve_source_without_depth",
+            "sourceTexture has no depth attachment.",
+        ],
+        [
+            "depth_resolve_single_sample_source",
+            "sourceTexture must be multisampled (sampleCount > 1).",
+        ],
+        [
+            "depth_resolve_target_without_depth",
+            "targetTexture has no depth format.",
+        ],
+    ] as const) {
+        const code = pinnedError(`DepthResolveTask "\${a0}": ${message}`);
         assert.match(
             header,
             new RegExp(
-                `${refusal}\\(\\[\\[maybe_unused\\]\\] const std::string& name\\) \\{\\n    return std::string\\("#${code}"\\);`,
+                `${refusal}\\(\\[\\[maybe_unused\\]\\] const std::string& name\\) \\{\\n    return std::string\\("${code}"\\);`,
             ),
         );
+    }
     assert.match(
         header,
         /return std::string\("DepthResolveTask \\""\) \+ name \+ "\\": targetTexture size " \+ std::to_string\(target_width\) \+ "×" \+ std::to_string\(target_height\) \+ " must match sourceTexture size " \+ std::to_string\(source_width\) \+ "×" \+ std::to_string\(source_height\)/,

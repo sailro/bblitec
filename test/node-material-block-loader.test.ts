@@ -12,6 +12,7 @@ import { FactoryLowerer } from "../src/lowering/factory-lowerer.js";
 import { composeNodeMaterial } from "../src/pinned-node-material.js";
 import { pinnedNodeVariantsHeader } from "../src/pinned-node-material-cpp.js";
 import { pinnedLabPublicUrl } from "../src/pinned-lab-public.js";
+import { pinnedError } from "./pinned-errors.js";
 
 const labDeployment = { publicUrl: pinnedLabPublicUrl() };
 
@@ -148,6 +149,9 @@ test("executes pinned geometry delegation while preserving ordinary graphs and l
         exportName: "SCENE149_NME_JSON",
     });
     const options = { pinnedBlockLoader: "geometry" } as const;
+    const missingEmitter = pinnedError(
+        'NodeMaterial: no emitter registered for block "${a0}"',
+    );
     const composed = await composeNodeMaterial(graph, "scene149-loader", {
         ...options,
         geometryTasks: [
@@ -189,7 +193,7 @@ test("executes pinned geometry delegation while preserving ordinary graphs and l
     await assert.rejects(
         () => composeNodeMaterial(graph, "scene149-default"),
         (error: Error & { lite?: readonly unknown[] }) =>
-            error.message === "#479" &&
+            error.message === missingEmitter &&
             error.lite?.[0] === "GeometryTextureOutputBlock",
     );
 
@@ -218,7 +222,7 @@ test("executes pinned geometry delegation while preserving ordinary graphs and l
                 options,
             ),
         (error: Error & { lite?: readonly unknown[] }) =>
-            error.message === "#479" &&
+            error.message === missingEmitter &&
             error.lite?.[0] === "MissingEmitterBlock",
     );
     const local = await composeNodeMaterial(graph, "scene149-local", {

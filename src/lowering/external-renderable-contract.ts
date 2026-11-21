@@ -150,8 +150,9 @@ export function _buildBindings(
     }
     if (record) {
         buildRenderPassDescriptor(task, rt);
-        task._updateContext.targetWidth = rt._width;
-        task._updateContext.targetHeight = rt._height;
+        const dimensions = config.depth ?? rt;
+        task._updateContext.targetWidth = dimensions._width;
+        task._updateContext.targetHeight = dimensions._height;
     }
     if (publish) {
         if (drawBindingLifecycle) {

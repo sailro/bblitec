@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { pinnedError, pinnedErrorsCpp } from "./pinned-errors.js";
 import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
@@ -305,7 +306,7 @@ async function pinnedLifecycle(output: string): Promise<void> {
     );
     for (const [length, message] of [
         [96, "GS vertex count mismatch"],
-        [0, "#335"],
+        [0, pinnedError("splat buffer is empty")],
         [65, "multiple of 4"],
     ] as const) {
         events.length = 0;
@@ -392,6 +393,12 @@ test(
                 writeFileSync(join(headers, `${name}.hpp`), lowered.header);
             writeFileSync(join(output, `${name}.cpp`), lowered.source);
         }
+        writeFileSync(
+            join(headers, "pinned_errors.hpp"),
+            pinnedErrorsCpp({
+                empty_splat: pinnedError("splat buffer is empty"),
+            }),
+        );
         const source = join(output, "check.cpp");
         writeFileSync(
             source,

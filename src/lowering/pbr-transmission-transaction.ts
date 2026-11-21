@@ -3,102 +3,76 @@ import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { sameSource } from "../compiler/syntax.js";
+import { finalReturn } from "../compiler/loop-control.js";
 
 /** Native shaders precompose the linear-capable variants; no runtime feature cache exists. */
 export function lowerPbrTransmissionTransaction(
     context: LoweringContext,
 ): string {
     const module = "src/frame-graph/transmission.ts";
-    const { file, declaration } = context.functionDeclaration(module, "_t");
-    const mark = context.functionDeclaration(module, "markPbrMaterialsLinear");
+    const { declaration } = context.functionDeclaration(module, "_t");
+    const statements = declaration.body!.statements;
     context.assertStatementShapes(
-        mark.declaration,
-        mark.declaration.body!.statements,
-        `for (const mesh of scene.meshes) {
-            const mat = mesh.material as { _linearImageProcessing?: boolean; _renderFeatures?: unknown } | undefined;
-            if (mat) { mat._linearImageProcessing = true; mat._renderFeatures = undefined; }
-        }`,
-        "Precomposed linear material/cache specialization",
-    );
-    const states = context.variableInitializer(declaration, "states");
-    context.assertExpressionShape(
-        states,
-        `scene.meshes.flatMap((mesh) => {
-        const mat = mesh.material as { _linearImageProcessing?: boolean; _renderFeatures?: unknown } | null;
-        return mat ? [[mat, mat._linearImageProcessing, mat._renderFeatures] as const] : [];
-    })`,
-        "Precomposed transmission material snapshot",
-    );
-    const body = lowerPinnedBody(file, declaration.body!.statements, {
-        bindings: new Map(),
-        calls: new Map(),
-        statement(statement, _lowerer, indent) {
-            if (
-                ts.isVariableStatement(statement) &&
-                statement.declarationList.declarations.length === 1 &&
-                statement.declarationList.declarations[0]!.initializer ===
-                    states
-            )
-                return [];
-            if (ts.isExpressionStatement(statement)) {
-                context.assertExpressionShape(
-                    statement.expression,
-                    "markPbrMaterialsLinear(scene)",
-                    "Precomposed linear transmission flags",
-                );
-                return [];
+        declaration,
+        statements.slice(0, -1),
+        `type TransmissionMaterial = { _linearImageProcessing?: boolean; _renderFeatures?: unknown };
+        const states: [TransmissionMaterial, boolean | undefined, unknown][] = [];
+        for (const mesh of scene.meshes) {
+            const mat = mesh.material as TransmissionMaterial | null;
+            if (mat) {
+                states.push([mat, mat._linearImageProcessing, mat._renderFeatures]);
+                mat._linearImageProcessing = true;
+                mat._renderFeatures = undefined;
             }
-            if (!ts.isReturnStatement(statement)) return undefined;
-            const expression = statement.expression;
-            if (
-                !expression ||
-                !ts.isArrayLiteralExpression(expression) ||
-                expression.elements.length !== 2
-            )
-                context.contractError(
-                    declaration,
-                    "Expected transmission commit and rollback callbacks.",
-                );
-            const callbacks = expression.elements.map((callback) => {
-                if (!ts.isArrowFunction(callback) || callback.parameters.length)
-                    context.contractError(
-                        callback,
-                        "Expected a closed transmission callback.",
-                    );
-                if (!ts.isBlock(callback.body)) {
-                    context.assertExpressionShape(
-                        callback.body,
-                        "enableSceneTransmissionTasks(scene, engine)",
-                        "Transmission task commit",
-                    );
-                    return `js::Callback<void()>{[owner = std::weak_ptr<SceneState>(scene.state)] {
-                        if (const auto state = owner.lock()) { auto target = Scene::from_state(state); enable_scene_transmission(target); }
-                    }}`;
-                }
-                context.assertStatementShapes(
-                    callback,
-                    callback.body.statements,
-                    `for (const [mat, linear, features] of states) {
-                        mat._linearImageProcessing = linear; mat._renderFeatures = features;
-                    }`,
-                    "Precomposed transmission cache rollback",
-                );
-                return "js::Callback<void()>{[] {}}";
-            });
-            // Each callback is a named local moved into the pair; clang's
-            // analyzer loses a shared body built in place inside an aggregate
-            // that is then passed by value.
-            const [commit, rollback] = callbacks;
-            return [
-                `${indent}js::Callback<void()> commit = ${commit};`,
-                `${indent}js::Callback<void()> rollback = ${rollback};`,
-                `${indent}return PbrTransmissionTransaction{std::move(commit), std::move(rollback)};`,
-            ];
-        },
+        }
+        const rollback = (): void => {
+            for (let i = states.length - 1; i >= 0; i--) {
+                const [mat, linear, features] = states[i]!;
+                mat._linearImageProcessing = linear;
+                mat._renderFeatures = features;
+            }
+        };`,
+        "Precomposed transmission material journal specialization",
+    );
+    const returned = finalReturn(declaration.body)?.expression;
+    if (
+        !returned ||
+        !ts.isArrayLiteralExpression(returned) ||
+        returned.elements.length !== 2
+    )
+        context.contractError(
+            declaration,
+            "Expected transmission commit and rollback callbacks.",
+        );
+    const callbacks = returned.elements.map((callback) => {
+        if (sameSource(callback, "rollback"))
+            return "js::Callback<void()>{[] {}}";
+        context.assertExpressionShape(
+            callback,
+            `() => { try { enableSceneTransmissionTasks(scene, engine); } catch (error) { rollback(); throw error; } }`,
+            "Transmission task commit",
+        );
+        // Only the task activation has runtime state. The journal rolled
+        // back on failure belongs to precomposed material variants.
+        return `js::Callback<void()>{[owner = std::weak_ptr<SceneState>(scene.state)] {
+            if (const auto state = owner.lock()) { auto target = Scene::from_state(state); enable_scene_transmission(target); }
+        }}`;
     });
+    const direct = context.functionDeclaration(
+        module,
+        "enableSceneTransmission",
+    ).declaration;
+    context.assertStatementShapes(
+        direct,
+        direct.body!.statements,
+        "_t(scene, engine)[0]();",
+        "Direct transmission commit",
+    );
     return `// ${context.provenance(module, "_t")}
 PbrTransmissionTransaction make_pbr_transmission_transaction(Scene& scene) {
-${body}
+    js::Callback<void()> first = ${callbacks[0]};
+    js::Callback<void()> second = ${callbacks[1]};
+    return PbrTransmissionTransaction{std::move(first), std::move(second)};
 }
 ${lowerRebuildTransaction(context)}`;
 }

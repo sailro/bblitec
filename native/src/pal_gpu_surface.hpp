@@ -71,12 +71,10 @@ inline bool scenes_run_frame_graphs(std::span<const std::shared_ptr<Scene>> scen
 
 /**
  * Whether a scene after the root (`scenes.front()`) records anything once
- * the root's direct pass ends: its own frame graph, or an overlay's pass.
+ * the root's direct pass ends.
  */
 inline bool scenes_record_after_root(std::span<const std::shared_ptr<Scene>> scenes) {
-    return std::any_of(std::next(scenes.begin()), scenes.end(), [](const auto& scene) {
-        return scene->has_frame_passes() || scene->state->overlay_base != nullptr;
-    });
+    return scenes_run_frame_graphs(scenes.subspan(1));
 }
 
 /**

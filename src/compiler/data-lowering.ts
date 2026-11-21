@@ -320,6 +320,7 @@ import {
     literalKey,
     localCallback,
     type LocalCallback,
+    jsonScalarLiteral,
     notJson,
     plainDataMembers,
     type DataMember,
@@ -9964,27 +9965,22 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (call.arguments.length !== 1) return undefined;
         const literalLanes = (): (string | number | boolean)[] | undefined => {
             const callee = namedMember(this.context.checker, call.expression);
-            if (!callee) return undefined;
-            const resolved = this.context.unwrap(
-                this.context.resolveStaticExpression(callee.expression),
+            if (
+                !callee ||
+                this.context.evaluationOrder.writesStorage(callee.expression)
+            )
+                return undefined;
+            const literal = this.context.evaluator.staticArrayLiteral(
+                callee.expression,
             );
-            if (!ts.isArrayLiteralExpression(resolved)) return undefined;
+            if (!literal) return undefined;
             const lanes: (string | number | boolean)[] = [];
-            for (const element of resolved.elements) {
-                if (
-                    ts.isSpreadElement(element) ||
-                    ts.isOmittedExpression(element)
-                )
-                    return undefined;
-                const lane = this.context.resolveStaticExpression(element);
-                if (ts.isStringLiteralLike(lane)) lanes.push(lane.text);
-                else if (ts.isNumericLiteral(lane))
-                    lanes.push(Number(lane.text));
-                else if (lane.kind === ts.SyntaxKind.TrueKeyword)
-                    lanes.push(true);
-                else if (lane.kind === ts.SyntaxKind.FalseKeyword)
-                    lanes.push(false);
-                else return undefined;
+            for (const element of literal.elements) {
+                const lane = jsonScalarLiteral(
+                    this.context.resolveStaticExpression(element),
+                );
+                if (lane === notJson || lane === null) return undefined;
+                lanes.push(lane);
             }
             return lanes;
         };
@@ -9999,9 +9995,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const lanes =
             known && known.every((lane) => lane !== undefined)
                 ? known
-                : literalLanes();
+                : // The receiver has already been evaluated. Neither an arm
+                  // selection nor a failed literal probe may emit a second read.
+                  this.context.probeEmission(
+                      () => unlessRefused(literalLanes),
+                      () => false,
+                  );
         if (!lanes) return undefined;
         const argument = argumentAt(call, 0);
+        // A needle may change the receiver before the search reads its lanes.
+        if (this.context.evaluationOrder.mayWriteArray(argument))
+            return undefined;
         return this.context.probeEmission((): Value | undefined => {
             const needle = primitive(this.context.compileValue(argument));
             if (needle === undefined) return undefined;
@@ -22543,9 +22547,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
 
     public compileOptionalSink(
         expression: ts.Expression,
-        dataType: DataType & {
-            kind: "optional";
-        },
+        dataType: DataType<"optional">,
+        // A handle selection retains the resource facts of its non-nullish arms.
+        observeValue?: (value: Value) => void,
     ): string {
         if (dataType.inner.kind === "undefined")
             return this.context.dataTypes.presentValue(
@@ -22561,12 +22565,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ? this.compileGuardableElementAccess(unwrapped)
                 : undefined) ??
             this.compileDataPath(unwrapped, "read") ??
-            (ts.isCallExpression(unwrapped) ||
+            (observeValue ||
+            ts.isCallExpression(unwrapped) ||
             ts.isIdentifier(unwrapped) ||
             ts.isPropertyAccessExpression(unwrapped) ||
             ts.isElementAccessExpression(unwrapped)
                 ? this.context.compileValue(unwrapped)
                 : undefined);
+        if (optional) observeValue?.(optional);
         if (optional?.kind === "void") {
             return this.compileKnownValueForSink(optional, dataType, unwrapped);
         }

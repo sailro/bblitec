@@ -52,6 +52,20 @@ test("render target stand-in getters retain arithmetic for each native build", (
     );
     assert.match(cpp, /std::floor\(\(width \/ 49\.0\)\)/);
     assert.match(cpp, /std::ceil\(\(height \* 0\.25\)\)/);
+    const logical = compileSource(
+        standInSource(
+            `Math["floor"]((canvas.width || 8) / 2)`,
+            "canvas.height && 4",
+        ),
+    ).cpp;
+    assert.match(
+        logical,
+        /auto&& (\w+) = width; return bbl::js::number_truthy\(static_cast<double>\(\1\)\) \? static_cast<double>\(\1\) : static_cast<double>\(8\.0\)/,
+    );
+    assert.match(
+        logical,
+        /auto&& (\w+) = height; return bbl::js::number_truthy\(static_cast<double>\(\1\)\) \? static_cast<double>\(4\.0\) : static_cast<double>\(\1\)/,
+    );
     const local = standInSource()
         .replace(
             `document.getElementById("renderCanvas") as HTMLCanvasElement`,
@@ -81,6 +95,7 @@ test("render target stand-ins refuse non-surface or effectful extents", () => {
         "Math.max(1, Math.floor(performance.now() / 2))",
         "Math.max(1, Math.floor(canvas.height / 2))",
         "(canvas.width++, canvas.width)",
+        "canvas.width || Math.random()",
     ]) {
         assert.throws(
             () => compileSource(standInSource(width)),
