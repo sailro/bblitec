@@ -146,3 +146,20 @@ for (const [name, source, message] of [
         );
     });
 }
+
+test("a MessagePort refuses an error handler", () => {
+    const directory = resolve("artifacts/worker-message-ports/refusals");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(resolve(directory, "worker.ts"), "self.close();");
+    assert.throws(
+        () =>
+            compileSource(
+                `const worker=new Worker(new URL("./worker.ts",import.meta.url),{type:"module"});worker.terminate();
+                interface Target { onerror?: ((event: ErrorEvent) => void) | null; onmessageerror?: ((event: MessageEvent) => void) | null; }
+                function install(target: Target): void { target.onerror = () => {}; }
+                const channel = new MessageChannel(); install(channel.port1);`,
+                { fileName: resolve(directory, "entry.ts") },
+            ),
+        /A MessagePort has no error event/,
+    );
+});

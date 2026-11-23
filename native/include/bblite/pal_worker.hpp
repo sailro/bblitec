@@ -120,6 +120,19 @@ public:
         require_owner();
         error_listeners_.add(std::move(callback), once);
     }
+    void set_message_handler(MessageCallback callback) {
+        require_owner();
+        message_listeners_.set_handler(std::move(callback));
+    }
+    void set_error_handler(ErrorCallback callback) {
+        require_owner();
+        error_listeners_.set_handler(std::move(callback));
+    }
+    /** Kept as the handler; a native message decodes at its typed read, so none fires. */
+    void set_messageerror_handler(MessageCallback callback) {
+        require_owner();
+        messageerror_listeners_.set_handler(std::move(callback));
+    }
     void remove_error_listener(const ErrorCallback& callback) {
         require_owner();
         error_listeners_.remove(callback.identity());
@@ -127,6 +140,7 @@ public:
     void gc_trace(const js::TraceVisitor& visitor) const {
         visitor(message_listeners_);
         visitor(error_listeners_);
+        visitor(messageerror_listeners_);
     }
 
 private:
@@ -148,6 +162,7 @@ private:
     std::thread thread_;
     PlatformEventListeners<void(const WorkerMessage&)> message_listeners_;
     PlatformEventListeners<void(WorkerErrorEvent&)> error_listeners_;
+    PlatformEventListeners<void(const WorkerMessage&)> messageerror_listeners_;
 };
 
 struct TransferredPort final : TransferredResource {

@@ -351,6 +351,14 @@ import { classPrototypeKeys, classMemberTable } from "./class-members.js";
 import { isPlainJsonRecord } from "./json-record-views.js";
 
 /** A source a struct local cannot hold in place: JSON, or a native object. */
+/** The DOM interface of each native platform object value. */
+const platformObjectInterfaces: Partial<Record<Value["kind"], string>> = {
+    worker: "Worker",
+    "message-port": "MessagePort",
+    "message-channel": "MessageChannel",
+    "offscreen-canvas": "OffscreenCanvas",
+};
+
 function outsideStructStorage(value: Value | undefined): boolean {
     return (
         isJsonValue(value) ||
@@ -16654,6 +16662,34 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return this.context.fail(
                 keyNode,
                 "Membership of an array takes a number or a generation-known string key.",
+            );
+        }
+        // A platform object's members are its interface's, on its prototype
+        // chain: `in` finds each, and none is an own property.
+        const platformInterface = platformObjectInterfaces[narrowed.kind];
+        if (platformInterface !== undefined) {
+            if (key.staticString === undefined)
+                return this.context.fail(
+                    keyNode,
+                    `Membership of a ${platformInterface} takes a generation-known string key.`,
+                );
+            if (operator !== "in") return "false";
+            const symbol = this.context.checker.resolveName(
+                platformInterface,
+                undefined,
+                ts.SymbolFlags.Type,
+                false,
+            );
+            if (!symbol)
+                return this.context.fail(
+                    ownerNode,
+                    `The ${platformInterface} interface has no library declaration.`,
+                );
+            return String(
+                this.context.checker
+                    .getDeclaredTypeOfSymbol(symbol)
+                    .getProperty(key.staticString) !== undefined ||
+                    Object.hasOwn(Object.prototype, key.staticString),
             );
         }
         return this.context.fail(

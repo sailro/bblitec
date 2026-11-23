@@ -141,7 +141,7 @@ import {
 } from "./compiler/worker-modules.js";
 import {
     compileWorkerValue,
-    emitMessagePortHandler,
+    emitMessageHandler,
     isNativeWorkerExpression,
     isRuntimeLocationMember,
 } from "./compiler/workers.js";
@@ -2930,7 +2930,7 @@ class Compiler implements LoweringServices {
         if (emitLibraryNodeParent(this, expression)) return;
         if (emitSplatStreamAssignment(this, expression)) return;
         if (emitCanvasAssignment(this, expression)) return;
-        if (this.options.workers && emitMessagePortHandler(this, expression))
+        if (this.options.workers && emitMessageHandler(this, expression))
             return;
         if (this.options.workers && this.emitUiPropertyAssignment(expression))
             return;

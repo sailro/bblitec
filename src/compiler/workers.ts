@@ -371,6 +371,11 @@ function messageDataType(
     );
 }
 
+const errorPositions = new Map([
+    ["lineno", "line"],
+    ["colno", "column"],
+]);
+
 /**
  * A message or error event's property: `event.data` deserializes the message
  * as the type of `expression`, the read as the source spells it (a type
@@ -410,6 +415,15 @@ export function readWorkerEventProperty(
         ["message", "filename"].includes(access.name.text)
     )
         return { kind: "string", cpp: `${owner.cpp}.${access.name.text}` };
+    // A native failure has no source position: both read 0, as an
+    // ErrorEvent without one does.
+    const position = errorPositions.get(access.name.text);
+    if (owner.kind === "worker-error-event" && position)
+        return {
+            kind: "number",
+            cpp: `static_cast<double>(${owner.cpp}.${position})`,
+            dataType: { kind: "number" },
+        };
     return undefined;
 }
 
@@ -577,6 +591,7 @@ function messagingType(
 }
 
 const messagePortHandlers = new Set(["onmessage", "onmessageerror"]);
+const messageHandlers = new Set([...messagePortHandlers, "onerror"]);
 
 /**
  * `new MessageChannel()`, its `port1` / `port2`, and a MessagePort's
@@ -700,52 +715,83 @@ function compileMessagePortCall(
 }
 
 /**
- * `port.onmessage = handler` and `port.onmessageerror = handler`: the
- * port's event handler, replaced in place; `null` or `undefined` removes
- * it. Setting `onmessage` enables the port's message queue, as `start()`
- * does.
+ * The message target an `on…` handler assignment writes: a Worker or a
+ * MessagePort, by its declared type or, through an interface the program
+ * declares (`{ onerror?: … }`), by the value its name holds.
  */
-export function emitMessagePortHandler(
+function messageHandlerTarget(
+    context: WorkerLoweringContext,
+    owner: ts.Expression,
+): boolean {
+    const unwrapped = context.unwrap(owner);
+    const bound = ts.isIdentifier(unwrapped)
+        ? context.bindings.lookupOptional(unwrapped)
+        : undefined;
+    return (
+        bound?.kind === "worker" ||
+        bound?.kind === "message-port" ||
+        messagingType(context, owner) === "MessagePort" ||
+        libraryName(
+            context.checker.getNonNullableType(
+                context.checker.getTypeAtLocation(owner),
+            ),
+        ) === "Worker"
+    );
+}
+
+/**
+ * `target.onmessage`, `target.onmessageerror` and a Worker's `onerror`
+ * written with a handler: the target's event handler, replaced in place;
+ * `null` or `undefined` removes it. Setting a port's `onmessage` enables its
+ * message queue, as `start()` does.
+ */
+export function emitMessageHandler(
     context: WorkerLoweringContext,
     expression: ts.BinaryExpression,
 ): boolean {
     const target = context.unwrap(expression.left);
     if (
         !ts.isPropertyAccessExpression(target) ||
-        !messagePortHandlers.has(target.name.text) ||
-        messagingType(context, target.expression) !== "MessagePort"
+        !messageHandlers.has(target.name.text) ||
+        !messageHandlerTarget(context, target.expression)
     )
         return false;
+    const name = target.name.text;
     if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken)
         return context.fail(
             expression,
-            `MessagePort.${target.name.text} supports direct assignment.`,
+            `The ${name} handler supports direct assignment.`,
         );
-    const port = context.dataLowerer.narrowOptional(
+    const owner = context.dataLowerer.narrowOptional(
         context.compileValue(target.expression),
         target.expression,
     );
-    if (port.kind !== "message-port")
+    if (owner.kind !== "worker" && owner.kind !== "message-port")
         return context.fail(
             target.expression,
-            "MessagePort handlers require a native port.",
+            "Message handlers require a native Worker or MessagePort.",
+        );
+    if (owner.kind === "message-port" && name === "onerror")
+        return context.fail(
+            target,
+            "A MessagePort has no error event; only a Worker reports errors.",
         );
     const receiver = context.bindings.pinValueToTemporary(
-        port,
-        "message_port",
+        owner,
+        "message_target",
     ).cpp;
     const handler = context.unwrap(expression.right);
     const callback =
         handler.kind === ts.SyntaxKind.NullKeyword ||
         isGlobalUndefined(context.checker, handler)
-            ? "bbl::pal::MessagePort::MessageCallback{}"
+            ? "{}"
             : context.asyncActivations.compileWorkerCallback(
                   expression.right,
-                  "message",
+                  name === "onerror" ? "error" : "message",
               );
     context.emit({
         kind: "expression",
-        code: `${receiver}->set_${target.name.text.slice(2)}_handler(${callback});`,
+        code: `${receiver}->set_${name.slice(2)}_handler(${callback});`,
     });
     return true;
 }
