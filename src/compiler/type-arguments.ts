@@ -11,6 +11,33 @@ import { calledDeclaration } from "./symbols.js";
 type Fail = (node: ts.Node, message: string) => never;
 
 /**
+ * A function's type parameters: those it declares, else those of the generic
+ * signature it is contextually typed by. TypeScript makes a lambda that
+ * declares none generic in its contextual signature's
+ * (`(capture) => read(capture)` given as `<T>(capture: () => T) => T`).
+ */
+function typeParameterDeclarations(
+    checker: ts.TypeChecker,
+    declaration: ts.SignatureDeclaration,
+): readonly ts.TypeParameterDeclaration[] {
+    if (declaration.typeParameters && declaration.typeParameters.length > 0)
+        return declaration.typeParameters;
+    if (
+        !ts.isArrowFunction(declaration) &&
+        !ts.isFunctionExpression(declaration)
+    )
+        return [];
+    return (
+        checker.getSignatureFromDeclaration(declaration)?.typeParameters ?? []
+    ).flatMap((parameter) => {
+        const node = parameter.symbol?.declarations?.find(
+            ts.isTypeParameterDeclaration,
+        );
+        return node ? [node] : [];
+    });
+}
+
+/**
  * What a generic function's type parameters stand for at one call.
  *
  * The checker has already instantiated the call's signature; what this
@@ -26,8 +53,8 @@ export function callTypeArguments(
     declaration: ts.SignatureDeclaration,
     fail: Fail,
 ): ReadonlyMap<ts.Symbol, ts.Type> | undefined {
-    const parameters = declaration.typeParameters;
-    if (!parameters || parameters.length === 0) {
+    const parameters = typeParameterDeclarations(checker, declaration);
+    if (parameters.length === 0) {
         return undefined;
     }
     const bindings = determinedTypeArguments(checker, call, declaration);
@@ -91,7 +118,7 @@ export function determinedTypeArguments(
     call: ts.CallExpression | ts.NewExpression,
     declaration: ts.SignatureDeclaration,
 ): ReadonlyMap<ts.Symbol, ts.Type> {
-    const parameters = declaration.typeParameters ?? [];
+    const parameters = typeParameterDeclarations(checker, declaration);
     const parameterSymbols = parameters.map(
         (parameter) => checker.getTypeAtLocation(parameter).symbol,
     );

@@ -193,3 +193,39 @@ test("recursive generic calls through equivalent source views still refuse", () 
         );
     }
 });
+
+test("a lambda given where a generic signature is declared specializes per call", (t) => {
+    const source = `
+        let failed = false;
+        function tryRead<T>(read: () => T): T | null { return !failed ? read() : null; }
+        interface Options { tryCapture?: <T>(capture: () => T) => T | null; }
+        function manager(options: Options) {
+            return {
+                ready: (): boolean => options.tryCapture ? options.tryCapture(() => true) === true : true,
+                take: (): string | null => options.tryCapture ? options.tryCapture(() => "world") : "world",
+            };
+        }
+        const managed = manager({ tryCapture: (capture) => tryRead(capture) });
+        if (!managed.ready() || managed.take() !== "world") throw new Error("boolean and string specializations");
+        failed = true;
+        if (managed.ready() || managed.take() !== null) throw new Error("absent arm");
+    `;
+    runInNewContext(
+        ts.transpileModule(source, {
+            compilerOptions: { target: ts.ScriptTarget.ES2022 },
+        }).outputText,
+    );
+    const result = compileSource(source, {
+        fileName: "contextual-generic-lambda.ts",
+    });
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(
+        tools,
+        "generic-function-families/contextual-generic-lambda",
+        result.cpp,
+    );
+});
