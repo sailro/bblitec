@@ -428,6 +428,21 @@ interface UiReflectedAttribute {
     /** The elements declaring the attribute, when not every HTML element does. */
     tags?: readonly string[];
 }
+/**
+ * Attributes of form-control markup generation decides from their literal
+ * value: selector classes and ids, styles, control types, links and hiding.
+ */
+const GENERATION_ATTRIBUTES: ReadonlySet<string> = new Set([
+    "class",
+    "id",
+    "style",
+    "type",
+    "href",
+    "target",
+    "rel",
+    "hidden",
+]);
+
 /** Elements whose `value` property is their form value. */
 const UI_FORM_VALUE_TAGS = ["textarea", "input", "select", "option", "output"];
 
@@ -5463,7 +5478,9 @@ export class UiProjection {
     /**
      * Markup creating form controls, parsed into its element tree: a static
      * string, or a flat template whose runtime operands are text (escaped, as
-     * in projected markup), each a hole the tree's text holds.
+     * in projected markup), each a hole the tree's text or an attribute value
+     * holds. An attribute generation decides ({@link GENERATION_ATTRIBUTES})
+     * takes none.
      */
     private uiAuthoredMarkup(expression: ts.Expression):
         | {
@@ -5484,11 +5501,14 @@ export class UiProjection {
                 node.attributes.some(
                     (attribute) =>
                         /__BBLITE_UI_MARKUP_\d+__/i.test(attribute.name) ||
-                        attribute.value.includes("__BBLITE_UI_MARKUP_"),
+                        (GENERATION_ATTRIBUTES.has(attribute.name) &&
+                            attribute.value.includes("__BBLITE_UI_MARKUP_")),
                 ) ||
                 node.children.some(holed));
         if (nodes.some(holed))
-            fail("with form controls takes runtime text only in text.");
+            fail(
+                `with form controls takes runtime text in text and attribute values, not in tag or attribute names or ${[...GENERATION_ATTRIBUTES].join(", ")}.`,
+            );
         return {
             nodes,
             substitutions: form.kind === "flat" ? form.substitutions : [],
@@ -5599,7 +5619,7 @@ export class UiProjection {
                         value,
                     );
                 emit(
-                    `bbl::ui_set_attribute(${engine}, ${name}, ${this.context.cppString(attribute.name)}, ${this.context.cppString(value)})`,
+                    `bbl::ui_set_attribute(${engine}, ${name}, ${this.context.cppString(attribute.name)}, ${textCpp(value)})`,
                 );
             }
             const [text] = node.children;

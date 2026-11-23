@@ -120,6 +120,8 @@ int main() {
         assert(ui_active_element(engine) == note);
         // Its maxlength is the control's limit, projected to the RmlUi text area.
         assert(ui_get_max_length(engine, note) == 5);
+        // A template's runtime text is an attribute value's text.
+        assert(ui_get_attribute(engine, note, "placeholder") == "Up to 5 letters");
         assert(runtime.projected_elements.at(note.value)
                    .element->GetAttribute<Rml::String>("maxlength", "") == "5");
         SDL_Event text{};

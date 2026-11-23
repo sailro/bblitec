@@ -598,6 +598,7 @@ test("static innerHTML form controls own state, listeners and queries as created
         `${realm}
         const panel = document.createElement("div");
         panel.id = "panel";
+        const hint = \`Up to \${panel.childElementCount + 5} letters\`;
         panel.innerHTML = \`
             <div class="title">Look &amp; feel</div>
             <div class="drop">Drop <b>.cube</b> files</div>
@@ -611,7 +612,7 @@ test("static innerHTML form controls own state, listeners and queries as created
                 <button class="keep" type="button" style="position:absolute;left:0;top:200px;width:80px;height:30px">Keep</button>
                 <input class="flag" type="checkbox" checked>
                 <label id="note-label" class="note-label" for="note" style="position:absolute;left:100px;top:200px;width:80px;height:30px">Note</label>
-                <textarea id="note" class="note" rows="2" maxlength="5" style="position:absolute;left:0;top:260px"></textarea>
+                <textarea id="note" class="note" rows="2" maxlength="5" placeholder="\${hint}" style="position:absolute;left:0;top:260px"></textarea>
             </div>
             <div class="status"></div>\`;
         document.body.appendChild(panel);
@@ -682,6 +683,15 @@ test("innerHTML form controls refuse markup retained elements cannot hold", () =
         ),
     );
     refusal('<img src="a.png"><input type="text">', /not <img>/);
+    // A runtime value reaches an attribute generation does not decide.
+    assert.throws(
+        () =>
+            compileEntry(
+                `const host = document.createElement("div"); const kind = \`row\${host.childElementCount}\`;
+                 host.innerHTML = \`<input class="\${kind}" type="text">\`;`,
+            ),
+        /takes runtime text in text and attribute values, not in tag or attribute names or class, id, style/,
+    );
     assert.throws(
         () =>
             compileEntry(
