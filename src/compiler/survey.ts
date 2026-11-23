@@ -205,7 +205,11 @@ interface SurveyUntried {
 /** The functions a census lists by untried statements. */
 const untriedKept = 200;
 
-/** A storage demand a pass met at a statement, which it rolled back: the next pass replays with it. */
+/**
+ * A storage demand a pass met at a statement, which it rolled back: the next
+ * pass replays with it, unless a root met a replay undoing the deployment's
+ * folds (`SurveyCollector.demanded`).
+ */
 interface SurveyDemand {
     /** What the demand asks for (`describeStorageRequests`). */
     demand: string;
@@ -644,11 +648,14 @@ export class SurveyCollector {
     /**
      * `replayable`: the replays a compile applies before its next attempt
      * (a storage demand, a lazy module's activation, runtime query state),
-     * which a pass meets at a statement.
+     * which a pass meets at a statement. `unfolding`: those of them that
+     * undo the deployment's generation-time folds (runtime query state),
+     * which only the program's own lowering takes.
      */
     public constructor(
         settings: SurveySettings = {},
         private readonly replayable?: (error: unknown) => error is Error,
+        private readonly unfolding?: (error: Error) => boolean,
     ) {
         this.progress = settings.progress;
         this.passLimit = settings.passLimit;
@@ -1276,7 +1283,11 @@ export class SurveyCollector {
         replay: Error,
         held = false,
     ): void {
-        attempt.replays.push(replay);
+        // A root meets a replay in the context the survey built: one that
+        // undoes the deployment's folds would let the program's own lowering
+        // reach what an ordinary compile folds away.
+        if (!this.inRoot || !this.unfolding?.(replay))
+            attempt.replays.push(replay);
         const described = replayText(replay);
         const site = replaySite(replay);
         const key = `${described} at ${site ?? ""}`;

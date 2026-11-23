@@ -619,6 +619,39 @@ test("a survey lowers every function the program never reached as a root", () =>
     assert.equal(report.program.attempted, report.program.statements);
 });
 
+test("a root's runtime query state leaves the deployment's folds to the entry", () => {
+    // The empty deployment query folds `query.has("x")` away, so only a
+    // root lowers `lab`. The `strip` root mutates a bag it cannot tell from
+    // the deployment's; its replay must not make the next pass lower the
+    // entry with runtime query state, which would reach `lab` itself.
+    const { report } = surveySource(
+        `
+        let total = 0;
+        function lab(mode: string): void {
+            total += new FinalizationRegistry<string>(() => {}).unregister({ mode }) ? 1 : 0;
+        }
+        export function strip(params: URLSearchParams): void {
+            params.delete("q");
+        }
+        const query = new URLSearchParams(location.search);
+        if (query.has("x")) lab(query.get("x")!);
+        localStorage.setItem("total", String(total));
+    `,
+        { fileName: resolve("survey-root-query.ts") },
+    );
+    assert.equal(report.complete, true);
+    assert.deepEqual(
+        report.refusals.map((refusal) => [
+            refusal.statement.function,
+            refusal.occurrences,
+            refusal.rootOccurrences,
+        ]),
+        [["lab", 1, 1]],
+        listed(report),
+    );
+    assert.equal(report.passes, 1);
+});
+
 test("a root held by its own storage demand lowers in the same pass", () => {
     // `Counter.add` reads `this`, whose class must be shared: the pass takes
     // that demand at the root and lowers the root again with it.

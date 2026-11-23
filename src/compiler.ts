@@ -703,7 +703,11 @@ export function surveySource(
     options: CompileOptions = {},
     settings: SurveySettings = {},
 ): SurveyOutcome {
-    const collector = new SurveyCollector(settings, isReplay);
+    const collector = new SurveyCollector(
+        settings,
+        isReplay,
+        (error) => error instanceof RuntimeSearchParamsRequired,
+    );
     return withSurvey(collector, () => {
         try {
             const result = compileSourceApplication(source, options);

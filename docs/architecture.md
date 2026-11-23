@@ -85,7 +85,8 @@ Paths are relative to `generated/<id>/`.
   members. Then each run of statements no lowering began inside a reached function (an arm a generation-known
   condition left, what follows an exit) is lowered the same way, under the loops, switches and labels holding it. A
   body is lowered in full once per pass; later calls take empty storage of their result. What the roots reach is
-  rolled back: only the storage demands they meet carry into the next pass. A root lowered before the pass took a
+  rolled back: only the replays they meet carry into the next pass, but runtime query state, which undoes the
+  deployment's folds: the program's own lowering alone takes it. A root lowered before the pass took a
   demand it meets lowers again in that pass (a round), while rounds keep taking demands; the pass a limit ends the
   survey at runs none.
 - A closure may read a `let`/`const` its block declares later. The binding takes temporal-dead-zone storage
