@@ -13149,6 +13149,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.requireRecordBinding(node);
             this.requireEnumMapBinding(node, dataType);
         }
+        if (dataType.kind === "struct" && value.dataType?.kind === "enummap")
+            this.context.dataTypes.requireKeyRecordStruct(
+                value.dataType,
+                dataType,
+                node,
+            );
         if (dataType.kind === "json") this.requireErasedHandleField(node);
         if (dataType.kind === "function" && value.dataType?.kind === "function")
             this.context.dataTypes.requireErasedHandleParameters(

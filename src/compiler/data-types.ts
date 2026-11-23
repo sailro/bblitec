@@ -101,7 +101,10 @@ import {
 } from "./native-record-storage.js";
 import { AbsentRecordProperties } from "./absent-record-properties.js";
 import { ReplayStorage } from "./replay-storage.js";
-import { EnumRecordStorageRequired } from "./enum-record-storage.js";
+import {
+    EnumRecordStorageRequired,
+    KeyRecordStructRequired,
+} from "./enum-record-storage.js";
 import {
     agreedKeyOrder,
     ownKeyOrder,
@@ -1879,6 +1882,44 @@ export class DataTypeRegistry {
     /** A string literal union's identity across replays: its sorted members. */
     public enumLiterals(name: string): string {
         return this.enumMembers(name).join("|");
+    }
+
+    /** A finite-key record type's identity across replays: its key union's members and its value storage. */
+    private keyRecordSchema(enumName: string, element: DataType): string {
+        return JSON.stringify([
+            this.enumMembers(enumName),
+            dataTypeKey(element),
+        ]);
+    }
+
+    /**
+     * A record of a key union stored as a struct whose fields are exactly
+     * its keys, each of its value storage: replay with the record stored as
+     * that struct (`KeyRecordStructRequired`), one object under both types.
+     */
+    public requireKeyRecordStruct(
+        record: DataType<"enummap">,
+        struct: DataType<"struct">,
+        node: ts.Node,
+    ): void {
+        const source = this.nativeRecordSources.get(struct.name);
+        if (!source || this.isClassStruct(struct.name)) return;
+        const fields = this.structFields(struct.name, node, "accessors");
+        const members = this.enumMembers(record.enumName);
+        if (
+            fields.length !== members.length ||
+            !fields.every(
+                (field) =>
+                    !field.accessor &&
+                    members.includes(field.sourceName) &&
+                    dataTypesEqual(field.type, record.element),
+            )
+        )
+            return;
+        throw new KeyRecordStructRequired(
+            this.keyRecordSchema(record.enumName, record.element),
+            { type: source.type, node: source.node },
+        );
     }
 
     /** Replay finite-key record storage when enumeration cannot prove its own order. */
@@ -10868,6 +10909,11 @@ export class DataTypeRegistry {
                 dictionary: true,
                 value: this.markStoredObjectReferences(element),
             };
+        // Stored as a struct of its keys, the record is that struct.
+        const struct = this.storage.structRecordSchemas.get(
+            this.keyRecordSchema(key.name, element),
+        );
+        if (struct) return this.fromStoredTsType(struct.type, struct.node);
         return {
             kind: "enummap",
             enumName: key.name,

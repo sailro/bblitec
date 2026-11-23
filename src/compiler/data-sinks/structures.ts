@@ -900,6 +900,24 @@ function valueStruct(
                     stored.kind === "string")
             );
         };
+        const fresh = fields.every((field) => !field.accessor)
+            ? freshDictionaryEntries(lowerer, value, node)
+            : undefined;
+        if (fresh) {
+            const copy = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
+                .map((field) =>
+                    storeFieldMember(
+                        lowerer,
+                        fresh(field.sourceName),
+                        field,
+                        node,
+                    ),
+                )
+                .join(", ")}}`;
+            return lowerer.context.dataTypes.isReferenceStruct(dataType.name)
+                ? `bbl::js::make_ref<bblscene::${dataType.name}Data>(${copy})`
+                : copy;
+        }
         const entryType = (field: DataStructField): boolean =>
             dataTypesEqual(sourceMap.value, field.type) ||
             (field.type.kind === "optional" &&
@@ -1285,6 +1303,42 @@ function freshConverted(lowerer: DataSinkHost, node: ts.Node): boolean {
     );
 }
 
+/**
+ * A fresh string-keyed dictionary no other reference holds
+ * (`Object.fromEntries`) read as a closed record: a copy of its entries,
+ * which nothing can tell from it. The reader yields a key's entry, which
+ * must be present; the dictionary is read once.
+ */
+function freshDictionaryEntries(
+    lowerer: DataSinkHost,
+    value: Value,
+    node: ts.Node,
+): ((key: string) => Value) | undefined {
+    const source = value.dataType;
+    if (
+        source?.kind !== "map" ||
+        !source.dictionary ||
+        source.key.kind !== "string" ||
+        !freshConverted(lowerer, node)
+    )
+        return undefined;
+    const entries = lowerer.context.allocateTemporaryCppName("entries");
+    lowerer.context.emit({
+        kind: "declaration",
+        type: "const auto",
+        name: entries,
+        initializer: value.cpp,
+    });
+    lowerer.context.reachJsData();
+    const entry =
+        source.value.kind === "optional" ? source.value.inner : source.value;
+    return (key) =>
+        lowerer.leafValue(
+            `bbl::js::present(${entries}.get(${lowerer.context.cppString(key)}))`,
+            entry,
+        );
+}
+
 function valueEnummap(
     dataType: DataType<"enummap">,
     lowerer: DataSinkHost,
@@ -1354,40 +1408,19 @@ function valueEnummap(
     if (value.dataType && dataTypesEqual(value.dataType, dataType)) {
         return value.cpp;
     }
-    // A fresh string-keyed dictionary no other reference holds
-    // (`Object.fromEntries`) read as the record of a key union: each member's
-    // entry, which must be present.
-    const source = value.dataType;
-    if (
-        source?.kind === "map" &&
-        source.dictionary &&
-        source.key.kind === "string" &&
-        freshConverted(lowerer, node)
-    ) {
-        const entries = lowerer.context.allocateTemporaryCppName("entries");
-        lowerer.context.emit({
-            kind: "declaration",
-            type: "const auto",
-            name: entries,
-            initializer: value.cpp,
-        });
-        const entry =
-            source.value.kind === "optional"
-                ? source.value.inner
-                : source.value;
+    // A fresh dictionary read as the record of a key union: each member's
+    // entry.
+    const entry = freshDictionaryEntries(lowerer, value, node);
+    if (entry) {
         const slots = lowerer.context.dataTypes
             .enumMembers(dataType.enumName)
             .map((member) =>
                 lowerer.compileKnownValueForSink(
-                    lowerer.leafValue(
-                        `bbl::js::present(${entries}.get(${lowerer.context.cppString(member)}))`,
-                        entry,
-                    ),
+                    entry(member),
                     dataType.element,
                     node,
                 ),
             );
-        lowerer.context.reachJsData();
         return `${lowerer.context.dataTypes.cppType(dataType)}{${slots.join(", ")}}`;
     }
     return undefined;

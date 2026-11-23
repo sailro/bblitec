@@ -68,6 +68,11 @@ export type StorageRequest =
     | { kind: "enum-array"; unions: readonly string[] }
     | { kind: "enum-record"; schema: string }
     | {
+          kind: "struct-record";
+          schema: string;
+          struct: { readonly type: ts.Type; readonly node: ts.Node };
+      }
+    | {
           kind: "key-order";
           record: ts.Symbol | ts.Type;
           orders: KeyOrders;
@@ -90,6 +95,8 @@ export function storageRequestSite(
         case "completion":
         case "unproven-completion":
             return request.signatureSite;
+        case "struct-record":
+            return request.struct.node;
         case "generic":
         case "enum-array":
         case "enum-record":
@@ -174,6 +181,11 @@ export class ReplayStorage {
     readonly stringElementUnions = new Set<string>();
     /** @unjournaled Finite-key record schemas whose enumeration requires dictionary order. */
     readonly orderedRecordSchemas = new Set<string>();
+    /** @unjournaled Demands outlive the attempts that met them. Finite-key record schemas stored as the struct of their keys (`KeyRecordStructRequired`). */
+    readonly structRecordSchemas = new Map<
+        string,
+        { readonly type: ts.Type; readonly node: ts.Node }
+    >();
     /**
      * @unjournaled Demands outlive the attempts that met them. The own-key
      * orders an enumerated record type's records take, by record identity,
@@ -357,6 +369,10 @@ export class ReplayStorage {
                 );
             case "enum-record":
                 return addNew(this.orderedRecordSchemas, request.schema);
+            case "struct-record":
+                if (this.structRecordSchemas.has(request.schema)) return false;
+                this.structRecordSchemas.set(request.schema, request.struct);
+                return true;
             case "key-order": {
                 // Orders demanded once already would replay in a cycle.
                 if (this.demandedKeyOrders(request.record, request.orders))
