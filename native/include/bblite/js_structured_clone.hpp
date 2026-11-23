@@ -5,6 +5,8 @@
 
 #include <cstdint>
 #include <cstring>
+#include <optional>
+#include <variant>
 
 namespace bbl::js {
 
@@ -461,6 +463,19 @@ template <typename T> struct CloneCodec<std::optional<T>> {
     }
 };
 
+/** A slot telling `undefined` from `null`: undefined until defined, then its value (`null` its empty state). */
+template <typename T> struct CloneCodec<Tagged<T>> {
+    static pal::CloneId write(pal::CloneWriter& writer, const Tagged<T>& value) {
+        return value.defined() ? clone_write(writer, value.value())
+                               : writer.add(pal::CloneUndefined{});
+    }
+    static Tagged<T> read(pal::CloneReader& reader, pal::CloneId id) {
+        if (std::holds_alternative<pal::CloneUndefined>(reader.node(id)))
+            return {};
+        return Tagged<T>(clone_read<T>(reader, id), true);
+    }
+};
+
 template <typename T> struct CloneCodec<Nullable<T>> {
     static pal::CloneId write(pal::CloneWriter& writer, const Nullable<T>& value) {
         return value ? clone_write(writer, *value) : writer.add(pal::CloneUndefined{});
@@ -470,6 +485,100 @@ template <typename T> struct CloneCodec<Nullable<T>> {
             std::holds_alternative<pal::CloneNull>(reader.node(id)))
             return {};
         return clone_read<T>(reader, id);
+    }
+};
+
+/**
+ * Whether a message node is the kind `T`'s codec writes: how a union reads
+ * its member back. The compiler admits a union only where its members' kinds
+ * differ.
+ */
+template <typename T> struct CloneShape {
+    static bool holds(const pal::CloneNode& node) {
+        if constexpr (std::is_same_v<T, bool>)
+            return std::holds_alternative<bool>(node);
+        else if constexpr (std::is_same_v<T, std::string>)
+            return std::holds_alternative<std::string>(node);
+        else if constexpr (std::is_arithmetic_v<T>)
+            return std::holds_alternative<double>(node);
+        else if constexpr (requires(const T& value) { clone_enum_value(value); })
+            return std::holds_alternative<std::string>(node);
+        else
+            return std::holds_alternative<pal::CloneObject>(node);
+    }
+};
+template <> struct CloneShape<Undefined> {
+    static bool holds(const pal::CloneNode& node) {
+        return std::holds_alternative<pal::CloneUndefined>(node);
+    }
+};
+template <> struct CloneShape<Null> {
+    static bool holds(const pal::CloneNode& node) {
+        return std::holds_alternative<pal::CloneNull>(node);
+    }
+};
+template <typename T> struct CloneShape<Array<T>> {
+    static bool holds(const pal::CloneNode& node) {
+        return std::holds_alternative<pal::CloneArray>(node);
+    }
+};
+template <std::size_t N> struct CloneShape<Tuple<N>> : CloneShape<Array<double>> {};
+template <typename K, typename V> struct CloneShape<Map<K, V>> {
+    static bool holds(const pal::CloneNode& node) {
+        return std::holds_alternative<pal::CloneMap>(node);
+    }
+};
+template <typename T> struct CloneShape<Set<T>> {
+    static bool holds(const pal::CloneNode& node) {
+        return std::holds_alternative<pal::CloneSet>(node);
+    }
+};
+template <> struct CloneShape<Date> {
+    static bool holds(const pal::CloneNode& node) {
+        return std::holds_alternative<pal::CloneDate>(node);
+    }
+};
+template <> struct CloneShape<ArrayBuffer> {
+    static bool holds(const pal::CloneNode& node) {
+        return std::holds_alternative<pal::CloneBuffer>(node);
+    }
+};
+template <typename T> struct CloneShape<TypedArray<T>> {
+    static bool holds(const pal::CloneNode& node) {
+        const auto* view = std::get_if<pal::CloneView>(&node);
+        return view && view->kind == CloneElement<T>::kind;
+    }
+};
+template <> struct CloneShape<U8Array> {
+    static bool holds(const pal::CloneNode& node) {
+        const auto* view = std::get_if<pal::CloneView>(&node);
+        return view && view->kind == pal::CloneViewKind::uint8;
+    }
+};
+template <> struct CloneShape<DataView> {
+    static bool holds(const pal::CloneNode& node) {
+        const auto* view = std::get_if<pal::CloneView>(&node);
+        return view && view->kind == pal::CloneViewKind::data_view;
+    }
+};
+template <typename T> struct CloneShape<Ref<T>> : CloneShape<T> {};
+
+/** A union clones as its present member and is received as the member its node holds. */
+template <typename... Ts> struct CloneCodec<std::variant<Ts...>> {
+    using Union = std::variant<Ts...>;
+    static pal::CloneId write(pal::CloneWriter& writer, const Union& value) {
+        return std::visit([&](const auto& member) { return clone_write(writer, member); }, value);
+    }
+    static Union read(pal::CloneReader& reader, pal::CloneId id) {
+        const auto& node = reader.node(id);
+        std::optional<Union> result;
+        static_cast<void>(
+            ((CloneShape<Ts>::holds(node) &&
+              (result.emplace(std::in_place_type<Ts>, clone_read<Ts>(reader, id)), true)) ||
+             ...));
+        if (!result)
+            throw pal::DataCloneError("Message value matches no member of the receiving union.");
+        return std::move(*result);
     }
 };
 

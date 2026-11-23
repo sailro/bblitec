@@ -99,6 +99,7 @@ function uncloneablePosition(
         case "u8clampedarray":
         case "f32array":
         case "f64array":
+        case "json": // A document clones as the value it holds (js_json.hpp).
             return undefined;
         case "optional":
             return uncloneablePosition(
@@ -254,10 +255,27 @@ function uncloneablePosition(
         case "function":
             // structuredClone throws DataCloneError where it meets one.
             return functions === "throw" ? undefined : refuse("a function");
-        case "json":
-            return refuse("a dynamic JSON value");
-        case "union":
-            return refuse("a mixed union");
+        case "union": {
+            // A member is received by the node kind it clones to.
+            const shapes = type.members.map(cloneShape);
+            if (
+                shapes.includes(undefined) ||
+                new Set(shapes).size !== shapes.length
+            )
+                return refuse("a mixed union");
+            for (const member of type.members) {
+                const found = uncloneablePosition(
+                    context,
+                    member,
+                    path,
+                    node,
+                    seen,
+                    functions,
+                );
+                if (found) return found;
+            }
+            return undefined;
+        }
         case "iterator":
             return refuse("an iterator");
         case "span":
@@ -268,6 +286,45 @@ function uncloneablePosition(
             return refuse("an enum-keyed record");
         case "table":
             return refuse("a constant table");
+    }
+}
+
+/**
+ * The message node kind a union member clones to (`CloneShape`,
+ * js_structured_clone.hpp); undefined for a member a union does not carry.
+ */
+function cloneShape(type: DataType): string | undefined {
+    switch (type.kind) {
+        case "number":
+        case "boolean":
+        case "undefined":
+        case "null":
+        case "map":
+        case "set":
+        case "date":
+        case "struct":
+            return type.kind;
+        case "string":
+        case "enum":
+            return "string";
+        case "vector":
+        case "tuple":
+            return "array";
+        case "arraybuffer":
+            return "buffer";
+        case "dataview":
+        case "u8array":
+        case "i8array":
+        case "u16array":
+        case "i16array":
+        case "u32array":
+        case "i32array":
+        case "u8clampedarray":
+        case "f32array":
+        case "f64array":
+            return `view ${type.kind}`;
+        default:
+            return undefined;
     }
 }
 
@@ -365,9 +422,14 @@ function messageDataType(
     context: WorkerLoweringContext,
     node: ts.Expression,
 ): DataType | undefined {
-    return context.dataTypes.fromStoredTsType(
-        context.checker.getTypeAtLocation(node),
-        node,
+    const type = context.checker.getTypeAtLocation(node);
+    // An `unknown` position holds any value: a dynamic document, whose
+    // codec clones the value it holds.
+    return (
+        context.dataTypes.fromStoredTsType(type, node) ??
+        ((type.flags & ts.TypeFlags.Unknown) !== 0
+            ? context.dataTypes.dynamicJsonType(type)
+            : undefined)
     );
 }
 
@@ -396,6 +458,21 @@ export function readWorkerEventProperty(
             );
         requireCloneable(context, type, "event.data", expression);
         const cppType = context.dataTypes.cppType(type);
+        if (type.kind === "tagged") {
+            // A read that may be `null` or `undefined` is decoded once; its
+            // value and its absence are read off that.
+            const decoded = context.allocateTemporaryCppName("message_data");
+            context.emit({
+                kind: "declaration",
+                type: "auto",
+                name: decoded,
+                initializer: `${owner.cpp}->data<${cppType}>()`,
+            });
+            return {
+                ...context.dataLowerer.leafValue(decoded, type),
+                freshData: true,
+            };
+        }
         return {
             kind:
                 type.kind === "number" ||

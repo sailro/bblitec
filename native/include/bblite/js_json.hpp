@@ -24,6 +24,7 @@
 // plain-data header every scene includes carries no parser for it.
 
 #include <bblite/js_data.hpp>
+#include <bblite/js_structured_clone.hpp>
 
 #include <cmath>
 #include <charconv>
@@ -636,12 +637,19 @@ public:
         case Kind::string:
             return static_cast<std::size_t>(hash_bytes(string_.data(), string_.size()));
         case Kind::array:
-            return reinterpret_cast<std::uintptr_t>(array_identity());
         case Kind::object:
-            return reinterpret_cast<std::uintptr_t>(
-                native_ ? native_->identity() : static_cast<const void*>(object_.get()));
+            return reinterpret_cast<std::uintptr_t>(reference_identity());
         }
         return 0;
+    }
+
+    /** The array or object this value refers to, which every reference to it shares; null for a primitive. */
+    [[nodiscard]] const void* reference_identity() const {
+        if (kind_ == Kind::array)
+            return array_identity();
+        if (kind_ == Kind::object)
+            return native_ ? native_->identity() : static_cast<const void*>(object_.get());
+        return nullptr;
     }
 
     /** The key Map.prototype.set and Set.prototype.add store: -0 becomes +0. */
@@ -1995,5 +2003,123 @@ template <typename T>
 [[nodiscard]] inline std::string legacy_null_dom_string(const JsonValue& value) {
     return value.is_null() ? std::string{} : value.to_string();
 }
+
+/** Each typed array class a document holds as itself (`json_value`), with the clone kind it is written as. */
+template <typename Visitor> bool for_json_clone_view(Visitor&& visitor) {
+    return visitor.template operator()<I8Array>(pal::CloneViewKind::int8) ||
+           visitor.template operator()<U8Array>(pal::CloneViewKind::uint8) ||
+           visitor.template operator()<I16Array>(pal::CloneViewKind::int16) ||
+           visitor.template operator()<U16Array>(pal::CloneViewKind::uint16) ||
+           visitor.template operator()<I32Array>(pal::CloneViewKind::int32) ||
+           visitor.template operator()<U32Array>(pal::CloneViewKind::uint32) ||
+           visitor.template operator()<F32Array>(pal::CloneViewKind::float32) ||
+           visitor.template operator()<F64Array>(pal::CloneViewKind::float64) ||
+           visitor.template operator()<TypedArray<ClampedByte>>(pal::CloneViewKind::uint8_clamped);
+}
+
+/**
+ * A dynamic document clones as the JavaScript value it holds, aliases and
+ * cycles kept, a typed array it holds as itself included; it is received as
+ * an owned document. A function throws DataCloneError, as does a Map, Set,
+ * Date, ArrayBuffer or DataView received into one.
+ */
+template <> struct CloneCodec<JsonValue> {
+    static pal::CloneId write(pal::CloneWriter& writer, const JsonValue& value) {
+        switch (value.kind()) {
+        case JsonValue::Kind::undefined:
+            return writer.add(pal::CloneUndefined{});
+        case JsonValue::Kind::null:
+            return writer.add(pal::CloneNull{});
+        case JsonValue::Kind::boolean:
+            return writer.add(value.truthy());
+        case JsonValue::Kind::number:
+            return writer.add(value.to_number());
+        case JsonValue::Kind::string:
+            return writer.add(value.string_value());
+        case JsonValue::Kind::array: {
+            const auto [id, fresh] = writer.remember(value.reference_identity());
+            if (!fresh)
+                return id;
+            pal::CloneArray array;
+            const auto length = static_cast<std::size_t>(value.length());
+            array.elements.reserve(length);
+            for (std::size_t index = 0; index < length; ++index)
+                array.elements.push_back(clone_write(writer, value.at(static_cast<double>(index))));
+            writer.replace(id, std::move(array));
+            return id;
+        }
+        case JsonValue::Kind::object:
+            break;
+        }
+        if (value.is_callable())
+            throw pal::DataCloneError("A function cannot be structured-cloned.");
+        if (value.is_array_buffer_view()) {
+            std::optional<pal::CloneId> view;
+            for_json_clone_view([&]<typename View>(pal::CloneViewKind) {
+                if (!value.instance_of<View>())
+                    return false;
+                view = clone_write(writer, value.asserted_instance<View>());
+                return true;
+            });
+            if (!view)
+                throw pal::DataCloneError("This document view has no structured-clone codec.");
+            return *view;
+        }
+        const auto [id, fresh] = writer.remember(value.reference_identity());
+        if (!fresh)
+            return id;
+        pal::CloneObject object;
+        value.for_each_entry([&](const auto& key, const JsonValue& member) {
+            object.properties.emplace_back(std::string(key), clone_write(writer, member));
+        });
+        writer.replace(id, std::move(object));
+        return id;
+    }
+    static JsonValue read(pal::CloneReader& reader, pal::CloneId id) {
+        const auto& node = reader.node(id);
+        if (std::holds_alternative<pal::CloneUndefined>(node))
+            return {};
+        if (std::holds_alternative<pal::CloneNull>(node))
+            return JsonValue::null_value();
+        if (const auto* boolean = std::get_if<bool>(&node))
+            return JsonValue::from_boolean(*boolean);
+        if (const auto* number = std::get_if<double>(&node))
+            return JsonValue::from_number(*number);
+        if (const auto* text = std::get_if<std::string>(&node))
+            return JsonValue::from_string(*text);
+        // A view is remembered as its own class: the document boxes it.
+        if (const auto* view = std::get_if<pal::CloneView>(&node)) {
+            std::optional<JsonValue> value;
+            for_json_clone_view([&]<typename View>(pal::CloneViewKind kind) {
+                if (kind != view->kind)
+                    return false;
+                value = json_value(clone_read<View>(reader, id));
+                return true;
+            });
+            if (value)
+                return *value;
+        }
+        if (const auto* recalled = reader.recalled<JsonValue>(id))
+            return *recalled;
+        if (const auto* array = std::get_if<pal::CloneArray>(&node)) {
+            const auto elements = array->elements;
+            auto value = JsonValue::from_array({});
+            reader.remember(id, value);
+            for (std::size_t index = 0; index < elements.size(); ++index)
+                value.set(std::to_string(index), clone_read<JsonValue>(reader, elements[index]));
+            return value;
+        }
+        if (const auto* object = std::get_if<pal::CloneObject>(&node)) {
+            const auto properties = object->properties;
+            auto value = JsonValue::from_object({});
+            reader.remember(id, value);
+            for (const auto& [key, member] : properties)
+                value.set(key, clone_read<JsonValue>(reader, member));
+            return value;
+        }
+        throw pal::DataCloneError(
+            "A dynamic document receives no Map, Set, Date, ArrayBuffer or DataView.");
+    }
+};
 
 } // namespace bbl::js

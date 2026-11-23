@@ -147,6 +147,90 @@ for (const [name, source, message] of [
     });
 }
 
+const targetWorkerSource = `
+type Constant = number | readonly number[];
+interface Request { constants: Record<string, Constant>; values: Float32Array[]; }
+function handle(port: MessagePort, data: Request | null | undefined): void {
+    if (!data) return;
+    let total = 0;
+    for (const key in data.constants) {
+        const constant = data.constants[key]!;
+        total += typeof constant === "number" ? constant : constant.length;
+    }
+    for (const values of data.values) total += values.length;
+    port.postMessage({ type: "sum", value: total });
+    throw new Error("worker failure");
+}
+addEventListener("message", (event: MessageEvent) => {
+    const data = event.data as { type: "attach"; port: MessagePort } | null | undefined;
+    if (!data || data.type !== "attach") return;
+    const port = data.port;
+    port.onmessage = (ev: MessageEvent) => handle(port, ev.data as Request | null | undefined);
+});
+`;
+
+const targetEntrySource = `
+interface FailTarget {
+    onerror?: ((event: ErrorEvent) => void) | null;
+    onmessageerror?: ((event: MessageEvent) => void) | null;
+}
+type Constant = number | readonly number[];
+type Reply = { type: "sum"; value: number } | { type: "none" };
+type Post = (message: { constants: Record<string, Constant>; values: Float32Array[] }, transfer?: Transferable[]) => void;
+const log: string[] = [];
+const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
+const channel = new MessageChannel();
+function install(target: FailTarget, name: string): void {
+    if ("onerror" in target) {
+        target.onerror = (event: ErrorEvent) => {
+            event.preventDefault();
+            log.push(name + ":" + event.lineno + ":" + event.colno);
+            const observed = log.join(",");
+            if (observed !== "sum:8,worker:0:0") throw new Error("observed " + observed);
+            channel.port1.close();
+            worker.terminate();
+            globalThis.close();
+        };
+    }
+    target.onmessageerror = () => {
+        throw new Error(name + " messageerror");
+    };
+}
+install(worker, "worker");
+install(channel.port1, "port");
+channel.port1.onmessage = (event: MessageEvent) => {
+    const reply = event.data as Reply;
+    if (!reply) return;
+    if (reply.type === "sum") log.push("sum:" + reply.value);
+};
+const post: Post = (message, transfer) => {
+    channel.port1.postMessage(message, transfer ?? []);
+};
+worker.postMessage({ type: "attach", port: channel.port2 }, [channel.port2]);
+const sources = [new Float32Array([1]), new Float32Array([2, 3])];
+const buffers = sources.length > 0 ? sources.flatMap((source) => [source.buffer]) : [];
+post({ constants: { a: 3, b: [5, 6] }, values: sources }, buffers);
+if (sources[0]!.length !== 0 || sources[1]!.length !== 0) throw new Error("run-time transfer detach");
+`;
+
+test("message targets take handlers, membership tests, unions and run-time transfer lists", (t) => {
+    const directory = resolve("artifacts/worker-message-ports/targets");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(resolve(directory, "worker.ts"), targetWorkerSource);
+    const result = compileSource(targetEntrySource, {
+        fileName: resolve(directory, "entry.ts"),
+    });
+    assert.match(result.cpp, /bbl::js::transfer_list\(/);
+    assert.match(result.cpp, /->set_error_handler\(/);
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) return t.skip("Native fixture compiler unavailable.");
+    runGeneratedProgram(tools, "worker-message-ports/targets/run", result.cpp, {
+        flags: ["/DBBLITE_WORKERS=1"],
+        timeoutMs: 20000,
+        expectedOutput: "",
+    });
+});
+
 test("a MessagePort refuses an error handler", () => {
     const directory = resolve("artifacts/worker-message-ports/refusals");
     mkdirSync(directory, { recursive: true });
@@ -161,5 +245,53 @@ test("a MessagePort refuses an error handler", () => {
                 { fileName: resolve(directory, "entry.ts") },
             ),
         /A MessagePort has no error event/,
+    );
+});
+
+const documentWorkerSource = `
+function count(values: Float32Array): number {
+    let total = 0;
+    for (const value of values) total += value;
+    return total;
+}
+addEventListener("message", (event: MessageEvent) => {
+    const data = event.data as unknown;
+    const document = data as { name: string; values: Float32Array; list: number[] };
+    const reply: unknown = { total: count(document.values) + document.list.length, name: document.name };
+    self.postMessage(reply);
+});
+`;
+
+const documentEntrySource = `
+const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
+worker.addEventListener("message", (event: MessageEvent) => {
+    const reply = event.data as unknown;
+    const document = reply as { total: number; name: string };
+    if (document.total !== 8 || document.name !== "doc") throw new Error("document reply");
+    worker.terminate();
+    globalThis.close();
+});
+const payload: unknown = { name: "doc", values: new Float32Array([1, 2, 3]), list: [4, 5] };
+worker.postMessage(payload);
+`;
+
+test("dynamic documents cross realms with the typed arrays they hold", (t) => {
+    const directory = resolve("artifacts/worker-message-ports/documents");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(resolve(directory, "worker.ts"), documentWorkerSource);
+    const result = compileSource(documentEntrySource, {
+        fileName: resolve(directory, "entry.ts"),
+    });
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) return t.skip("Native fixture compiler unavailable.");
+    runGeneratedProgram(
+        tools,
+        "worker-message-ports/documents/run",
+        result.cpp,
+        {
+            flags: ["/DBBLITE_WORKERS=1"],
+            timeoutMs: 20000,
+            expectedOutput: "",
+        },
     );
 });

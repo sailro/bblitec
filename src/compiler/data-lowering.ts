@@ -14046,6 +14046,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return value;
         }
         this.requireDocumentDictionaryConversion(value, dataType, source);
+        // A typed array a document holds is read back as its class: the same
+        // array (`valueResource`).
+        if (isJsonValue(value) && isTypedArrayType(dataType))
+            return {
+                kind: "data",
+                cpp: this.compileKnownValueForSink(value, dataType, source),
+                dataType,
+            };
         // A compile-time record stores its entries in a dictionary whatever
         // expression produced it, as a named one does (`valueMap`).
         if (value.kind === "record" && dataType.kind === "map")
