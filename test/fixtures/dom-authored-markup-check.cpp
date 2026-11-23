@@ -118,6 +118,18 @@ int main() {
         release.button.down = false;
         send(release);
         assert(ui_active_element(engine) == note);
+        // Its maxlength is the control's limit, projected to the RmlUi text area.
+        assert(ui_get_max_length(engine, note) == 5);
+        assert(runtime.projected_elements.at(note.value)
+                   .element->GetAttribute<Rml::String>("maxlength", "") == "5");
+        SDL_Event text{};
+        text.type = SDL_EVENT_TEXT_INPUT;
+        text.text.windowID = SDL_GetWindowID(window);
+        text.text.text = "abcdefg";
+        static_cast<void>(pal::handle_ui_rml_event(runtime, text));
+        pal::update_ui_rml_runtime(runtime, 640, 480);
+        if (ui_get_form_value(engine, note) != "abcde")
+            throw std::runtime_error("maxlength keeps " + ui_get_form_value(engine, note));
     }
     SDL_DestroyWindow(window);
     SDL_Quit();

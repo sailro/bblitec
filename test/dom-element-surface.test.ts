@@ -611,7 +611,7 @@ test("static innerHTML form controls own state, listeners and queries as created
                 <button class="keep" type="button" style="position:absolute;left:0;top:200px;width:80px;height:30px">Keep</button>
                 <input class="flag" type="checkbox" checked>
                 <label id="note-label" class="note-label" for="note" style="position:absolute;left:100px;top:200px;width:80px;height:30px">Note</label>
-                <textarea id="note" class="note" rows="2" style="position:absolute;left:0;top:260px"></textarea>
+                <textarea id="note" class="note" rows="2" maxlength="5" style="position:absolute;left:0;top:260px"></textarea>
             </div>
             <div class="status"></div>\`;
         document.body.appendChild(panel);

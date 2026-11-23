@@ -65,12 +65,20 @@ const TAG_ATTRIBUTES: ReadonlyMap<string, ReadonlySet<string>> = new Map(
             "max",
             "step",
             "placeholder",
+            "maxlength",
             "checked",
             "disabled",
         ],
         select: ["name", "disabled"],
         option: ["value", "selected", "disabled"],
-        textarea: ["name", "placeholder", "rows", "cols", "disabled"],
+        textarea: [
+            "name",
+            "placeholder",
+            "rows",
+            "cols",
+            "maxlength",
+            "disabled",
+        ],
     }).map(([tag, names]) => [tag, new Set(names)]),
 );
 
