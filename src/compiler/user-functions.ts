@@ -6334,12 +6334,17 @@ export class UserFunctionLowerer {
                 this.activeStoredDataFunctions.delete(declaration);
             }
         }
-        // A callback a container compares carries the identity of the
-        // declaration it came from together with the closure that
-        // declaration closes over, so it is brace-initialized with that
-        // identity beside the closure; everything else is the plain
-        // assignment the stored-function model already emitted.
-        const identity = dataType.identity
+        // A callback a container compares, and every read of a named function
+        // (one JavaScript object, which an inlined callee can return to a
+        // comparison its type does not mark), carry the identity of their
+        // declaration and closure, brace-initialized beside the closure. A
+        // literal evaluated here keeps the plain assignment's fresh identity.
+        const keepsIdentity =
+            dataType.identity ||
+            (site !== undefined &&
+                ts.isExpression(site) &&
+                ts.isIdentifier(unwrapExpression(site)));
+        const identity = keepsIdentity
             ? identityCpp
                 ? `{${identityCpp}, `
                 : owner?.repeatedCallbackEvaluation
@@ -6382,10 +6387,10 @@ export class UserFunctionLowerer {
                   );
         context.emit(
             selfIdentifier
-                ? dataType.identity
+                ? keepsIdentity
                     ? `${sharedCellCpp(selfOwnerCpp!)} = ${cppType}${identity}${lambda}};`
                     : `${sharedCellCpp(selfOwnerCpp!)} = ${lambda};`
-                : `${cppType} ${cppName}${identity}${lambda}${dataType.identity ? "}" : ""};`,
+                : `${cppType} ${cppName}${identity}${lambda}${keepsIdentity ? "}" : ""};`,
         );
         if (selfIdentifier) {
             context.emit({

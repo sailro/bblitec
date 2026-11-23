@@ -481,3 +481,21 @@ test("a timer schedules the stored function value it is given", (t) =>
         t,
         true,
     ));
+
+test("a const arrow keeps its identity through an inlined call that returns it", (t) =>
+    nativeCheck(
+        "const-arrow-identity-through-inlined-return",
+        `
+        const links=new Set(["a"]);
+        function link(page:string,open:()=>void):(()=>void)|undefined {
+            return links.has(page)?open:undefined;
+        }
+        let calls=0;
+        const open=()=>{calls++;};
+        const found=link("a",open);
+        if(found!==open)throw new Error("identity");
+        found?.();
+        if(calls!==1||link("b",open)!==undefined)throw new Error("call and absence");
+        `,
+        t,
+    ));
