@@ -497,7 +497,7 @@ function replaySite(replay: unknown): string | undefined {
 }
 
 /** What restarted an attempt, and where its storage demand rose. */
-function describeStop(cause: unknown): string {
+export function describeStop(cause: unknown): string {
     const text =
         cause instanceof StorageDemand
             ? `${cause.constructor.name}: ${replayText(cause)}`

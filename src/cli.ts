@@ -829,6 +829,7 @@ async function main(): Promise<void> {
         compileSource(source, {
             ...compileOptions,
             readAssetBytes: readAssetBytesSync,
+            compileProgress: (line) => console.error(line),
         }),
     );
 

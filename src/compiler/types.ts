@@ -182,6 +182,8 @@ export interface RefusalSite {
 export interface CompileOptions extends DeploymentOptions {
     /** Generation supplies resource bytes for source-derived loader feature discovery. */
     readAssetBytes?: (source: string, entryFileName: string) => Uint8Array;
+    /** Told one line per lowering attempt a replay ends: a long compile says how it goes. */
+    compileProgress?: (line: string) => void;
     /** Emit explicit typed runtime failures for registered missing capabilities. */
     deferredCapabilities?: "runtime-throw";
     fileName?: string;

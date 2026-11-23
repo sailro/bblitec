@@ -37,6 +37,25 @@ const state = `
     const state=make();
 `;
 
+test("a compile reports each attempt a replay ends", () => {
+    const lines: string[] = [];
+    compileSource(
+        `
+        interface Settings { gain: number }
+        function parsed(text: string): Settings { return JSON.parse(text); }
+        let active: Settings = { gain: 2 };
+        active = parsed('{"gain":3}');
+        console.log(active.gain);
+    `,
+        { compileProgress: (line) => lines.push(line) },
+    );
+    assert.equal(lines.length, 1, lines.join("\n"));
+    assert.match(
+        lines[0]!,
+        /^Compile attempt 1 of .+: NativeRecordStorageRequired: record \(Settings: document\) at .+:2 \(\d+ s\)$/,
+    );
+});
+
 /**
  * A program compiled in one storage replay (two constructions), run
  * natively against its own assertions.

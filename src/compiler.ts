@@ -95,6 +95,7 @@ import { emptyStorage } from "./compiler/empty-storage.js";
 import { emitSurveyRoots } from "./compiler/survey-roots.js";
 import {
     activeSurvey,
+    describeStop,
     SurveyCollector,
     SurveyPassLimit,
     type SurveySettings,
@@ -907,16 +908,29 @@ function lowerSourceApplication(
         // statement is the compile. A plan that adds no demand leaves the
         // next attempt to strict lowering.
         let planning = false;
-        for (;;) {
+        const started = performance.now();
+        const attempted = (attempt: number, ended: string): void => {
+            options.compileProgress?.(
+                `Compile attempt ${attempt} of ${input.sourceFile.fileName}: ${ended} (${((performance.now() - started) / 1000).toFixed(0)} s)`,
+            );
+        };
+        for (let attempt = 1; ; attempt++) {
             if (planning) {
                 const planner = new StorageDemandPlanner(input.checker);
+                let replay = "";
                 try {
                     const planned = planner.run(() => lower(planner));
                     if (planned) return planned;
                 } catch (planningError) {
                     if (!acceptReplay(planningError)) throw planningError;
+                    replay = `, then ${describeStop(planningError)}`;
                 }
-                planning = addPlanned(planner) > 0;
+                const added = addPlanned(planner);
+                planning = added > 0;
+                attempted(
+                    attempt,
+                    `plan took ${added} of ${planner.demands.length} demands${replay}`,
+                );
                 continue;
             }
             try {
@@ -926,6 +940,7 @@ function lowerSourceApplication(
                 planning =
                     error instanceof StorageDemand &&
                     storageDemandPlanningEnabled();
+                attempted(attempt, describeStop(error));
             }
         }
     };

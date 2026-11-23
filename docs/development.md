@@ -142,7 +142,9 @@ statements slowest to lower; no tree) and `api/report.html` (referenced pinned d
 function of the program's own sources ([survey invariants](architecture.md#lowering-invariants));
 `bblitec <entry> --survey <census.json>` rewrites the census as it goes (`complete: false`), and `--survey-passes <n>` caps
 the passes: one attempts every statement. Each pass reports on stderr the seconds and statement lowerings of its entry,
-module roots, function roots and statement roots, and the seconds its probes kept and rolled back. Group by shared
+module roots, function roots and statement roots, and the seconds its probes kept and rolled back. An ordinary
+compile reports on stderr each lowering attempt a replay ends (`Compile attempt <n>`: what restarted it, where, and
+the seconds so far). Group by shared
 capability and probe source shapes before implementing. The
 compiler's `--coverage <coverage.json>` (with `--out` or `--survey`) records statement-level retained, refused and
 rolled-back lowering; it does not prove native support. A survey rewrites it every ten minutes (`complete: false` until it
