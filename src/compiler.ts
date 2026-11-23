@@ -5481,8 +5481,18 @@ class Compiler implements LoweringServices {
             this.reachFeature("renderer:floating-origin", call);
         }
         const engineIdentity = Symbol();
-        if (engineCanvas)
+        if (engineCanvas) {
             writable(engineCanvas).canvasEngineIdentity = engineIdentity;
+            // A read of a binding is a copy of its value (a narrowed
+            // `canvas!` too): the binding keeps the proof its later reads
+            // and the aliases they make carry.
+            const argument = this.unwrap(argumentAt(call, 0));
+            const stored = ts.isIdentifier(argument)
+                ? this.bindings.lookupOptional(argument)
+                : undefined;
+            if (stored?.kind === engineCanvas.kind)
+                writable(stored).canvasEngineIdentity = engineIdentity;
+        }
         return {
             kind: "engine",
             cpp: engineCpp,
