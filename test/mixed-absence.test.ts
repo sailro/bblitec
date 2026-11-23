@@ -40,14 +40,38 @@ test("mixed primitive absence retains null and undefined through fields, loops a
         if (matches[0]!.weight !== null || matches[0]!.enabled !== undefined) throw new Error("primitive tags");
     `);
     assert(result.manifest.features.includes("data:json"));
+    runChecked(t, result.cpp, "mixed-absence-check");
+});
+
+test("a map callback's record keeps a null member's absence in a declared record's document slot", (t) => {
+    const result = compileSource(`
+        type State = "met" | "missing";
+        interface Line { key: string; state?: State | null; tone?: "problem" }
+        interface Row { key: string; state: State | null; tone?: "problem" }
+        let first: State | null = null;
+        for (let at = 0; at < 3; at++) if (at === 4) first = "met";
+        const rows: Row[] = [
+            { key: "a", state: first },
+            { key: "b", state: "missing", tone: "problem" },
+        ];
+        const lines: Line[] = rows.map((row) => ({ key: row.key, state: row.state, ...(row.tone ? { tone: row.tone } : {}) }));
+        const all: Line[] = [...lines, { key: "c" }];
+        if (all[0]!.state !== null || all[1]!.state !== "missing" || all[2]!.state !== undefined) throw new Error("states");
+        if (all[0]!.tone !== undefined || all[1]!.tone !== "problem") throw new Error("tones");
+    `);
+    runChecked(t, result.cpp, "map-record-absence-check");
+});
+
+/** Builds the program into `artifacts/<name>` and runs it: it throws on a wrong value. */
+function runChecked(t: test.TestContext, cpp: string, name: string): void {
     const tools = optionalNativeFixtureTools(false);
     if (!tools) {
         t.skip("Native fixture compiler unavailable.");
         return;
     }
-    const directory = resolve("artifacts/mixed-absence-check");
+    const directory = resolve(`artifacts/${name}`);
     mkdirSync(directory, { recursive: true });
-    writeFileSync(join(directory, "program.hpp"), result.cpp);
+    writeFileSync(join(directory, "program.hpp"), cpp);
     const executable = join(directory, "check.exe");
     runNativeFixtureCompiler(tools, [
         `/Fo:${directory}/`,
@@ -60,7 +84,7 @@ test("mixed primitive absence retains null and undefined through fields, loops a
         execFileSync(executable, { encoding: "utf8", timeout: 10000 }),
         "",
     );
-});
+}
 
 test("an optional chain is undefined where it is absent, unless its type names null alone", () => {
     // `input?.kind` over a receiver the checker calls present still tests

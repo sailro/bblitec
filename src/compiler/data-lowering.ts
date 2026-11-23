@@ -12727,12 +12727,21 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                   ? mappedElement(this.context.checker, container)
                   : literalMember(container, key);
         if (container && !expression && typeof key === "string") {
-            const property = this.context.checker.getPropertyOfType(
-                this.context.checker.getNonNullableType(
-                    this.context.checker.getTypeAtLocation(container),
-                ),
-                key,
-            );
+            const checker = this.context.checker;
+            const memberOf = (type: ts.Type) =>
+                checker.getPropertyOfType(
+                    checker.getNonNullableType(type),
+                    key,
+                );
+            // A callback's result (a `map` element) is the record its
+            // signature returns, unless the function holds the member.
+            const signature = ts.isFunctionLike(container)
+                ? checker.getSignatureFromDeclaration(container)
+                : undefined;
+            const property =
+                memberOf(checker.getTypeAtLocation(container)) ??
+                (signature &&
+                    memberOf(checker.getReturnTypeOfSignature(signature)));
             if (property && member.dataType?.kind === "optional") {
                 const absence = nullability(
                     this.context.checker.getTypeOfSymbolAtLocation(
