@@ -7800,18 +7800,20 @@ export class DataTypeRegistry {
                 });
                 return undefined;
             };
-            // An empty payload cannot also stand for a present null/undefined key.
+            // An empty payload cannot also stand for a present null/undefined
+            // key: a required one that may hold undefined, or a null. An
+            // optional key's empty slot is absent, as everywhere.
             if (
                 absent &&
-                (members.some(
-                    (member) => (member.flags & ts.SymbolFlags.Optional) !== 0,
-                ) ||
-                    memberTypes.some((member) => {
-                        const absence = nullability(member);
-                        return (
-                            absence.null || absence.undefined || absence.void
-                        );
-                    }))
+                memberTypes.some((member, index) => {
+                    const absence = nullability(member);
+                    return (
+                        absence.null ||
+                        ((members[index]!.flags & ts.SymbolFlags.Optional) ===
+                            0 &&
+                            (absence.undefined || absence.void))
+                    );
+                })
             )
                 return unstored(
                     0,
