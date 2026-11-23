@@ -563,6 +563,20 @@ export function requiresStaticLoopIteration(
     return required;
 }
 
+/**
+ * DOM methods whose first argument names what the lowering selects at
+ * generation: a listener family, or an attribute.
+ */
+const generationNamedDomMethods: ReadonlySet<string> = new Set([
+    "addEventListener",
+    "removeEventListener",
+    "setAttribute",
+    "removeAttribute",
+    "toggleAttribute",
+    "hasAttribute",
+    "getAttribute",
+]);
+
 /** Plain-data iteration can update existing native resources, not specialize them. */
 export function requiresStaticDataIteration(
     context: ResourceLoopContext,
@@ -747,15 +761,13 @@ function reachesSpecializingEffect(
         if (ts.isCallExpression(node)) {
             const callee = unwrapExpression(node.expression);
             const member = namedMember(context.checker, callee);
-            // Listener names choose native callback families even in stored
+            // Listener and attribute names choose what lowers, even in stored
             // bodies. Expand the loop supplying a name, not an enclosing
-            // runtime owner loop or a loop registering one constant name.
+            // runtime owner loop or a loop using one constant name.
             if (
                 iteration &&
                 member &&
-                ["addEventListener", "removeEventListener"].includes(
-                    member.name,
-                ) &&
+                generationNamedDomMethods.has(member.name) &&
                 declaredInDomLibrary(
                     accessedPropertySymbol(context.checker, member.access),
                 ) &&
