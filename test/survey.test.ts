@@ -214,6 +214,37 @@ test("one survey pass meets every independent demand", () => {
     );
 });
 
+test("a binding a demand left without storage cascades from its declaration", () => {
+    // The destructuring reads a record that demands document storage: the
+    // capped survey rolls it back for the next pass, and `rest`, whose
+    // type has no empty storage yet, is unbound where it is read.
+    const { report } = surveySource(
+        `
+        interface A { a: number }
+        function parsed(text: string): A { return JSON.parse(text); }
+        let held: A = { a: 1 };
+        function run(text: string): number {
+            held = parsed(text);
+            const { a, ...rest } = held;
+            return a + Object.keys(rest).length;
+        }
+        localStorage.setItem("t", String(run('{"a":2}')));
+    `,
+        { fileName: resolve("survey-demand-cascade.ts") },
+        { passLimit: 1 },
+    );
+    assert.equal(report.statements.demanded, 2);
+    const [read, ...others] = report.refusals;
+    assert.equal(others.length, 0, listed(report));
+    assert.ok(read, listed(report));
+    assert.match(read.message, /^Unknown or unsupported variable 'rest'\./);
+    assert.equal(read.site.line, 8);
+    // The site the read cascades from is the name its declaration binds.
+    assert.ok(read.cascade, listed(report));
+    assert.match(read.cascade.file, /survey-demand-cascade\.ts$/);
+    assert.deepEqual([read.cascade.line, read.cascade.column], [7, 27]);
+});
+
 test("a member call through a refused binding is a cascade of its declaration", () => {
     // FinalizationRegistry is deliberately outside the supported runtime.
     const create = `

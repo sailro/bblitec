@@ -1123,6 +1123,17 @@ export class SurveyCollector {
                         refused ? taken! : (met as Error),
                         applied === "held",
                     );
+                    // What it declares is the next pass's: the empty
+                    // storage below stands in for it, so a refusal reached
+                    // through one of its names is not a gap of its own.
+                    for (const name of statementDeclaredNames(statement)) {
+                        const location = sourceLocation(name);
+                        this.declaredAt(attempt, context.checker, [name], {
+                            file: location.file.fileName,
+                            line: location.line,
+                            column: location.character,
+                        });
+                    }
                     if (
                         attempt.root &&
                         applied === false &&
