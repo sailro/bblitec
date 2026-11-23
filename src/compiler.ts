@@ -264,6 +264,7 @@ import {
 } from "./compiler/loop-control.js";
 import {
     createsReceiverState,
+    isInertDefaultExport,
     isModuleInitializerStatement,
     planEntryModuleState,
     recordHoldsCallables,
@@ -1986,15 +1987,7 @@ class Compiler implements LoweringServices {
                         this.emitStatement(runtimeStatement);
                         continue;
                     }
-                    if (
-                        ts.isExportAssignment(statement) &&
-                        this.evaluationOrder.isPureExpression(
-                            statement.expression,
-                        ) &&
-                        !this.evaluationOrder.hasModuleEffects(
-                            statement.expression,
-                        )
-                    )
+                    if (isInertDefaultExport(statement, this.evaluationOrder))
                         continue;
                     if (isModuleInitializerStatement(statement, this.checker)) {
                         this.emitStatement(statement);

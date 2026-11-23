@@ -74,6 +74,25 @@ export function isModuleInitializerStatement(
     );
 }
 
+/**
+ * A module's `export default` of a pure expression with no module effects:
+ * evaluating it changes nothing a reader observes (importers read the
+ * expression's own binding), so a module initializer skips it.
+ */
+export function isInertDefaultExport(
+    statement: ts.Statement,
+    evaluationOrder: Pick<
+        EvaluationOrder,
+        "isPureExpression" | "hasModuleEffects"
+    >,
+): boolean {
+    return (
+        ts.isExportAssignment(statement) &&
+        evaluationOrder.isPureExpression(statement.expression) &&
+        !evaluationOrder.hasModuleEffects(statement.expression)
+    );
+}
+
 /** The initializers that create a container a later write can reach into. */
 function isContainerInitializer(initializer: ts.Expression): boolean {
     const current = unwrapExpression(initializer);

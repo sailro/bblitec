@@ -21,6 +21,7 @@ import { EmissionMap } from "./emission-transaction.js";
 import { emitReachableStatements } from "./loop-control.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import {
+    isInertDefaultExport,
     isModuleInitializerStatement,
     planEntryModuleState,
     runtimeModuleDependencies,
@@ -266,6 +267,10 @@ export class ModuleNamespaces {
                                     isModuleInitializerStatement(
                                         statement,
                                         context.checker,
+                                    ) &&
+                                    !isInertDefaultExport(
+                                        statement,
+                                        context.evaluationOrder,
                                     ) &&
                                     (readable === "all" ||
                                         !ts.isVariableStatement(statement) ||
