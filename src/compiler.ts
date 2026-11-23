@@ -95,6 +95,7 @@ import { emptyStorage } from "./compiler/empty-storage.js";
 import { emitSurveyRoots } from "./compiler/survey-roots.js";
 import {
     activeSurvey,
+    describeRequests,
     describeStop,
     SurveyCollector,
     SurveyPassLimit,
@@ -933,7 +934,7 @@ function lowerSourceApplication(
                 planning = added > 0;
                 attempted(
                     attempt,
-                    `plan took ${added} of ${planner.demands.length} demands${replay}`,
+                    `plan took ${added} of ${planner.demands.length} demands (${describeRequests(planner.demands)})${replay}`,
                 );
                 continue;
             }

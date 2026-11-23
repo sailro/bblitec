@@ -28,6 +28,7 @@ import { sourceLocation, syntaxKindName } from "../source-location.js";
 import {
     describeStorageRequests,
     storageRequestSite,
+    type StorageRequest,
 } from "./replay-storage.js";
 import { StorageDemand } from "./storage-demand.js";
 import { EmissionSet, EmissionTransaction } from "./emission-transaction.js";
@@ -493,11 +494,24 @@ function rolledBackCensus(rolledBack: ReadonlySet<ts.Statement>): {
     };
 }
 
+/** Where storage requests rose: the first one's node as `file:line`, or a signature site. */
+function requestsSite(requests: readonly StorageRequest[]): string | undefined {
+    const site = requests.map(storageRequestSite).find(Boolean);
+    return typeof site === "object" ? nodeSite(site) : site;
+}
+
 /** Where a storage demand rose: a node as `file:line`, or a signature site. */
 function replaySite(replay: unknown): string | undefined {
-    if (!(replay instanceof StorageDemand)) return undefined;
-    const site = replay.requests.map(storageRequestSite).find(Boolean);
-    return typeof site === "object" ? nodeSite(site) : site;
+    return replay instanceof StorageDemand
+        ? requestsSite(replay.requests)
+        : undefined;
+}
+
+/** `text` on one line, cut short, and the site it names. */
+function stopLine(text: string, site: string | undefined): string {
+    return (
+        text.replace(/\s+/g, " ").slice(0, 160) + (site ? ` at ${site}` : "")
+    );
 }
 
 /** What restarted an attempt, and where its storage demand rose. */
@@ -508,10 +522,12 @@ export function describeStop(cause: unknown): string {
             : cause instanceof Error
               ? replayText(cause)
               : String(cause);
-    const site = replaySite(cause);
-    return (
-        text.replace(/\s+/g, " ").slice(0, 160) + (site ? ` at ${site}` : "")
-    );
+    return stopLine(text, replaySite(cause));
+}
+
+/** What a plan's storage requests ask for, and where the first rose. */
+export function describeRequests(requests: readonly StorageRequest[]): string {
+    return stopLine(describeStorageRequests(requests), requestsSite(requests));
 }
 
 /**
