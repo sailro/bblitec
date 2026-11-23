@@ -22611,7 +22611,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 dataType,
                 this.compileForSink(expression, dataType.inner),
             );
-        const unwrapped = this.context.unwrap(expression);
+        // Through an `await` only where it settles in place: in a realm it
+        // suspends, and the arm's value is what it settles with.
+        const unwrapped = this.context.unwrapValue(expression);
         if (isNullishLiteral(this.context.checker, unwrapped)) {
             return this.context.dataTypes.absentValue(dataType);
         }

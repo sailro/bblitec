@@ -161,6 +161,36 @@ check(
 `,
 );
 
+test("an awaited conditional arm of an optional handle stores what its promise settles with", () => {
+    // The arm's `await` suspends in the realm: the selection holds the
+    // settled element, never the promise (which refused before).
+    const result = compileSource(`
+    const made=document.createElement('div');
+    const cache=new Map<string,Promise<HTMLDivElement>>();
+    function load(key:string):Promise<HTMLDivElement> {
+        let p=cache.get(key);
+        if(!p){p=new Promise<HTMLDivElement>((resolve)=>{setTimeout(()=>resolve(made),0);});cache.set(key,p);}
+        return p;
+    }
+    async function loadOrNull(key:string):Promise<HTMLDivElement|null> {
+        try { return await load(key); } catch { return null; }
+    }
+    async function run(key:string|null):Promise<void> {
+        const picked=key?await loadOrNull(key):null;
+        const direct=key?await load(key):null;
+        if(key!==null&&(picked!==made||direct!==made)) throw new Error('settled arm');
+        if(key===null&&(picked!==null||direct!==null)) throw new Error('absent arm');
+    }
+    void run(Math.random()>2?null:'a').then(()=>run(null));
+`);
+    // Each selection takes the value its arm awaited.
+    assert.equal(
+        result.cpp.match(/conditional_result_\d+ = [^;]*await_result_\d+/g)
+            ?.length,
+        2,
+    );
+});
+
 test("named deferred callbacks retain captures after registration", async (t) => {
     const source = `
     import {createEngine,createSceneContext,onSceneDispose,disposeScene} from '@babylonjs/lite';
