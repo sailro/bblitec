@@ -20147,6 +20147,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     "bufferview",
                     "numberindex",
                     "arguments",
+                    "enummap",
                 ].includes(value.dataType.kind))
         ) {
             // JavaScript containers and typed arrays are objects and are
@@ -20277,6 +20278,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             // null state directly rather than wrapping it in std::optional.
             return `static_cast<bool>(${value.cpp})`;
         }
+        // An inline record is an object, present wherever it is held.
+        if (value.kind === "data" && value.dataType?.kind === "struct")
+            return value.cpp && !readsNativeStorage(value)
+                ? `(static_cast<void>(${value.cpp}), true)`
+                : "true";
         if (value.kind === "json-null") {
             return "false";
         }
