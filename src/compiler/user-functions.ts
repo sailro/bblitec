@@ -163,6 +163,7 @@ import {
     type SupportedFunction,
     variableKind,
     jumpBinding,
+    expressionHasEffects,
 } from "./syntax.js";
 import {
     emitReachableStatements,
@@ -8351,8 +8352,17 @@ export class UserFunctionLowerer {
         const expanded: Value[] = [];
         // An argument a later one touches the storage of, either one
         // writing it, is evaluated where JavaScript evaluates it (see
-        // `evaluation-order.ts`).
+        // `evaluation-order.ts`). An argument past the parameters runs too,
+        // though no parameter reads it: with one that has an effect, every
+        // effectful argument is held in source order.
         const ordered = context.evaluationOrder.operandsToPin(call.arguments);
+        const pinEffects =
+            rest === undefined &&
+            call.arguments.some(
+                (argument, index) =>
+                    index >= ir.parameters.length &&
+                    expressionHasEffects(argument),
+            );
         call.arguments.forEach((argument, index) => {
             const sink =
                 rest !== undefined && index >= rest ? expanded : values;
@@ -8469,7 +8479,8 @@ export class UserFunctionLowerer {
                                 "call_argument",
                                 argument,
                             )
-                          : ordered[index]
+                          : ordered[index] ||
+                              (pinEffects && expressionHasEffects(argument))
                             ? pinOperand(
                                   context,
                                   value,

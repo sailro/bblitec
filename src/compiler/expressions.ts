@@ -1148,6 +1148,10 @@ export class ExpressionLowerer {
                 unwrapped.expression.name.text === "meta"
             )
                 return this.compileBrowserValue(unwrapped);
+            // A console method read as a value (`log = console.error`) is
+            // browser state: a call through it erases as a direct call does.
+            if (this.context.libraryGlobal(unwrapped.expression) === "console")
+                return this.compileBrowserValue(unwrapped);
             const mathFunction = mathFunctionValue(this.context, unwrapped);
             const arrayFunction = arrayFunctionValue(this.context, unwrapped);
             if (arrayFunction) return arrayFunction;
@@ -4838,6 +4842,10 @@ export class ExpressionLowerer {
         if (executedGltf) {
             return executedGltf;
         }
+        // A function read from browser state (`log = console.error`) is
+        // called as a browser call: its arguments run, the call erases.
+        if (this.context.bindings.lookupOptional(callee)?.kind === "browser")
+            return this.compileBrowserValue(call);
         const userFunction = compileWithRuntimeCaseSplit(
             this.context,
             call,
