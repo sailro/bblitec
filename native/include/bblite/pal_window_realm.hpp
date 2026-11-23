@@ -54,6 +54,8 @@ ScreenMetrics window_screen_metrics();
 InputCapabilities window_input_capabilities();
 const void* window_screen_identity();
 UiClientRect window_element_size(UiElementHandle element);
+/** The element's content box in the display's last layout, in CSS pixels. */
+UiContentBox window_element_content_box(UiElementHandle element);
 /** What the display finds at a viewport point of the document it lays out now. */
 std::optional<DomEventTarget> window_element_at(double x, double y);
 /** False for a duplicate listener. */

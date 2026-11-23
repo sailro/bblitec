@@ -1058,20 +1058,49 @@ UiElementHandle ui_get_element_by_id(Engine& engine, std::string_view id) {
     throw std::runtime_error("Host page element id was not materialized: " + std::string(id));
 }
 
+/** CSS pixels per layout pixel of the page this engine lays out. */
+static double ui_layout_css_scale(const Engine& engine) {
+    return engine.canvas_client_width /
+           page_canvas(engine.ui_page_viewport, engine.options.width, engine.options.height)
+               .width();
+}
+
 UiClientRect ui_get_client_rect(Engine& engine, UiElementHandle element) {
     // An SVG child's box is its drawn geometry's bounds, which the runtime measures.
     if (engine.ui_measure_element && !pal::ui_svg_shape(ui_element(engine, element)))
         return engine.ui_measure_element(engine, element);
     UiElementRecord& record = ui_element(engine, element);
     record.client_rect_requested = true;
-    const double scale =
-        engine.canvas_client_width /
-        page_canvas(engine.ui_page_viewport, engine.options.width, engine.options.height).width();
+    const double scale = ui_layout_css_scale(engine);
     const auto& rect = record.client_rect;
     return {rect.left * scale,         rect.top * scale,          rect.width * scale,
             rect.height * scale,       rect.offset_width * scale, rect.offset_height * scale,
             rect.scroll_left * scale,  rect.scroll_top * scale,   rect.zoom,
             rect.scroll_width * scale, rect.scroll_height * scale};
+}
+
+UiContentBox ui_get_content_box(Engine& engine, UiElementHandle element) {
+    if (engine.ui_measure_content_box)
+        return engine.ui_measure_content_box(engine, element);
+    UiElementRecord& record = ui_element(engine, element);
+    record.client_rect_requested = true;
+    const double scale = ui_layout_css_scale(engine);
+    const auto& box = record.content_box;
+    return {box.left * scale, box.top * scale, box.width * scale, box.height * scale};
+}
+
+js::Nullable<js::DomMatrixHandle> ui_svg_screen_ctm(Engine& engine, UiElementHandle element) {
+    auto root = element;
+    while (root.value != invalid_handle && ui_element(engine, root).tag != "svg")
+        root = ui_element(engine, root).parent;
+    if (root.value == invalid_handle || !ui_is_connected(engine, root))
+        return std::nullopt;
+    // A shape draws in its root's user space: SVG children carry no transform.
+    const UiContentBox box = ui_get_content_box(engine, root);
+    const auto viewport = pal::ui_svg_viewport(pal::ui_svg_view_box(ui_element(engine, root)),
+                                               box.width, box.height, 1.0);
+    return js::make_ref<js::DomMatrix>(js::DomMatrix{viewport.scale, 0, 0, viewport.scale,
+                                                     box.left + viewport.x, box.top + viewport.y});
 }
 
 std::optional<DomEventTarget> ui_element_from_point(Engine& engine, double x, double y) {

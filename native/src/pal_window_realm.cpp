@@ -599,6 +599,11 @@ struct WindowDocument {
                 throw std::logic_error("A Window layout read requires its owning realm.");
             return window_element_size(element);
         };
+        engine.ui_measure_content_box = [](Engine& owner, UiElementHandle element) {
+            if (&owner != &window_document_engine())
+                throw std::logic_error("A Window layout read requires its owning realm.");
+            return window_element_content_box(element);
+        };
         engine.ui_adopt_pointer_states = [](Engine& owner) {
             if (&owner != &window_document_engine())
                 throw std::logic_error("A Window selector state read requires its owning realm.");
@@ -1530,6 +1535,15 @@ UiClientRect window_element_size(UiElementHandle element) {
     box.scroll_width /= layout->pixel_ratio;
     box.scroll_height /= layout->pixel_ratio;
     return box;
+}
+UiContentBox window_element_content_box(UiElementHandle element) {
+    update_window_document();
+    const auto& layout = current_document().layout;
+    if (!layout || element.value >= layout->elements.size())
+        throw std::out_of_range("Window element has no layout box.");
+    const auto& box = handle_at(layout->elements, element).content_box;
+    const double ratio = layout->pixel_ratio;
+    return {box.left / ratio, box.top / ratio, box.width / ratio, box.height / ratio};
 }
 std::shared_ptr<CanvasElement> window_canvas(UiElementHandle element) {
     auto& doc = current_document();

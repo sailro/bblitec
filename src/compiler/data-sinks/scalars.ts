@@ -631,6 +631,8 @@ export const scalarsSinks: DataSinkOperations<
     | "image-bitmap"
     | "offscreen-canvas-2d"
     | "dom-rect"
+    | "dom-matrix"
+    | "dom-point"
     | "gpu-adapter"
     | "gpu"
     | "gpu-adapter-info"
@@ -762,6 +764,8 @@ export const scalarsSinks: DataSinkOperations<
     "image-bitmap": opaqueSink,
     "offscreen-canvas-2d": opaqueSink,
     "dom-rect": opaqueSink,
+    "dom-matrix": opaqueSink,
+    "dom-point": opaqueSink,
     gpu: sameKindSink("gpu"),
     file: opaqueSink,
     blob: boxedOpaqueSink,

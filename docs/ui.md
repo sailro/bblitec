@@ -149,6 +149,9 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
   glyphs are placed along its path in the face the UI font resolves. Pointer listeners hit painted geometry (fill,
   stroke band, glyph cells; `pointer-events` auto/none, a listener opting in as on HTML elements) and
   getBoundingClientRect reads its bounds. Listeners without DOM input, nested SVG, tspan and paint servers refuse.
+- `getScreenCTM()` maps the root's user space (its viewBox, xMidYMid meet) into viewport CSS pixels, null outside the
+  document; `createSVGPoint()` and DOMPoint `x`/`y`/`z`/`w` (`=` writes) with `matrixTransform(matrix)`; DOMMatrix
+  `a`-`f` (`m11`...`m42`) and `inverse()`. Other DOMMatrix and DOMPoint members refuse.
 
 ## Canvas2D
 

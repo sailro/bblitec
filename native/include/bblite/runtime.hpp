@@ -5410,6 +5410,8 @@ struct Engine {
     void (*ui_link_navigation)(const std::string& url) = nullptr;
     /** A realm host can synchronously publish pending edits before a source layout read. */
     UiClientRect (*ui_measure_element)(Engine&, UiElementHandle) = nullptr;
+    /** The same read of the element's content box. */
+    UiContentBox (*ui_measure_content_box)(Engine&, UiElementHandle) = nullptr;
     /** A realm host asks its display what lies at a viewport point (`DomInput::element_at`). */
     std::optional<DomEventTarget> (*ui_element_at)(Engine&, double, double) = nullptr;
     /** A realm host adopts its display's latest `pointer_states` before a selector reads them. */

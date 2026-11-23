@@ -824,6 +824,10 @@ const LIBRARY_OBJECT_KINDS: readonly (readonly [
     ],
     ["DOMRect", "dom", { kind: "dom-rect" }],
     ["DOMRectReadOnly", "dom", { kind: "dom-rect" }],
+    ["DOMMatrix", "dom", { kind: "dom-matrix" }],
+    ["DOMMatrixReadOnly", "dom", { kind: "dom-matrix" }],
+    ["DOMPoint", "dom", { kind: "dom-point" }],
+    ["DOMPointReadOnly", "dom", { kind: "dom-point" }],
     ["IdleDeadline", "dom", { kind: "idle-deadline" }],
     ["URLSearchParams", "dom", { kind: "search-params" }],
     // A form entry list of strings is the same ordered name/value list.
@@ -886,6 +890,7 @@ const WEB_PLATFORM_HEADERS: readonly (readonly [
     [["image-bitmap"], "pal_image_bitmap"],
     [["offscreen-canvas-2d"], "pal_canvas"],
     [["idle-deadline"], "pal_idle_callbacks"],
+    [["dom-matrix", "dom-point"], "js_dom_geometry"],
     [["uninhabited-object"], "pal_media_stream"],
     // A stored error or rejection listener spells the realm's error event.
     [

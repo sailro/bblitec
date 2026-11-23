@@ -40,6 +40,14 @@ test("retained SVG construction preserves namespace, shape mutation and inherite
         if (!(svg instanceof Element)) throw new Error("SVG is an element");
         if (!(stored.child instanceof SVGElement)) throw new Error("SVG interface");
         document.body.append(svg);
+        // A client point in the root's user space: measured, inverted and applied.
+        const ctm = (svg as SVGSVGElement).getScreenCTM();
+        if (!ctm) throw new Error("A connected SVG has a screen CTM");
+        const point = (svg as SVGSVGElement).createSVGPoint();
+        point.x = 3; point.y = 4;
+        const user = point.matrixTransform(ctm.inverse());
+        if (user === point || point.x !== 3 || point.y !== 4 || user.w !== 1 || ctm.b !== 0) throw new Error("SVG point");
+        if ((make("circle") as SVGGraphicsElement).getScreenCTM() !== null) throw new Error("A detached SVG shape has no CTM");
         // A label on an arc: the text follows the path, styled by a class rule.
         const labels = make("svg");
         labels.setAttribute("id", "labels");
@@ -71,6 +79,8 @@ test("retained SVG construction preserves namespace, shape mutation and inherite
     );
     assert.ok(result.manifest.features.includes("ui:inline-svg"));
     assert.match(result.cpp, /ui_create_svg_element/);
+    assert.match(result.cpp, /bbl::ui_svg_screen_ctm\(/);
+    assert.match(result.cpp, /bbl::js::dom_point_matrix_transform\(/);
     writeFileSync(join(directory, "program.hpp"), result.cpp);
     runRmlUiFixture(t, "ui-svg", {
         macros: {
@@ -101,6 +111,19 @@ test("SVG construction refuses foreign namespaces and unsupported SVG elements",
     );
     assert.match(named.cpp, /ui_create_svg_element\([^;]*"text"/);
     assert.match(named.cpp, /"data-group-key", "walls"/);
+});
+
+test("SVG geometry refuses DOMMatrix and DOMPoint members it does not lower", () => {
+    const prefix = `const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); document.body.append(svg); const ctm = svg.getScreenCTM()!; const point = svg.createSVGPoint();`;
+    for (const [statement, message] of [
+        ["point.x += 1;", /DOMPoint components support '=' assignments/],
+        [
+            "point.matrixTransform({ a: 2 });",
+            /matrixTransform requires a DOMMatrix; a DOMMatrixInit is not lowered/,
+        ],
+        ["ctm.multiply(ctm);", /DOMMatrix\.multiply is not lowered/],
+    ] as const)
+        assert.throws(() => compileSource(`${prefix} ${statement}`), message);
 });
 
 test("image markup accepts void tags and refuses dynamic sources or unrepresented attributes", () => {

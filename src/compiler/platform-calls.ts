@@ -1,4 +1,5 @@
 import { domRectSnapshotCpp } from "./dom-rects.js";
+import { domPointOrigin, domScreenCtm } from "./dom-geometry.js";
 import { compileWebPlatformCall } from "./web-platform.js";
 import { journaled } from "./emission-transaction.js";
 import { deferredCapabilityDescriptor } from "./deferred-capabilities.js";
@@ -1742,6 +1743,8 @@ export class PlatformCalls {
                   ? undefined
                   : [
                           "getBoundingClientRect",
+                          "getScreenCTM",
+                          "createSVGPoint",
                           "querySelector",
                           "querySelectorAll",
                           "matches",
@@ -2770,6 +2773,18 @@ export class PlatformCalls {
                     ),
                 ],
             };
+        }
+        if (element && callee.name === "getScreenCTM") {
+            this.context.expectArgumentCount(call, 0, 0);
+            return domScreenCtm(
+                this.context.dataLowerer,
+                this.context.requireEngine(element, call),
+                element.cpp,
+            );
+        }
+        if (element && callee.name === "createSVGPoint") {
+            this.context.expectArgumentCount(call, 0, 0);
+            return domPointOrigin(this.context.dataLowerer);
         }
         if (element && callee.name === "animate") {
             this.context.expectArgumentCount(call, 2, 2);

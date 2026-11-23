@@ -237,8 +237,11 @@ cancel })` is a program source; `new Response(stream, { status, statusText, head
   static cap of 1 or more applies as below (desktop keeps devicePixelRatio 1); any other cap selects a realm.
 - A Window realm's global: `Object.defineProperty` getters redefine its host accessor `devicePixelRatio`; a `fetch`
   replacement is erased loading instrumentation. Writing or defining another host property refuses.
-- A global-object member only the program's types declare is the Window realm's state where program code writes it
+- A global-object member only the program's types declare is the Window realm's state where program code may write it
   (outside a branch the generation-time browser state rules out); otherwise no host page installs it and it reads absent.
+  A write may reach the global object through it, a value of a type it is declared or given as, or a variable it is
+  given to; through an open type (`unknown`, `object`, an index signature) only once such a value is given as one.
+  Deletions write nothing.
 - Device recovery rebuilds GPU resources from CPU owners; GPU-only storage buffers lose contents. Only the scene
   strategy recovers; a loss with sprite, text, effect or frame-graph contexts refuses with the pin's message.
 - Recovery registers before `startEngine` in the entry, anywhere in an application realm.

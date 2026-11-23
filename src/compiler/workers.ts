@@ -212,6 +212,10 @@ function uncloneablePosition(
             return refuse("a GPUAdapterInfo");
         case "idle-deadline":
             return refuse("an IdleDeadline");
+        case "dom-matrix":
+            return refuse("a DOMMatrix");
+        case "dom-point":
+            return refuse("a DOMPoint");
         case "search-params":
             return refuse("a URLSearchParams");
         case "promise":

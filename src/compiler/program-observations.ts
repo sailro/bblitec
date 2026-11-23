@@ -53,6 +53,7 @@ const REFLECTIVE_DEFINITIONS: ReadonlyMap<string, ReflectiveDefinition> =
         ["Object.defineProperty", "defineProperty"],
         ["Object.defineProperties", "defineProperties"],
         ["Reflect.set", "set"],
+        ["Reflect.defineProperty", "defineProperty"],
     ]);
 
 /**
@@ -158,9 +159,10 @@ export interface NamedRead {
  * - definitions: each site giving objects a member, by the key its syntax
  *   names: an object literal's member (a destructuring pattern's are its
  *   leaves' writes), a class member or parameter property, a write of a
- *   member access, and `Object.defineProperty`, `Reflect.set` (a literal
- *   key) and `Object.defineProperties` (each key of its descriptors
- *   literal, through selections and spreads of such literals); keyed
+ *   member access, and `Object.defineProperty`, `Reflect.defineProperty`,
+ *   `Reflect.set` (a literal key) and `Object.defineProperties` (each key
+ *   of its descriptors literal, through selections and spreads of such
+ *   literals); keyed
  *   definitions are those whose key only the run time knows, and every
  *   `Object.assign`;
  * - type assertions and guards: every `as`/`<T>` assertion, and the type
@@ -215,6 +217,11 @@ export interface ProgramObservations {
      * null-prototype results of `Object.groupBy` and a match's `groups`.
      */
     readonly foreignPrototype: ts.Node | undefined;
+    /**
+     * Every `Object.setPrototypeOf` and `Reflect.setPrototypeOf` call: each
+     * gives its first argument other inherited members.
+     */
+    readonly prototypeSetters: readonly ts.CallExpression[];
 }
 
 /** @unjournaled A pure function of the checked program, kept across replays. */
@@ -432,6 +439,7 @@ function observe(program: ts.Program): ProgramObservations {
     const typeAssertions: (ts.AsExpression | ts.TypeAssertion)[] = [];
     const guardedTypes: ts.TypeNode[] = [];
     let foreignPrototype: ts.Node | undefined;
+    const prototypeSetters: ts.CallExpression[] = [];
     const typeOf = (node: ts.Node): ts.Type => checker.getTypeAtLocation(node);
     let order = 0;
     const place = (
@@ -952,6 +960,11 @@ function observe(program: ts.Program): ProgramObservations {
             (owner === "Reflect" && method === "setPrototypeOf")
         )
             foreignPrototype ??= node;
+        if (
+            method === "setPrototypeOf" &&
+            (owner === "Object" || owner === "Reflect")
+        )
+            prototypeSetters.push(node);
         const reflective = REFLECTIVE_DEFINITIONS.get(`${owner}.${method}`);
         if (reflective && first && !ts.isSpreadElement(first)) {
             const definition: MemberDefinition = {
@@ -1050,5 +1063,6 @@ function observe(program: ts.Program): ProgramObservations {
         typeAssertions,
         guardedTypes,
         foreignPrototype,
+        prototypeSetters,
     };
 }
