@@ -541,6 +541,7 @@ function valueStruct(
             dataType.name,
             represented,
             node,
+            lowerer.convertedMember(node),
         );
         lowerer.context.fail(
             node,

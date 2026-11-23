@@ -227,6 +227,7 @@ import {
     typedArrayStem,
     typedArrayStoreExpression,
     tupleComponents,
+    type ConvertedMember,
     type DataIterationElement,
     type DataStructField,
     type DataType,
@@ -12742,6 +12743,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
               readonly node: ts.Node;
               readonly expression: ts.Expression | undefined;
               readonly elementOf: ts.Expression | undefined;
+              readonly read?: ConvertedMember | undefined;
           }
         | undefined;
 
@@ -12770,21 +12772,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                   ? mappedElement(this.context.checker, container)
                   : literalMember(container, key);
         if (container && !expression && typeof key === "string") {
-            const checker = this.context.checker;
-            const memberOf = (type: ts.Type) =>
-                checker.getPropertyOfType(
-                    checker.getNonNullableType(type),
-                    key,
-                );
-            // A callback's result (a `map` element) is the record its
-            // signature returns, unless the function holds the member.
-            const signature = ts.isFunctionLike(container)
-                ? checker.getSignatureFromDeclaration(container)
-                : undefined;
-            const property =
-                memberOf(checker.getTypeAtLocation(container)) ??
-                (signature &&
-                    memberOf(checker.getReturnTypeOfSignature(signature)));
+            const property = this.memberProperty(container, key);
             if (property && member.dataType?.kind === "optional") {
                 const absence = nullability(
                     this.context.checker.getTypeOfSymbolAtLocation(
@@ -12879,15 +12867,66 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
     }
 
+    /**
+     * The property `key` of the value `container` evaluates to: of its
+     * type, or of the record a callback's signature returns (a `map`
+     * element), unless the function holds the member.
+     */
+    private memberProperty(
+        container: ts.Expression,
+        key: string,
+    ): ts.Symbol | undefined {
+        const checker = this.context.checker;
+        const memberOf = (type: ts.Type) =>
+            checker.getPropertyOfType(checker.getNonNullableType(type), key);
+        const signature = ts.isFunctionLike(container)
+            ? checker.getSignatureFromDeclaration(container)
+            : undefined;
+        return (
+            memberOf(checker.getTypeAtLocation(container)) ??
+            (signature && memberOf(checker.getReturnTypeOfSignature(signature)))
+        );
+    }
+
+    /**
+     * Stores the member `key` a spread copies out of `spread`'s value as
+     * `dataType`, at the spread: no expression of its own names it, so a
+     * sink asking which native owner it holds reads its checked type
+     * (`convertedMember`).
+     */
+    private compileSpreadMemberForSink(
+        member: Value,
+        dataType: DataType,
+        spread: ts.SpreadAssignment,
+        key: string,
+    ): string {
+        const property = this.memberProperty(spread.expression, key);
+        return this.compileConvertedMember(
+            member,
+            dataType,
+            spread,
+            undefined,
+            undefined,
+            property && {
+                type: this.context.checker.getTypeOfSymbolAtLocation(
+                    property,
+                    spread.expression,
+                ),
+                of: spread.expression,
+            },
+        );
+    }
+
     private compileConvertedMember(
         member: Value,
         dataType: DataType,
         at: ts.Node,
         expression: ts.Expression | undefined,
         elementOf: ts.Expression | undefined,
+        read?: ConvertedMember,
     ): string {
         const previous = this.memberConversion;
-        this.memberConversion = { node: at, expression, elementOf };
+        this.memberConversion = { node: at, expression, elementOf, read };
         try {
             return this.compileKnownValueForSink(member, dataType, at);
         } finally {
@@ -12911,6 +12950,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     public convertedElementOf(node: ts.Node): ts.Expression | undefined {
         const member = this.memberConversion;
         return member?.node === node ? member.elementOf : undefined;
+    }
+
+    /** The member a sink at `node` stores, where no expression of its own names it. */
+    public convertedMember(node: ts.Node): ConvertedMember | undefined {
+        const member = this.memberConversion;
+        return member?.node === node ? member.read : undefined;
     }
 
     public compileKnownValueForSink(
@@ -15421,6 +15466,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const assigned = new EmissionSet<string>();
         // The keys the new record makes own, in creation order.
         const created: CreatedKeys[] = [];
+        // A spread's member is read out of its value: stored at the spread.
         const assign = (
             sourceName: string,
             sourceValue: Value,
@@ -15431,11 +15477,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 kind: "expression",
                 code: store(
                     field,
-                    this.compileKnownValueForSink(
-                        sourceValue,
-                        field.type,
-                        node,
-                    ),
+                    ts.isSpreadAssignment(node)
+                        ? this.compileSpreadMemberForSink(
+                              sourceValue,
+                              field.type,
+                              node,
+                              sourceName,
+                          )
+                        : this.compileKnownValueForSink(
+                              sourceValue,
+                              field.type,
+                              node,
+                          ),
                 ),
             });
             assigned.add(field.name);
@@ -15525,10 +15578,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                                 kind: "expression",
                                 code: store(
                                     field,
-                                    this.compileKnownValueForSink(
+                                    this.compileSpreadMemberForSink(
                                         entry.value,
                                         field.type,
                                         property,
+                                        name,
                                     ),
                                 ),
                             }),

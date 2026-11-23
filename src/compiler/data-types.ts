@@ -689,6 +689,15 @@ export function pinnedHandleKind(type: ts.Type): HandleKind | undefined {
     return pinnedHandle(type, false);
 }
 
+/**
+ * A member a sink stores, read out of the value of `of` where no
+ * expression of its own names it (a spread's member): its checked type.
+ */
+export interface ConvertedMember {
+    readonly type: ts.Type;
+    readonly of: ts.Expression;
+}
+
 /** Whether `type` is one of the pin's engine object types (`pinnedHandleKind`). */
 export function isPinnedHandleType(type: ts.Type): boolean {
     return pinnedHandleKind(type) !== undefined;
@@ -2671,15 +2680,19 @@ export class DataTypeRegistry {
 
     /**
      * The part of a checked type that the native owner stored as `actual`
-     * is: the type itself, or the element of the list it is (a host list
-     * of owners sinks element by element).
+     * is: the type itself, a part of the intersection it is (`window` is a
+     * `Window & typeof globalThis`), or the element of the list it is (a host
+     * list of owners sinks element by element).
      */
     private nativeOwnerType(
         checked: ts.Type,
         actual: DataType,
         expression: ts.Expression,
     ): ts.Type | undefined {
-        for (const part of presentMembers(checked)) {
+        for (const part of presentMembers(checked).flatMap((member) => [
+            member,
+            ...intersectedParts(member),
+        ])) {
             const mapped = this.fromStoredTsType(part, expression);
             // A DOM event target is the object itself, whatever its
             // declared interface maps to.
@@ -2707,23 +2720,28 @@ export class DataTypeRegistry {
         return undefined;
     }
 
-    /** A checked structural projection retains the represented native owner. */
+    /**
+     * A checked structural projection retains the represented native owner:
+     * the one `node` evaluates to, or the `member` read out of it.
+     */
     public nativeRecordViewDemand(
         name: string,
         actual: DataType,
         node: ts.Node,
+        member?: ConvertedMember,
     ): NativeRecordStorageDemand | undefined {
         const source = this.nativeRecordSources.get(name);
+        const owner = member?.of ?? (ts.isExpression(node) ? node : undefined);
         if (
             !source ||
             this.isClassStruct(name) ||
             !isNativeStructuralView(actual) ||
-            !ts.isExpression(node)
+            !owner
         )
             return undefined;
-        const expression = unwrapExpression(node);
+        const expression = unwrapExpression(owner);
         const checked = this.nativeOwnerType(
-            this.checker.getTypeAtLocation(node),
+            member?.type ?? this.checker.getTypeAtLocation(owner),
             actual,
             expression,
         );
@@ -2746,8 +2764,9 @@ export class DataTypeRegistry {
         name: string,
         actual: DataType,
         node: ts.Node,
+        member?: ConvertedMember,
     ): void {
-        const demand = this.nativeRecordViewDemand(name, actual, node);
+        const demand = this.nativeRecordViewDemand(name, actual, node, member);
         if (demand) throw new NativeRecordStorageRequired(demand);
     }
 
