@@ -76,8 +76,8 @@ inline void ui_validate_svg_attribute(const UiElementRecord& record, std::string
     const bool common =
         one_of({"id", "class", "fill", "stroke", "stroke-width", "stroke-linecap",
                 "stroke-linejoin", "stroke-opacity", "fill-opacity", "paint-order", "opacity"});
-    const bool root = record.tag == "svg" && one_of({"viewBox", "width", "height", "xmlns", "style",
-                                                     "aria-hidden", "hidden"});
+    const bool root =
+        record.tag == "svg" && one_of({"viewBox", "width", "height", "xmlns", "style", "hidden"});
     const bool path = record.tag == "path" && name == "d";
     const bool rectangle =
         record.tag == "rect" && one_of({"x", "y", "width", "height", "rx", "ry"});
@@ -90,10 +90,11 @@ inline void ui_validate_svg_attribute(const UiElementRecord& record, std::string
         one_of({"font-size", "font-family", "font-weight", "letter-spacing", "text-anchor"});
     const bool text = record.tag == "text" && one_of({"x", "y", "dx", "dy"});
     const bool text_path = record.tag == "textPath" && one_of({"href", "startOffset"});
-    // Data attributes carry no rendering.
+    // Data and accessibility attributes carry no rendering; tabindex orders focus.
     const bool data = name.starts_with("data-");
+    const bool interaction = name == "tabindex" || name == "role" || name.starts_with("aria-");
     if (!(common || root || path || rectangle || circle || line || ellipse || polygon || typeset ||
-          text || text_path || data))
+          text || text_path || data || interaction))
         throw std::runtime_error("Unsupported retained SVG attribute '" + std::string(name) +
                                  "' on <" + record.tag + ">.");
     if (name == "fill" || name == "stroke") {

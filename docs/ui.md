@@ -152,6 +152,10 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 - `getScreenCTM()` maps the root's user space (its viewBox, xMidYMid meet) into viewport CSS pixels, null outside the
   document; `createSVGPoint()` and DOMPoint `x`/`y`/`z`/`w` (`=` writes) with `matrixTransform(matrix)`; DOMMatrix
   `a`-`f` (`m11`...`m42`) and `inverse()`. Other DOMMatrix and DOMPoint members refuse.
+- SVG `role` and `aria-*` attributes are kept and inert. `tabindex` on the root and its shapes: the root's RmlUi
+  element holds focus for each. Tab visits those with tabindex 0 in tree order, key events target the focused
+  element, a press focuses the nearest one with a tabindex under the pointer, and `:focus`, `:focus-visible` and
+  `:focus-within` rules select shapes. Hover and active rules on shapes refuse.
 
 ## Canvas2D
 

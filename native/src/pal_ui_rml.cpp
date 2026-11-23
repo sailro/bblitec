@@ -157,8 +157,6 @@ std::optional<std::int32_t> html_integer(std::string_view text) {
 
 /** A retained HTML element's tabindex attribute, when it holds a valid integer. */
 std::optional<std::int32_t> ui_tab_order(const UiElementRecord& record) {
-    if (record.svg_namespace)
-        return std::nullopt;
     const auto found = record.attributes.find("tabindex");
     return found == record.attributes.end() ? std::nullopt : html_integer(found->second);
 }
@@ -559,6 +557,8 @@ struct RetainedUiSelectorTree {
     Engine& engine;
     /** The focused element, for a tree that reads interaction states. */
     std::optional<Node> focused{};
+    /** Hover and active are the projection's: an SVG shape, drawn in its root's markup, has none. */
+    bool pointer_states = true;
     static constexpr Node document{invalid_handle - 1};
     bool root(Node node) const { return node == engine.ui_document_roots.html; }
     bool valid(Node node) const {
@@ -619,7 +619,10 @@ struct RetainedUiSelectorTree {
      * the UI projection's, as its last update applied them to the styles. */
     bool state(Node node, UiSelectorTestKind kind) const {
         if (!focused)
-            throw std::runtime_error("Interaction state selectors on SVG shapes require SVG DOM "
+            throw std::logic_error("A selector tree without a focus reads no interaction state.");
+        if (!pointer_states &&
+            (kind == UiSelectorTestKind::Hover || kind == UiSelectorTestKind::Active))
+            throw std::runtime_error("Pointer state selectors on SVG shapes require SVG DOM "
                                      "projection.");
         const auto& record = ui_element(engine, node);
         switch (kind) {
@@ -2020,7 +2023,7 @@ void ui_set_attribute(Engine& engine, UiElementHandle element, std::string name,
     if (name == "hidden" && ascii_iequals(value, "until-found")) {
         throw std::runtime_error("Native UI hidden='until-found' requires find-in-page support.");
     }
-    if (name == "tabindex" && !record.svg_namespace)
+    if (name == "tabindex")
         require_tree_tab_order(html_integer(value));
     const auto existing = record.attributes.find(name);
 #if BBLITE_HAS_BROWSER_FILE
@@ -2757,8 +2760,6 @@ double ui_tab_index(Engine& engine, UiElementHandle element) {
 void ui_set_tab_index(Engine& engine, UiElementHandle element, double value) {
     const std::int32_t order = js::to_int32(value);
     const UiElementRecord& record = ui_element(engine, element);
-    if (record.svg_namespace)
-        throw std::runtime_error("SVG tabIndex focus navigation is not represented.");
     if (record.tag == "canvas") {
         if (order != 0)
             throw std::runtime_error(
@@ -2906,6 +2907,57 @@ bool ui_focusable(Engine& engine, UiElementHandle element) {
         cursor = record.markup_owner.value != invalid_handle ? record.markup_owner : record.parent;
     }
     return false;
+}
+
+/** The SVG root an SVG element draws in: itself for a root; none for an HTML element. */
+std::optional<UiElementHandle> ui_svg_focus_root(const Engine& engine, UiElementHandle element) {
+    for (auto cursor = element; cursor.value < engine.ui_elements.size();) {
+        const auto& record = handle_at(engine.ui_elements, cursor);
+        if (!record.svg_namespace)
+            return std::nullopt;
+        if (record.tag == "svg")
+            return cursor;
+        cursor = record.parent;
+    }
+    return std::nullopt;
+}
+
+/** An SVG root and its descendants, in tree order. */
+std::vector<UiElementHandle> ui_svg_tree(const Engine& engine, UiElementHandle root) {
+    std::vector<UiElementHandle> order;
+    const auto visit = [&](const auto& self, UiElementHandle node) -> void {
+        order.push_back(node);
+        for (const auto child : handle_at(engine.ui_elements, node).children)
+            self(self, child);
+    };
+    visit(visit, root);
+    return order;
+}
+
+/**
+ * The sequential focus stops that a root's one RmlUi element stands for: the root and its
+ * shapes whose tabindex is 0, focusable, in tree order. A shape has no RmlUi element.
+ */
+bool ui_svg_tab_stop(Engine& engine, UiElementHandle node) {
+    const auto order = ui_tab_order(handle_at(engine.ui_elements, node));
+    return order && *order >= 0 && ui_focusable(engine, node);
+}
+
+/** The root's stop after (`direction` 1) or before (-1) `from` in tree order, or none. */
+std::optional<UiElementHandle> ui_svg_next_tab_stop(Engine& engine, UiElementHandle root,
+                                                    std::optional<UiElementHandle> from,
+                                                    int direction) {
+    const auto tree = ui_svg_tree(engine, root);
+    const auto count = static_cast<std::ptrdiff_t>(tree.size());
+    // Without `from` the walk enters the root from the side it moves away from.
+    auto index = from ? std::find(tree.begin(), tree.end(), *from) - tree.begin()
+                      : (direction > 0 ? -1 : count);
+    if (from && index == count)
+        return std::nullopt;
+    for (index += direction; index >= 0 && index < count; index += direction)
+        if (ui_svg_tab_stop(engine, tree[static_cast<std::size_t>(index)]))
+            return tree[static_cast<std::size_t>(index)];
+    return std::nullopt;
 }
 } // namespace
 
@@ -6418,8 +6470,12 @@ struct UiRmlRuntime {
                 return found;
             };
             input.focus_path = [this] {
-                return this->engine.canvas_focused ? dom_canvas_path()
-                                                   : event_path(context->GetFocusElement());
+                if (this->engine.canvas_focused)
+                    return dom_canvas_path();
+                // A shape takes the keys its root's element holds focus for.
+                if (const auto shape = delegated_focus())
+                    return dom_ui_path(this->engine, *shape);
+                return event_path(context->GetFocusElement());
             };
             input.can_activate = [this](DomEventTarget target) {
                 if (target.kind != DomEventTargetKind::Element)
@@ -6926,7 +6982,7 @@ struct UiRmlRuntime {
 
     /**
      * The rules the retained matcher selects an SVG descendant with, which has no RmlUi element:
-     * no pointer, focus, scrollbar or generated part reaches one.
+     * no pointer, scrollbar or generated part reaches one; focus is the document's.
      */
     template <typename Matcher, typename Callback>
     std::size_t for_each_matching_svg_rule(UiElementHandle handle, const Matcher& matcher,
@@ -6935,8 +6991,10 @@ struct UiRmlRuntime {
         for_each_active_style_rule([&](const UiStyleRule& rule) {
             const std::size_t rule_order = source_order++;
             if (rule.generated != UiGeneratedPart::None || rule.range != UiRangePart::None ||
-                rule.scrollbar != UiScrollbarPart::None || rule.hover || rule.focus_visible ||
-                rule.active || !style_rule_media_matches(rule))
+                rule.scrollbar != UiScrollbarPart::None || rule.hover || rule.active ||
+                (rule.focus_visible &&
+                 !(handle == engine.ui_focused_element && engine.ui_focus_visible)) ||
+                !style_rule_media_matches(rule))
                 return;
             if (rule.selector == UiStyleSelectorKind::Sequence
                     ? matcher.sequence(handle, rule.sequence)
@@ -7029,8 +7087,14 @@ struct UiRmlRuntime {
              (engine.dom_input && engine.dom_input->pointer_elements.contains(handle.value)))) {
             append("pointer-events:auto;");
         }
-        // A negative tabindex keeps an element focusable but out of Tab navigation.
-        if (const auto order = ui_tab_order(record); order && record.tag != "canvas")
+        // A negative tabindex keeps an element focusable but out of Tab navigation. An SVG
+        // root is one RmlUi stop for itself and its shapes (`ui_svg_next_tab_stop`).
+        if (record.svg_namespace && record.tag == "svg") {
+            if (ui_svg_next_tab_stop(engine, handle, std::nullopt, 1))
+                append("tab-index:auto;");
+            else if (ui_tab_order(record))
+                append("tab-index:none;");
+        } else if (const auto order = ui_tab_order(record); order && record.tag != "canvas")
             append(*order < 0 ? "tab-index:none;" : "tab-index:auto;");
         return projected_attribute_value("style", style);
     }
@@ -7796,7 +7860,7 @@ struct UiRmlRuntime {
 
     void sync_svg_element(UiElementHandle handle, Rml::Element& raw, bool attributes_changed) {
         const auto& root = ui_element(engine, handle);
-        const RetainedUiSelectorTree tree{engine};
+        const RetainedUiSelectorTree tree{engine, ui_active_element(engine), false};
         const UiSelectorMatcher matcher{tree};
         // Rules on shapes and texts may set presentation and text properties, which the markup
         // resolves, and authored variables; a private declaration carries another feature.
@@ -8120,10 +8184,74 @@ struct UiRmlRuntime {
         native_focus_pending = false;
         for (auto* cursor = context->GetFocusElement(); cursor; cursor = cursor->GetParentNode()) {
             if (const auto found = event_targets.find(cursor); found != event_targets.end()) {
-                ui_focus(engine, UiElementHandle{found->second.element}, engine.ui_focus_visible);
+                const UiElementHandle element{found->second.element};
+                ui_focus(engine, svg_focus_target(*cursor, element), engine.ui_focus_visible);
                 return;
             }
         }
+    }
+
+    /**
+     * The focused shape the context's focus element, its SVG root's, stands for; none where
+     * the focus is the element's own.
+     */
+    std::optional<UiElementHandle> delegated_focus() {
+        const auto focused = ui_active_element(engine);
+        if (focused.value == invalid_handle || !context)
+            return std::nullopt;
+        const auto root = ui_svg_focus_root(engine, focused);
+        if (!root || *root == focused || root->value >= projected_elements.size() ||
+            handle_at(projected_elements, *root).element != context->GetFocusElement())
+            return std::nullopt;
+        return focused;
+    }
+
+    /**
+     * What RmlUi focusing an SVG root's element focuses: on a Tab, the root's first or last
+     * stop; on a press, the focusable shape or root under it; otherwise the root, or the shape
+     * it already holds focus for.
+     */
+    UiElementHandle svg_focus_target([[maybe_unused]] Rml::Element& element, UiElementHandle root) {
+#if BBLITE_UI_INLINE_SVG
+        auto* svg = dynamic_cast<UiSvgRootElement*>(&element);
+        if (!svg || !ui_svg_focus_root(engine, root))
+            return root;
+        if (tab_direction != 0)
+            return ui_svg_next_tab_stop(engine, root, std::nullopt, tab_direction).value_or(root);
+        if (pressing) {
+            for (auto node = svg->hit_child.value_or(root); node.value != invalid_handle;
+                 node = ui_element(engine, node).parent) {
+                if (ui_tab_order(ui_element(engine, node)))
+                    return node;
+                if (node == root)
+                    break;
+            }
+            return root;
+        }
+        const auto focused = ui_active_element(engine);
+        return focused.value != invalid_handle && ui_svg_focus_root(engine, focused) == root
+                   ? focused
+                   : root;
+#else
+        return root;
+#endif
+    }
+
+    /**
+     * Tab from a focused SVG root or shape to the root's next (`direction` 1) or previous
+     * (-1) stop; false where none is left, so RmlUi leaves the root.
+     */
+    bool svg_tab(int direction) {
+        const auto focused = ui_active_element(engine);
+        const auto root =
+            focused.value == invalid_handle ? std::nullopt : ui_svg_focus_root(engine, focused);
+        if (!root)
+            return false;
+        const auto next = ui_svg_next_tab_stop(engine, *root, focused, direction);
+        if (!next)
+            return false;
+        ui_focus(engine, *next, true);
+        return true;
     }
 
     /** Sources transitionend once a listener names it. */
@@ -8182,15 +8310,31 @@ struct UiRmlRuntime {
         const auto focused = ui_active_element(engine);
         if (projected_focus_revision == engine.ui_focus_revision && projected_focused == focused)
             return false;
+        // A shape has no RmlUi element: its SVG root's holds focus for it, matching neither
+        // focus state itself.
+        const auto svg_root = focused.value < projected_elements.size()
+                                  ? ui_svg_focus_root(engine, focused)
+                                  : std::nullopt;
+        const auto holder = svg_root.value_or(focused);
         if (focused.value < projected_elements.size()) {
-            if (auto* element = handle_at(projected_elements, focused).element;
+            if (auto* element = handle_at(projected_elements, holder).element;
                 element && element->Focus(engine.ui_focus_visible)) {
+                const bool own = holder == focused;
+                if (svg_root)
+                    element->SetPseudoClass("focus", own);
                 // RmlUi emits no new focus event when only the input modality changes.
-                element->SetPseudoClass("focus-visible", engine.ui_focus_visible);
+                element->SetPseudoClass("focus-visible", own && engine.ui_focus_visible);
             }
         } else if (auto* element = context->GetFocusElement()) {
             element->Blur();
         }
+        // A shape's focus states select its SVG rules: both roots redraw.
+        for (const auto shape : {projected_focused, focused})
+            if (const auto root = shape.value < projected_elements.size()
+                                      ? ui_svg_focus_root(engine, shape)
+                                      : std::nullopt)
+                if (auto* raw = handle_at(projected_elements, *root).element)
+                    sync_svg_element(*root, *raw, false);
         projected_focus_revision = engine.ui_focus_revision;
         projected_focused = focused;
         return true;
@@ -9058,6 +9202,9 @@ struct UiRmlRuntime {
     bool default_prevented = false;
     bool projecting = false;
     bool native_focus_pending = false;
+    /** The Tab direction (1, -1) or press RmlUi handles now, which focuses an SVG root's stop. */
+    int tab_direction = 0;
+    bool pressing = false;
     UiElementHandle resizing{};
     float resize_start_y = 0;
     float resize_start_height = 0;
@@ -9255,7 +9402,25 @@ bool handle_ui_rml_event(UiRmlRuntime& runtime, SDL_Event& event) {
     const bool replay_key = (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) &&
                             event.key.which == ~0u;
     const int replay_modifiers =
-        replay_key && (event.key.mod & SDL_KMOD_CTRL) ? Rml::Input::KM_CTRL : 0;
+        replay_key ? ((event.key.mod & SDL_KMOD_CTRL) ? Rml::Input::KM_CTRL : 0) |
+                         ((event.key.mod & SDL_KMOD_SHIFT) ? Rml::Input::KM_SHIFT : 0)
+                   : 0;
+    // Tab walks an SVG root's stops before RmlUi moves focus past the root's element, which
+    // a Tab or press focusing it resolves to one of its stops (`svg_focus_target`).
+    const int tab_direction = event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_TAB
+                                  ? ((event.key.mod & SDL_KMOD_SHIFT) ? -1 : 1)
+                                  : 0;
+    if (tab_direction != 0 && runtime.svg_tab(tab_direction))
+        return false;
+    struct FocusCause {
+        UiRmlRuntime& runtime;
+        ~FocusCause() {
+            runtime.tab_direction = 0;
+            runtime.pressing = false;
+        }
+    } cause{runtime};
+    runtime.tab_direction = tab_direction;
+    runtime.pressing = event.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
     const bool result =
         replay_key ? event.type == SDL_EVENT_KEY_DOWN
                          ? runtime.context->ProcessKeyDown(RmlSDL::ConvertKey(event.key.key),
@@ -9264,6 +9429,8 @@ bool handle_ui_rml_event(UiRmlRuntime& runtime, SDL_Event& event) {
                                                          replay_modifiers)
                    : RmlSDL::InputEventHandler(runtime.context, runtime.window, event);
     if (runtime.default_prevented && event.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+        // The restored focus is no press's.
+        runtime.pressing = false;
         Rml::Element* current_focus = runtime.context->GetFocusElement();
         if (previous_focus) {
             previous_focus->Focus();

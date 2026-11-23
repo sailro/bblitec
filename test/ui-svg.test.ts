@@ -113,6 +113,16 @@ test("SVG construction refuses foreign namespaces and unsupported SVG elements",
     assert.match(named.cpp, /"data-group-key", "walls"/);
 });
 
+test("an SVG shape takes a tabindex, ARIA attributes, focus and key listeners", () => {
+    const result = compileSource(
+        `import {createEngine} from "@babylonjs/lite"; await createEngine({}); const ns = "http://www.w3.org/2000/svg"; const svg = document.createElementNS(ns, "svg"); const thumb = document.createElementNS(ns, "circle"); const label = ["Mix", "Blend"][Math.floor(Math.random() * 2)]!; for (const [key, value] of Object.entries({ r: "11", tabindex: "0", role: "slider", "aria-label": label, "aria-valuemin": "0", "aria-valuemax": "1" })) thumb.setAttribute(key, value); svg.append(thumb); document.body.append(svg); let value = 0; thumb.addEventListener("keydown", (e) => { if (e.key === "End") { value = 1; thumb.setAttribute("aria-valuenow", String(value)); e.preventDefault(); } }); thumb.addEventListener("focus", () => thumb.setAttribute("stroke-width", "3")); (thumb as SVGGraphicsElement).focus();`,
+    );
+    assert.match(result.cpp, /ui_set_attribute\([^;]*"tabindex", "0"\)/);
+    assert.match(result.cpp, /ui_set_attribute\([^;]*"role", "slider"\)/);
+    assert.match(result.cpp, /on_dom_keyboard\([^;]*"keydown"/);
+    assert.match(result.cpp, /bbl::ui_focus\(/);
+});
+
 test("SVG geometry refuses DOMMatrix and DOMPoint members it does not lower", () => {
     const prefix = `const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); document.body.append(svg); const ctm = svg.getScreenCTM()!; const point = svg.createSVGPoint();`;
     for (const [statement, message] of [
