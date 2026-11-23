@@ -1395,7 +1395,7 @@ const groupEscapes = new WeakMap<
  * `returnedValueCanMove` follows them. Resolution only runs for
  * identifiers whose position is not already safe.
  */
-export function recursiveStorageEscapes(
+function recursiveStorageEscapes(
     program: ts.Program,
     checker: ts.TypeChecker,
     members: ReadonlySet<SupportedFunction>,
@@ -1461,6 +1461,42 @@ export function recursiveStorageEscapes(
     for (const region of regions) {
         scan(region, false);
         if (escapes) break;
+    }
+    return escapes;
+}
+
+/**
+ * @unjournaled Whether a recursive callback lets storage escape the
+ * function body that declares it (`recursiveCallbackStorageEscapes`): a
+ * function of the checked program, kept across replays and rollbacks.
+ */
+const callbackEscapes = new WeakMap<
+    ts.Program,
+    WeakMap<ts.ArrowFunction | ts.FunctionExpression, boolean>
+>();
+
+/**
+ * {@link recursiveStorageEscapes} of a recursive callback over `body`, the
+ * function body that declares it: the verdict depends only on source
+ * shape, so it is computed once per program.
+ */
+export function recursiveCallbackStorageEscapes(
+    program: ts.Program,
+    checker: ts.TypeChecker,
+    callback: ts.ArrowFunction | ts.FunctionExpression,
+    body: ts.Node,
+): boolean {
+    let known = callbackEscapes.get(program);
+    if (!known) callbackEscapes.set(program, (known = new WeakMap()));
+    let escapes = known.get(callback);
+    if (escapes === undefined) {
+        escapes = recursiveStorageEscapes(
+            program,
+            checker,
+            new EmissionSet<SupportedFunction>([callback]),
+            [body],
+        );
+        known.set(callback, escapes);
     }
     return escapes;
 }

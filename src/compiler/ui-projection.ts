@@ -173,6 +173,7 @@ import {
     writeSites,
     writeSiteOf,
     accessKey,
+    isMemberAccess,
 } from "./syntax.js";
 import { stringConcatPart } from "./expressions.js";
 import { isJsonValue } from "./json-bridge.js";
@@ -428,6 +429,58 @@ interface UiReflectedAttribute {
     /** The elements declaring the attribute, when not every HTML element does. */
     tags?: readonly string[];
 }
+/** The document methods that find retained elements (`isNativeHostUiLookup`). */
+const DOCUMENT_LOOKUPS: ReadonlySet<string> = new Set([
+    "getElementById",
+    "querySelector",
+    "querySelectorAll",
+]);
+
+/**
+ * @unjournaled The calls of a helper body `isNativeUiHelperCall` asks
+ * about (`helperUiCalls`), by checker: derived from the checked program
+ * alone, so every compile of it shares them.
+ */
+const helperUiCallsByBody = new WeakMap<
+    ts.TypeChecker,
+    WeakMap<ts.Node, readonly ts.CallExpression[]>
+>();
+
+/**
+ * The calls in `body`, in walk order, that may make it a native UI
+ * helper: one whose callee names a document lookup or `createElement`, or
+ * one whose callee an unwrap sees through. The callee of any other call is
+ * a name or a member access with another name, which answers no.
+ */
+function helperUiCalls(
+    checker: ts.TypeChecker,
+    body: ts.Node,
+): readonly ts.CallExpression[] {
+    let known = helperUiCallsByBody.get(checker);
+    if (!known) helperUiCallsByBody.set(checker, (known = new WeakMap()));
+    const kept = known.get(body);
+    if (kept) return kept;
+    const calls: ts.CallExpression[] = [];
+    const visit = (node: ts.Node): void => {
+        if (ts.isCallExpression(node)) {
+            const callee = node.expression;
+            const name = isMemberAccess(callee)
+                ? namedMember(checker, callee)?.name
+                : undefined;
+            if (
+                !(ts.isIdentifier(callee) || isMemberAccess(callee)) ||
+                (name !== undefined &&
+                    (DOCUMENT_LOOKUPS.has(name) || name === "createElement"))
+            )
+                calls.push(node);
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(body);
+    known.set(body, calls);
+    return calls;
+}
+
 /**
  * Attributes of form-control markup generation decides from their literal
  * value: selector classes and ids, styles, control types, links and hiding.
@@ -7273,11 +7326,7 @@ export class UiProjection {
         );
         if (
             !callee ||
-            !(
-                callee.name === "getElementById" ||
-                callee.name === "querySelector" ||
-                callee.name === "querySelectorAll"
-            ) ||
+            !DOCUMENT_LOOKUPS.has(callee.name) ||
             !isDocumentReceiver(this.context, callee.expression) ||
             call.arguments.length !== 1
         ) {
@@ -7342,37 +7391,26 @@ export class UiProjection {
         ) {
             return false;
         }
-        let reached = false;
-        const visit = (node: ts.Node): void => {
-            if (reached) return;
-            if (ts.isCallExpression(node)) {
-                if (this.isNativeHostUiLookup(node)) {
-                    reached = true;
-                    return;
-                }
+        return helperUiCalls(this.context.checker, declaration.body).some(
+            (node) => {
+                if (this.isNativeHostUiLookup(node)) return true;
                 if (
-                    isLibraryStatic(
+                    !isLibraryStatic(
                         this.context.checker,
                         this.context.unwrap(node.expression),
                         "document",
                         "createElement",
                     )
-                ) {
-                    const tag = node.arguments[0];
-                    if (
-                        tag &&
-                        ts.isStringLiteralLike(tag) &&
-                        tag.text.toLowerCase() !== "canvas"
-                    ) {
-                        reached = true;
-                        return;
-                    }
-                }
-            }
-            ts.forEachChild(node, visit);
-        };
-        visit(declaration.body);
-        return reached;
+                )
+                    return false;
+                const tag = node.arguments[0];
+                return (
+                    tag !== undefined &&
+                    ts.isStringLiteralLike(tag) &&
+                    tag.text.toLowerCase() !== "canvas"
+                );
+            },
+        );
     }
 
     public compileHostUi(startup?: (fileName: string) => string[]): string[] {

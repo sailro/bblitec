@@ -151,7 +151,7 @@ import {
 } from "./uninitialized-handle.js";
 import {
     aliasedMutationScan,
-    recursiveStorageEscapes,
+    recursiveCallbackStorageEscapes,
     retainedNativeMutationTarget,
     callbackFunction,
     tryResolveFunctionDeclaration,
@@ -3276,11 +3276,11 @@ export class DeclarationLowerer {
                 : undefined;
         const escapes =
             enclosingBody === undefined ||
-            recursiveStorageEscapes(
+            recursiveCallbackStorageEscapes(
                 this.context.program,
                 this.context.checker,
-                new EmissionSet<SupportedFunction>([callback]),
-                [enclosingBody],
+                callback,
+                enclosingBody,
             );
         if (escapes) {
             this.context.bindings.refuseEscapingPlatformEventCapturesIn(

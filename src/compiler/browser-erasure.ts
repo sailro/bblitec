@@ -239,6 +239,16 @@ interface GlobalObjectFlows {
     readonly bindings: ReadonlySet<ts.Symbol>;
 }
 
+/**
+ * What a given value's operand is, whichever flows are asked
+ * (`globalObjectFlows`): computed when first read.
+ */
+interface GivenOperand {
+    readonly operand: ts.Expression;
+    global?: boolean;
+    type?: ts.Type;
+}
+
 export function isAbsentWindowMember(name: string): boolean {
     return ABSENT_GLOBAL_MEMBERS.has(name);
 }
@@ -2671,6 +2681,21 @@ export class BrowserErasure {
         }));
     }
 
+    /** @unjournaled A fact of the checked program, kept across replays. */
+    private globalObjectBases: ReadonlySet<ts.Type> | undefined;
+
+    /** The types the global object's types inherit from, themselves included (`inheritsFrom`). */
+    private globalBases(): ReadonlySet<ts.Type> {
+        if (this.globalObjectBases) return this.globalObjectBases;
+        const bases = new Set<ts.Type>();
+        for (const global of this.globalTypes())
+            inheritsFrom(global, (base) => {
+                bases.add(base);
+                return false;
+            });
+        return (this.globalObjectBases = bases);
+    }
+
     /**
      * How a value of type `type` may be the global object: `closed` where a
      * member is a type the global object's types are assignable to
@@ -2765,6 +2790,19 @@ export class BrowserErasure {
         return (this.givenValues = given);
     }
 
+    /** @unjournaled Facts of the checked program, kept across replays. */
+    private readonly givenOperands = new Map<ts.Expression, GivenOperand>();
+
+    /** A given value's {@link GivenOperand}: each round of a flow reads it. */
+    private givenOperand(value: ts.Expression): GivenOperand {
+        let given = this.givenOperands.get(value);
+        if (!given) {
+            given = { operand: settledOperand(value) };
+            this.givenOperands.set(value, given);
+        }
+        return given;
+    }
+
     /** {@link globalObjectFlows} of the values given where `runs`, computed when first asked. */
     private lazyGlobalObjectFlows(
         runs: (node: ts.Node) => boolean,
@@ -2793,12 +2831,12 @@ export class BrowserErasure {
         const carriers = new Set<ts.Type>();
         const bindings = new Set<ts.Symbol>();
         const bears = (value: ts.Expression): boolean => {
-            const operand = settledOperand(value);
-            return (
-                this.isGlobalObject(operand, settledOperand) ||
-                this.boundVariable(operand, bindings) ||
-                this.carries(checker.getTypeAtLocation(operand), carriers)
-            );
+            const facts = this.givenOperand(value);
+            facts.global ??= this.isGlobalObject(facts.operand, settledOperand);
+            if (facts.global || this.boundVariable(facts.operand, bindings))
+                return true;
+            facts.type ??= checker.getTypeAtLocation(facts.operand);
+            return this.carries(facts.type, carriers);
         };
         let escapes = false;
         // A carrier or a binding makes the values of its type or the reads
@@ -2874,10 +2912,7 @@ export class BrowserErasure {
      */
     private carries(type: ts.Type, carriers: ReadonlySet<ts.Type>): boolean {
         const carrier = (part: ts.Type): boolean =>
-            carriers.has(part) ||
-            this.globalTypes().some((global) =>
-                inheritsFrom(global, (base) => base === part),
-            );
+            carriers.has(part) || this.globalBases().has(part);
         return unionMembers(type).some(
             (member) =>
                 carrier(member) ||

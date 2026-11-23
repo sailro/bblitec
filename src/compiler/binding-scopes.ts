@@ -162,6 +162,18 @@ interface RepeatedBodyEntry {
     readonly answers: RepeatedBodyAnswers;
 }
 
+/**
+ * @unjournaled What code reads (`codeReads`) and what a closure reads
+ * (`closureReads`), by checker: derived from the checked program alone, so
+ * every compile of it shares them.
+ */
+const programReads = new WeakMap<ts.TypeChecker, ProgramReads>();
+
+interface ProgramReads {
+    readonly code: WeakMap<ts.Node, CodeReads>;
+    readonly closures: WeakMap<ts.Node, ReadonlySet<ts.Symbol>>;
+}
+
 export class BindingScopes {
     private readonly transparentRebindingScopes = new EmissionWeakSet<
         Map<ts.Symbol, VariableBinding>
@@ -179,13 +191,6 @@ export class BindingScopes {
     private readonly invalidatedRecordMaps = new EmissionWeakSet<object>();
     private readonly sharedRecordMaps = new EmissionWeakSet<object>();
     private readonly unwrittenScalarRecordMaps = new EmissionWeakSet<object>();
-    /** @unjournaled Derived from the program alone, on first use. */
-    private readonly codeReadsByNode = new WeakMap<ts.Node, CodeReads>();
-    /** @unjournaled Derived from the program alone, on first use. */
-    private readonly closureReadSets = new WeakMap<
-        ts.Node,
-        ReadonlySet<ts.Symbol>
-    >();
     private readonly cppNamePrefixes: string[] = emissionArray([""]);
 
     /**
@@ -622,7 +627,7 @@ export class BindingScopes {
      * scopes).
      */
     private closureReads(root: ts.Node): ReadonlySet<ts.Symbol> {
-        const cached = this.closureReadSets.get(root);
+        const cached = this.programReads().closures.get(root);
         if (cached) return cached;
         const read = new Set<ts.Symbol>();
         const visited = new Set<ts.Node>();
@@ -634,8 +639,19 @@ export class BindingScopes {
             for (const symbol of reads.names.keys()) read.add(symbol);
             pending.push(...reads.functions);
         }
-        this.closureReadSets.set(root, read);
+        this.programReads().closures.set(root, read);
         return read;
+    }
+
+    /** This program's {@link programReads}. */
+    private programReads(): ProgramReads {
+        const checker = this.context.checker;
+        let reads = programReads.get(checker);
+        if (!reads) {
+            reads = { code: new WeakMap(), closures: new WeakMap() };
+            programReads.set(checker, reads);
+        }
+        return reads;
     }
 
     /** The innermost binding of a symbol, read without using it. */
@@ -718,7 +734,7 @@ export class BindingScopes {
 
     /** What one piece of code reads and reaches, without following either. */
     private codeReads(code: ts.Node): CodeReads {
-        const cached = this.codeReadsByNode.get(code);
+        const cached = this.programReads().code.get(code);
         if (cached) return cached;
         const names = new Map<ts.Symbol, ts.Identifier>();
         const functions = new Set<ts.Node>();
@@ -758,7 +774,7 @@ export class BindingScopes {
             functions: [...functions],
             calls: [...calls],
         };
-        this.codeReadsByNode.set(code, reads);
+        this.programReads().code.set(code, reads);
         return reads;
     }
 
