@@ -590,6 +590,38 @@ test("runtime img src reads what the functions a call goes through return", () =
     assert.ok(!passed.includes("assets/ui/green.png"));
 });
 
+test("runtime img src skips the arms whose type has no such member", () => {
+    // The false arm passes on a fact a stored handler's argument holds,
+    // whose source generation cannot follow; its type has no \`src\`, so it
+    // adds no candidate.
+    const outputs = compileEntry(`
+        type Fact = { kind: "none" } | { kind: "living"; key: string };
+        type Shown = { kind: "none" } | { kind: "living"; key: string; src: string };
+        interface Request { read(): Fact }
+        let handler: ((request: Request) => void) | null = null;
+        let key = "red";
+        window.addEventListener("keydown", (event) => { key = event.key; });
+        window.addEventListener("pointerdown", () => {
+            handler?.({ read: () => (key === "none" ? { kind: "none" } : { kind: "living", key }) });
+        });
+        let current: (() => Shown) | null = null;
+        const img = document.createElement("img");
+        document.body.append(img);
+        window.addEventListener("pointerup", () => {
+            const shown = current?.();
+            if (shown && shown.kind === "living") img.src = shown.src;
+        });
+        handler = (request) => {
+            current = (): Shown => {
+                const fact = request.read();
+                return fact.kind === "living" ? { ...fact, src: appUrl(\`/assets/ui/\${fact.key}.png\`) } : fact;
+            };
+        };
+    `).manifest.assets.map((asset) => asset.output);
+    for (const name of ["red", "green", "blue"])
+        assert.ok(outputs.includes(`assets/ui/${name}.png`), name);
+});
+
 test("runtime img src strings generation cannot bound refuse", () => {
     for (const [body, pattern] of [
         [

@@ -53,6 +53,7 @@ import {
     yieldedOperands,
     ANY_KEY,
     jsonScalarLiteral,
+    wrappedParent,
     notJson,
 } from "./syntax.js";
 import { pathStartsWith, type KeyPath } from "./projections.js";
@@ -1637,6 +1638,25 @@ class StringDomain {
     }
 
     /**
+     * Whether `key` is a member no shape of `node`'s type, as narrowed
+     * there, declares: each shape is an object type without an index
+     * signature, and none an array.
+     */
+    private lacksMember(node: ts.Expression, key: string): boolean {
+        const checker = this.context.checker;
+        const type = checker.getNonNullableType(
+            checker.getTypeAtLocation(node),
+        );
+        return unionMembers(type).every(
+            (shape) =>
+                (shape.flags & ts.TypeFlags.Object) !== 0 &&
+                !checker.isArrayLikeType(shape) &&
+                checker.getIndexInfosOfType(shape).length === 0 &&
+                !shape.getProperty(key),
+        );
+    }
+
+    /**
      * The closed set of names a run-time key holds, each a member it reads;
      * undefined for an unknown or open key, or one that may be an index.
      */
@@ -1794,20 +1814,33 @@ class StringDomain {
                 ts.isIdentifier(test) &&
                 resolvedSymbol(this.context.checker, test);
             const narrows = tested && !this.truthy.has(tested);
+            // An arm whose type, as the condition narrows it, declares the
+            // member read in no shape holds no string there: it adds
+            // nothing, whatever its own source. (A call step reads what a
+            // function value returns, not a member.)
+            // A spread arm lacking the member leaves the value an earlier
+            // member gave it in place instead, so a spread operand reads both.
+            const [key] = projection;
+            const consumer = wrappedParent(node);
+            const spread =
+                ts.isSpreadAssignment(consumer) || ts.isSpreadElement(consumer);
+            const arm = (expression: ts.Expression): Domain =>
+                key !== undefined &&
+                !spread &&
+                !this.callSteps.has(key) &&
+                this.lacksMember(expression, key)
+                    ? nothing
+                    : this.read(expression, projection, environment);
             return this.union([
                 () => {
                     if (narrows) this.truthy.add(tested);
                     try {
-                        return this.read(
-                            node.whenTrue,
-                            projection,
-                            environment,
-                        );
+                        return arm(node.whenTrue);
                     } finally {
                         if (narrows) this.truthy.delete(tested);
                     }
                 },
-                () => this.read(node.whenFalse, projection, environment),
+                () => arm(node.whenFalse),
             ]);
         }
         return this.member(node, projection, environment);
