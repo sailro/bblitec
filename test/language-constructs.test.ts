@@ -7606,6 +7606,39 @@ checkInRealm(
 `,
 );
 
+checkInRealm(
+    "instanceof-promise-is-false-for-a-result-that-holds-no-promise",
+    `
+    interface Selection {
+        set(id: string): void | boolean | Promise<void | boolean>;
+        commit?(): void | boolean | Promise<void | boolean>;
+    }
+    let reopened = 0;
+    let log = "";
+    const pick = (selection: Selection, id: string): void => {
+        const done = (accepted: void | boolean): void => { log += accepted === false ? "n" : "y"; };
+        const selected = (accepted: void | boolean): void => {
+            if (accepted === false) return done(false);
+            const result = selection.commit?.();
+            if (result instanceof Promise) void result.then(done);
+            else done(result);
+        };
+        const result = selection.set(id);
+        if (result instanceof Promise) void result.then(selected);
+        else selected(result);
+    };
+    // A commit returning nothing, and a selection without one.
+    pick({ set: (id) => (id.startsWith("now") ? true : Promise.resolve(true)), commit: () => { reopened++; } }, "now");
+    pick({ set: (id) => { log += id.length > 0 ? "s" : "e"; } }, "stair");
+    if (log !== "ysy" || reopened !== 1) throw new Error("log " + log + " reopened " + reopened);
+    pick({ set: () => Promise.resolve(true), commit: () => { reopened++; } }, "later");
+    setTimeout(() => {
+        if (log !== "ysyy" || reopened !== 2) throw new Error("settled log " + log + " reopened " + reopened);
+        globalThis.close();
+    }, 0);
+`,
+);
+
 check(
     "a-conditional-of-two-boolean-literals-knows-neither",
     `

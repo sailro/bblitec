@@ -838,6 +838,11 @@ export class ConditionLowerer {
                             : `(${optionalPresentCpp(held)} && ${arms})`;
                     }
                     this.requirePromisesApart(unwrapped);
+                    // Where promises stay apart from their settlements,
+                    // storage of any other kind (a void call's result, an
+                    // absent optional method's) holds no promise.
+                    this.context.emitDiscardedValue(value);
+                    return "false";
                 }
                 const collection = COLLECTION_CLASSES.get(global);
                 if (collection)
