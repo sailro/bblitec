@@ -20985,6 +20985,22 @@ test("a promise reaction refuses a chain that completes with a value", () => {
     );
 });
 checkInRealm(
+    "a reaction calling an omitted optional handler completes with undefined",
+    `
+    function widget(onError?: (error: unknown) => void): (fail: boolean) => Promise<void> {
+        const hooks = { failed: (error: unknown) => onError?.(error) };
+        return (fail) => Promise.resolve(fail).then((bad) => { if (bad) throw new Error("bad"); }).catch(hooks.failed);
+    }
+    let seen = 0;
+    const quiet = widget();
+    const loud = widget(() => { seen++; });
+    void quiet(true).then(() => loud(true)).then(() => {
+        if (seen !== 1) throw new Error("handled " + seen);
+        globalThis.close();
+    });
+    `,
+);
+checkInRealm(
     "Promise.all settles to a new array",
     `
     const arr = [1, 2];
