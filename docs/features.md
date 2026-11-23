@@ -84,7 +84,8 @@ Rules:
 - A record binding whose member is written by a run-time key or replaced takes native storage; its fields typed
   `Record<string, unknown>` are documents.
 - A record type a parsed document is stored as is a document, with every record type the program reads out of it
-  (members, array elements, dictionary values).
+  (members, array elements, dictionary values) and every record type whose values it hands where one of these is
+  declared.
 - A record type annotated on a dictionary (`const h: Partial<Record<K, T>> = Object.fromEntries(...)`) whose optional
   keys the program reads as own (`Object.keys`/`values`, `in`) is a document: absent keys and key order are the
   dictionary's.

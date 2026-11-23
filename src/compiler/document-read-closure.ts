@@ -138,22 +138,27 @@ export function intersectedParts(type: ts.Type): readonly ts.Type[] {
  * @unjournaled `copiedRecords` answers, by program: a function of the
  * checked program.
  */
-const copied = new WeakMap<
-    ts.Program,
-    readonly { from: readonly ts.Type[]; into: readonly ts.Type[] }[]
->();
+const copied = new WeakMap<ts.Program, readonly RecordPassage[]>();
+
+/** One place the program's values pass from record types to others. */
+interface RecordPassage {
+    /** The record types the value may be (an intersection's parts too). */
+    readonly from: readonly ts.Type[];
+    /** Those the copy holds or the declared type names. */
+    readonly into: readonly ts.Type[];
+    /** Whether the value itself is given (`handed`), not its fields copied. */
+    readonly handed: boolean;
+}
 
 /**
  * Where the program's values pass from record types to others: its
  * field-by-field copies (`ProgramObservations.copies`) and the values it
- * hands where another record type is declared (`handed`). `from` is the
- * record types the value may be (an intersection's parts too), `into`
- * those the copy holds or the declared type names.
+ * hands where another record type is declared (`handed`).
  */
 function copiedRecords(
     checker: ts.TypeChecker,
     program: ts.Program,
-): readonly { from: readonly ts.Type[]; into: readonly ts.Type[] }[] {
+): readonly RecordPassage[] {
     let known = copied.get(program);
     if (!known) {
         const observed = programObservations(program);
@@ -168,6 +173,7 @@ function copiedRecords(
             ...observed.copies.map(({ from, into }) => ({
                 from: recordsOf(from),
                 into: heldRecordTypes(checker, checker.getTypeAtLocation(into)),
+                handed: false,
             })),
             // Most handed values hold no record: the declared type is
             // asked for only where one does.
@@ -184,6 +190,7 @@ function copiedRecords(
                               (record) => !from.includes(record),
                           )
                         : [],
+                    handed: true,
                 };
             }),
         ].filter(({ from, into }) => from.length > 0 && into.length > 0);
@@ -241,6 +248,9 @@ const closures: ProgramAnswers<readonly ts.Type[]> = new WeakMap();
  *   read out of it: the copy of a document's fields holds document values,
  *   and a document seen as another type is that type's value
  *   (`heldDocuments`);
+ * - every record type whose values the program hands where one of these is
+ *   declared, with what is read out of it: the document takes that value
+ *   itself, so the value's own record type is a document as well;
  * - where `record` is itself held by a type the program asserts data of no
  *   shape as (`parsedRecords`), that type and everything it holds: the
  *   document a `record` arrived in is one of those, however far down its
@@ -287,10 +297,10 @@ export function documentReadClosure(
 const documents: ProgramAnswers<ReadonlySet<ts.Type>> = new WeakMap();
 
 /**
- * The record types a document `record` hands its values to: those read
+ * The record types a document `record` shares its values with: those read
  * out of it (`readOut`), those any of them is copied into or handed as
- * (`copiedRecords`), and those read out of these; none that stays
- * `native`.
+ * (`copiedRecords`), those whose values are handed where one of them is
+ * declared, and those read out of these; none that stays `native`.
  */
 function heldDocuments(
     checker: ts.TypeChecker,
@@ -303,10 +313,17 @@ function heldDocuments(
         const copies = copiedRecords(checker, program);
         for (let grown = true; grown;) {
             grown = false;
-            for (const { from, into } of copies) {
-                if (!from.some((held) => held === record || found.has(held)))
-                    continue;
-                for (const made of into) {
+            const document = (held: ts.Type): boolean =>
+                held === record || found.has(held);
+            for (const { from, into, handed } of copies) {
+                // A document's value is the value of what it is copied into
+                // or handed as; a value handed where a document is declared
+                // is that document's, so its own record type is one too.
+                const shared = [
+                    ...(from.some(document) ? into : []),
+                    ...(handed && into.some(document) ? from : []),
+                ];
+                for (const made of shared) {
                     if (made === record || found.has(made) || native(made))
                         continue;
                     grown = true;

@@ -1349,3 +1349,37 @@ test("an array literal of constants an identity read stores by reference replays
             );
     }
 });
+
+test("a document's record type takes the record types handed where it is declared in the same demand", async (t) => {
+    // `Herd` is read out of a parsed document and holds `Bounds`; `SMALL`'s
+    // own record type is handed where `Bounds` is declared, so the strict
+    // loop would take it as a document one attempt later.
+    const source = `
+        interface Bounds { minX: number; maxX: number; minY: number; maxY: number }
+        interface Herd { bounds: Bounds; scale: number }
+        interface Config { herd: Herd; name: string }
+        const DEFAULTS: Config = { herd: { bounds: { minX: -1, maxX: 1, minY: 0, maxY: 2 }, scale: 1 }, name: "defaults" };
+        function measure(bounds: Readonly<Bounds>, height: number): number { return (bounds.maxY - bounds.minY) * height + bounds.maxX; }
+        const SMALL = { minX: -0.5, maxX: 0.5, minY: 0, maxY: 0.25 };
+        const SMALL_METRIC = measure(SMALL, 4);
+        function load(text: string): Config { return { ...DEFAULTS, ...(JSON.parse(text) as Config) }; }
+        const config = load('{"herd":{"bounds":{"minX":-2,"maxX":3,"minY":1,"maxY":5},"scale":2},"name":"saved"}');
+        if (measure(config.herd.bounds, config.herd.scale) !== 11) throw new Error("document bounds");
+        if (SMALL_METRIC !== 1.5) throw new Error("handed bounds");
+        if (config.name !== "saved") throw new Error("name");
+    `;
+    const lines: string[] = [];
+    compileSource(source, { compileProgress: (line) => lines.push(line) });
+    assert.match(lines[0]!, /record \(Herd: document\)/);
+    assert.ok(
+        !lines.some((line) =>
+            /record \(\{ minX, maxX, minY, maxY \}: document\)/.test(line),
+        ),
+        lines.join("\n"),
+    );
+    await runSelfCheckingProgram(
+        t,
+        "storage-demand-planner/handed-document-records",
+        source,
+    );
+});
