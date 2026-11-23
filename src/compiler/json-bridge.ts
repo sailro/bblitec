@@ -20,7 +20,12 @@ import { undefinedValue, absenceOfNull } from "./values/model.js";
 import { argumentAt, accessKey } from "./syntax.js";
 import { functionUsesDynamicThis } from "./user-functions.js";
 import { isNullishLiteral, namedMember } from "./symbols.js";
-import { holdsOnly, PRIMITIVE_KINDS } from "./type-facts.js";
+import {
+    absenceKind,
+    holdsOnly,
+    PRIMITIVE_KINDS,
+    type Nullability,
+} from "./type-facts.js";
 
 import type { DataType, DataTypeRegistry } from "./data-types.js";
 import { optionalPresentCpp, optionalValueCpp, type Value } from "./types.js";
@@ -50,6 +55,7 @@ interface JsonBridgeContext extends Pick<
 
 interface JsonStrictComparisonContext extends Pick<
     LoweringServices,
+    | "checker"
     | "compileValue"
     | "compileNumber"
     | "conditions"
@@ -640,6 +646,8 @@ export function compileJsonStrictComparison(
     otherIsNullish: boolean,
     compileString: (expression: ts.Expression) => string,
     retainValue: (value: Value, expression: ts.Expression) => string,
+    /** The absences the document's own type admits, where its expression is known. */
+    documentAbsence?: Pick<Nullability, "null" | "undefined">,
 ): string | undefined {
     if (otherIsNullish) {
         return other.kind === ts.SyntaxKind.NullKeyword
@@ -658,6 +666,24 @@ export function compileJsonStrictComparison(
     }
     if (isJsonValue(value)) {
         return `${documentCpp}.strict_equals(${value.cpp})`;
+    }
+    // An optional scalar whose absence may be null or undefined (a storage
+    // that keeps one absent state) has no document form; it compares its
+    // value where present, and absent equals no document that cannot be
+    // absent.
+    const inner =
+        value.kind === "data" && value.dataType?.kind === "optional"
+            ? value.dataType.inner.kind
+            : undefined;
+    if (
+        (inner === "string" || inner === "number" || inner === "boolean") &&
+        documentAbsence &&
+        !documentAbsence.null &&
+        !documentAbsence.undefined &&
+        absenceKind(context.checker, value, other) === "either"
+    ) {
+        const held = optionalValueCpp("held");
+        return `([&](const auto& held) { return ${optionalPresentCpp("held")} && ${documentCpp}.strict_equals(${inner === "number" ? `static_cast<double>(${held})` : held}); }(${value.cpp}))`;
     }
     const error = authoredErrorValue(context, value) ?? value;
     if (error.dataType?.kind === "error")

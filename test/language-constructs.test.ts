@@ -21012,6 +21012,22 @@ checkInRealm(
     `,
 );
 check(
+    "a parsed document compares with a member an optional parameter may lack",
+    `
+    interface Line { key: string; state?: string | null }
+    interface Selection { key: string | null; onSelect?: (key: string) => void }
+    const lines = JSON.parse('[{"key":"a","state":null},{"key":"b"}]') as Line[];
+    function pick(copy: readonly Line[], selection?: Selection): string {
+        const current = copy.find((line) => line.key === selection?.key) ?? copy[0];
+        return current?.key ?? "-";
+    }
+    const keys: (string | null)[] = [null, "b"];
+    let picked = pick(lines) + ",";
+    for (const key of keys) picked += pick(lines, { key }) + ",";
+    if (picked !== "a,a,b,") throw new Error("picked " + picked);
+    `,
+);
+check(
     "an optional chain skips an element call on an absent owner",
     `
     const pick = (present: boolean): Record<string, () => number> | undefined => (present ? { m: () => 1 } : undefined);

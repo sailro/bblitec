@@ -21096,6 +21096,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                             { kind: "json" },
                             node,
                         ),
+                    nullability(
+                        this.context.checker.getTypeAtLocation(documentSide),
+                    ),
                 );
                 if (compare !== undefined) {
                     return negated ? `!(${compare})` : compare;
