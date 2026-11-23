@@ -429,7 +429,11 @@ function discoverPackagedCandidates(
     accepts: (source: string) => boolean,
     unpackaged?: (url: string) => boolean,
 ): PackagedDiscovery | undefined {
-    const compiled = context.compileValue(expression);
+    // An optional slot TypeScript narrows present is its string.
+    const compiled = context.dataLowerer.narrowOptional(
+        context.compileValue(expression),
+        expression,
+    );
     // A string-literal union is stored as its enum: the key is its spelling.
     const selected =
         compiled.kind === "data" && compiled.dataType?.kind === "enum"

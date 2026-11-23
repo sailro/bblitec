@@ -490,6 +490,106 @@ test("runtime img src reads the calls a function stored in a typed slot receives
     );
 });
 
+test("runtime img src reads members and parameters TypeScript narrows present", () => {
+    const result = compileEntry(`
+        type Parent = { kind: "none" } | { kind: "living"; picture: string };
+        function renderParents(parents: readonly Parent[]): void {
+            parents.forEach((parent) => {
+                if (parent.kind === "living") {
+                    const img = document.createElement("img");
+                    img.src = parent.picture;
+                    document.body.append(img);
+                }
+            });
+        }
+        renderParents([{ kind: "living", picture: appUrl("/assets/ui/red.png") }, { kind: "none" }]);
+        // An optional parameter its test proves present: the calls omitting it never reach the write.
+        const plate = (title: string, icon?: string): void => {
+            const box = document.createElement("div");
+            box.textContent = title;
+            if (icon) {
+                const img = document.createElement("img");
+                img.src = icon;
+                box.append(img);
+            }
+            document.body.append(box);
+        };
+        plate("a", appUrl("/assets/ui/green.png"));
+        plate("b");
+    `);
+    const outputs = result.manifest.assets.map((asset) => asset.output);
+    for (const name of ["red", "green"])
+        assert.ok(outputs.includes(`assets/ui/${name}.png`), name);
+    assert.ok(!outputs.includes("assets/ui/blue.png"));
+});
+
+test("runtime img src reads what the functions a call goes through return", () => {
+    const result = compileEntry(`
+        const shades = ["red", "green"];
+        const pick = (): string => shades[Math.floor(Math.random() * shades.length)]!;
+        type Raw = { kind: "none" } | { kind: "living"; shade: string };
+        type Parent = { kind: "none" } | { kind: "living"; picture: string };
+        interface Snapshot { parents?: readonly Parent[] }
+        interface CardData { title: string; read: () => Snapshot | null }
+        interface Card { open: (data: CardData) => void }
+        function createCard(): Card {
+            let current: CardData | null = null;
+            const renderParents = (parents: readonly Parent[]): void => {
+                parents.forEach((parent) => {
+                    if (parent.kind !== "living") return;
+                    const img = document.createElement("img");
+                    img.src = parent.picture;
+                    document.body.append(img);
+                });
+            };
+            const refresh = (): void => {
+                const snap = current?.read();
+                if (snap?.parents) renderParents(snap.parents);
+            };
+            return {
+                open(data) {
+                    current = data;
+                    refresh();
+                },
+            };
+        }
+        const raw = (): { parents?: readonly Raw[] } => ({ parents: [{ kind: "living", shade: pick() }, { kind: "none" }] });
+        const card = createCard();
+        // A record member's function, read through the binding holding the record.
+        document.body.addEventListener("click", () =>
+            card.open({
+                title: "a",
+                read: () => {
+                    const snap = raw();
+                    const parents = snap.parents?.map((parent): Parent =>
+                        parent.kind === "living" ? { kind: "living", picture: appUrl(\`/assets/ui/\${parent.shade}.png\`) } : parent,
+                    );
+                    return { ...snap, parents };
+                },
+            }),
+        );
+    `);
+    const outputs = result.manifest.assets.map((asset) => asset.output);
+    for (const name of ["red", "green"])
+        assert.ok(outputs.includes(`assets/ui/${name}.png`), name);
+    assert.ok(!outputs.includes("assets/ui/blue.png"));
+    // A parameter's function, and a declared function passed as one.
+    const passed = compileEntry(`
+        function picture(): string { return appUrl("/assets/ui/blue.png"); }
+        function show(read: () => { picture: string }, other: () => string): void {
+            const img = document.createElement("img");
+            img.src = read().picture;
+            const second = document.createElement("img");
+            second.src = other();
+            document.body.append(img, second);
+        }
+        show(() => ({ picture: appUrl("/assets/ui/red.png") }), picture);
+    `).manifest.assets.map((asset) => asset.output);
+    for (const name of ["red", "blue"])
+        assert.ok(passed.includes(`assets/ui/${name}.png`), name);
+    assert.ok(!passed.includes("assets/ui/green.png"));
+});
+
 test("runtime img src strings generation cannot bound refuse", () => {
     for (const [body, pattern] of [
         [
@@ -499,6 +599,11 @@ test("runtime img src strings generation cannot bound refuse", () => {
         [
             // A cycle through a string operation has no closed domain.
             `const img = document.createElement("img"); let path = "/assets/ui/red"; while (performance.now() < 0) path = path + "d"; img.src = appUrl(path + ".png");`,
+            /An img src write requires sources generation can package/,
+        ],
+        [
+            // A function value returning a stored string.
+            `function show(read: () => string): void { const img = document.createElement("img"); img.src = read(); } show(() => localStorage.getItem("icon") ?? "");`,
             /An img src write requires sources generation can package/,
         ],
         [
