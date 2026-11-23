@@ -489,6 +489,31 @@ template <typename T> T clone_read(pal::CloneReader& reader, pal::CloneId id) {
     }
 }
 
+/**
+ * An ArrayBuffer in a transfer list (a typed array's `.buffer` included):
+ * serialization meets it by its storage, and the transfer detaches it after
+ * serialization, as HTML's StructuredSerializeWithTransfer does.
+ */
+class BufferTransfer final : public pal::Transferable {
+public:
+    explicit BufferTransfer(ArrayBuffer buffer) : buffer_(std::move(buffer)) {
+        if (buffer_.shared())
+            throw pal::DataCloneError("A SharedArrayBuffer cannot be transferred.");
+        if (!buffer_.detachable())
+            throw pal::DataCloneError("A borrowed native buffer cannot be transferred.");
+    }
+    [[nodiscard]] std::pair<const void*, pal::CloneIdentitySpace>
+    transfer_identity() const override {
+        return {buffer_.identity(), pal::CloneIdentitySpace::buffer};
+    }
+    std::unique_ptr<pal::TransferredResource> transfer() override {
+        return std::make_unique<pal::TransferredBuffer>(buffer_.detach());
+    }
+
+private:
+    ArrayBuffer buffer_;
+};
+
 template <typename T>
 pal::SerializedMessage serialize_message(const T& value,
                                          std::span<pal::Transferable* const> transfers = {}) {

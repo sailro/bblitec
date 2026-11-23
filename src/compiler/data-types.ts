@@ -5756,6 +5756,12 @@ export class DataTypeRegistry {
         if (libraryName(type) === "MediaQueryList") {
             return { kind: "handle", handle: "worker-media-query" };
         }
+        if (libraryName(type) === "MessagePort") {
+            return { kind: "handle", handle: "message-port" };
+        }
+        if (libraryName(type) === "MessageChannel") {
+            return { kind: "handle", handle: "message-channel" };
+        }
         if (
             type.symbol &&
             (type.symbol.declarations ?? []).some(ts.isClassLike)

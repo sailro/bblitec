@@ -38,6 +38,8 @@ const handleCppTypes: Record<HandleKind, string> = {
     "offscreen-canvas": "std::shared_ptr<bbl::pal::OffscreenCanvas>",
     "worker-media-query": "std::shared_ptr<bbl::pal::MediaQueryList>",
     "worker-mutation-observer": "std::shared_ptr<bbl::pal::MutationObserver>",
+    "message-port": "std::shared_ptr<bbl::pal::MessagePort>",
+    "message-channel": "std::shared_ptr<bbl::pal::MessageChannel>",
     mesh: "bbl::MeshHandle",
     "effect-wrapper": "bbl::EffectWrapperHandle",
     "animation-group": "bbl::AnimationGroupHandle",

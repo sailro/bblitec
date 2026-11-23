@@ -5,6 +5,8 @@ export type HandleKind =
     | "dom-event-identity"
     | "worker-media-query"
     | "worker-mutation-observer"
+    | "message-port"
+    | "message-channel"
     | AudioHandleKind
     | "engine"
     | "asset"

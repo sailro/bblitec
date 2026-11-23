@@ -76,6 +76,7 @@ import {
     type CanvasContext,
 } from "./canvas.js";
 import { renderClosure } from "./closure-captures.js";
+import { readWorkerEventProperty } from "./workers.js";
 import {
     borrowedPlatformEventKind,
     handleCppType,
@@ -4299,6 +4300,14 @@ export class PropertyAccessLowerer {
             expression,
         );
         if (shaderFact) return shaderFact;
+        // An event read the compile hook did not meet (a string
+        // concatenation's operand).
+        const workerEvent = readWorkerEventProperty(
+            this.context,
+            owner,
+            expression,
+        );
+        if (workerEvent) return workerEvent;
         return this.context.fail(
             expression,
             `Unsupported property value '${this.propertyPathForDiagnostic(expression)}' (owner ${owner.kind} ${owner.dataType ? JSON.stringify(owner.dataType) : "without data type"}).`,

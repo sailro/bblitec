@@ -1705,6 +1705,8 @@ export type ValueKind =
     | "worker-message-event"
     | "worker-error-event"
     | "offscreen-canvas"
+    | "message-port"
+    | "message-channel"
     | "promise"
     | "animation-clip"
     | "animation-group"

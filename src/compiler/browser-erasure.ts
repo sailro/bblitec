@@ -153,6 +153,8 @@ const NATIVE_DOM_BRIDGE_KINDS = new EmissionSet<Value["kind"]>([
     "worker-media-query",
     "worker-mutation-observer",
     "offscreen-canvas",
+    "message-port",
+    "message-channel",
 ]);
 
 /** DOM-declared classes with native runtime values (`web-platform.ts`). */

@@ -175,7 +175,7 @@ export function compileAdaptations(
             sourceSemantics:
                 "Browser dedicated module workers have isolated globals, ordered messages, structured clone, task queues and termination.",
             nativeSemantics:
-                "Local AOT module factories execute in isolated native realms with owner-thread promises, timers, copied message graphs and transferred canvas endpoints. Clone codecs admit typed plain data and copied buffers; source transfer lists currently admit OffscreenCanvas only. Compiled cancellation checks interrupt source busy loops. Classic workers, dynamic URLs, MessagePort transfer, shared memory and the complete browser Promise/WorkerGlobalScope API are not admitted.",
+                "Local AOT module factories execute in isolated native realms with owner-thread promises, timers, copied message graphs and transferred canvas endpoints. Clone codecs admit typed plain data and copied buffers; source transfer lists are array literals of OffscreenCanvas, MessagePort and ArrayBuffer values. MessageChannel ports deliver messages as tasks of the receiving realm. Compiled cancellation checks interrupt source busy loops. Classic workers, dynamic URLs, shared memory and the complete browser Promise/WorkerGlobalScope API are not admitted.",
             validation: [
                 "worker compilation, clone, promise, event-loop and service fixtures",
                 "unchanged Offscreen application on SDL_GPU and Dawn",
