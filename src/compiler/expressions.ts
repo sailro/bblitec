@@ -2751,6 +2751,10 @@ export class ExpressionLowerer {
                 return { kind: "void", cpp: "" };
             }
 
+            // A run-time delay is a realm's timer: its task queue schedules
+            // any delay the program computes.
+            if (delay === undefined && !this.context.options.workers)
+                throw new ApplicationRealmRequired();
             if (delay === undefined || !Number.isFinite(delay) || delay < 0) {
                 this.context.fail(
                     argumentAt(call, 1),

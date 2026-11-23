@@ -155,3 +155,18 @@ test("callbacks observe completed lexical initializers and preserve failed initi
     assert.equal(execution.stdout, "");
     assert.equal(execution.stderr, "");
 });
+
+test("a run-time timeout delay selects the realm whose timers schedule it", () => {
+    // A generation-known delay stays on the frame conductor's timer queue;
+    // one the program computes is a realm timer.
+    const source = (delay: string) => `
+        import {createEngine} from "@babylonjs/lite";
+        const engine=await createEngine(document.createElement("canvas"));
+        const hide=(duration?:number):number=>setTimeout(()=>{document.body.textContent="hidden";},${delay});
+        document.addEventListener("keydown",()=>{hide(document.body.childElementCount);});
+        console.log(engine!==undefined);`;
+    const known = compileSource(source("400"));
+    assert.ok(!known.manifest.features.includes("platform:workers"));
+    const computed = compileSource(source("Math.max(400,duration??2200)"));
+    assert.ok(computed.manifest.features.includes("platform:workers"));
+});
