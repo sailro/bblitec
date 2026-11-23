@@ -7,6 +7,7 @@ export type HandleKind =
     | "worker-mutation-observer"
     | "message-port"
     | "message-channel"
+    | "transferable"
     | AudioHandleKind
     | "engine"
     | "asset"

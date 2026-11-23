@@ -429,6 +429,11 @@ export function yieldsNewArray(
     expression: ts.Expression,
 ): boolean {
     const unwrapped = unwrapExpression(expression);
+    // A selection (`c ? a.map(f) : []`) yields one of its operands.
+    if (isOperandSelection(unwrapped))
+        return valueOperands(unwrapped).every((operand) =>
+            yieldsNewArray(checker, operand),
+        );
     return (
         yieldsFreshObject(checker, unwrapped) ||
         callsFreshArrayBuiltin(checker, unwrapped)

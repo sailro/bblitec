@@ -459,6 +459,8 @@ function expressionHandle(
         value.dataType?.kind === "event-target"
     )
         return lowerer.compileKnownValueForSink(value, dataType, unwrapped);
+    if (dataType.handle === "transferable" && transferableEntry(value))
+        return lowerer.compileKnownValueForSink(value, dataType, unwrapped);
     if (dataType.handle === "sprite-atlas" && value.kind === "record") {
         const atlas = lowerer.context.compileSpriteAtlasRecord(
             value,
@@ -595,12 +597,29 @@ function expressionTypedArray(
     return value.cpp;
 }
 
+/** A value a transfer list holds: a MessagePort, an OffscreenCanvas or an ArrayBuffer. */
+function transferableEntry(value: Value): boolean {
+    return (
+        value.kind === "message-port" ||
+        value.kind === "offscreen-canvas" ||
+        value.dataType?.kind === "arraybuffer"
+    );
+}
+
 function valueResource(
     dataType: DataType<"arraybuffer" | "dataview" | TypedArrayKind | "handle">,
     lowerer: DataSinkHost,
     value: Value,
     node: ts.Node,
 ): string | undefined {
+    if (
+        dataType.kind === "handle" &&
+        dataType.handle === "transferable" &&
+        transferableEntry(value)
+    )
+        return value.dataType?.kind === "arraybuffer"
+            ? `bbl::js::transferable_buffer(${value.cpp})`
+            : `std::shared_ptr<bbl::pal::Transferable>(${value.cpp})`;
     if (dataType.kind === "handle" && dataType.ownedEngine) {
         if (value.dataType && dataTypesEqual(value.dataType, dataType)) {
             const storage = representedStorage(value);

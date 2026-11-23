@@ -40,6 +40,9 @@ const handleCppTypes: Record<HandleKind, string> = {
     "worker-mutation-observer": "std::shared_ptr<bbl::pal::MutationObserver>",
     "message-port": "std::shared_ptr<bbl::pal::MessagePort>",
     "message-channel": "std::shared_ptr<bbl::pal::MessageChannel>",
+    // A transfer list's entry: a MessagePort, an OffscreenCanvas or an
+    // ArrayBuffer (`bbl::js::BufferTransfer`).
+    transferable: "std::shared_ptr<bbl::pal::Transferable>",
     mesh: "bbl::MeshHandle",
     "effect-wrapper": "bbl::EffectWrapperHandle",
     "animation-group": "bbl::AnimationGroupHandle",

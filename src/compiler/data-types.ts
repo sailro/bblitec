@@ -5009,6 +5009,8 @@ export class DataTypeRegistry {
         // dynamic value, as a stored value read back is.
         if (libraryName(type.aliasSymbol) === "IDBValidKey")
             return { kind: "json" };
+        if (libraryName(type.aliasSymbol) === "Transferable")
+            return { kind: "handle", handle: "transferable" };
         const readonlyTarget =
             libraryName(type.aliasSymbol) === "Readonly"
                 ? type.aliasTypeArguments?.[0]

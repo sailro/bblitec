@@ -117,9 +117,9 @@ test("message channels cross realms with transferred ports and buffers", (t) => 
 
 for (const [name, source, message] of [
     [
-        "runtime transfer list",
-        "const channel=new MessageChannel();const list:Transferable[]=[];channel.port1.postMessage(1,list);",
-        /Worker transfer lists currently require an explicit array/,
+        "absent run-time transfer list",
+        "const channel=new MessageChannel();const list:Transferable[]|undefined=undefined;channel.port1.postMessage(1,list);",
+        /A run-time transfer list must be present/,
     ],
     [
         "handler read",

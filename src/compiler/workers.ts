@@ -431,7 +431,8 @@ export function readWorkerEventProperty(
  * `postMessage(message, transfer?)` of a Worker, a worker global or a
  * MessagePort: the message's snapshot, then its transfer list, in source
  * order. A transfer list is an array literal of OffscreenCanvas, MessagePort
- * and ArrayBuffer values (`bbl::js::BufferTransfer` detaches a buffer).
+ * and ArrayBuffer values (`bbl::js::BufferTransfer` detaches a buffer), or a
+ * run-time `Transferable[]` of them.
  */
 function compileMessagePost(
     context: WorkerLoweringContext,
@@ -461,11 +462,28 @@ function compileMessagePost(
     const transfer = node.arguments[1];
     if (!transfer) return { snapshot, transfer: "" };
     const list = context.unwrap(transfer);
-    if (!ts.isArrayLiteralExpression(list))
-        return context.fail(
-            list,
-            "Worker transfer lists currently require an explicit array of supported transferable values.",
-        );
+    if (!ts.isArrayLiteralExpression(list)) {
+        // A run-time `Transferable[]`: its entries hold their transfer.
+        if (isNullable(context.checker.getTypeAtLocation(transfer)))
+            return context.fail(
+                transfer,
+                "A run-time transfer list must be present; pass `list ?? []`.",
+            );
+        const listName = context.allocateTemporaryCppName("transfer_list");
+        context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: listName,
+            initializer: `bbl::js::transfer_list(${context.dataLowerer.compileForSink(
+                transfer,
+                {
+                    kind: "vector",
+                    element: { kind: "handle", handle: "transferable" },
+                },
+            )})`,
+        });
+        return { snapshot, transfer: `, ${listName}` };
+    }
     const entries = list.elements.map((element) => {
         if (ts.isSpreadElement(element) || ts.isOmittedExpression(element))
             return context.fail(

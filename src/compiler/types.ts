@@ -1707,6 +1707,7 @@ export type ValueKind =
     | "offscreen-canvas"
     | "message-port"
     | "message-channel"
+    | "transferable"
     | "promise"
     | "animation-clip"
     | "animation-group"

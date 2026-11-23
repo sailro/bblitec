@@ -36,6 +36,7 @@ import {
     resolvedSymbol,
     nullishComparison,
     calledDeclaration,
+    calledFunction,
     namedMember,
     forwardedCallShape,
     type ForwardedCallShape,
@@ -1158,8 +1159,10 @@ export function callTarget(
         return declarationInDefaultLibrary(declaration)
             ? { kind: "library" }
             : { kind: "unknown" };
-    return isEffectFunction(declaration) && declaration.body
-        ? { kind: "bodies", checker, bodies: [declaration], engine: false }
+    // The authored function, also behind a `const` its type annotates.
+    const body = calledFunction(checker, call);
+    return isEffectFunction(body)
+        ? { kind: "bodies", checker, bodies: [body], engine: false }
         : { kind: "unknown" };
 }
 

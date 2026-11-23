@@ -496,14 +496,14 @@ template <typename T> T clone_read(pal::CloneReader& reader, pal::CloneId id) {
  */
 class BufferTransfer final : public pal::Transferable {
 public:
-    explicit BufferTransfer(ArrayBuffer buffer) : buffer_(std::move(buffer)) {
+    explicit BufferTransfer(ArrayBuffer buffer) : buffer_(std::move(buffer)) {}
+    /** Serialization asks first: a buffer no transfer detaches throws before any is serialized. */
+    [[nodiscard]] std::pair<const void*, pal::CloneIdentitySpace>
+    transfer_identity() const override {
         if (buffer_.shared())
             throw pal::DataCloneError("A SharedArrayBuffer cannot be transferred.");
         if (!buffer_.detachable())
             throw pal::DataCloneError("A borrowed native buffer cannot be transferred.");
-    }
-    [[nodiscard]] std::pair<const void*, pal::CloneIdentitySpace>
-    transfer_identity() const override {
         return {buffer_.identity(), pal::CloneIdentitySpace::buffer};
     }
     std::unique_ptr<pal::TransferredResource> transfer() override {
@@ -513,6 +513,21 @@ public:
 private:
     ArrayBuffer buffer_;
 };
+
+/** An ArrayBuffer held in a run-time transfer list (`Transferable[]`). */
+inline std::shared_ptr<pal::Transferable> transferable_buffer(ArrayBuffer buffer) {
+    return std::make_shared<BufferTransfer>(std::move(buffer));
+}
+
+/** A run-time transfer list's entries, as serialization takes them. */
+inline std::vector<pal::Transferable*>
+transfer_list(const Array<std::shared_ptr<pal::Transferable>>& list) {
+    std::vector<pal::Transferable*> entries;
+    entries.reserve(list.size());
+    for (const auto& entry : list)
+        entries.push_back(entry.get());
+    return entries;
+}
 
 template <typename T>
 pal::SerializedMessage serialize_message(const T& value,
