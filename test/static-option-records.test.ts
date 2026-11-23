@@ -318,3 +318,80 @@ test("reads a selected option record whose numbers a store copies", () => {
         /closes over 'scale', whose value generation does not know/,
     );
 });
+
+const composedParts = (beforeRead: string) => `
+    import { createBox, createEngine, createShaderMaterial, setShaderUniform, type ShaderMaterial } from "@babylonjs/lite";
+
+    interface Decl { name: string; type: "f32"; defaultValue: number }
+    interface Storage { name: string; type: string }
+    interface Composition { uniforms: Decl[]; storage: Storage[]; bind(material: ShaderMaterial): void }
+    const OPT_OUT: Composition = { uniforms: [], storage: [], bind: () => {} };
+    function composition(participates: boolean): Composition {
+        if (!participates) return OPT_OUT;
+        return {
+            uniforms: [{ name: "uFade", type: "f32", defaultValue: 0 }],
+            storage: [{ name: "members", type: "array<vec4<f32>>" }],
+            bind: (material) => setShaderUniform(material, "uFade", 0.5),
+        };
+    }
+    function make(name: string, fade: boolean): ShaderMaterial {
+        const parts = composition(fade);
+        ${beforeRead}
+        const material = createShaderMaterial({
+            name,
+            vertexSource: \`struct VertexOutput{@builtin(position) position:vec4<f32>,};
+@vertex fn mainVertex(input:VertexInput)->VertexOutput{var out:VertexOutput;out.position=shaderSystem.worldViewProjection*vec4<f32>(input.position,1.0);return out;}\`,
+            fragmentSource: \`@fragment fn mainFragment()->@location(0) vec4<f32>{return vec4<f32>(1.0);}\`,
+            attributes: ["position"],
+            uniforms: ["worldViewProjection", ...parts.uniforms],
+            storageBuffers: [...parts.storage],
+        });
+        parts.bind(material);
+        return material;
+    }
+
+    async function main() {
+        const engine = await createEngine({});
+        createBox(engine).material = make("faded", true);
+        createBox(engine).material = make("plain", false);
+    }
+`;
+
+test("reads a list member of the record a local helper's call returns", () => {
+    // The helper returns a module constant record in one arm and a fresh
+    // one in the other, so its records take native storage; the list is
+    // read from the arm the call's argument selects, before the method
+    // call through the record that follows the read.
+    const programs = compileSource(composedParts("")).manifest
+        .customShaderPrograms;
+    assert.deepEqual(
+        programs.map(({ name, uniforms, storageBuffers }) => [
+            name,
+            uniforms,
+            storageBuffers.map((buffer) => buffer.name),
+        ]),
+        [
+            ["faded", ["worldViewProjection", "uFade:f32"], ["members"]],
+            ["plain", ["worldViewProjection"], []],
+        ],
+    );
+    // A write through the record before the read changes the list, and so
+    // does one after it in a loop around it, before the next iteration's.
+    const extra = `parts.uniforms.push({ name: "uExtra", type: "f32", defaultValue: 1 });`;
+    for (const source of [
+        composedParts(extra),
+        composedParts("")
+            .replace(
+                "const material = createShaderMaterial({",
+                "let material!: ShaderMaterial;\n        for (let pass = 0; pass < 2; pass++) {\n        material = createShaderMaterial({",
+            )
+            .replace(
+                "        });\n        parts.bind(material);",
+                `        });\n        ${extra}\n        }\n        parts.bind(material);`,
+            ),
+    ])
+        assert.throws(
+            () => compileSource(source),
+            /Expected a static array literal/,
+        );
+});

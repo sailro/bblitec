@@ -1814,8 +1814,43 @@ export class StaticEvaluator {
         return written;
     }
 
-    private scanWritesThrough(declaration: ts.VariableDeclaration): boolean {
+    /**
+     * Whether anything may write through `declaration`'s object before
+     * `read`: a write that source order places earlier in the declaring
+     * function, one in a loop of that function enclosing the read (a later
+     * iteration reads after it), or one a function nested in it makes,
+     * which may run before. A write the read precedes cannot change what it
+     * reads.
+     */
+    public isWrittenThroughBefore(
+        declaration: ts.VariableDeclaration,
+        read: ts.Node,
+    ): boolean {
+        return this.scanWritesThrough(declaration, read);
+    }
+
+    private scanWritesThrough(
+        declaration: ts.VariableDeclaration,
+        before?: ts.Node,
+    ): boolean {
         if (!ts.isIdentifier(declaration.name)) return true;
+        const owner = ts.findAncestor(declaration, ts.isFunctionLike);
+        // The outermost loop of the declaring function enclosing the read.
+        let loop: ts.Node | undefined;
+        for (
+            let node = before?.parent;
+            node && node !== owner;
+            node = node.parent
+        )
+            if (ts.isIterationStatement(node, false)) loop = node;
+        const within = (node: ts.Node, ancestor: ts.Node): boolean =>
+            ts.findAncestor(node, (candidate) => candidate === ancestor) !==
+            undefined;
+        const reaches = (node: ts.Node): boolean =>
+            before === undefined ||
+            node.getStart() < before.getStart() ||
+            (loop !== undefined && within(node, loop)) ||
+            ts.findAncestor(node, ts.isFunctionLike) !== owner;
         // A scalar is copied wherever it goes: it holds no object to write.
         if (
             !typeCanCarryReference(
@@ -1849,18 +1884,19 @@ export class StaticEvaluator {
                 aliasingMember: (source, _leaf, scan) => holds(source, scan),
                 aliasingIteration: (source, _leaf, scan) => holds(source, scan),
                 mutates: (node, scan) =>
-                    writeSites(node).some(({ target }) =>
+                    reaches(node) &&
+                    (writeSites(node).some(({ target }) =>
                         throughAlias(target, scan),
                     ) ||
-                    (ts.isCallExpression(node) &&
-                        (throughAlias(node.expression, scan) ||
-                            (node.arguments.some(
-                                (argument) =>
-                                    scan.namesAlias(
-                                        unwrapExpression(argument),
-                                    ) || throughAlias(argument, scan),
-                            ) &&
-                                this.callReachesABody(node)))),
+                        (ts.isCallExpression(node) &&
+                            (throughAlias(node.expression, scan) ||
+                                (node.arguments.some(
+                                    (argument) =>
+                                        scan.namesAlias(
+                                            unwrapExpression(argument),
+                                        ) || throughAlias(argument, scan),
+                                ) &&
+                                    this.callReachesABody(node))))),
             },
         );
     }
