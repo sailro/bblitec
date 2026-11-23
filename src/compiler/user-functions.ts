@@ -2589,14 +2589,31 @@ export class UserFunctionLowerer {
                 pinArguments,
             );
         // Outside a probe a survey lowers the shared body where its
-        // statements recover: a refusal or a storage demand one meets is
-        // that statement's, not the whole call's.
+        // statements recover: a storage demand one meets is that
+        // statement's, not the whole call's. A refusal refuses the shared
+        // body, as in a strict compile: its lowering is dropped and the call
+        // lowers inline, where the statements that still refuse count.
         const recovering = survey !== undefined && !context.speculating;
         let ended = false;
         try {
-            const result = recovering
-                ? context.keptEmission(shared)
-                : context.probeEmission(shared);
+            if (recovering) {
+                let refused = false;
+                const result = context.keptEmission(
+                    () => {
+                        const kept = survey.withholdingRefusals(shared);
+                        refused = kept.refused;
+                        return kept.result;
+                    },
+                    (value) => value !== undefined && !refused,
+                );
+                if (refused) {
+                    survey.sharedBodyRefused(ir.declaration, true);
+                    return undefined;
+                }
+                ended = true;
+                return result;
+            }
+            const result = context.probeEmission(shared);
             ended = true;
             return result;
         } catch (error) {

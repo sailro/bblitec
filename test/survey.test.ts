@@ -105,6 +105,32 @@ test("a survey records every refusal it reaches and continues past each", () => 
     for (const refusal of report.refusals) assert.equal(refusal.occurrences, 1);
 });
 
+test("a shared body a statement refuses lowers inline, as a compile lowers it", () => {
+    // Shared, `css` is the body's parameter, whose text a stylesheet must
+    // know; a compile refuses the shared body and lowers each call inline,
+    // where it is the caller's literal. The survey reports what that meets.
+    const source = `
+    function installUiStyle(id: string, css: string): HTMLStyleElement {
+        let style = document.getElementById(id) as HTMLStyleElement | null;
+        if (!style) {
+            style = document.createElement("style");
+            style.id = id;
+            style.textContent = css;
+            document.head.appendChild(style);
+        }
+        return style;
+    }
+    installUiStyle("a", ".a { color: red; }");
+    installUiStyle("b", ".b { color: blue; }");
+    installUiStyle("c", ".c { color: green; }");`;
+    const fileName = resolve("survey-shared-inline.ts");
+    compileSource(source, { fileName });
+    for (const roots of [true, false]) {
+        const { report } = surveySource(source, { fileName }, { roots });
+        assert.equal(report.refusals.length, 0, listed(report));
+    }
+});
+
 test("an entry-only survey reports the entry's own refusals, without roots", () => {
     // `unused` is never called: only a root reaches its refusal.
     const source = `${refusing}

@@ -668,6 +668,8 @@ export class SurveyCollector {
     public readonly lowersRoots: boolean;
     /** @unjournaled Takes a storage demand into the storage the running attempt lowers with. */
     private apply: ((demand: StorageDemand) => boolean) | undefined;
+    /** @unjournaled The refusals a shared body's recovering lowering withholds (`withholdingRefusals`). */
+    private withheld: { refusals: number } | undefined;
 
     /**
      * `replayable`: the replays a compile applies before its next attempt
@@ -870,6 +872,27 @@ export class SurveyCollector {
      * body (`refused` notes one that could not): the next call lowers it
      * inline instead of probing it again.
      */
+    /**
+     * Runs `work`, a shared body's lowering with statement recovery, with
+     * the refusals its statements meet withheld from the census: a strict
+     * compile refuses such a body and lowers the call inline, where the
+     * statements that still refuse are recorded.
+     */
+    public withholdingRefusals<T>(work: () => T): {
+        result: T;
+        refused: boolean;
+    } {
+        const enclosing = this.withheld;
+        const withheld = { refusals: 0 };
+        this.withheld = withheld;
+        try {
+            const result = work();
+            return { result, refused: withheld.refusals > 0 };
+        } finally {
+            this.withheld = enclosing;
+        }
+    }
+
     public sharedBodyRefused(declaration: ts.Node, refused = false): boolean {
         const shared = this.current?.speculative.shared;
         if (!shared) return false;
@@ -1453,6 +1476,10 @@ export class SurveyCollector {
         statement: ts.Statement,
         error: CompileError,
     ): void {
+        if (this.withheld) {
+            this.withheld.refusals++;
+            return;
+        }
         const census = this.counted(attempt, checker, statement, error);
         if (census.rolledBack.has(statement)) return;
         census.rolledBack.add(statement);
