@@ -354,6 +354,12 @@ private:
     return decode_utf8_removing_bom(file_bytes(handle));
 }
 
+/** File.arrayBuffer(): a fresh buffer holding the snapshot's bytes, as read. */
+[[nodiscard]] inline ArrayBuffer file_array_buffer(const BrowserFileHandle& handle) {
+    const std::vector<std::uint8_t>& bytes = browser_file_record(handle).bytes;
+    return ArrayBuffer(std::vector<std::uint8_t>(bytes.begin(), bytes.end()));
+}
+
 [[nodiscard]] inline const BrowserFileRecord& browser_file_record(const Engine& engine,
                                                                   const BrowserFileHandle& handle) {
     const BrowserFileRecord* record = handle.get();

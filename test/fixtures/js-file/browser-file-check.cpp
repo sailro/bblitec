@@ -313,6 +313,13 @@ int main(int argc, char** argv) {
             });
         require(bbl::js::file_text(engine, marked) == "a\xef\xbf\xbd",
                 "File.text removes a byte order mark and replaces invalid UTF-8");
+        bbl::js::ArrayBuffer marked_bytes = bbl::js::file_array_buffer(marked);
+        require(std::string(reinterpret_cast<const char*>(marked_bytes.data()),
+                            marked_bytes.byte_length()) == bom_text,
+                "File.arrayBuffer holds every byte, the byte order mark included");
+        marked_bytes.data()[0] = 0u;
+        require(bbl::js::file_array_buffer(marked).data()[0] == 0xefu,
+                "each File.arrayBuffer read is a fresh buffer over the snapshot");
         const std::string utf16 = "\xff\xfe"
                                   "A";
         bbl::BrowserFileHandle wide;

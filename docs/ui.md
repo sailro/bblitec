@@ -122,6 +122,7 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
   `target` is inert; string `href` with `download` refuses.
 - Save dialogs publish only accepted selections. Single-file inputs only; FileList index 0.
 - Limits: 256 MiB live selection cap; drops count up to 4096 files and snapshot the first (64 MiB); Blob 64 MiB.
+- A File reads `name`, `size`, `text()` (UTF-8, BOM removed) and `arrayBuffer()` (its bytes).
 - FileReader supports `readAsText` only (BOM-detected, else UTF-8). File System Access pickers are absent.
 - iOS uses UIKit Files; other platforms SDL dialogs.
 - Window file dialogs run on the display thread; callbacks, selections and object URLs stay in the application realm.
