@@ -4123,13 +4123,43 @@ export class DataTypeRegistry {
                 this.documentRecords.has(this.structIdentity(demand.type))
             )
                 return;
-            if (type?.kind !== "struct")
+            if (type?.kind !== "struct") {
+                const shared = this.unsharedLayoutClass(demand.type);
+                if (shared) throw shared;
                 this.fail(
                     demand.node,
                     `Demanded record no longer has a native object representation: ${this.unrepresentedPart(demand.type, demand.node, true)}.`,
                 );
+            }
             this.markStoredObjectReferences(type);
         });
+    }
+
+    /**
+     * The demand sharing a class whose instances a demanded record's layout
+     * holds where no replay shares it yet, which leaves that field with no
+     * storage: storing an instance in the record shares the class, as a
+     * lowered store of one does (`requireSharedClass`).
+     */
+    private unsharedLayoutClass(
+        record: ts.Type,
+    ): SharedClassStorageRequired | undefined {
+        const seen = new Set<ts.Type>();
+        for (let current = record; !seen.has(current);) {
+            seen.add(current);
+            const unstored =
+                this.unstoredLayoutProperties.get(current) ??
+                this.unstoredLayoutProperties.get(
+                    this.checker.getNonNullableType(current),
+                );
+            if (!unstored || unstored.reason) return undefined;
+            for (const part of presentMembers(unstored.type)) {
+                const declaration = classInstanceDeclaration(part);
+                if (declaration) return this.sharedClassDemand(declaration);
+            }
+            current = unstored.type;
+        }
+        return undefined;
     }
 
     /** Map in the generic frames and storage mode a record was demanded in. */

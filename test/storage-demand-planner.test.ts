@@ -1383,3 +1383,57 @@ test("a document's record type takes the record types handed where it is declare
         source,
     );
 });
+
+test("a demanded record whose field holds an instance of a class no replay shares yet shares the class", async (t) => {
+    // The options literal's record is demanded before any store shares
+    // `Frame` (its instance arrives inside another record), so the record
+    // is mapped while `Frame` has no storage yet: the demand shares it,
+    // as a lowered store of an instance does, rather than refusing.
+    const source = `
+        interface Placement { readonly slot: number; readonly y: number }
+        interface Node3 { position: { y: number }; parent: object | null }
+        class Frame {
+          constructor(private readonly origin: number) {}
+          private readonly entries = new Map<number, number>();
+          private version = 0;
+          place(node: Pick<Node3, "position" | "parent">, placement: Placement): void {
+            this.entries.set(placement.slot, placement.y);
+            this.version++;
+            node.position.y = placement.y + this.origin;
+          }
+          count(): number { return this.entries.size * 10 + this.version; }
+        }
+        interface BatchOptions { name?: string; frame?: Frame; capacity?: number; tint?: [number, number, number]; drift?: number }
+        interface Batch { node: Node3; name: string; add(slot: number, y: number): void; count(): number }
+        function createBatch(opts: BatchOptions = {}): Batch {
+          const node: Node3 = { position: { y: 0 }, parent: null };
+          const frame = opts.frame;
+          return { node, name: \`\${opts.name ?? "batch"}:\${opts.capacity ?? 1}:\${opts.tint?.[0] ?? 0}\`, add: (slot, y) => frame?.place(node, { slot, y }), count: () => frame?.count() ?? -1 };
+        }
+        interface HostRender { frame: Frame }
+        interface TowerOptions { hostRender?: HostRender; tinted: boolean; drift: number }
+        function createTowers(opts: TowerOptions): Batch[] {
+          const nativeOptions = opts.hostRender ? { frame: opts.hostRender.frame } : {};
+          const rail = createBatch({ name: "rail", capacity: 8, drift: opts.drift, ...nativeOptions, ...(opts.tinted ? { tint: [1, 0.5, 0.25] as [number, number, number] } : {}) });
+          const belt = createBatch({ name: "belt", capacity: 4, drift: opts.drift, ...nativeOptions, ...(opts.tinted ? { tint: [0.5, 0.5, 0.5] as [number, number, number] } : {}) });
+          return [rail, belt];
+        }
+        const hosted = Date.now() > 0;
+        const batches = createTowers({ hostRender: hosted ? { frame: new Frame(0.5) } : undefined, tinted: Date.now() < 0, drift: 1 });
+        for (let index = 0; index < batches.length; index++) batches[index]!.add(index, 2);
+        if (batches[0]!.count() !== 22 || batches[1]!.count() !== 22) throw new Error("one shared frame");
+        if (batches[0]!.node.position.y !== 2.5 || batches[1]!.node.position.y !== 2.5) throw new Error("placed nodes");
+        if (batches[0]!.name !== "rail:8:0" || batches[1]!.name !== "belt:4:0") throw new Error("options");
+    `;
+    const lines: string[] = [];
+    compileSource(source, { compileProgress: (line) => lines.push(line) });
+    assert.ok(
+        lines.some((line) => /shared-class/.test(line)),
+        lines.join("\n"),
+    );
+    await runSelfCheckingProgram(
+        t,
+        "storage-demand-planner/demanded-record-unshared-class",
+        source,
+    );
+});
