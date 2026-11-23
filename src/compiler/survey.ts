@@ -1400,6 +1400,22 @@ export class SurveyCollector {
         this.declaredAt(attempt, checker, [name], census.site);
     }
 
+    /**
+     * A root's parameter holding empty storage, which no call passes: a
+     * refusal reached through it (a value generation must know, a member
+     * of the record a caller hands) cascades from the parameter.
+     */
+    public emptyBinding(checker: ts.TypeChecker, name: ts.Identifier): void {
+        const attempt = this.current;
+        if (!attempt) return;
+        const location = sourceLocation(name);
+        this.declaredAt(attempt, checker, [name], {
+            file: location.file.fileName,
+            line: location.line,
+            column: location.character,
+        });
+    }
+
     /** Each of `names` that has no refusal site yet takes `site`. */
     private declaredAt(
         attempt: Attempt,

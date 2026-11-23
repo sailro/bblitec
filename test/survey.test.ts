@@ -214,6 +214,31 @@ test("one survey pass meets every independent demand", () => {
     );
 });
 
+test("a root's refusal through a parameter it holds empty cascades from the parameter", () => {
+    // No call passes `base`: the root holds it as empty storage, so the
+    // URL generation must know is a caller's, not a gap of the function.
+    const { report } = surveySource(
+        `
+        import { setDracoBaseUrl } from "@babylonjs/lite";
+        function configure(base: { url: string }): void {
+            setDracoBaseUrl(base.url);
+        }
+        console.log(typeof configure);
+    `,
+        {
+            fileName: resolve("survey-root-parameter.ts"),
+            publicUrl: "https://cdn.example.invalid/",
+        },
+    );
+    const [refusal, ...others] = report.refusals;
+    assert.equal(others.length, 0, listed(report));
+    assert.ok(refusal, listed(report));
+    assert.match(refusal.message, /Asset decoder URLs must be known/);
+    assert.equal(refusal.rootOccurrences, refusal.occurrences);
+    assert.ok(refusal.cascade, listed(report));
+    assert.deepEqual([refusal.cascade.line, refusal.cascade.column], [3, 28]);
+});
+
 test("a binding a demand left without storage cascades from its declaration", () => {
     // The destructuring reads a record that demands document storage: the
     // capped survey rolls it back for the next pass, and `rest`, whose
