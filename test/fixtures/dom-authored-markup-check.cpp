@@ -102,6 +102,22 @@ int main() {
         send(up);
         assert(ui_element(engine, status).text.ends_with("K"));
         assert(ui_has_attribute(engine, keep, "disabled"));
+        // A markup label activates the control its `for` names.
+        const auto note = ui_get_element_by_id(engine, "note");
+        const auto label_rect =
+            ui_get_client_rect(engine, ui_get_element_by_id(engine, "note-label"));
+        SDL_Event press = down;
+        press.button.x = static_cast<float>(label_rect.left + 20);
+        press.button.y = static_cast<float>(label_rect.top + 10);
+        motion.motion.x = press.button.x;
+        motion.motion.y = press.button.y;
+        send(motion);
+        send(press);
+        SDL_Event release = press;
+        release.type = SDL_EVENT_MOUSE_BUTTON_UP;
+        release.button.down = false;
+        send(release);
+        assert(ui_active_element(engine) == note);
     }
     SDL_DestroyWindow(window);
     SDL_Quit();

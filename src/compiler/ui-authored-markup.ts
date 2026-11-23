@@ -49,7 +49,8 @@ const TAG_ATTRIBUTES: ReadonlyMap<string, ReadonlySet<string>> = new Map(
         h2: [],
         b: [],
         strong: [],
-        label: [],
+        // A label activates the control its `for` names, as `htmlFor` does.
+        label: ["for"],
         nav: [],
         // A link's activation navigates this browsing context only.
         a: ["href", "target"],

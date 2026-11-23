@@ -137,10 +137,10 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 - A stored string of fixed fragments (closed choices among them included) around one runtime text reads as the shape
   whose fragments it holds, the most specific first.
 - Static innerHTML with input/select/option/textarea builds retained elements, so its controls own state as created
-  ones do: div/span/p/h1/h2/b/strong/label/nav/a/form/output/button and reviewed control attributes. A flat template's
-  runtime operands are text there (escaped, as in projected markup); in attributes they refuse. A link targets this
-  browsing context only. A form holding a text or password input refuses (Enter submits it; native forms never
-  submit). Comments, other tags, textarea content and other dynamic markup with controls refuse; whitespace between
+  ones do: div/span/p/h1/h2/b/strong/label/nav/a/form/output/button and reviewed control attributes, a label's `for`
+  among them. A flat template's runtime operands are text there (escaped, as in projected markup); in attributes they
+  refuse. A link targets this browsing context only. A form holding a text or password input refuses (Enter submits
+  it; native forms never submit). Comments, other tags, textarea content and other dynamic markup with controls refuse; whitespace between
   options is not kept.
 - ARIA has no native accessibility bridge.
 - `createElementNS`: SVG svg/path/rect/circle/line/ellipse/polyline/polygon and text (its text or one textPath),
