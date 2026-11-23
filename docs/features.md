@@ -85,6 +85,9 @@ Rules:
   `Record<string, unknown>` are documents.
 - A record type a parsed document is stored as is a document, with every record type the program reads out of it
   (members, array elements, dictionary values).
+- A record type annotated on a dictionary (`const h: Partial<Record<K, T>> = Object.fromEntries(...)`) whose optional
+  keys the program reads as own (`Object.keys`/`values`, `in`) is a document: absent keys and key order are the
+  dictionary's.
 - A stored binding whose literal spells plain JSON that no layout holds (empty arrays, elements of mixed shapes: a
   JSON import of saved data) is a document.
 - Reached `Iterable<T>` parameters specialize to concrete collection storage, preserving iterator cursor identity.

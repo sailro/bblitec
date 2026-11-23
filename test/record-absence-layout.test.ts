@@ -80,6 +80,20 @@ check(
     `,
 );
 
+check(
+    "annotated-dictionary-views-read-own-keys-as-documents",
+    `
+    type Key='default'|'hunter'|'farmer';
+    const KEYS:readonly Key[]=['default','hunter','farmer'];
+    interface Herd{id:number}
+    type Herds=Partial<Record<Key,Herd>>;
+    const herds:Herds=Object.fromEntries(KEYS.filter(key=>key!=='hunter').map((key,i)=>[key,{id:i}]));
+    const ids=Object.values(herds).map(herd=>herd.id).join(),keys=Object.keys(herds).join();
+    if(ids!=='0,1'||keys!=='default,farmer')throw new Error('values and key order '+ids+' '+keys);
+    if('hunter' in herds||herds.hunter!==undefined||herds.farmer?.id!==1)throw new Error('absent and present entries');
+    `,
+);
+
 test("authored-optional-undefined-union-presence-remains-distinct", () => {
     for (const shape of [
         `{value:number}|{value?:undefined}`,

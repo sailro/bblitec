@@ -9770,7 +9770,8 @@ export class DataTypeRegistry {
                     written.node,
                 );
         }
-        if (presence === "ambiguous") this.refuseAmbiguousPresence(field, node);
+        if (presence === "ambiguous")
+            this.ambiguousPresenceRead(structName, field, node);
         // A field holding null beside absence, whose presence is read, keeps
         // the two apart in tagged storage: a library-declared field too (an
         // init dictionary's `relatedTarget`), the record's storage being the
@@ -9894,6 +9895,26 @@ export class DataTypeRegistry {
             .join(" || ");
     }
 
+    /**
+     * A presence read of a field whose shapes disagree on whether it is own.
+     * A dictionary view's optional slot is ambiguous by design: its records
+     * are stored as documents, whose own keys and their order are the open
+     * record's. Any other refuses.
+     */
+    private ambiguousPresenceRead(
+        structName: string,
+        field: DataStructField,
+        node: ts.Node,
+    ): never {
+        const source = this.nativeRecordSources.get(structName);
+        if (source && this.recordViews.has(this.structIdentity(source.type))) {
+            const demand = this.documentRecordDemand(structName);
+            if (demand && !demand.type.isUnion())
+                throw new NativeRecordStorageRequired(demand);
+        }
+        return this.refuseAmbiguousPresence(field, node);
+    }
+
     private refuseAmbiguousPresence(
         field: DataStructField,
         node: ts.Node,
@@ -9914,7 +9935,11 @@ export class DataTypeRegistry {
                     read.arms,
                 ) === "ambiguous"
             )
-                this.refuseAmbiguousPresence(read.field, read.node);
+                this.ambiguousPresenceRead(
+                    read.structName,
+                    read.field,
+                    read.node,
+                );
     }
 
     public isReferenceStruct(name: string): boolean {
