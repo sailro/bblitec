@@ -193,7 +193,8 @@ cancel })` is a program source; `new Response(stream, { status, statusText, head
 - `OffscreenCanvas.getContext("2d")`, null under a WebGPU context: `drawImage` of an ImageBitmap only. `convertToBlob`
   (`type`, `quality`) encodes its pixels on the native workers as `toDataURL` does ([UI](ui.md#canvas2d)). Other
   members and context attributes refuse.
-- `setDracoBaseUrl`/`setKtx2DecoderUrl` must be generation-known and precede compressed loads. KTX1 selects a
+- `setDracoBaseUrl`/`setKtx2DecoderUrl` must be generation-known and precede compressed loads; their arguments may
+  be the spread tuple of a closed call, which runs at generation. KTX1 selects a
   device-supported BC/ASTC candidate.
   `loadKtx2Texture2D` packages the pinned decoder's compressed mip chain for a known URL; each load selects its
   linear/sRGB format. Unsupported native formats refuse.

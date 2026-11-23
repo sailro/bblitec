@@ -60,6 +60,7 @@ import type { IntrinsicOptions } from "./intrinsic-options.js";
 import type {
     ExecutedArgument,
     ExecutedResult,
+    ExecutedTarget,
 } from "./executed-application-function.js";
 
 /** Convert an already evaluated return value, including adopted promise results. */
@@ -408,12 +409,12 @@ export interface LoweringServices {
         leaf?: (part: Value) => unknown,
     ): unknown;
     /**
-     * An application function run once at generation per declaration and
-     * arguments; its plain-data result. `pinnedStandIn` binds pinned imports
-     * the run may reach (`executeApplicationFunction`).
+     * An application function (or a closed call) run once at generation per
+     * declaration and arguments; its plain-data result. `pinnedStandIn`
+     * binds pinned imports the run may reach (`executeApplicationFunction`).
      */
     runGenerationFunction(
-        declaration: ts.FunctionLikeDeclaration,
+        declaration: ExecutedTarget,
         args: readonly (ExecutedArgument | undefined)[],
         label: string,
         pinnedStandIn?: (name: string) => unknown,
