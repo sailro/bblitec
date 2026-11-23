@@ -131,6 +131,26 @@ test("a shared body a statement refuses lowers inline, as a compile lowers it", 
     }
 });
 
+test("a later call of a text helper gives the text a compile gives", () => {
+    // The second call's result is a decoder URL generation must know: empty
+    // storage in its place would refuse what a compile lowers.
+    const source = `
+    import { setDracoBaseUrl } from "@babylonjs/lite";
+    const BASE = "/app/";
+    const appUrl = (path: string): string => BASE + path.replace(/^\\/+/, "");
+    console.log(appUrl(location.hash));
+    setDracoBaseUrl(appUrl("/decoders/draco/"));`;
+    const options = {
+        fileName: resolve("survey-repeated-text.ts"),
+        publicUrl: "https://cdn.example.invalid/",
+    };
+    compileSource(source, options);
+    for (const roots of [true, false]) {
+        const { report } = surveySource(source, options, { roots });
+        assert.equal(report.refusals.length, 0, listed(report));
+    }
+});
+
 test("an entry-only survey reports the entry's own refusals, without roots", () => {
     // `unused` is never called: only a root reaches its refusal.
     const source = `${refusing}

@@ -2280,6 +2280,7 @@ export class UserFunctionLowerer {
     private repeatedSurveyCall(
         context: UserFunctionContext,
         ir: UserFunctionIr,
+        argumentValues: readonly Value[],
         discardReturn = false,
         body?: CallbackInvocationOptions,
     ): Value | undefined {
@@ -2291,7 +2292,7 @@ export class UserFunctionLowerer {
             body
         )
             return undefined;
-        return this.emptyCallResult(context, ir, discardReturn);
+        return this.emptyCallResult(context, ir, argumentValues, discardReturn);
     }
 
     /**
@@ -2543,6 +2544,7 @@ export class UserFunctionLowerer {
                     this.deferredSurveyCall(
                         context,
                         ir,
+                        argumentValues,
                         ts.isExpressionStatement(call.parent),
                     ) ??
                     this.trySharedCall(context, ir, call, argumentValues) ??
@@ -2642,17 +2644,26 @@ export class UserFunctionLowerer {
     private deferredSurveyCall(
         context: UserFunctionContext,
         ir: UserFunctionIr,
+        argumentValues: readonly Value[],
         discardReturn: boolean,
     ): Value | undefined {
         const survey = context.speculating ? activeSurvey() : undefined;
         if (!survey || survey.lowers(ir.declaration)) return undefined;
-        return this.emptyCallResult(context, ir, discardReturn);
+        return this.emptyCallResult(context, ir, argumentValues, discardReturn);
     }
 
-    /** Empty storage of `ir`'s declared result; nothing for a discarded or void one. */
+    /**
+     * Empty storage of `ir`'s declared result; nothing for a discarded or
+     * void one. A scalar result of arguments generation knows lowers its
+     * call instead, unless its body already refused this attempt (that
+     * refusal counted once): such a call can give text or a number that a
+     * reader generation must know reads (a URL, a stylesheet, a key), and
+     * empty storage carries none of it.
+     */
     private emptyCallResult(
         context: UserFunctionContext,
         ir: UserFunctionIr,
+        argumentValues: readonly Value[],
         discardReturn: boolean,
     ): Value | undefined {
         const signature = this.checker.getSignatureFromDeclaration(
@@ -2664,6 +2675,20 @@ export class UserFunctionLowerer {
             return { kind: "void", cpp: "" };
         // A returned array keeps its storage, a readonly one too.
         const result = context.dataTypes.fromTsType(returned, ir.declaration);
+        if (
+            (result?.kind === "string" ||
+                result?.kind === "number" ||
+                result?.kind === "boolean" ||
+                result?.kind === "enum") &&
+            argumentValues.every(
+                (value) =>
+                    value.staticString !== undefined ||
+                    value.staticNumber !== undefined ||
+                    value.staticBoolean !== undefined,
+            ) &&
+            !activeSurvey()?.sharedBodyRefused(ir.declaration)
+        )
+            return undefined;
         return emptyStorage(
             context,
             result && context.dataTypes.ownReturnedArray(result),
@@ -2798,7 +2823,11 @@ export class UserFunctionLowerer {
             !returned ||
             (returnType && !context.dataTypes.carriesFunction(returnType))
         ) {
-            const repeated = this.repeatedSurveyCall(context, ir);
+            const repeated = this.repeatedSurveyCall(
+                context,
+                ir,
+                argumentValues,
+            );
             if (repeated) return repeated;
             const group = this.reachedRecursiveGroup(context, ir.declaration);
             let result = this.lowerRecursiveGroup(
@@ -3177,6 +3206,7 @@ export class UserFunctionLowerer {
                     this.deferredSurveyCall(
                         context,
                         ir,
+                        argumentValues,
                         ts.isExpressionStatement(call.parent),
                     ) ??
                     this.trySharedCall(context, ir, call, argumentValues) ??
@@ -6930,6 +6960,7 @@ export class UserFunctionLowerer {
         const repeated = this.repeatedSurveyCall(
             context,
             ir,
+            arguments_,
             discardReturn,
             body,
         );
