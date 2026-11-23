@@ -543,7 +543,8 @@ export function hasDynamicObjectSpread(
  * Only descent is handled here, because descent is what has no static type
  * to consult: `file.parts[0].s` is three reads over a document whose shape
  * the source has not proven yet. Everything the chain reaches is another
- * dynamic value, including an object's own `length` property.
+ * dynamic value, including an object's own `length` property, except a
+ * record that stays native (`documentMemberRead`).
  */
 export function compileJsonRead(
     context: JsonBridgeContext,
@@ -572,7 +573,11 @@ export function compileJsonRead(
             );
         return ts.isOptionalChain(unwrapped)
             ? context.dataLowerer.optionalAccess(owner, unwrapped, read)
-            : (context.dataLowerer.packagedPrimitive(unwrapped) ?? read(owner));
+            : (context.dataLowerer.packagedPrimitive(unwrapped) ??
+                  context.dataLowerer.documentMemberRead(
+                      read(owner),
+                      unwrapped,
+                  ));
     }
     if (ts.isElementAccessExpression(unwrapped)) {
         const owner = compileJsonRead(context, unwrapped.expression);
@@ -589,7 +594,7 @@ export function compileJsonRead(
             );
         return ts.isOptionalChain(unwrapped)
             ? context.dataLowerer.optionalAccess(owner, unwrapped, read)
-            : read(owner);
+            : context.dataLowerer.documentMemberRead(read(owner), unwrapped);
     }
     if (ts.isCallExpression(unwrapped)) {
         const parsed = compileJsonCall(context, unwrapped);

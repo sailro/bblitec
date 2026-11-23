@@ -70,6 +70,62 @@ function heldRecordTypes(
         .flatMap((index) => below(index.type));
 }
 
+/** Whether a type is an engine object's, which no document has a form for. */
+export type EngineObjectTest = (type: ts.Type) => boolean;
+
+/**
+ * @unjournaled `holdsEngineObject` answers, by program and record type: a
+ * function of the checked program.
+ */
+const engineHolders: ProgramAnswers<boolean> = new WeakMap();
+
+/**
+ * Whether values of the program's record type `record` hold an engine object
+ * (`isEngineObject`) in a property, in place or through the arrays, tuples,
+ * dictionaries and records it holds. No document has a form for one: such a
+ * record stays a native object, which a document holds by reference.
+ */
+export function holdsEngineObject(
+    checker: ts.TypeChecker,
+    program: ts.Program,
+    record: ts.Type,
+    isEngineObject: EngineObjectTest,
+): boolean {
+    return answered(engineHolders, program, record, () => {
+        const seen = new Set<ts.Type>();
+        const holds = (type: ts.Type, depth: number): boolean => {
+            const present = checker.getNonNullableType(type);
+            if (
+                depth > MAX_HELD_DEPTH ||
+                holdsOnly(present, PRIMITIVE_KINDS) ||
+                seen.has(present)
+            )
+                return false;
+            seen.add(present);
+            if ([present, ...intersectedParts(present)].some(isEngineObject))
+                return true;
+            if (present.isUnion())
+                return unionMembers(present).some((member) =>
+                    holds(member, depth + 1),
+                );
+            if (checker.isArrayType(present) || checker.isTupleType(present))
+                return checker
+                    .getTypeArguments(present as ts.TypeReference)
+                    .some((element) => holds(element, depth + 1));
+            if (isPlainRecord(checker, present))
+                return checker
+                    .getPropertiesOfType(present)
+                    .some((property) =>
+                        holds(checker.getTypeOfSymbol(property), depth + 1),
+                    );
+            return checker
+                .getIndexInfosOfType(present)
+                .some((index) => holds(index.type, depth + 1));
+        };
+        return holds(record, 0);
+    });
+}
+
 /**
  * The parts an intersection joins, none for any other type. A value of the
  * intersection is a value of each: it is a document where a part is.
@@ -191,6 +247,10 @@ const closures: ProgramAnswers<readonly ts.Type[]> = new WeakMap();
  *   first stored value was found. An intersection arrived where one of its
  *   parts did (`Save & { id: number }` over a parsed `Save`).
  *
+ * A record type holding an engine object (`holdsEngineObject`) is none of
+ * them, nor is what is read out of it: a document holds its values by
+ * reference, and a read of one is that native object.
+ *
  * A record type has one storage, so these types are stored as documents
  * with `record` rather than one compile attempt later each, when their
  * first value arrives.
@@ -199,13 +259,18 @@ export function documentReadClosure(
     checker: ts.TypeChecker,
     program: ts.Program,
     record: ts.Type,
+    isEngineObject: EngineObjectTest,
 ): readonly ts.Type[] {
     return answered(closures, program, record, () => {
-        const closure = new Set(heldDocuments(checker, program, record));
+        const native = (held: ts.Type): boolean =>
+            holdsEngineObject(checker, program, held, isEngineObject);
+        const closure = new Set(
+            heldDocuments(checker, program, record, native),
+        );
         const arrived = [record, ...intersectedParts(record)];
         for (const root of parsedRecords(checker, program)) {
-            if (root === record || closure.has(root)) continue;
-            const below = heldDocuments(checker, program, root);
+            if (root === record || closure.has(root) || native(root)) continue;
+            const below = heldDocuments(checker, program, root, native);
             if (!arrived.some((part) => part === root || below.has(part)))
                 continue;
             closure.add(root);
@@ -224,15 +289,17 @@ const documents: ProgramAnswers<ReadonlySet<ts.Type>> = new WeakMap();
 /**
  * The record types a document `record` hands its values to: those read
  * out of it (`readOut`), those any of them is copied into or handed as
- * (`copiedRecords`), and those read out of these.
+ * (`copiedRecords`), and those read out of these; none that stays
+ * `native`.
  */
 function heldDocuments(
     checker: ts.TypeChecker,
     program: ts.Program,
     record: ts.Type,
+    native: (record: ts.Type) => boolean,
 ): ReadonlySet<ts.Type> {
     return answered(documents, program, record, () => {
-        const found = new Set(readOut(checker, program, record));
+        const found = new Set(readOut(checker, program, record, native));
         const copies = copiedRecords(checker, program);
         for (let grown = true; grown;) {
             grown = false;
@@ -240,10 +307,11 @@ function heldDocuments(
                 if (!from.some((held) => held === record || found.has(held)))
                     continue;
                 for (const made of into) {
-                    if (made === record || found.has(made)) continue;
+                    if (made === record || found.has(made) || native(made))
+                        continue;
                     grown = true;
                     found.add(made);
-                    for (const held of readOut(checker, program, made))
+                    for (const held of readOut(checker, program, made, native))
                         if (held !== record) found.add(held);
                 }
             }
@@ -341,18 +409,23 @@ function readFrom(
  */
 const readOuts: ProgramAnswers<readonly ts.Type[]> = new WeakMap();
 
-/** The record types the program reads out of a `record`, and out of each of those. */
+/**
+ * The record types the program reads out of a `record`, and out of each of
+ * those; none that stays `native`, nor what is read out of one.
+ */
 function readOut(
     checker: ts.TypeChecker,
     program: ts.Program,
     record: ts.Type,
+    native: (record: ts.Type) => boolean,
 ): readonly ts.Type[] {
     return answered(readOuts, program, record, () => {
         const found = new Set<ts.Type>();
         const visit = (holder: ts.Type): void => {
             for (const part of unionMembers(holder))
                 for (const held of readFrom(checker, program, part)) {
-                    if (held === record || found.has(held)) continue;
+                    if (held === record || found.has(held) || native(held))
+                        continue;
                     found.add(held);
                     visit(held);
                 }

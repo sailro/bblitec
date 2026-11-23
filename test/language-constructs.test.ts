@@ -19927,6 +19927,75 @@ test("an object field holds a record whose fields hold meshes as that record", (
     );
 });
 
+// A document record (keys in two orders, enumerated) holding a record whose
+// parts hold meshes: that record stays native, held by reference, and a read
+// out of the document is that very record, so its mesh fields keep handles.
+test("a document record reads a held record whose parts hold meshes as that record", (t) => {
+    const { cpp } = compileSource(`
+        import { createBox, type EngineContext, type Mesh } from "@babylonjs/lite";
+        interface Part { mesh: Mesh; weight: number }
+        interface Model { parts: Part[]; count: number }
+        interface Holder { label: string; model: Model }
+        function inspect(engine: EngineContext): number {
+            const mesh = createBox(engine);
+            const parts: Part[] = [];
+            parts.push({ mesh, weight: 2 });
+            const model: Model = { parts, count: 0 };
+            const first: Holder = { label: "a", model };
+            const second: Holder = { model, label: "b" };
+            const holders = [first, second];
+            const orders = holders.map((holder) => Object.keys(holder).join());
+            if (orders.join(";") !== "label,model;model,label") throw new Error("key orders");
+            let weight = 0;
+            for (const holder of holders) {
+                holder.model.count++;
+                for (const part of holder.model.parts) {
+                    if (part.mesh !== mesh) throw new Error("mesh handle");
+                    weight += part.weight;
+                }
+            }
+            if (first.model !== second.model || model.count !== 2 || weight !== 4) throw new Error("held record");
+            return holders.length;
+        }
+        const inspections: Array<typeof inspect> = [inspect];
+    `);
+    assert.match(
+        cpp,
+        /\.read_property\("model"\)\.asserted_instance<bblscene::Model>\(\)/,
+    );
+    const entry =
+        /double (\w+)\(\[\[maybe_unused\]\] bblscene::(\w+)& \w+, \[\[maybe_unused\]\] bbl::StoredEngine \w+\);/.exec(
+            cpp,
+        );
+    assert.ok(entry, "inspection entry");
+    if (!native) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(
+        native,
+        "language-constructs/document-held-record-with-meshes",
+        `
+        #define main generated_main
+        ${cpp}
+        #undef main
+        #include <cassert>
+        namespace bbl {
+            MeshHandle create_box(Engine& engine, BoxOptions) {
+                engine.meshes.emplace_back();
+                return {0, 0};
+            }
+        }
+        int main() {
+            const bbl::js::RealmScope realm;
+            auto engine = std::make_shared<bbl::Engine>();
+            bblscene::${entry[2]} environment{};
+            assert(bblscene::${entry[1]}(environment, bbl::StoredEngine{engine}) == 2);
+        }
+    `,
+    );
+});
+
 check(
     "a-local-record-stored-as-a-closed-key-record-is-that-record",
     `

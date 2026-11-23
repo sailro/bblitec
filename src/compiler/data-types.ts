@@ -686,6 +686,11 @@ export function pinnedHandleKind(type: ts.Type): HandleKind | undefined {
     return pinnedHandle(type, false);
 }
 
+/** Whether `type` is one of the pin's engine object types (`pinnedHandleKind`). */
+export function isPinnedHandleType(type: ts.Type): boolean {
+    return pinnedHandleKind(type) !== undefined;
+}
+
 /**
  * The kinds of the engine objects the pinned package declares. The package
  * makes each as an object literal (or `Object.create` of one) and declares
@@ -2474,6 +2479,7 @@ export class DataTypeRegistry {
                             this.checker,
                             program,
                             demand.type,
+                            isPinnedHandleType,
                         ),
                     ])
                         this.documentRecords.add(this.structIdentity(record));
@@ -11999,6 +12005,19 @@ export class DataTypeRegistry {
             default:
                 return false;
         }
+    }
+
+    /**
+     * Whether a document holds records of struct `type` boxed, by reference:
+     * a class's instances, and records holding a native handle
+     * (`holdsNativeHandle`), which no document has a form for. A document
+     * read as one is the record it holds, asserted (`assertedInstance`).
+     */
+    public documentHoldsBoxed(type: DataType<"struct">): boolean {
+        return (
+            this.isClassStruct(type.name) ||
+            (this.isReferenceStruct(type.name) && this.holdsNativeHandle(type))
+        );
     }
 
     /**

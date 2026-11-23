@@ -232,10 +232,12 @@ import {
     type DataType,
     type TypedArrayKind,
     callMember,
+    isPinnedHandleType,
     isUiElementHandleType,
     soleArrayArmIndex,
     soleMemberIndex,
 } from "./data-types.js";
+import { holdsEngineObject } from "./document-read-closure.js";
 import {
     booleanValue,
     commonResourceValue,
@@ -6236,9 +6238,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             // A parsed document answers every property, because that is
             // what a document does: a key it does not carry reads as
             // `undefined` rather than failing here.
-            return this.leafValue(
-                `${owner.cpp}.read_property(${this.context.cppString(property)})`,
-                { kind: "json" },
+            return this.documentMemberRead(
+                this.leafValue(
+                    `${owner.cpp}.read_property(${this.context.cppString(property)})`,
+                    { kind: "json" },
+                ),
+                access,
             );
         }
         if (["blob", "file", "file-list"].includes(dataType.kind))
@@ -13099,6 +13104,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const compiled = compileDataValueSink(dataType, this, value, node);
         if (compiled !== undefined) return compiled;
         this.requireNumericSlot(value, dataType, node);
+        const boxed = this.documentBoxedRecord(value, dataType);
+        if (boxed) return boxed.cpp;
         if (isJsonValue(value)) this.requireDocumentRecord(dataType);
         if (dataType.kind === "enummap" && value.dataType?.kind === "struct") {
             this.requireRecordBinding(node);
@@ -13539,11 +13546,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     /**
      * A parsed document read as a plain-data record type keeps its own
      * fields and identity only as a document: the program is lowered again
-     * with every record of that type stored as one.
+     * with every record of that type stored as one. A record type documents
+     * hold boxed (`documentHoldsBoxed`) keeps its storage.
      */
     private requireDocumentRecord(dataType: DataType): void {
         const record = dataType.kind === "optional" ? dataType.inner : dataType;
-        if (record.kind !== "struct") return;
+        if (
+            record.kind !== "struct" ||
+            this.context.dataTypes.documentHoldsBoxed(record)
+        )
+            return;
         const demand = this.context.dataTypes.documentRecordDemand(record.name);
         if (demand) throw new NativeRecordStorageRequired(demand);
     }
@@ -13932,7 +13944,47 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             : undefined;
     }
 
-    /** The class instance a document holds; any other document throws TypeError. */
+    /**
+     * The record a dynamic value holds where `dataType` is a record type
+     * documents hold boxed (`documentHoldsBoxed`): a class's instance, or a
+     * record holding a native handle. Any other value throws TypeError
+     * (docs/fidelity.md).
+     */
+    private documentBoxedRecord(
+        value: Value,
+        dataType: DataType,
+    ): Value | undefined {
+        return isJsonValue(value) &&
+            dataType.kind === "struct" &&
+            this.context.dataTypes.documentHoldsBoxed(dataType)
+            ? this.assertedInstance(value, dataType)
+            : undefined;
+    }
+
+    /**
+     * A member `read` out of a document whose type is a record type holding
+     * an engine object (`holdsEngineObject`), which stays native: the record
+     * the document holds boxed. A read that may be absent stays the
+     * document's value until narrowed.
+     */
+    public documentMemberRead(read: Value, access: ts.Expression): Value {
+        const checker = this.context.checker;
+        const type = checker.getTypeAtLocation(access);
+        if (
+            checker.getNonNullableType(type) !== type ||
+            !holdsEngineObject(
+                checker,
+                this.context.program,
+                type,
+                isPinnedHandleType,
+            )
+        )
+            return read;
+        const stored = this.context.dataTypes.fromStoredTsType(type, access);
+        return (stored && this.documentBoxedRecord(read, stored)) ?? read;
+    }
+
+    /** The record a document holds boxed; any other document throws TypeError. */
     public assertedInstance(value: Value, dataType: DataType<"struct">): Value {
         return {
             kind: "data",
@@ -14029,14 +14081,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 freshData: true,
             };
         this.requireNumericSlot(value, dataType, expression);
-        // A dynamic value asserted to a class's type is the instance it
-        // holds; any other value throws TypeError (docs/fidelity.md).
-        if (
-            isJsonValue(value) &&
-            dataType.kind === "struct" &&
-            this.context.dataTypes.isClassStruct(dataType.name)
-        )
-            return this.assertedInstance(value, dataType);
+        const boxed = this.documentBoxedRecord(value, dataType);
+        if (boxed) return boxed;
         // A parsed array is stored as the array sink stores it: parsed
         // records stay documents, every other element converts.
         if (isJsonValue(value) && dataType.kind === "vector")
