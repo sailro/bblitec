@@ -741,6 +741,34 @@ test("a survey lowers every function the program never reached as a root", () =>
     assert.equal(report.program.attempted, report.program.statements);
 });
 
+test("a repeated call's empty result is the event its body constructs", () => {
+    // The second interlock's call of `keyupFor` takes empty storage of its
+    // result: the event the body constructs (an owned one, which dispatch
+    // takes), not the borrowed event its declared `Event` would be.
+    const { report } = surveySource(
+        `
+        const released = new WeakSet<Event>();
+        function keyupFor(key: string): Event {
+            const event = new KeyboardEvent("keyup", { key, bubbles: true });
+            released.add(event);
+            return event;
+        }
+        function createInterlock(target: EventTarget) {
+            let held = "";
+            target.addEventListener("keydown", (event) => { held = (event as KeyboardEvent).key; });
+            return {
+                release(): void { if (held) target.dispatchEvent(keyupFor(held)); },
+            };
+        }
+        const first = createInterlock(window);
+        const second = createInterlock(document);
+        window.addEventListener("pointerdown", () => { first.release(); second.release(); });
+    `,
+        { fileName: resolve("survey-repeated-event.ts") },
+    );
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
 test("a root's runtime query state leaves the deployment's folds to the entry", () => {
     // The empty deployment query folds `query.has("x")` away, so only a
     // root lowers `lab`. The `strip` root mutates a bag it cannot tell from

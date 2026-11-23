@@ -2654,7 +2654,8 @@ export class UserFunctionLowerer {
     }
 
     /**
-     * Empty storage of `ir`'s declared result; nothing for a discarded or
+     * Empty storage of `ir`'s declared result, an event the body constructs
+     * being the event it owns (`ownedEventResult`); nothing for a discarded or
      * void one. A scalar result of arguments generation knows lowers its
      * call instead, unless its body already refused this attempt (that
      * refusal counted once): such a call can give text or a number that a
@@ -2675,7 +2676,10 @@ export class UserFunctionLowerer {
         if (discardReturn || !returned || isVoid(returned))
             return { kind: "void", cpp: "" };
         // A returned array keeps its storage, a readonly one too.
-        const result = context.dataTypes.fromTsType(returned, ir.declaration);
+        const result = this.ownedEventResult(
+            context.dataTypes.fromTsType(returned, ir.declaration),
+            ir.declaration,
+        );
         if (
             (result?.kind === "string" ||
                 result?.kind === "number" ||
@@ -2697,22 +2701,33 @@ export class UserFunctionLowerer {
         );
     }
 
+    /**
+     * `mapped`, the storage of a function's declared result, unless the
+     * function returns only events it constructed: it returns the event it
+     * owns, whatever DOM event interface declares its result.
+     */
+    private ownedEventResult(
+        mapped: DataType | undefined,
+        node: ts.Node,
+    ): DataType | undefined {
+        return mapped?.kind === "borrowed-platform-event" &&
+            ts.isFunctionLike(node) &&
+            returnsOnlyConstructedEvents(node, this.checker, (expression) =>
+                libraryGlobal(this.checker, expression),
+            )
+            ? { kind: "handle", handle: "dom-event" }
+            : mapped;
+    }
+
     private sharedReturnType(
         context: UserFunctionContext,
         type: ts.Type,
         node: ts.Node,
     ): DataType | undefined {
-        const mapped = context.dataTypes.fromSharedReturnType(type, node);
-        // A function returning only events it constructed returns the event
-        // it owns, whatever DOM event interface declares its result.
-        if (
-            mapped?.kind === "borrowed-platform-event" &&
-            ts.isFunctionLike(node) &&
-            returnsOnlyConstructedEvents(node, this.checker, (expression) =>
-                libraryGlobal(this.checker, expression),
-            )
-        )
-            return { kind: "handle", handle: "dom-event" };
+        const mapped = this.ownedEventResult(
+            context.dataTypes.fromSharedReturnType(type, node),
+            node,
+        );
         return mapped?.kind === "struct" &&
             sourceTypeHasObservedIdentity(
                 this.checker,
