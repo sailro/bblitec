@@ -1149,14 +1149,11 @@ export class SurveyCollector {
                     // What it declares is the next pass's: the empty
                     // storage below stands in for it, so a refusal reached
                     // through one of its names is not a gap of its own.
-                    for (const name of statementDeclaredNames(statement)) {
-                        const location = sourceLocation(name);
-                        this.declaredAt(attempt, context.checker, [name], {
-                            file: location.file.fileName,
-                            line: location.line,
-                            column: location.character,
-                        });
-                    }
+                    this.declaredAtNames(
+                        attempt,
+                        context.checker,
+                        statementDeclaredNames(statement),
+                    );
                     if (
                         attempt.root &&
                         applied === false &&
@@ -1245,7 +1242,8 @@ export class SurveyCollector {
      * A rolled-back compound statement's own statements, which its rollback
      * left unlowered: each is lowered on its own, the names its header binds
      * (a loop's variables, a catch variable) holding empty storage, counted
-     * with the roots as context the survey rebuilt.
+     * with the roots as context the survey rebuilt. A refusal through one of
+     * those names cascades from it, whether or not its type has empty storage.
      */
     private lowerHeld(
         context: StatementContext,
@@ -1265,6 +1263,7 @@ export class SurveyCollector {
                 ),
         );
         if (unlowered.length === 0) return;
+        this.declaredAtNames(attempt, context.checker, held.names);
         this.inRoots(() => {
             for (const name of held.names) context.bindEmptyStorage(name);
             for (const nested of unlowered) lowerNested(nested);
@@ -1406,14 +1405,23 @@ export class SurveyCollector {
      * of the record a caller hands) cascades from the parameter.
      */
     public emptyBinding(checker: ts.TypeChecker, name: ts.Identifier): void {
-        const attempt = this.current;
-        if (!attempt) return;
-        const location = sourceLocation(name);
-        this.declaredAt(attempt, checker, [name], {
-            file: location.file.fileName,
-            line: location.line,
-            column: location.character,
-        });
+        if (this.current) this.declaredAtNames(this.current, checker, [name]);
+    }
+
+    /** Each of `names` that has no refusal site yet takes the name's own. */
+    private declaredAtNames(
+        attempt: Attempt,
+        checker: ts.TypeChecker,
+        names: Iterable<ts.Identifier>,
+    ): void {
+        for (const name of names) {
+            const location = sourceLocation(name);
+            this.declaredAt(attempt, checker, [name], {
+                file: location.file.fileName,
+                line: location.line,
+                column: location.character,
+            });
+        }
     }
 
     /** Each of `names` that has no refusal site yet takes `site`. */

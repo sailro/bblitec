@@ -239,6 +239,35 @@ test("a root's refusal through a parameter it holds empty cascades from the para
     assert.deepEqual([refusal.cascade.line, refusal.cascade.column], [3, 28]);
 });
 
+test("a read of a refused loop's binding cascades from the loop's refusal", () => {
+    // The iterable refuses through the root's empty `identity`: the body's
+    // reads of `reference` are that refusal's, not gaps of their own.
+    const { report } = surveySource(
+        `
+        function references(identity: { kin?: unknown }): unknown[] {
+            return [...(Array.isArray(identity.kin) ? identity.kin : [])];
+        }
+        function reserved(items: { lc?: { kin?: unknown } }[]): number {
+            const ids = new Set<number>();
+            for (const item of items) {
+                if (!item.lc) continue;
+                for (const reference of references(item.lc)) {
+                    if (typeof reference === "number" && !ids.has(reference)) ids.add(reference);
+                }
+            }
+            return ids.size;
+        }
+        console.log(typeof reserved);
+    `,
+        { fileName: resolve("survey-loop-cascade.ts") },
+    );
+    const reads = report.refusals.filter((refusal) =>
+        /^Unknown or unsupported variable 'reference'\./.test(refusal.message),
+    );
+    assert.ok(reads.length > 0, listed(report));
+    for (const read of reads) assert.ok(read.cascade, listed(report));
+});
+
 test("a binding a demand left without storage cascades from its declaration", () => {
     // The destructuring reads a record that demands document storage: the
     // capped survey rolls it back for the next pass, and `rest`, whose
