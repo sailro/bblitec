@@ -89,14 +89,12 @@ class EphemeronGraph {
                void* graph) {
                 auto& self = *static_cast<EphemeronGraph*>(graph);
                 WeakEdges entry{identity, nullptr, {}, owner, erase};
-                auto* previous = std::exchange(self.values_, &entry.values);
-                try {
-                    visit(value, self.visitor());
-                } catch (...) {
-                    self.values_ = previous;
-                    throw;
-                }
-                self.values_ = previous;
+                struct RestoreValues {
+                    std::vector<Node*>*& target;
+                    std::vector<Node*>* previous;
+                    ~RestoreValues() { target = previous; }
+                } restore{self.values_, std::exchange(self.values_, &entry.values)};
+                visit(value, self.visitor());
                 self.edges_.at(self.current_).weak.push_back(std::move(entry));
             }};
         return {shared_,

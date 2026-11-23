@@ -15,9 +15,7 @@ import {
 } from "./capture-suite-reference.js";
 import type { RenderItemSpecialization } from "./asset-specializer.js";
 import {
-    applicationScenes,
     isRegisteredScene,
-    resolveScene,
     sceneReferencePage,
     type SceneDefinition,
     type SceneParityDefinition,
@@ -627,8 +625,7 @@ export function summarizeMemoryProfile(
         (requestedFrames !== undefined &&
             last.frame < requestedFrames - memoryProfileFrames) ||
         samples.some(
-            (sample, index) =>
-                index > 0 && sample.frame <= samples[index - 1]!.frame,
+            (sample, index) => sample.frame !== index * memoryProfileFrames,
         )
     )
         return undefined;
@@ -728,11 +725,10 @@ export function formatMemorySummary(
  * `--replay-file` hands the run another tape (`--replay -` idles).
  */
 export function runMemoryReport(
-    idOrSource: string,
+    selected: readonly SceneDefinition[],
     memoryArguments: MemoryArguments,
+    outputDirectory = artifactDirectory("memory"),
 ): void {
-    const selected =
-        idOrSource === "all" ? applicationScenes : [resolveScene(idOrSource)];
     const backend = resolveBackend(memoryArguments.backend, "memory");
     let failures = 0;
     let unmeasured = 0;
@@ -744,10 +740,8 @@ export function runMemoryReport(
         const generatedDirectory = resolve(scene.output);
         verifyDeployedPayload(executable, generatedDirectory);
         const stampPath = resolve(
-            artifactDirectory(
-                "memory",
-                `${scene.id}-${backendFileToken(backend)}.build-stamp`,
-            ),
+            outputDirectory,
+            `${scene.id}-${backendFileToken(backend)}.build-stamp`,
         );
         mkdirSync(resolve(stampPath, ".."), { recursive: true });
         rmSync(stampPath, { force: true });
@@ -780,7 +774,11 @@ export function runMemoryReport(
                     ? { BBLITE_INPUT_REPLAY: replay }
                     : {}),
             },
-            { dropVariables: ["BBLITE_GPU_BACKEND"], captureStderr: true },
+            {
+                dropVariables: ["BBLITE_GPU_BACKEND"],
+                captureStderr: true,
+                timeoutMs: 600_000,
+            },
         );
         verifyBuildIdentity(executable, generatedDirectory, stampPath);
         const samples = parseMemoryProfile(stderr);
@@ -853,7 +851,7 @@ export function runMemoryReport(
     }
     if (failures > 0 || unmeasured > 0) {
         throw new Error(
-            `memory: ${failures} run(s) failed the gate; ${unmeasured} unmeasured run(s). See artifacts/memory/.`,
+            `memory: ${failures} run(s) failed the gate; ${unmeasured} unmeasured run(s). See ${outputDirectory}.`,
         );
     }
 }

@@ -1,5 +1,111 @@
+import ts from "typescript";
+import { soleBindingName } from "../compiler/syntax.js";
+import { PinnedNumericLowerer } from "./pinned-numeric-lowerer.js";
 import type { LoweringContext } from "./context.js";
 import { GPS_PASS } from "./splat-stream-library.js";
+
+/** The predicate of the pin's task search and the decision on that task. The native
+ * scene has one representable pass; a device signature is its identity, not a name. */
+export function gpsPassPolicy(context: LoweringContext): string {
+    const { file } = context.functionDeclaration(GPS_PASS, "gpsRenderTask");
+    const find = context.returnedExpression(GPS_PASS, "gpsRenderTask");
+    if (
+        !ts.isCallExpression(find) ||
+        find.arguments.length !== 1 ||
+        !context.expressionMatchesShape(
+            find.expression,
+            "scene._frameGraph?._tasks.find",
+        )
+    )
+        return context.contractError(
+            find,
+            "Expected a search of the scene's tasks.",
+        );
+    const predicate = find.arguments[0]!;
+    if (
+        !ts.isArrowFunction(predicate) ||
+        ts.isBlock(predicate.body) ||
+        predicate.parameters.length !== 1 ||
+        soleBindingName(predicate.parameters[0]!.name) !== "task"
+    )
+        return context.contractError(
+            predicate,
+            "Expected a task selection predicate.",
+        );
+    const lowerer = new PinnedNumericLowerer(file, {
+        bindings: new Map([
+            ["task._targetSignature", { type: "opaque", cpp: "candidate" }],
+            ["signature", { type: "opaque", cpp: "signature" }],
+        ]),
+        calls: new Map(),
+        expression(node) {
+            if (
+                context.expressionMatchesShape(
+                    node,
+                    "task?._targetSignature._depthStencilFormat",
+                )
+            )
+                return "(task && task->depth_stencil_format.has_value())";
+            if (
+                context.expressionMatchesShape(
+                    node,
+                    "owners?.get(scene)?.tasks.has(task)",
+                )
+            )
+                return "(task && !scene->pass_controllers.empty())";
+            if (
+                context.expressionMatchesShape(
+                    node,
+                    '"_targetSignature" in task',
+                )
+            )
+                return "true";
+            return undefined;
+        },
+    });
+    const selected = lowerer.expression(predicate.body);
+    const defers = context.functionDeclaration(
+        GPS_PASS,
+        "gpsDefersDraw",
+    ).declaration;
+    const statements = defers.body?.statements;
+    if (
+        statements?.length !== 2 ||
+        !ts.isVariableStatement(statements[0]!) ||
+        !ts.isReturnStatement(statements[1]!) ||
+        !statements[1].expression
+    )
+        return context.contractError(
+            defers,
+            "Expected gpsDefersDraw to decide on the selected task.",
+        );
+    context.assertExpressionShape(
+        context.variableInitializer(defers, "task"),
+        "gpsRenderTask(scene, signature)",
+        "GPS task lookup",
+    );
+    return `#pragma once
+#include <bblite/library_runtime.hpp>
+namespace bbl::library {
+// ${context.provenance(GPS_PASS, "gpsRenderTask")}
+[[nodiscard]] inline const GpuRenderTargetSignature* gps_selected_task(const LibraryScene& scene, const LibraryTargetSignature& signature) {
+    const auto& candidate = scene->pausable_pass;
+    return candidate && (${selected}) ? candidate.get() : nullptr;
+}
+[[nodiscard]] inline js::Nullable<RenderTaskView> gps_render_task(const LibraryScene& scene, const LibraryTargetSignature& signature) {
+    if (gps_selected_task(scene, signature)) return scene_pass_view(scene, scene->pausable_pass);
+    return std::nullopt;
+}
+// ${context.provenance(GPS_PASS, "gpsDefersDraw")}
+[[nodiscard]] inline bool gps_defers_draw(const LibraryScene& scene, const LibraryTargetSignature& signature) {
+    if (!scene->pass_controllers.empty() && signature && signature->depth_stencil_format && scene->pausable_pass != signature)
+        throw std::runtime_error("Pausing a render task's pass is not lowered.");
+    const auto* task = gps_selected_task(scene, signature);
+    return ${lowerer.expression(statements[1].expression)};
+}
+} // namespace bbl::library
+`;
+}
 
 /**
  * Full AST contracts for gps-pass.ts, which the point renderer's pass
@@ -20,23 +126,6 @@ export function assertGpsPassContracts(context: LoweringContext): void {
             source,
             `${GPS_PASS}#${name} point renderer pass contract`,
         );
-    check(
-        "gpsRenderTask",
-        `
-export function gpsRenderTask(scene: SceneContext, signature: RenderTargetSignature): RenderTask | undefined {
-    return scene._frameGraph?._tasks.find((task): task is RenderTask => "_targetSignature" in task && task._targetSignature === signature);
-}
-`,
-    );
-    check(
-        "gpsDefersDraw",
-        `
-export function gpsDefersDraw(scene: SceneContext, signature: RenderTargetSignature): boolean {
-    const task = gpsRenderTask(scene, signature);
-    return !!task?._targetSignature._depthStencilFormat && !!owners?.get(scene)?.tasks.has(task);
-}
-`,
-    );
     check(
         "gpsRefreshPasses",
         `

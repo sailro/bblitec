@@ -188,6 +188,17 @@ test("source IBL activation and selected-scene guards decide whether resources e
     );
 });
 
+test("BRDF texture packaging consumes the pinned dispatch, not an assumed workgroup count", async () => {
+    const { document, bin } = fixture();
+    const context = doctoredContext(
+        assemblyModule,
+        "pass.dispatchWorkgroups(Math.ceil(size / 8), Math.ceil(size / 8));",
+        "pass.dispatchWorkgroups(Math.ceil(size / 8) + 1, Math.ceil(size / 8));",
+    );
+    const plan = await gltfMeshPlan(document, bin, context);
+    assert.equal(plan.ibl.textures[0]?.brdfWidth, 256);
+});
+
 test("source image order and cube destination layers drive native face order", async () => {
     const first = fixture();
     const reversed = await packageGltfMeshPlan(

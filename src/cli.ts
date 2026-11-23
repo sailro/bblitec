@@ -111,10 +111,6 @@ import {
     sceneTransmission,
     type ActivationPlan,
 } from "./asset-feature-join.js";
-import {
-    reachedDiffuseUv2,
-    reachedStandardLightLists,
-} from "./babylon-asset-features.js";
 import { pinnedFeaturesCarrySkeleton } from "./pinned-mesh-features.js";
 import { DEFORMATION_BONE_SLOTS } from "./shader-builtins-standard.js";
 import { composeScenePipeline } from "./compose-pipeline.js";
@@ -1009,9 +1005,6 @@ async function main(): Promise<void> {
     if (specializationFeatures.eightInfluenceSkinning) {
         // The pinned loader reads the second influence pair and skins eight
         // influences (MSH_HAS_SKELETON_8); the generated loader reads four.
-        // The divergence is intentional and bounded — the second pair
-        // carries the small weight tail — so it is recorded here instead of
-        // refused, per the repository's adaptation policy.
         result.manifest.adaptations.push({
             id: "four-influence-skinning",
             category: "rendering",
@@ -1616,11 +1609,7 @@ async function main(): Promise<void> {
         pureSpriteVertex: result.manifest.pureSpriteVertex,
         plainSpriteLayer: result.manifest.plainSpriteLayer,
         plainBillboardSystem: result.manifest.plainBillboardSystem,
-        standardLightLists: reachedStandardLightLists(assetJoin.babylonLights),
-        standardDiffuseUv2: reachedDiffuseUv2(
-            outputPath,
-            result.manifest.assets,
-        ),
+        standardLightLists: assetJoin.standardLightLists,
         animationPointer: specializationFeatures.animationPointer,
         animationPointerMaterials:
             specializationFeatures.animationPointerMaterials,

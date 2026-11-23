@@ -12,6 +12,7 @@ import {
 import { optionalNativeFixtureTools } from "./native-fixture.js";
 import {
     compileLibraryShaders,
+    computeRoleShaders,
     runWebGpuFixture,
 } from "./webgpu-subset-fixture.js";
 
@@ -74,6 +75,7 @@ async function runSdlStream(): Promise<Map<string, string> | undefined> {
         shaders: await compileLibraryShaders(
             join(output, "root"),
             SPLAT_STREAM_SHADER_MODULES,
+            computeRoleShaders,
         ),
     });
     return sdlResult;
@@ -86,6 +88,10 @@ async function runSdlStream(): Promise<Map<string, string> | undefined> {
 function assertStreamChecks(lines: Map<string, string>, backend: string): void {
     assert.equal(lines.get(backend), "ok");
     assert.equal(lines.get("mapping"), "ok");
+    assert.equal(lines.get("authored"), "41 73 109 0 0 0");
+    assert.equal(lines.get("builtinOnly"), "0 0 0 2 3 5");
+    assert.equal(lines.get("both"), "41 73 109 2 3 5");
+    assert.equal(lines.get("other"), "41 73 109 0 0 0");
     assert.equal(lines.get("limits"), "268435456 256640000 65535");
     assert.match(
         lines.get("sort") ?? "",

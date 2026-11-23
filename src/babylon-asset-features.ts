@@ -1,91 +1,73 @@
-// The `.babylon` asset scans generation keys on.
-//
-// Each function answers one question about the materialized `.babylon`
-// documents in a scene's output tree — how many light slots, which
-// texture selections, which per-light mesh lists — by reading the assets
-// on disk, which are materialized before any emitter runs. Moved here
-// from `cli.ts` as text motion (the monolith-remainder audit item); the
-// bodies are the CLI's own, unchanged.
-import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import type { CompileAsset } from "./compiler.js";
+import { readFileSync } from "node:fs";
+import {
+    asRecords,
+    isRecord,
+    jsonValue,
+    type JsonRecord,
+} from "./json-fields.js";
+import { pinnedBabylonLightFacts } from "./pinned-babylon-materials.js";
 
-/**
- * How many Standard light slots the scene's materialized `.babylon` assets
- * ask for. The pinned template sizes its light array at generation time from
- * `MAX_LIGHTS`; native unrolls one slot per light instead, and the count is
- * knowable here because the loader only accepts point lights (`type: 0`) and
- * the asset is on disk before the emitters run.
- */
-export interface BabylonLight {
-    type?: number;
-    includedOnlyMeshesIds?: unknown[];
-    excludedMeshesIds?: unknown[];
+export interface BabylonCompositionAsset {
+    materials: readonly unknown[];
+    textureModes: readonly boolean[];
+    renderableCount: number;
 }
 
-export function babylonLights(
-    outputPath: string,
-    assets: CompileAsset[],
-): BabylonLight[] {
-    const result: BabylonLight[] = [];
-    for (const asset of assets) {
-        if (asset.kind !== "babylon") {
-            continue;
-        }
-        const materialized = resolve(outputPath, "assets", asset.output);
-        if (!existsSync(materialized)) {
-            continue;
-        }
-        const document = JSON.parse(readFileSync(materialized, "utf8")) as {
-            lights?: BabylonLight[];
-        };
-        result.push(...(document.lights ?? []));
-    }
-    return result;
+/** Project material and light inputs once; do not retain the packaged vertex arrays. */
+export async function readBabylonAsset(
+    path: string,
+    textureModes: readonly boolean[],
+) {
+    const { lights, composition } = readComposition(path, textureModes);
+    return { ...(await pinnedBabylonLightFacts(lights)), composition };
 }
 
-/**
- * Whether any reached `.babylon` material authors its diffuse texture
- * against the second UV set. The specular and ambient slots always carried
- * that selection; a scene needs it on the diffuse slot only when its assets
- * ask for it, which Sponza's upper walls do.
- */
-export function reachedDiffuseUv2(
-    outputPath: string,
-    assets: CompileAsset[],
-): boolean {
-    for (const asset of assets) {
-        if (asset.kind !== "babylon") {
-            continue;
-        }
-        const materialized = resolve(outputPath, "assets", asset.output);
-        if (!existsSync(materialized)) {
-            continue;
-        }
-        const document = JSON.parse(readFileSync(materialized, "utf8")) as {
-            materials?: { diffuseTexture?: { coordinatesIndex?: number } }[];
-        };
-        if (
-            (document.materials ?? []).some(
-                (material) => material.diffuseTexture?.coordinatesIndex === 1,
-            )
-        ) {
-            return true;
-        }
-    }
-    return false;
-}
-
-/**
- * Whether any reached light names the meshes it applies to. The pinned
- * engine keeps that as a per-mesh light set, which the Standard uniform
- * block only has to express for a scene whose assets declare one.
- */
-export function reachedStandardLightLists(lights: BabylonLight[]): boolean {
-    return lights.some(
-        (light) =>
-            light.type === 0 &&
-            ((light.includedOnlyMeshesIds ?? []).length > 0 ||
-                (light.excludedMeshesIds ?? []).length > 0),
+function readComposition(path: string, textureModes: readonly boolean[]) {
+    const document = jsonValue(
+        JSON.parse(readFileSync(path, "utf8")),
+        isRecord,
+        "Expected a packaged .babylon document.",
     );
+    return {
+        lights: document.lights,
+        composition: {
+            materials: asRecords(document.materials),
+            textureModes,
+            renderableCount: babylonRenderableCount(document),
+        },
+    };
+}
+
+/**
+ * The `.babylon` renderable count, mirroring the generated loader's mesh
+ * walk (`babylon-loader-cpp.ts`): visible meshes with positions,
+ * normals and indices produce one record per valid submesh. The Standard
+ * mesh-feature table needs one zero row per record so scene-code mesh
+ * handles land at their correct indices behind them.
+ */
+export function babylonRenderableCount(document: JsonRecord): number {
+    let count = 0;
+    for (const mesh of asRecords(document.meshes)) {
+        if (mesh.isVisible === false) continue;
+        if (
+            !Array.isArray(mesh.positions) ||
+            !Array.isArray(mesh.normals) ||
+            !Array.isArray(mesh.indices) ||
+            mesh.indices.length === 0
+        ) {
+            continue;
+        }
+        const submeshes =
+            mesh.subMeshes == null
+                ? [{ indexCount: mesh.indices.length }]
+                : asRecords(mesh.subMeshes);
+        for (const submesh of submeshes) {
+            const length = submesh.indexCount ?? 0;
+            if (length === 0) {
+                continue;
+            }
+            count += 1;
+        }
+    }
+    return count;
 }

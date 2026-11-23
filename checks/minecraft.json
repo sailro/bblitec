@@ -1,14 +1,25 @@
 {
   "scene": "minecraft",
   "notes": "A left click captures the pointer, relative movement turns the camera, and Escape releases capture.",
+  "observe": {
+    "golden": false,
+    "steps": [
+      { "id": "lock", "actions": [{"click":[640,360]}, {"waitFor":"document.pointerLockElement !== null"}], "screenshot":"none" },
+      { "id": "release", "actions": [{"evaluate":"document.exitPointerLock()"}, {"waitFor":"document.pointerLockElement === null"}], "screenshot":"none" },
+      { "id": "reacquire", "actions": [{"click":[640,360]}, {"waitFor":"document.pointerLockElement !== null"}], "screenshot":"none" }
+    ]
+  },
   "phases": [
     { "id": "idle", "frame": 60 },
     { "id": "look", "frame": 60, "tape": ["-*20", "UiClick@640:360", "-*5", "UiMove@660:360", "UiMove@680:360", "UiMove@700:360"] },
-    { "id": "release", "frame": 60, "tape": ["-*20", "UiClick@640:360", "-*5", "UiKey@Escape"] }
+    { "id": "release", "frame": 60, "tape": ["-*20", "UiClick@640:360", "-*5", "UiKey@Escape"] },
+    { "id": "reacquire", "frame": 120, "tape": ["-*20", "UiClick@640:360", "-*5", "UiKey@Escape", "-*61", "UiClick@640:360", "UiMove@700:360"] }
   ],
   "expect": [
     { "kind": "log-match", "phase": "look", "pattern": "pointer-lock phase=sync-applied requested=1 locked=1 relative=1 cursor-visible=0", "count": 1 },
     { "kind": "log-match", "phase": "release", "pattern": "pointer-lock phase=sync-applied requested=0 locked=0 relative=0 cursor-visible=1", "count": 1 },
+    { "kind":"log-match", "phase":"reacquire", "pattern":"pointer-lock phase=sync-applied requested=1 locked=1 relative=1 cursor-visible=0", "count":2 },
+    { "kind":"log-match", "phase":"reacquire", "pattern":"locked=1 relative=1[\\s\\S]*?locked=0 relative=0[\\s\\S]*?locked=1 relative=1" },
     { "kind": "log-match", "phase": "*", "pattern": "pointer-lock phase=sync-rejected", "absent": true },
     { "kind": "capture-differs", "phase": "look", "vs": "idle", "path": "camera" },
     { "kind": "image-mad", "phase": "look", "vs": "idle", "min": 0.1 }

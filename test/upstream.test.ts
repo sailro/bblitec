@@ -3144,14 +3144,10 @@ test("sizes an SMAA composite's intermediates from the recorded graph", async ()
     // report them as a vanishing fraction of the source that happens to
     // reproduce at both probe sizes. Both are the source's size exactly.
     assert.deepEqual(
-        composed.intermediates.map((target) => [
-            target.format,
-            target.widthRatio,
-            target.heightRatio,
-        ]),
+        composed.intermediates.map((target) => [target.format, target.size]),
         [
-            ["rgba8unorm", 1, 1],
-            ["rgba8unorm", 1, 1],
+            ["rgba8unorm", { widthRatio: 1, heightRatio: 1 }],
+            ["rgba8unorm", { widthRatio: 1, heightRatio: 1 }],
         ],
     );
 

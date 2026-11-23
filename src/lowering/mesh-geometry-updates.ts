@@ -246,7 +246,6 @@ export function lowerMeshGeometryUpdates(context: LoweringContext): string {
                     "Number.isInteger",
                     (args) => `js::number_is_integer(${args[0]})`,
                 ],
-                ["Number.isFinite", (args) => `std::isfinite(${args[0]})`],
                 ["isFinite", (args) => `std::isfinite(${args[0]})`],
                 [
                     "validateGeometryRange",

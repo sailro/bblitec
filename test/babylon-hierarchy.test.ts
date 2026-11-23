@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { lowerBabylonMeshConstruction } from "../src/lowering/babylon-mesh-construction.js";
 import { importPinnedModuleFetching } from "../src/pinned-shader-composer.js";
-import { babylonRenderableCount } from "../src/pinned-standard-variants.js";
+import { babylonRenderableCount } from "../src/babylon-asset-features.js";
 import { packageBabylonMeshWalks } from "../src/babylon-mesh-walks.js";
 import { GLTF_MESH_WALKS } from "../src/gltf-document.js";
 import { type JsonObject } from "../src/json-fields.js";
@@ -137,10 +137,7 @@ test("the complete Babylon loader preserves parent chains, split meshes and root
                 "nested",
             ],
         );
-        assert.equal(
-            babylonRenderableCount(JSON.stringify(document)),
-            expected.length,
-        );
+        assert.equal(babylonRenderableCount(document), expected.length);
     } finally {
         imported.release();
     }
@@ -251,6 +248,10 @@ test("the complete Babylon loader preserves parent chains, split meshes and root
         for(std::size_t mesh=0;mesh<collected.size();++mesh)
             assert(collected[mesh]==asset.meshes.at(walks[index][mesh].get<std::size_t>()));
     }
+    AssetRecord light_asset;
+    load_babylon_lights(engine,light_asset,Json::parse(R"({"lights":[{"type":0,"position":[1,2,3],"intensity":16777217}]})"));
+    const auto direct=create_point_light(engine,{1,2,3},16777217);
+    assert(engine.lights.at(light_asset.lights.at(0).value).intensity==engine.lights.at(direct.value).intensity);
     const auto containers=load_babylon(engine,"containers.json");
     assert(engine.assets.at(containers.value).meshes.empty());
     Json input;

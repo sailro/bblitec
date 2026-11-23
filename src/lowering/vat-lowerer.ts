@@ -169,6 +169,7 @@ ${options.baked ? this.lowerBake() : ""}VatHandle attach_vat(
     // mesh.skeleton = null: baked, so no live skinning and no per-frame
     // palette upload. The pose pass skips the record from here.
     record.skinned = false;
+    record.skeleton_attached = false;
     record.bone_matrices.clear();
     const VatHandle handle{mesh};
     const VatBakeRecord& bake = ${recordAt("engine.vat_bakes", "baked")};

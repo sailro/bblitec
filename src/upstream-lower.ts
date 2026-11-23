@@ -58,7 +58,10 @@ import {
 } from "./lowering/static-sound-library.js";
 import { transparentOrderHeader } from "./lowering/transparent-order-lowerer.js";
 import { assertExternalRenderableContracts } from "./lowering/external-renderable-contract.js";
-import { assertGpsPassContracts } from "./lowering/gps-pass-contract.js";
+import {
+    assertGpsPassContracts,
+    gpsPassPolicy,
+} from "./lowering/gps-pass-contract.js";
 import { TextRendererLowerer } from "./lowering/text-renderer-lowerer.js";
 import { TextWeightLowerer } from "./lowering/text-weight-lowerer.js";
 import { cameraChangeKeyHeader } from "./lowering/camera-change-key-lowerer.js";
@@ -627,7 +630,6 @@ export interface UpstreamEmitOptions {
     /** The `KHR_materials_variants` a scene selected, or "" when unreached. */
     selectedMaterialVariant: string;
     standardLightLists: boolean;
-    standardDiffuseUv2: boolean;
     textureTransform: boolean;
     imageBasedLighting: boolean;
     gpuInstancing: boolean;
@@ -1718,8 +1720,11 @@ ${lowerThinInstanceSync(context)}
                 "upstream/include/bblite/upstream_splat_stream.hpp",
                 loweredLibraryHeader(context, SPLAT_STREAM_LIBRARY),
             );
-            // Its point renderer's pass adapters transcribe gps-pass.ts; a
-            // pinned change to it refuses generation.
+            this.tree.write(
+                "upstream/include/bblite/upstream/gps_pass_policy.hpp",
+                gpsPassPolicy(context),
+            );
+            // Device instrumentation is a transport adapter; changes to its contract refuse.
             assertGpsPassContracts(context);
         }
         // MeshLoD's run-time WGSL: its GPU selection's module and every
@@ -4511,7 +4516,6 @@ export const DEFAULT_UPSTREAM_EMIT_OPTIONS: UpstreamEmitOptions = {
     transmission: false,
     selectedMaterialVariant: "",
     standardLightLists: false,
-    standardDiffuseUv2: false,
     textureTransform: false,
     imageBasedLighting: false,
     gpuInstancing: false,

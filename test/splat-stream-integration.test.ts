@@ -9,7 +9,10 @@ import {
     pinnedRawShaderImports,
     runtimeWgslModules,
 } from "../src/lowering/library-shaders.js";
-import { assertGpsPassContracts } from "../src/lowering/gps-pass-contract.js";
+import {
+    assertGpsPassContracts,
+    gpsPassPolicy,
+} from "../src/lowering/gps-pass-contract.js";
 import {
     GPS_PASS,
     SPLAT_STREAM_SHADER_MODULES,
@@ -18,6 +21,8 @@ import { wgslStageStem } from "../src/wgsl-artifacts.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    runGeneratedProgram,
+    writeFixtureHeaders,
 } from "./native-fixture.js";
 import { doctoredContext } from "./doctored-store.js";
 
@@ -195,6 +200,46 @@ test("createEngine requiredLimits lowers a run-time record into the engine optio
         "/DBBLITE_HAS_UI=1",
         cpp,
     ]);
+});
+
+test("the point pass selects task identity and lowers the pin's depth/owner predicate", (t) => {
+    const native = optionalNativeFixtureTools(false);
+    if (!native) return t.skip("Native fixture compiler unavailable");
+    const header = gpsPassPolicy(new LoweringContext());
+    const changed = gpsPassPolicy(
+        doctoredContext(
+            GPS_PASS,
+            "&& !!owners?.get(scene)?.tasks.has(task)",
+            "|| !!owners?.get(scene)?.tasks.has(task)",
+        ),
+    );
+    for (const [name, body, unowned] of [
+        ["pinned", header, false],
+        ["changed", changed, true],
+    ] as const) {
+        const dir = writeFixtureHeaders("gps-pass-" + name, {
+            "policy.hpp": body,
+        });
+        runGeneratedProgram(
+            native,
+            "gps-pass-policy-" + name,
+            `#include "policy.hpp"
+#include <cassert>
+int main() {
+    auto scene = std::make_shared<bbl::SceneState>();
+    auto sig = std::make_shared<bbl::GpuRenderTargetSignature>();
+    sig->depth_stencil_format = std::string("depth24plus");
+    scene->pausable_pass = sig;
+    const auto other = std::make_shared<bbl::GpuRenderTargetSignature>(*sig);
+    assert(!bbl::library::gps_render_task(scene,other));
+    assert(bbl::library::gps_render_task(scene,sig));
+    assert(bbl::library::gps_defers_draw(scene,sig) == ${unowned});
+    scene->pass_controllers.emplace_back([] {return true;});
+    assert(bbl::library::gps_defers_draw(scene,sig));
+}`,
+            { flags: ["/I", dir] },
+        );
+    }
 });
 
 test("the point renderer's transcribed pass refuses a changed pin", () => {

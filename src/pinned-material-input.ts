@@ -7,7 +7,8 @@
  * in one source module realm. GPU records remain slot-shaped adapters.
  */
 import { javascriptModuleUrl } from "./data-url.js";
-import { asNumbers, asObject, type JsonObject } from "./json-fields.js";
+import type { GltfAnimationMaterialState } from "./gltf-animation-material-state.js";
+import { asObject, type JsonObject } from "./json-fields.js";
 import {
     assertPinnedSync,
     importPinnedModule,
@@ -71,76 +72,18 @@ interface PinnedMaterialSceneContext {
      * browser's fragment still declares `baseColorFactor`.
      */
     animatedBaseColorFactor?: boolean;
-    /**
-     * True when `KHR_animation_pointer` drives a `KHR_texture_transform` on
-     * this material. `gltf-feature-animation-pointer.ts` calls
-     * `enableMaterialUvTransform`, which sets `_hasUvTx` outright — the same
-     * shape as the base-colour exception above, and for the same reason: the
-     * animation writes into a UBO field, so the field has to exist.
-     *
-     * The load-time transform is typically the *empty* object in this case —
-     * Scene 253's NormalScale and TextureTransform materials both declare
-     * `KHR_texture_transform: {}` and animate offset and scale — so the
-     * static rule and this one disagree exactly where it matters.
-     */
-    animatedUvTransform?: boolean;
+    preparedPointerMaterial?: GltfAnimationMaterialState;
     /**
      * The `animation-pointer-ext.ts` pointer families targeting this material,
      * from `gltfAnimatedExtensionTargets`. Each one makes `seedExtMaterials`
      * change the material's shape so the animation has somewhere to write.
      */
     animatedExtensionTargets?: PinnedAnimatedExtensionTargets;
-    /**
-     * True when `KHR_animation_pointer` drives this material's emissive factor
-     * or its `KHR_materials_emissive_strength`. The emissive extension reads
-     * `_emissiveColor` for `PBR_HAS_EMISSIVE_COLOR`, and an animated emissive
-     * needs that field however the load-time factor reads — Scene 242 animates
-     * both halves and its captured fragment declares `emissiveColor`.
-     */
-    animatedEmissive?: boolean;
     /** Records a call to the pinned metallic-reflectance setter while this
      *  material's loader and animation-pointer paths execute. */
     recordMetallicReflectanceRegistration?: () => void;
     /** Records the actual transmission hook call in the executed material setters. */
     recordTransmissionRegistration?: () => void;
-}
-
-/** The material indices a `KHR_animation_pointer` channel drives a pointer into. */
-export function gltfAnimatedMaterialPointers(
-    document: JsonObject,
-    pointerSuffix: string,
-): ReadonlySet<number> {
-    return gltfAnimatedPointers(
-        document,
-        new RegExp(`^/materials/(\\d+)/${pointerSuffix}$`),
-    );
-}
-
-/** Material indices whose animated pointer matches `pattern`. */
-function gltfAnimatedPointers(
-    document: JsonObject,
-    pattern: RegExp,
-): ReadonlySet<number> {
-    const animated = new Set<number>();
-    const animations = Array.isArray(document["animations"])
-        ? (document["animations"] as JsonObject[])
-        : [];
-    for (const animation of animations) {
-        const channels = Array.isArray(animation["channels"])
-            ? (animation["channels"] as JsonObject[])
-            : [];
-        for (const channel of channels) {
-            const pointer = asObject(
-                asObject(asObject(channel["target"])?.["extensions"])?.[
-                    "KHR_animation_pointer"
-                ],
-            )?.["pointer"];
-            if (typeof pointer !== "string") continue;
-            const match = pattern.exec(pointer);
-            if (match) animated.add(Number(match[1]));
-        }
-    }
-    return animated;
 }
 
 /**
@@ -643,21 +586,9 @@ export function pinnedMaterialInputFromGltf(
     };
     // ExtrasAsMetadata returns an opaque payload; preserve the source's shape and identity.
     if ("metadata" in props) input.metadata = props["metadata"];
-    // `_emissiveColor`, three writers in the pin's own order:
-    // `gltf-ext-emissive-strength.ts` ran with the other extensions and wrote
-    // `factor * strength` whenever the extension is declared; an animated
-    // pointer needs the field regardless of the load-time factor
-    // (`gltf-feature-animation-pointer.ts`, mirrored — its module is
-    // asset-level plumbing); otherwise the executed `needsGltfEmissive`
-    // decides and the pin's own setter writes. The predicate's texture
-    // operand is the slot, standing in for the built texture as everywhere
-    // else in the output shape.
+    // Static assembly runs before the recorded pointer initialization below.
     if ("_emissiveColor" in layers) {
         input["_emissiveColor"] = layers["_emissiveColor"];
-    } else if (scene.animatedEmissive) {
-        input["_emissiveColor"] = asNumbers(material["emissiveFactor"]) ?? [
-            1, 1, 1,
-        ];
     } else if (
         pin.needsGltfEmissive(mat, asObject(material["emissiveTexture"]))
     ) {
@@ -686,8 +617,47 @@ export function pinnedMaterialInputFromGltf(
     // transform on a slot the assembly never built, composes nothing — and
     // the pin's own `enableMaterialUvTransform` writes the field, here as in
     // the animated-pointer path upstream.
-    if (pin.needsGltfUvTransform(textures) || scene.animatedUvTransform) {
+    if (pin.needsGltfUvTransform(textures)) {
         pin.enableMaterialUvTransform(input);
+    }
+    // Composition reads the post-parse state of this physical material, not the channel spelling.
+    for (const patch of scene.preparedPointerMaterial?.patches ?? []) {
+        const field = patch.path[0];
+        if (field !== "_hasUvTx" && field !== "_emissiveColor") continue;
+        if (patch.path.length !== 1)
+            throw new Error(
+                "Unsupported nested pointer preparation field: " + field,
+            );
+        if (patch.operation === "erase") {
+            delete input[field];
+            continue;
+        }
+        if (patch.operation !== "set")
+            throw new Error(
+                "Unsupported pointer preparation operation: " + field,
+            );
+        if (
+            field === "_hasUvTx" &&
+            patch.value.kind === "literal" &&
+            typeof patch.value.value === "boolean"
+        ) {
+            if (patch.value.value) pin.enableMaterialUvTransform(input);
+            else input._hasUvTx = false;
+        } else if (
+            field === "_emissiveColor" &&
+            patch.value.kind === "array" &&
+            patch.value.values.length === 3
+        ) {
+            input._emissiveColor = patch.value.values.map((channel) => {
+                if (
+                    channel.kind !== "number" ||
+                    typeof channel.value !== "number"
+                )
+                    throw new Error("Expected finite emissive channel.");
+                return channel.value;
+            });
+        } else
+            throw new Error("Unsupported pointer preparation value: " + field);
     }
     if (scene.linearImageProcessing) input["_linearImageProcessing"] = true;
     // The factor field follows source assembly or animated-pointer preparation.

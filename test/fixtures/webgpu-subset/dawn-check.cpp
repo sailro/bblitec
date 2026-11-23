@@ -115,6 +115,7 @@ bbl::js::Promise<bbl::js::PromiseVoid> run(std::shared_ptr<bbl::pal::DawnWebGpuD
     stream_check::Library library(device);
     stream_check::check_limits(*device, limits);
     co_await stream_check::check_mapping(*device);
+    co_await stream_check::check_compute_roles(*device);
     co_await stream_check::check_sort(library, 70000, 69123, 0x13579bdfu);
     co_await stream_check::check_projection(library);
     const auto sog = stream_check::sog_images();

@@ -121,19 +121,15 @@ function ambientGpuBackend(): NativeBackend | undefined {
 
 /**
  * The backend a single-backend run measures: an explicit `--backend` wins,
- * the ambient `BBLITE_GPU_BACKEND` variable is the fallback, SDL_GPU is the
- * default. An explicit flag that disagrees with the ambient variable says
- * so, because a run that silently ignored either one measures the wrong
- * backend with full confidence.
+ * otherwise measure the first backend the multi-backend command would use.
+ * Warn when the flag overrides the ambient runtime selection.
  */
 export function resolveBackend(
     explicit: string | undefined,
     command: string,
 ): NativeBackend {
+    if (explicit === undefined) return measuredBackends(undefined, command)[0];
     const ambientBackend = ambientGpuBackend();
-    if (explicit === undefined) {
-        return ambientBackend ?? "sdl_gpu";
-    }
     const canonical = canonicalBackend(explicit, command);
     if (ambientBackend !== undefined && ambientBackend !== canonical) {
         console.warn(
@@ -152,7 +148,7 @@ export function resolveBackend(
 export function measuredBackends(
     explicit: string | undefined,
     command: string,
-): NativeBackend[] {
+): [NativeBackend, ...NativeBackend[]] {
     const selection =
         explicit !== undefined
             ? parseBackendName(explicit, `${command}: --backend`, true)

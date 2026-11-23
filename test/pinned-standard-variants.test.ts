@@ -10,8 +10,8 @@ import { inlineCpp } from "./generated-cpp.js";
  */
 import assert from "node:assert/strict";
 import test from "node:test";
+import { babylonRenderableCount } from "../src/babylon-asset-features.js";
 import {
-    babylonRenderableCount,
     composePinnedStandardVariant,
     composeSceneStandardVariants,
     pinnedStandardMaterialFeatures,
@@ -575,33 +575,28 @@ test("the scene driver composes, dedups and keys a runtime-sweep shape", async (
     const flags = await importPinnedModule<{
         DISABLE_LIGHTING: number;
     }>("material/standard/standard-flags.js");
-    const composition = await composeSceneStandardVariants(
-        {
-            babylonAssets: [],
-            fog: false,
-            vertexColors: false,
-            noColorViews: false,
-            esmShadowViews: false,
-            emissiveRenderTexture: false,
-            diffuseRenderTexture: false,
-            diffusePixelsTexture: false,
-            diffuseSolidTexture: false,
-            diffuseFileTexture: false,
-            emissiveFileTexture: false,
-            uvTransform: false,
-            standardMaterialPlugins: [],
-            thinInstances: true,
-            thinInstanceColors: false,
-            morphTargets: false,
-            sceneMaterials: true,
-            sceneMeshFeatureValues: [0],
-            geometryTasks: [],
-            shadowLights: [],
-        },
-        () => {
-            throw new Error("no assets to read");
-        },
-    );
+    const composition = await composeSceneStandardVariants({
+        babylonAssets: [],
+        fog: false,
+        vertexColors: false,
+        noColorViews: false,
+        esmShadowViews: false,
+        emissiveRenderTexture: false,
+        diffuseRenderTexture: false,
+        diffusePixelsTexture: false,
+        diffuseSolidTexture: false,
+        diffuseFileTexture: false,
+        emissiveFileTexture: false,
+        uvTransform: false,
+        standardMaterialPlugins: [],
+        thinInstances: true,
+        thinInstanceColors: false,
+        morphTargets: false,
+        sceneMaterials: true,
+        sceneMeshFeatureValues: [0],
+        geometryTasks: [],
+        shadowLights: [],
+    });
     // Scene-code feature space is the setter closure {0, DISABLE_LIGHTING,
     // DOUBLE_SIDED, ALPHA_BLEND, ...}; only DISABLE_LIGHTING changes the
     // composed text, so the plain and thin-instanced lit/unlit pairs are
@@ -639,38 +634,33 @@ test("the scene driver composes, dedups and keys a runtime-sweep shape", async (
     assert.ok(plain && doubleSided);
     assert.equal(doubleSided.variant, plain.variant);
     // Determinism: the same inputs compose the same bytes and rows.
-    const again = await composeSceneStandardVariants(
-        {
-            babylonAssets: [],
-            fog: false,
-            vertexColors: false,
-            noColorViews: false,
-            esmShadowViews: false,
-            emissiveRenderTexture: false,
-            diffuseRenderTexture: false,
-            diffusePixelsTexture: false,
-            diffuseSolidTexture: false,
-            diffuseFileTexture: false,
-            emissiveFileTexture: false,
-            uvTransform: false,
-            standardMaterialPlugins: [],
-            thinInstances: true,
-            thinInstanceColors: false,
-            morphTargets: false,
-            sceneMaterials: true,
-            sceneMeshFeatureValues: [0],
-            geometryTasks: [],
-            shadowLights: [],
-        },
-        () => {
-            throw new Error("no assets to read");
-        },
-    );
+    const again = await composeSceneStandardVariants({
+        babylonAssets: [],
+        fog: false,
+        vertexColors: false,
+        noColorViews: false,
+        esmShadowViews: false,
+        emissiveRenderTexture: false,
+        diffuseRenderTexture: false,
+        diffusePixelsTexture: false,
+        diffuseSolidTexture: false,
+        diffuseFileTexture: false,
+        emissiveFileTexture: false,
+        uvTransform: false,
+        standardMaterialPlugins: [],
+        thinInstances: true,
+        thinInstanceColors: false,
+        morphTargets: false,
+        sceneMaterials: true,
+        sceneMeshFeatureValues: [0],
+        geometryTasks: [],
+        shadowLights: [],
+    });
     assert.deepEqual(again, composition);
 });
 
 test("the babylon walk mirrors the generated loader's records", async () => {
-    const document = JSON.stringify({
+    const document = {
         materials: [
             {
                 id: "walls",
@@ -718,7 +708,7 @@ test("the babylon walk mirrors the generated loader's records", async () => {
             { positions: [0], normals: [0], indices: [] },
             { isVisible: false, positions: [0], normals: [0], indices: [0] },
         ],
-    });
+    };
     assert.equal(babylonRenderableCount(document), 2);
     const flags = await importPinnedModule<{
         HAS_DIFFUSE_TEXTURE: number;
@@ -730,31 +720,34 @@ test("the babylon walk mirrors the generated loader's records", async () => {
         OPACITY_FROM_RGB: number;
         HAS_REFLECTION_TEXTURE: number;
     }>("material/standard/standard-flags.js");
-    const composition = await composeSceneStandardVariants(
-        {
-            babylonAssets: ["asset.babylon"],
-            fog: false,
-            vertexColors: false,
-            noColorViews: false,
-            esmShadowViews: false,
-            emissiveRenderTexture: false,
-            diffuseRenderTexture: false,
-            diffusePixelsTexture: false,
-            diffuseSolidTexture: false,
-            diffuseFileTexture: false,
-            emissiveFileTexture: false,
-            uvTransform: false,
-            standardMaterialPlugins: [],
-            thinInstances: false,
-            thinInstanceColors: false,
-            morphTargets: false,
-            sceneMaterials: false,
-            sceneMeshFeatureValues: [],
-            geometryTasks: [],
-            shadowLights: [],
-        },
-        () => document,
-    );
+    const composition = await composeSceneStandardVariants({
+        babylonAssets: [
+            {
+                materials: document.materials,
+                textureModes: [true],
+                renderableCount: 2,
+            },
+        ],
+        fog: false,
+        vertexColors: false,
+        noColorViews: false,
+        esmShadowViews: false,
+        emissiveRenderTexture: false,
+        diffuseRenderTexture: false,
+        diffusePixelsTexture: false,
+        diffuseSolidTexture: false,
+        diffuseFileTexture: false,
+        emissiveFileTexture: false,
+        uvTransform: false,
+        standardMaterialPlugins: [],
+        thinInstances: false,
+        thinInstanceColors: false,
+        morphTargets: false,
+        sceneMaterials: false,
+        sceneMeshFeatureValues: [],
+        geometryTasks: [],
+        shadowLights: [],
+    });
     const words = composition.selectors.map((selector) => selector.features);
     assert.ok(
         words.includes(

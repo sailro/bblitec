@@ -7,6 +7,7 @@
 // compares across backends.
 
 #include "fixture-require.hpp"
+#include "fixture-files.hpp"
 #include "pal_webgpu_usage.hpp"
 
 #include <bblite/upstream_splat_stream.hpp>
@@ -96,6 +97,44 @@ template <class T> std::vector<T> values_of(const js::ArrayBuffer& bytes) {
     std::vector<T> result(bytes.byte_length() / sizeof(T));
     std::memcpy(result.data(), bytes.data(), result.size() * sizeof(T));
     return result;
+}
+
+/** Compare the authored binding and the builtin independently, including per-entry auto layouts. */
+inline js::Promise<js::PromiseVoid> check_compute_roles(bbl::GpuDevice& device) {
+    const auto sentinel = buffer(device, 16, BU::storage | BU::copy_dst);
+    device.write_buffer(sentinel, 0,
+                        js::TypedArray<std::uint32_t>(std::vector<std::uint32_t>{41, 73, 109, 0}));
+    for (const auto& [file, entry] : {std::pair{"authored", "authored"},
+                                      {"builtin", "builtinOnly"},
+                                      {"mixed", "both"},
+                                      {"mixed", "other"}}) {
+        const auto source = bbl::pal::read_binary_file(
+            std::string("test/fixtures/webgpu-subset/roles-") + file + ".wgsl");
+        const auto module =
+            device.create_shader_module({{}, std::string(source.begin(), source.end())});
+        const auto pipeline =
+            device.create_compute_pipeline({{}, {}, {module, std::string(entry)}});
+        const auto output = buffer(device, 24, BU::storage | BU::copy_src | BU::copy_dst);
+        device.write_buffer(output, 0, js::ArrayBuffer(std::vector<std::uint8_t>(24)));
+        bbl::GpuBindGroupDescriptor group;
+        group.layout = pipeline->get_bind_group_layout(0);
+        group.entries.push_back({0, bbl::GpuBufferBinding{output, {}, {}}});
+        if (std::string_view(file) != "builtin")
+            group.entries.push_back({1, bbl::GpuBufferBinding{sentinel, {}, {}}});
+        const auto encoder = device.create_command_encoder();
+        const auto pass = encoder->begin_compute_pass();
+        pass->set_pipeline(pipeline);
+        pass->set_bind_group(0, device.create_bind_group(group));
+        pass->dispatch_workgroups(2, 3, 5);
+        pass->end();
+        device.submit(js::Array<GpuHandle>{encoder->finish()});
+        const auto words = values_of<std::uint32_t>(co_await read_back(device, output, 0, 24));
+        std::printf("%s", entry);
+        for (const auto word : words)
+            std::printf(" %u", word);
+        std::printf("\n");
+    }
+    co_return js::PromiseVoid{};
 }
 
 /** A deterministic sequence, so both backends see the same inputs. */

@@ -1,21 +1,47 @@
-# Replaces the shader directory beside an executable with the snapshot files
-# its compiled renderers read, run by native/CMakeLists.txt after each shader
-# snapshot:
-#
-#   BBLITE_SOURCE       the build's shader snapshot directory
-#   BBLITE_DESTINATION  the executable's shader directory
-#   BBLITE_SUFFIXES     the deployed file-name suffixes (the table beside the
-#                       deploy target in CMakeLists.txt)
-#
-# The copy runs from a script because a scene's shader set can outgrow a
-# command line (hundreds of files).
-if(NOT BBLITE_SUFFIXES)
-    message(FATAL_ERROR "No compiled renderer names a deployed shader suffix.")
+cmake_minimum_required(VERSION 3.24)
+
+# Only remove files this deployment previously installed. A pre-existing
+# shader directory without a receipt is not proof of ownership.
+set(receipt "${BBLITE_DESTINATION}/.bblite-deployed-shaders")
+if(IS_SYMLINK "${BBLITE_DESTINATION}" OR IS_SYMLINK "${receipt}")
+    message(FATAL_ERROR "Refusing linked shader deployment at ${BBLITE_DESTINATION}")
 endif()
-set(matching "")
-foreach(suffix IN LISTS BBLITE_SUFFIXES)
-    list(APPEND matching PATTERN "*${suffix}")
+file(STRINGS "${BBLITE_MANIFEST}" shaders ENCODING UTF-8)
+set(previous "")
+if(EXISTS "${receipt}")
+    file(STRINGS "${receipt}" previous ENCODING UTF-8)
+endif()
+
+# Check membership paths before copying or removing anything. In particular
+# a formerly deployed subdirectory can now be a link out of the payload.
+set(names ${shaders} ${previous})
+list(REMOVE_DUPLICATES names)
+foreach(name IN LISTS names)
+    if(IS_ABSOLUTE "${name}" OR name MATCHES "(^|/)[.][.]?(/|$)|[:\\\\]" OR name STREQUAL ".bblite-deployed-shaders")
+        message(FATAL_ERROR "Invalid deployed shader path: ${name}")
+    endif()
+    string(REPLACE "/" ";" parts "${name}")
+    set(path "${BBLITE_DESTINATION}")
+    foreach(part IN LISTS parts)
+        string(APPEND path "/${part}")
+        if(IS_SYMLINK "${path}")
+            message(FATAL_ERROR "Refusing linked shader path: ${path}")
+        endif()
+    endforeach()
+    if(IS_DIRECTORY "${path}")
+        message(FATAL_ERROR "Expected a shader file, not a directory: ${path}")
+    endif()
 endforeach()
-file(REMOVE_RECURSE "${BBLITE_DESTINATION}")
+
 file(MAKE_DIRECTORY "${BBLITE_DESTINATION}")
-file(COPY "${BBLITE_SOURCE}/" DESTINATION "${BBLITE_DESTINATION}" FILES_MATCHING ${matching})
+foreach(name IN LISTS shaders)
+    get_filename_component(directory "${BBLITE_DESTINATION}/${name}" DIRECTORY)
+    file(MAKE_DIRECTORY "${directory}")
+    file(COPY_FILE "${BBLITE_SOURCE}/${name}" "${BBLITE_DESTINATION}/${name}" ONLY_IF_DIFFERENT)
+endforeach()
+foreach(name IN LISTS previous)
+    if(NOT name IN_LIST shaders)
+        file(REMOVE "${BBLITE_DESTINATION}/${name}")
+    endif()
+endforeach()
+file(COPY_FILE "${BBLITE_MANIFEST}" "${receipt}" ONLY_IF_DIFFERENT)

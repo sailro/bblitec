@@ -205,7 +205,7 @@ test("carries the cascade stabilization and the world-space bias into the CSM re
     // omitted one stays the pin's `null`.
     assert.match(
         csm,
-        /if \(options\.csm_world_space_bias\)\s*generator\.csm_world_space_bias = \(\(\(std::isfinite\(static_cast<double>\(\(\*options\.csm_world_space_bias\)\)\)\) && \(\(\*options\.csm_world_space_bias\) > 0\.0\)\) \? \(\*options\.csm_world_space_bias\) : 0\.0\);/,
+        /if \(options\.csm_world_space_bias\)\s*generator\.csm_world_space_bias = \(\(\(std::isfinite\(\(\*options\.csm_world_space_bias\)\)\) && \(\(\*options\.csm_world_space_bias\) > 0\.0\)\) \? \(\*options\.csm_world_space_bias\) : 0\.0\);/,
     );
     // The fit and the caster bias read both off the record.
     assert.match(

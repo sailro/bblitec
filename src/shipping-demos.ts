@@ -1,12 +1,4 @@
-import { randomUUID } from "node:crypto";
-import {
-    existsSync,
-    lstatSync,
-    mkdirSync,
-    readdirSync,
-    renameSync,
-    writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { availableParallelism, totalmem } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,7 +20,13 @@ import {
     vcpkgInstallDirectory,
     type VcpkgManifestInstall,
 } from "./vcpkg-install.js";
-import { writeJsonRecord } from "./tooling/records.js";
+import { buildShippingTree, shippingBuildState } from "./shipping-iteration.js";
+import {
+    contentDigest,
+    hashEntries,
+    toolIdentity,
+    writeJsonRecord,
+} from "./tooling/records.js";
 import { runLoggedProcess } from "./tooling/logged-process.js";
 import {
     packageDesktopDemo,
@@ -140,7 +138,7 @@ export function shippingPlan(
                 ),
                 rmlUiDirectory: resolve(
                     root,
-                    `artifacts/tools/rmlui-static${has("ui:inline-svg") ? "-svg" : ""}${suffix}`,
+                    `artifacts/tools/${basename(installedDirectory)}/rmlui-static${has("ui:inline-svg") ? "-svg" : ""}${suffix}`,
                 ),
             };
         }),
@@ -155,7 +153,6 @@ export function shippingConfigureArguments(
     vcpkgToolchain: string,
 ): string[] {
     return [
-        "--fresh",
         "-S",
         resolve(root, "native"),
         "-B",
@@ -187,47 +184,6 @@ export function shippingConfigureArguments(
     ];
 }
 
-/** Configure clears cached package paths; obsolete deployed payload is moved aside
- * separately because CMake's deployment merges directories. Objects remain cached. */
-export function preserveShippingPayload(
-    root: string,
-    sceneId: string,
-    macArchitecture?: "x86_64" | "arm64",
-): void {
-    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(sceneId))
-        throw new Error(`Invalid shipping scene ID '${sceneId}'.`);
-    if (
-        macArchitecture !== undefined &&
-        !["x86_64", "arm64"].includes(macArchitecture)
-    )
-        throw new Error("Invalid macOS architecture.");
-    const native = resolve(root, "native");
-    const buildDirectory = resolve(
-        native,
-        `build-${sceneId}-min-sdl${macArchitecture ? `-${macArchitecture}` : ""}`,
-    );
-    for (const ancestor of [native, buildDirectory]) {
-        if (existsSync(ancestor) && lstatSync(ancestor).isSymbolicLink())
-            throw new Error(`Shipping build path crosses a link: ${ancestor}`);
-    }
-    if (!existsSync(buildDirectory)) return;
-    const obsolete = readdirSync(buildDirectory).filter(
-        (name) =>
-            ["assets", "shaders", "bblite-shaders-deployed.stamp"].includes(
-                name,
-            ) || name.toLowerCase().endsWith(".dll"),
-    );
-    if (!obsolete.length) return;
-    for (const name of obsolete) {
-        if (lstatSync(join(buildDirectory, name)).isSymbolicLink())
-            throw new Error(`Shipping payload crosses a link: ${name}`);
-    }
-    const previous = join(buildDirectory, `.payload-${randomUUID()}`);
-    mkdirSync(previous);
-    for (const name of obsolete)
-        renameSync(join(buildDirectory, name), join(previous, name));
-}
-
 interface PackageSize {
     scene: string;
     exeBytes: number;
@@ -252,7 +208,7 @@ export function packageSizeReport(
             ? "Windows x64, MSVC, static CRT, SDL_GPU / Direct3D 12, BBLITE_MINSIZE. Capture is disabled."
             : `${platform === "darwin" ? "macOS universal (x86_64 + arm64), SDL_GPU / Metal" : "Linux x64, SDL_GPU / Vulkan"}, static project libraries, BBLITE_MINSIZE. Capture is disabled.`,
         "",
-        "Each package passed its five-frame GPU-validation startup check. Previous packages are retained under `.replaced/`; exact bytes and SHA-256 hashes are in the package JSON receipts.",
+        "Each package exited successfully in its GPU-validation startup check (five-frame limit). Previous packages are retained under `.replaced/`; exact bytes and SHA-256 hashes are in the package JSON receipts.",
         "",
         "Changes compare with the packages replaced by this run; any separate `@previous/` comparison baseline remains untouched.",
         "",
@@ -357,7 +313,7 @@ async function main(): Promise<void> {
         );
     const toolchain = windows ?? { compiler: tools.cxx!, ninja: tools.ninja! };
     holdDistLock("shipping-demos");
-    const environment = {
+    const environment: NodeJS.ProcessEnv = {
         ...process.env,
         ...windows?.environment,
         CMAKE_COMMAND: cmake,
@@ -432,54 +388,114 @@ async function main(): Promise<void> {
         console.log(JSON.stringify(plan, null, 2));
         return;
     }
-    for (const profile of plan.profiles)
-        installVcpkgManifest(vcpkg, profile, environment);
-    const prepared = new Set<string>();
-    const prepare = async (
-        scene: ShippingScene,
-        directory: string,
-        script: string,
-        args: string[],
-    ): Promise<void> => {
-        if (prepared.has(directory)) return;
-        await run("dependency", basename(directory), powershell, [
-            "-NoProfile",
-            "-File",
-            resolve("tools", script),
-            "-OutputDirectory",
-            directory,
-            ...(scene.macArchitecture
-                ? [
-                      "-MacArchitecture",
-                      scene.macArchitecture,
-                      "-Workspace",
-                      resolve(root, ".cache/shipping", basename(directory)),
-                  ]
-                : []),
-            ...args,
-        ]);
-        prepared.add(directory);
-    };
-    for (const scene of plan.scenes) {
+    const buildId = (scene: ShippingScene): string =>
+        `${scene.id}${scene.macArchitecture ? `-${scene.macArchitecture}` : ""}`;
+    const toolKey = hashEntries([
+        ...[cmake, tools.cc, toolchain.compiler, toolchain.ninja, vcpkg].map(
+            toolIdentity,
+        ),
+        contentDigest(vcpkgToolchain),
+        ...[
+            "CMAKE_GENERATOR",
+            "CMAKE_GENERATOR_PLATFORM",
+            "CMAKE_GENERATOR_TOOLSET",
+            "CMAKE_GENERATOR_INSTANCE",
+            "INCLUDE",
+            "LIB",
+            "CL",
+            "_CL_",
+            "DEVELOPER_DIR",
+            "SDKROOT",
+            "MACOSX_DEPLOYMENT_TARGET",
+            "WindowsSDKVersion",
+            "CFLAGS",
+            "CXXFLAGS",
+            "LDFLAGS",
+        ].map((name) => `${name}=${environment[name] ?? ""}`),
+    ]);
+    const builds = plan.scenes.map((scene) => {
+        const args = shippingConfigureArguments(
+            root,
+            scene,
+            toolchain,
+            vcpkgToolchain,
+        );
+        const profile = plan.profiles.find(
+            (item) => item.installedDirectory === scene.installedDirectory,
+        )!;
+        const stamps: string[] = [];
+        return {
+            scene,
+            args,
+            state: shippingBuildState(
+                root,
+                scene,
+                args,
+                toolKey,
+                profile.features,
+            ),
+            stamps,
+        };
+    });
+    const installs = new Map(
+        plan.profiles.map((profile) => [
+            profile.installedDirectory,
+            installVcpkgManifest(vcpkg, profile, environment, toolKey),
+        ]),
+    );
+    const prepared = new Map<string, string>();
+    for (const { scene, stamps } of builds) {
+        const prepare = async (
+            library: string,
+            directory: string,
+            options: string[],
+        ): Promise<void> => {
+            let stamp = prepared.get(directory);
+            if (!stamp) {
+                await run(
+                    "dependency",
+                    buildId(scene) + "-" + library,
+                    powershell,
+                    [
+                        "-NoProfile",
+                        "-File",
+                        resolve(root, "tools/prepare-shipping-dependency.ps1"),
+                        "-Library",
+                        library,
+                        "-OutputDirectory",
+                        directory,
+                        "-ToolchainIdentity",
+                        hashEntries([toolKey, scene.platform, scene.triplet]),
+                        "-Jobs",
+                        String(jobs),
+                        ...(scene.macArchitecture
+                            ? ["-MacArchitecture", scene.macArchitecture]
+                            : []),
+                        ...options,
+                    ],
+                );
+                stamp = contentDigest(
+                    join(directory, "dependency-build-inputs.txt"),
+                );
+                prepared.set(directory, stamp);
+            }
+            stamps.push(stamp);
+        };
+        stamps.push(installs.get(scene.installedDirectory)!);
         const has = (feature: string): boolean =>
             scene.runtime.includes(feature);
-        await prepare(scene, scene.sdlDirectory, "build-sdl-min.ps1", [
+        await prepare("sdl3", scene.sdlDirectory, [
             ...(has("audio:engine") ? ["-EnableAudio"] : []),
             ...(has("input:gamepad") ? ["-EnableGamepad"] : []),
         ]);
         if (has("audio:engine"))
             await prepare(
-                scene,
+                "labsound",
                 scene.labSoundDirectory,
-                "build-labsound.ps1",
-                [
-                    platform === "win32" ? "-StaticRuntime" : "-MinSize",
-                    ...(has("audio:decoded-buffer") ? ["-EnableCodecs"] : []),
-                ],
+                has("audio:decoded-buffer") ? ["-EnableCodecs"] : [],
             );
         if (has("ui:rml"))
-            await prepare(scene, scene.rmlUiDirectory, "build-rmlui.ps1", [
-                platform === "win32" ? "-StaticRuntime" : "-MinSize",
+            await prepare("rmlui", scene.rmlUiDirectory, [
                 "-FreetypeRoot",
                 join(scene.installedDirectory, scene.triplet),
                 ...(has("ui:inline-svg") ? ["-EnableSvg"] : []),
@@ -527,34 +543,21 @@ async function main(): Promise<void> {
         });
         writeJsonRecord(join(logs, "results.json"), results);
     }
-    const buildId = (scene: ShippingScene): string =>
-        `${scene.id}${scene.macArchitecture ? `-${scene.macArchitecture}` : ""}`;
     await runConcurrently(
-        plan.scenes,
+        builds,
         workers,
-        buildId,
-        async (scene) => {
-            preserveShippingPayload(root, scene.id, scene.macArchitecture);
-            await run(
-                "configure",
-                buildId(scene),
-                cmake,
-                shippingConfigureArguments(
-                    root,
-                    scene,
-                    toolchain,
-                    vcpkgToolchain,
-                ),
-            );
-            await run("build", buildId(scene), cmake, [
-                "--build",
-                scene.buildDirectory,
-                "--config",
-                "Release",
-                "--parallel",
-                String(jobs),
-            ]);
-        },
+        ({ scene }) => buildId(scene),
+        ({ scene, args, state, stamps }) =>
+            buildShippingTree(
+                root,
+                scene,
+                args,
+                state,
+                hashEntries(stamps),
+                jobs,
+                (stage, commandArgs) =>
+                    run(stage, buildId(scene), cmake, commandArgs),
+            ),
         { completed: "built" },
     );
     const receipts: PackageSize[] = [];

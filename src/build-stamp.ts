@@ -150,6 +150,11 @@ export function computeBuildStamp(
     return { stamp, inputs };
 }
 
+/** The build stamp is embedded as a string literal, including in each thin slice. */
+export function binaryCarriesStamp(executable: string, stamp: string): boolean {
+    return readFileSync(executable).includes(stamp);
+}
+
 /** The generated header body carrying the stamp into the executable. */
 export function buildStampHeader(stamp: string): string {
     return `#pragma once
@@ -169,20 +174,21 @@ interface PayloadMismatch {
 /**
  * The shader files the build that produced the executable in
  * `executableDirectory` deploys, by name suffix: the list
- * `native/CMakeLists.txt` derives from its compiled renderers and records
+ * `native/shader-deployment.cmake` derives from its compiled renderers and records
  * as `BBLITE_DEPLOYED_SHADER_SUFFIXES`, read from the CMake cache -- the
  * directory itself under Ninja, its parent under a multi-configuration
  * generator.
  */
 export function executableDeployedShaderSuffixes(
     executableDirectory: string,
+    cache?: Readonly<Record<string, string>>,
 ): readonly string[] {
-    for (const directory of [
-        executableDirectory,
-        resolve(executableDirectory, ".."),
-    ]) {
-        const suffixes =
-            readCacheConfiguration(directory)?.BBLITE_DEPLOYED_SHADER_SUFFIXES;
+    const directories = cache
+        ? [executableDirectory]
+        : [executableDirectory, resolve(executableDirectory, "..")];
+    for (const directory of directories) {
+        const suffixes = (cache ?? readCacheConfiguration(directory))
+            ?.BBLITE_DEPLOYED_SHADER_SUFFIXES;
         if (suffixes === undefined) continue;
         const list = suffixes.split(";").filter((suffix) => suffix !== "");
         if (list.length === 0) {
@@ -220,6 +226,7 @@ export function deployedPayloads(
     executableDirectory: string,
     generatedDirectory: string,
     buildDirectory = executableDirectory,
+    cache?: Readonly<Record<string, string>>,
 ): DeployedPayload[] {
     // Read on first use: a tree without shaders configures no suffix list.
     let shaderSuffixes: readonly string[] | undefined;
@@ -229,10 +236,10 @@ export function deployedPayloads(
             source: resolve(generatedDirectory, "upstream/shaders"),
             deployed: resolve(executableDirectory, "shaders"),
             deploys: (path) =>
-                (shaderSuffixes ??=
-                    executableDeployedShaderSuffixes(buildDirectory)).some(
-                    (suffix) => path.endsWith(suffix),
-                ),
+                (shaderSuffixes ??= executableDeployedShaderSuffixes(
+                    buildDirectory,
+                    cache,
+                )).some((suffix) => path.endsWith(suffix)),
         },
         {
             label: "assets",
@@ -244,7 +251,7 @@ export function deployedPayloads(
 }
 
 /** The source files a payload deploys, as `/`-separated relative paths. */
-function expectedPayload({
+export function expectedPayload({
     source,
     deploys,
 }: Pick<DeployedPayload, "source" | "deploys">): Set<string> {
@@ -259,12 +266,9 @@ function expectedPayload({
  */
 export function comparePayload(
     payload: Pick<DeployedPayload, "source" | "deployed" | "deploys">,
+    expected: ReadonlySet<string> = expectedPayload(payload),
 ): PayloadMismatch[] {
     const mismatches: PayloadMismatch[] = [];
-    if (!existsSync(payload.source)) {
-        return mismatches;
-    }
-    const expected = expectedPayload(payload);
     for (const path of expected) {
         const deployed = resolve(payload.deployed, path);
         if (!existsSync(deployed) || !statSync(deployed).isFile()) {
@@ -279,23 +283,23 @@ export function comparePayload(
             mismatches.push({ path, reason: "changed" });
         }
     }
-    for (const path of orphansAgainst(expected, payload.deployed)) {
+    for (const path of orphansAgainst(
+        expected,
+        relativeFiles(payload.deployed),
+    )) {
         mismatches.push({ path, reason: "unexpected" });
     }
     return mismatches;
 }
 
-/** The names-only walk behind the `unexpected` entries, shared by
- *  `comparePayload` and `payloadOrphans` so the guard and the prune
- *  cannot disagree about what an orphan is. */
+/** The guard and the prune use the same membership rule for deployed names. */
 function orphansAgainst(
     expected: ReadonlySet<string>,
-    deployedDirectory: string,
+    deployedFiles: readonly string[],
 ): string[] {
     const orphans: string[] = [];
-    for (const path of relativeFiles(deployedDirectory)) {
-        // The build's own marker files (CMake stamps the shader snapshot
-        // with `.snapshot-stamp`) are not payload.
+    for (const path of deployedFiles) {
+        // Hidden deployment markers are not runtime payload.
         if (path.split("/").pop()?.startsWith(".")) {
             continue;
         }
@@ -315,29 +319,52 @@ function orphansAgainst(
  */
 export function payloadOrphans(
     payload: Pick<DeployedPayload, "source" | "deployed" | "deploys">,
+    deployedFiles: readonly string[] = relativeFiles(payload.deployed),
 ): string[] {
-    if (!existsSync(payload.source)) {
-        return [];
+    const orphans = orphansAgainst(expectedPayload(payload), deployedFiles);
+    if (orphans.length > 0 && !existsSync(payload.source)) {
+        // The caller deletes every returned path. With no generated directory
+        // and no prior inventory we cannot establish who wrote these files.
+        throw new Error(
+            `Refusing to prune ${payload.deployed}: ${payload.source} is absent, but ${orphans[0]} remains. Move unexpected files aside or use a fresh build directory.`,
+        );
     }
-    return orphansAgainst(expectedPayload(payload), payload.deployed);
+    return orphans;
 }
 
-/** The CMake cache entries that shape what a build directory produces. */
-export function readCacheConfiguration(
-    buildDirectory: string,
-): Record<string, string> | undefined {
+function readCacheBytes(buildDirectory: string): Buffer | undefined {
     const cachePath = resolve(buildDirectory, "CMakeCache.txt");
-    if (!existsSync(cachePath)) {
-        return undefined;
-    }
+    return existsSync(cachePath) ? readFileSync(cachePath) : undefined;
+}
+
+function parseCacheConfiguration(bytes: Buffer): Record<string, string> {
     const values: Record<string, string> = {};
-    for (const line of readFileSync(cachePath, "utf8").split(/\r?\n/)) {
+    for (const line of bytes.toString("utf8").split(/\r?\n/)) {
         const match = /^([A-Za-z0-9_]+):[A-Z]+=(.*)$/.exec(line);
         if (match) {
             values[match[1]!] = match[2]!;
         }
     }
     return values;
+}
+
+/** The CMake cache entries that shape what a build directory produces. */
+export function readCacheConfiguration(
+    buildDirectory: string,
+): Record<string, string> | undefined {
+    const bytes = readCacheBytes(buildDirectory);
+    return bytes && parseCacheConfiguration(bytes);
+}
+
+/** The exact configuration whose bytes a shipping receipt identifies. */
+export function readCacheSnapshot(buildDirectory: string) {
+    const bytes = readCacheBytes(buildDirectory);
+    return (
+        bytes && {
+            configuration: parseCacheConfiguration(bytes),
+            digest: digest(bytes),
+        }
+    );
 }
 
 interface IncompatibleCacheEntry {

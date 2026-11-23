@@ -696,14 +696,14 @@ inline void encode_sdl_webgpu_dispatch(SdlWebGpuOwner& owner, SDL_GPUCommandBuff
     writable_buffers.assign(pipeline.counts[4], {});
     if (pipeline.counts[1] || pipeline.counts[3])
         webgpu_refuse("storage textures are not in the subset.");
-    std::vector<OwnedSdlBuffer> workgroup_counts;
+    OwnedSdlBuffer workgroup_counts;
     for (const auto& slot : pipeline.slots) {
         if (slot.workgroup_counts) {
-            workgroup_counts.push_back(encode_sdl_workgroup_counts(
+            workgroup_counts = encode_sdl_workgroup_counts(
                 owner.live_device(), command, dispatch.workgroups,
                 dispatch.indirect ? dispatch.indirect->gpu_buffer() : nullptr,
-                dispatch.indirect_offset));
-            readonly_buffers.at(slot.index) = workgroup_counts.back().get();
+                dispatch.indirect_offset);
+            readonly_buffers.at(slot.index) = workgroup_counts.get();
             continue;
         }
         const auto resolved =

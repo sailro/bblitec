@@ -118,7 +118,12 @@ export function packageFiles(directory: string): string[] {
             if (entry.isSymbolicLink())
                 throw new Error(`Package payload holds a link: ${path}`);
             if (entry.isDirectory()) walk(path);
-            else files.push(relative(directory, path).split(sep).join("/"));
+            else if (entry.isFile())
+                files.push(relative(directory, path).split(sep).join("/"));
+            else
+                throw new Error(
+                    `Package payload holds a non-regular file: ${path}`,
+                );
         }
     };
     walk(directory);

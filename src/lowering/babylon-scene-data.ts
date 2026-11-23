@@ -79,7 +79,7 @@ export function lowerBabylonSceneData(
                                 declaration,
                                 "Expected the point-light position and intensity.",
                             );
-                        return `create_point_light(engine, babylon_vec3(${args[0]}), static_cast<float>(${args[1]}))`;
+                        return `create_point_light(engine, babylon_vec3(${args[0]}), ${args[1]})`;
                     },
                 ],
             ]),

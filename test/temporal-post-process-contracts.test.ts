@@ -121,12 +121,11 @@ test("TAA observes presentation identity separately from history order and retai
         assert.deepEqual(
             composite.intermediates.map((target) => [
                 target.format,
-                target.widthRatio,
-                target.heightRatio,
+                target.size,
             ]),
             [
-                ["rgba16float", 1, 1],
-                ["rgba16float", 1, 1],
+                ["rgba16float", { widthRatio: 1, heightRatio: 1 }],
+                ["rgba16float", { widthRatio: 1, heightRatio: 1 }],
             ],
         );
         assert.deepEqual(

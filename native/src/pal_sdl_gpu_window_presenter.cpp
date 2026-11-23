@@ -1,4 +1,5 @@
 #include "pal_window_presenter.hpp"
+#include <bblite/teardown.hpp>
 
 #include "pal_sdl_gpu_offscreen.hpp"
 #include "pal_gpu_frame.hpp"
@@ -26,7 +27,9 @@ public:
             read_frame_options().page_ui_sample_count());
     }
     ~SdlWindowPresenter() override {
-        SDL_WaitForGPUIdle(device_.get());
+        // The fences and image owners below still belong to the submissions if the wait fails.
+        if (!SDL_WaitForGPUIdle(device_.get()))
+            terminate_after("Window SDL_WaitForGPUIdle", SDL_GetError());
         in_flight_.clear();
         release_sprite_ui_sdl_gpu_resources(device_.get(), ui_);
         composite_.release(device_.get());

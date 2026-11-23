@@ -169,7 +169,6 @@ test("transcribes MorphTargetsBlock storage bindings structurally", async () => 
         transmission: false,
         selectedMaterialVariant: "",
         standardLightLists: false,
-        standardDiffuseUv2: false,
         textureTransform: false,
         imageBasedLighting: false,
         gpuInstancing: false,

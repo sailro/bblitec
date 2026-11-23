@@ -80,15 +80,7 @@ export interface CompositeIntermediate {
      * against sources of different formats.
      */
     format: string | null;
-    /**
-     * Its extent, as the fraction of the source the pin sizes it at:
-     * `max(1, floor(sourceExtent * ratio))`, re-evaluated every record because
-     * a canvas-sized source changes with the window. Derived by composing at
-     * two source sizes and refusing anything the single ratio does not
-     * reproduce exactly.
-     */
-    widthRatio: number;
-    heightRatio: number;
+    size: { bloomScale: number } | { widthRatio: number; heightRatio: number };
 }
 
 /** One pass a composite builds, in the order the composite built it. */
@@ -432,6 +424,15 @@ export async function composeComposite(
             `Pinned ${request.intrinsic} changes its public output pass with source size.`,
         );
     }
+    let bloomSize: { bloomScale: number } | undefined;
+    if (request.intrinsic === "createBloomPostProcessTask") {
+        const scale: unknown = Reflect.get(run.composite, "bloomScale");
+        if (typeof scale !== "number" || !Number.isFinite(scale))
+            throw new Error(
+                "Pinned bloom does not publish a finite sizing scale.",
+            );
+        bloomSize = { bloomScale: scale };
+    }
     const intermediates: CompositeIntermediate[] = [];
     const indices = new Map<PinnedRenderTarget, number>();
     const engine = compositionEngine();
@@ -450,7 +451,7 @@ export async function composeComposite(
         ): CompositeTextureRef =>
             resolveCompositeTexture(
                 request.intrinsic,
-                { run, check },
+                { run, check, bloomSize },
                 { intermediates, indices },
                 target,
                 twin,
@@ -572,7 +573,11 @@ function compositePassParams(
  */
 function resolveCompositeTexture(
     intrinsic: string,
-    runs: { run: CompositeRun; check: CompositeRun },
+    runs: {
+        run: CompositeRun;
+        check: CompositeRun;
+        bloomSize: { bloomScale: number } | undefined;
+    },
     seen: {
         intermediates: CompositeIntermediate[];
         indices: Map<PinnedRenderTarget, number>;
@@ -626,20 +631,22 @@ function resolveCompositeTexture(
             target._descriptor.format === twin._descriptor.format
                 ? (target._descriptor.format ?? null)
                 : null,
-        widthRatio: ratio(
-            target._descriptor.size.width,
-            twin._descriptor.size.width,
-            runs.run.width,
-            runs.check.width,
-            "width",
-        ),
-        heightRatio: ratio(
-            target._descriptor.size.height,
-            twin._descriptor.size.height,
-            runs.run.height,
-            runs.check.height,
-            "height",
-        ),
+        size: runs.bloomSize ?? {
+            widthRatio: ratio(
+                target._descriptor.size.width,
+                twin._descriptor.size.width,
+                runs.run.width,
+                runs.check.width,
+                "width",
+            ),
+            heightRatio: ratio(
+                target._descriptor.size.height,
+                twin._descriptor.size.height,
+                runs.run.height,
+                runs.check.height,
+                "height",
+            ),
+        },
     });
     seen.indices.set(target, index);
     return { kind: "intermediate", index };

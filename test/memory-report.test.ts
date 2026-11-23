@@ -259,6 +259,11 @@ test("names an unmeasured loop instead of passing it", () => {
         summarizeMemoryProfile([...samples, samples[0]!], 2),
         undefined,
     );
+    for (const missing of [0, 5]) {
+        const gap = samples.filter((_, index) => index !== missing);
+        assert.equal(summarizeMemoryProfile(gap, 2), undefined);
+        assert.equal(summarizeMemoryProfile(gap, 2, 330), undefined);
+    }
     assert.match(formatMemorySummary("sprite", undefined), /unmeasured/);
 });
 

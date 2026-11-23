@@ -56,7 +56,6 @@ function options(pure: boolean): UpstreamEmitOptions {
         transmission: false,
         selectedMaterialVariant: "",
         standardLightLists: false,
-        standardDiffuseUv2: false,
         textureTransform: false,
         imageBasedLighting: false,
         gpuInstancing: false,

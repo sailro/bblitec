@@ -290,7 +290,7 @@ export function adoptRecapturedRow(
 }
 
 /** The first row of a newly registered scene: its first capture, pinned whole. */
-export function newReferenceRow(
+function newReferenceRow(
     id: string,
     reference: string,
     inputs: ReferenceInputs,

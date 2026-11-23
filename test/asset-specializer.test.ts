@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import {
     emitAssetSpecializations,
@@ -221,6 +221,7 @@ test("accepts the pin-implemented material extensions and records the loader fac
  */
 async function packagedDocument(options: {
     skinned?: boolean;
+    extra?: readonly string[];
     skins?: boolean;
     morph?: boolean;
     animation?: boolean;
@@ -261,6 +262,12 @@ async function packagedDocument(options: {
             true,
         );
     }
+    for (const key of options.extra ?? [])
+        attributes[key] = append(
+            new Uint8Array(12),
+            "VEC4",
+            key.startsWith("WEIGHTS"),
+        );
     const primitive: JsonObject = {
         attributes,
         ...(options.mode !== undefined ? { mode: options.mode } : {}),
@@ -331,6 +338,64 @@ async function packagedLoader(
     assert.ok(loader);
     return loader;
 }
+
+test("only positioned Babylon point lights activate light and per-mesh list support", async (t) => {
+    const outputPath = mkdtempSync(join(tmpdir(), "bblite-light-join-"));
+    t.after(() => rmSync(outputPath, { recursive: true, force: true }));
+    for (const positioned of [false, true]) {
+        const result =
+            compileSource(`import {createEngine, loadBabylon} from "@babylonjs/lite";
+            const engine = await createEngine({});
+            await loadBabylon(engine, "light.babylon");`);
+        const asset = result.manifest.assets.find(
+            (entry) => entry.kind === "babylon",
+        )!;
+        const file = join(outputPath, "assets", asset.output);
+        mkdirSync(dirname(file), { recursive: true });
+        writeFileSync(
+            file,
+            JSON.stringify({
+                lights: [
+                    {
+                        type: 0,
+                        includedOnlyMeshesIds: ["box"],
+                        ...(positioned && { position: [0, 0, 0] }),
+                    },
+                    {
+                        type: 1,
+                        position: [0, 0, 0],
+                        includedOnlyMeshesIds: ["box"],
+                    },
+                ],
+            }),
+        );
+        const joined = await joinAssetFeatures({
+            result,
+            outputPath,
+            documents: new Map(),
+            specialization: specialize(outputPath, result.manifest.assets),
+            splatHarmonics: undefined,
+        });
+        assert.equal(joined.standardLightLists, positioned);
+        assert.equal(joined.joined.has("light:point"), positioned);
+    }
+});
+
+test("eight-influence fidelity reports the extra buffers the pinned skeleton actually created", async () => {
+    for (const [extra, skins, expected] of [
+        [["JOINTS_1"], true, false],
+        [["WEIGHTS_1"], true, false],
+        [["JOINTS_2", "WEIGHTS_2"], true, false],
+        [["JOINTS_1", "WEIGHTS_1"], false, false],
+        [["JOINTS_1", "WEIGHTS_1"], true, true],
+    ] as const) {
+        assert.equal(
+            (await packagedLoader({ skinned: true, skins, extra }))
+                .eightInfluenceSkinning,
+            expected,
+        );
+    }
+});
 
 test("velocity preload distinguishes packaged node animation from skin/morph deformation", async (t) => {
     const outputPath = mkdtempSync(join(tmpdir(), "bblite-deformation-join-"));
@@ -524,32 +589,6 @@ test("refuses asset content the pinned loader implements and this port does not"
             ["KHR_xmp_json_ld", "KHR_xmp"],
         );
 
-        // Eight-influence skinning: the pin reads JOINTS_1/WEIGHTS_1
-        // (MSH_HAS_SKELETON_8); this port reads four influences and records
-        // the truncation as a fidelity adaptation rather than refusing —
-        // Scene 7's ChibiRex carries the second pair and gates it.
-        writeGlb(path, {
-            accessors: [{ count: 3 }],
-            meshes: [
-                {
-                    primitives: [
-                        {
-                            attributes: {
-                                POSITION: 0,
-                                JOINTS_0: 0,
-                                JOINTS_1: 0,
-                            },
-                        },
-                    ],
-                },
-            ],
-        });
-        assert.equal(
-            specializeGltf(parseGlbJson(path), "asset.glb").features
-                .eightInfluenceSkinning,
-            true,
-        );
-
         // An attribute the pinned loader also ignores passes: `wrapTexCoord`
         // stamps only `_texCoord: 1`, so a TEXCOORD_2 nothing samples on
         // either side renders identically (Scene 176's asset carries one).
@@ -564,9 +603,8 @@ test("refuses asset content the pinned loader implements and this port does not"
             ],
         });
         assert.equal(
-            specializeGltf(parseGlbJson(path), "asset.glb").features
-                .eightInfluenceSkinning,
-            false,
+            specializeGltf(parseGlbJson(path), "asset.glb").loader,
+            null,
         );
 
         // Packaging materializes every sparse accessor through the pin's

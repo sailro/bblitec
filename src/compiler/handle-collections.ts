@@ -76,15 +76,11 @@ import {
     isRecord,
     type JsonObject,
 } from "../json-fields.js";
-// The same reader the material arms key their skinned mesh features by, so
-// "which meshes of this file are skinned" has one answer in the compiler.
-// The same reader the material arms key their skinned mesh features by, so
-// "which meshes of this file are skinned" has one answer in the compiler.
-import { skinnedMeshIndices } from "../pinned-mesh-features.js";
+
 import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
 import { recordAt } from "./record-access.js";
 import { arrayElementType, unionMembers } from "./type-facts.js";
-import { knownCondition } from "./values/model.js";
+import { handleFoundCpp, knownCondition } from "./values/model.js";
 
 /**
  * One engine handle collection an expression names.
@@ -2502,18 +2498,7 @@ export class HandleCollections {
         };
     }
 
-    /**
-     * The VAT scenes' `findSkinned(root)`: the first mesh of an imported
-     * glTF root that carries a skeleton.
-     *
-     * Its sibling above searches by NAME, and a name can sit on several
-     * flattened records, so that one has to reason about which hierarchy
-     * branch the source walk reaches first. This one selects on a property
-     * the loader records per mesh, and generation refuses unless the
-     * materialized file carries EXACTLY ONE skinned primitive -- so the
-     * emitted loop's first hit is the DFS's first hit whatever order the
-     * flat table is in. Order is made irrelevant rather than claimed.
-     */
+    /** A proven first-skinned DFS over a glTF root, in its packaged scene traversal order. */
     public compileAssetSkinnedDescendantSearch(
         call: ts.CallExpression,
         callee: ts.Identifier,
@@ -2538,94 +2523,22 @@ export class HandleCollections {
                 "The first-skinned descendant search requires a materialized glTF root.",
             );
         }
-        this.requireUniqueAssetSkinnedMesh(root.asset, call);
         const engine = this.context.requireEngine(root, call);
         const result = this.context.allocateTemporaryCppName(
             "asset_skinned_match",
         );
-        const found = this.context.allocateTemporaryCppName(
-            "asset_skinned_found",
-        );
-        const item =
-            this.context.allocateTemporaryCppName("asset_skinned_mesh");
         this.context.emit({
             kind: "declaration",
-            type: handleCppType("mesh"),
+            type: `const ${handleCppType("mesh")}`,
             name: result,
-            initializer: "",
-            initialization: "default",
+            initializer: `bbl::first_skinned_gltf_descendant(${engine}, ${root.cpp})`,
         });
-        this.context.emit({
-            kind: "declaration",
-            type: "bool",
-            name: found,
-            initializer: "false",
-            attributes: "[[maybe_unused]] ",
-        });
-        this.context.emit({
-            kind: "open",
-            code:
-                `for (const ${handleCppType("mesh")} ${item} : ` +
-                `${recordAt(`${engine}.assets`, root.cpp)}.meshes) {`,
-            iteration: true,
-        });
-        this.context.increaseIndent();
-        this.context.emit({
-            kind: "open",
-            code: `if (${recordAt(`${engine}.meshes`, item)}.skinned) {`,
-        });
-        this.context.increaseIndent();
-        this.context.emit({ kind: "expression", code: `${result} = ${item};` });
-        this.context.emit({ kind: "expression", code: `${found} = true;` });
-        this.context.emit({
-            kind: "control",
-            code: "break;",
-            transfer: "break",
-        });
-        this.context.decreaseIndent();
-        this.context.emit({ kind: "close", code: "}" });
-        this.context.decreaseIndent();
-        this.context.emit({ kind: "close", code: "}" });
         return {
             kind: "mesh",
             cpp: result,
             engineCpp: engine,
-            optionalFoundCpp: found,
+            optionalFoundCpp: handleFoundCpp(result),
         };
-    }
-
-    /**
-     * Proves the flat native mesh table can stand for the first-skinned DFS
-     * hit: the file carries exactly one skinned primitive, so there is one
-     * record to find and nothing about traversal order to claim. A file with
-     * several skinned meshes refuses -- the source walk's first hit is a
-     * hierarchy fact the flattened table does not carry -- and one with none
-     * refuses too, because the scene's own guard would then be reasoning
-     * about a search this port could never satisfy.
-     */
-    private requireUniqueAssetSkinnedMesh(
-        asset: CompileAsset,
-        node: ts.Node,
-    ): void {
-        const document = this.readAssetDocument(asset, node);
-        const skinnedMeshes = skinnedMeshIndices(document);
-        const meshes = asRecords(document.meshes);
-        let skinned = 0;
-        for (const meshIndex of skinnedMeshes) {
-            skinned += asRecords(meshes[meshIndex]?.primitives).length;
-        }
-        if (skinned === 0) {
-            this.context.fail(
-                node,
-                `Asset '${asset.output}' carries no skinned mesh; the first-skinned descendant search has nothing to resolve.`,
-            );
-        }
-        if (skinned > 1) {
-            this.context.fail(
-                node,
-                `Asset '${asset.output}' carries ${skinned} skinned mesh records; the source DFS's first hit is not proven by the flat native table.`,
-            );
-        }
     }
 
     /**

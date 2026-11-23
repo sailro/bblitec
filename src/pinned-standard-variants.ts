@@ -1,3 +1,4 @@
+import type { BabylonCompositionAsset } from "./babylon-asset-features.js";
 import { CppDefinitions, type CppModule } from "./cpp-definitions.js";
 /**
  * Composes Standard-material shader variants through Babylon Lite's own
@@ -1493,9 +1494,8 @@ function lowerStandardFeatureDerivation(
 export interface StandardSceneCompositionInput {
     skeleton?: boolean;
     vertexAlpha?: boolean;
-    /** Materialized `.babylon` asset paths, in load order. */
-    babylonAssets: readonly string[];
-    babylonTextureModes?: ReadonlyMap<string, readonly boolean[]>;
+    /** Packaged `.babylon` material inputs, in load order. */
+    babylonAssets: readonly BabylonCompositionAsset[];
     fog: boolean;
     /** The area lightings a scene can draw under
      *  (`reachedRectAreaLightings`); an installed one's scene shader context
@@ -1807,7 +1807,6 @@ function sceneCodeMaterialInputs(options: {
  */
 export async function composeSceneStandardVariants(
     input: StandardSceneCompositionInput,
-    readAsset: (path: string) => string,
 ): Promise<StandardSceneComposition> {
     const meshBits = await importPinnedModule<{
         MSH_HAS_MORPH_TARGETS: number;
@@ -1850,15 +1849,10 @@ export async function composeSceneStandardVariants(
         );
     }
     for (const asset of input.babylonAssets) {
-        const document = JSON.parse(readAsset(asset)) as {
-            materials?: unknown[];
-        };
-        for (const loadTextures of input.babylonTextureModes?.get(asset) ?? [
-            true,
-        ])
+        for (const loadTextures of asset.textureModes)
             materialInputs.push(
                 ...(await pinnedBabylonMaterials(
-                    document.materials ?? [],
+                    asset.materials,
                     loadTextures,
                 )),
             );
@@ -2162,52 +2156,6 @@ export async function composeSceneStandardVariants(
             input.rectAreaLightings,
         ),
     };
-}
-
-/**
- * The `.babylon` renderable count, mirroring the generated loader's mesh
- * walk (`babylon-loader-cpp.ts`): visible meshes with positions,
- * normals and indices produce one record per valid submesh. The Standard
- * mesh-feature table needs one zero row per record so scene-code mesh
- * handles land at their correct indices behind them.
- */
-export function babylonRenderableCount(documentText: string): number {
-    const document = JSON.parse(documentText) as {
-        meshes?: {
-            isVisible?: boolean;
-            parentId?: string | null;
-            positions?: unknown[];
-            normals?: unknown[];
-            indices?: unknown[];
-            subMeshes?: {
-                indexCount?: number;
-                indexStart?: number;
-            }[];
-        }[];
-    };
-    let count = 0;
-    for (const mesh of document.meshes ?? []) {
-        if (mesh.isVisible === false) continue;
-        if (
-            !Array.isArray(mesh.positions) ||
-            !Array.isArray(mesh.normals) ||
-            !Array.isArray(mesh.indices) ||
-            mesh.indices.length === 0
-        ) {
-            continue;
-        }
-        const submeshes = mesh.subMeshes ?? [
-            { indexStart: 0, indexCount: mesh.indices.length },
-        ];
-        for (const submesh of submeshes) {
-            const length = submesh.indexCount ?? 0;
-            if (length === 0) {
-                continue;
-            }
-            count += 1;
-        }
-    }
-    return count;
 }
 
 /**

@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #if BBLITE_CHECKED_HANDLES
@@ -35,6 +36,11 @@ struct HandleSite {};
                             std::to_string(handle_generation) +
                             " and now holds a later record at generation " +
                             std::to_string(slot_generation) + handle_site_suffix(site));
+}
+
+/** An exhausted slot stays retired: wrapping would revive the first occupant's handles. */
+[[nodiscard]] constexpr bool has_next_generation(std::uint32_t generation) noexcept {
+    return generation != (std::numeric_limits<std::uint32_t>::max)();
 }
 
 /**

@@ -4,8 +4,8 @@ Compiler, source-ownership and build remediation: [audit](audit.md#remediation).
 
 ## Qualification
 
-- [ ] Add a reproducible sanitizer command for native allocator/ownership fixtures, then extend it to representative scenes and GPU/library lifetimes.
-- [ ] Rebuild dependency artifacts with unknown pin/patch provenance through their maintained builders; `native/patch-identity.cmake` warns when an artifact has no identity record.
+- [ ] Extend [allocator/GC sanitizer coverage](docs/debugging.md#memory) to representative generated scenes and GPU/library lifetimes; run whole-process leak detection on a supported host.
+- [ ] Rebuild stale Windows shipping dependencies (trimmed SDL, static RmlUi and LabSound) through their maintained builders before measuring package size. The desktop development artifacts have current identity records.
 - [ ] Move mixed mesh/billboard ordering into a generated draw plan after retaining source deferred-build completion order and prior stable binding order; keep equal-order/depth and camera-less refusals until those inputs and ordering-neutrality coverage exist.
 - [ ] Give remaining sliced PAL code standalone concern headers that harness fixtures include.
 - [ ] Qualify `playroom` ragdoll fidelity and physics performance; current measured limits are in [status](docs/status.md#upstream-application-gates).

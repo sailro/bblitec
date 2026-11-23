@@ -4,7 +4,7 @@
  * development builds and dual-backend differential binaries are refused), the
  * payload of the single backend the build compiled -- SDL_GPU ships DXIL on
  * Windows, SPIR-V on Linux and Metal on macOS; Windows Dawn ships WGSL text --
- * the notices of what it links, a five-frame startup check and a receipt.
+ * the notices of what it links, a frame-limited startup check and a receipt.
  * macOS packages merge an x86_64 and an arm64 slice into one universal
  * executable. The package ships no runtime or CRT libraries.
  *
@@ -15,7 +15,6 @@ import { spawnSync } from "node:child_process";
 import {
     chmodSync,
     copyFileSync,
-    cpSync,
     existsSync,
     mkdirSync,
     readFileSync,
@@ -25,8 +24,11 @@ import {
 } from "node:fs";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import {
+    binaryCarriesStamp,
     comparePayload,
+    computeBuildStamp,
     deployedPayloads,
+    expectedPayload,
     readCacheConfiguration,
 } from "./build-stamp.js";
 import { discoverDevelopmentTools } from "./development-tools.js";
@@ -116,14 +118,14 @@ interface DesktopPackageReceipt {
     zipSha256: string;
     previousExeBytes: number | null;
     previousZipBytes: number | null;
-    smokeFrames: number;
+    smokeFrameLimit: number;
     smokeExit: number;
     architectures: string[];
     smokeArchitecture: string;
     buildDirectories: string[];
 }
 
-const smokeFrames = 5;
+const smokeFrameLimit = 5;
 const smokeTimeoutMs = 120_000;
 
 interface Host {
@@ -189,6 +191,7 @@ const samePath = (left: string, right: string, platform: ShippingPlatform) =>
         : resolve(left) === resolve(right);
 
 interface Slice {
+    payloads: { label: string; source: string; files: ReadonlySet<string> }[];
     buildDirectory: string;
     cache: Record<string, string>;
     executable: string;
@@ -293,14 +296,14 @@ function readSlice(
         throw new Error(
             `Required shipping input not found: ${join(runtimeDirectory, "shaders")}`,
         );
-    // The deploy merges rather than mirrors, so a reused tree can hold files
-    // the current generation no longer owns, or stale copies: a package ships
-    // only what the generated tree owns (the measured-run guard's comparison).
-    for (const payload of deployedPayloads(
+    // Retain the same membership for validation and package staging.
+    const payloads = deployedPayloads(
         runtimeDirectory,
         generatedDirectory,
-    )) {
-        const mismatches = comparePayload(payload);
+        buildDirectory,
+    ).map((payload) => {
+        const files = expectedPayload(payload);
+        const mismatches = comparePayload(payload, files);
         if (mismatches.length > 0)
             throw new Error(
                 `Deployed ${payload.label} beside ${executable} differ from ${payload.source}: ${mismatches
@@ -308,9 +311,14 @@ function readSlice(
                     .map((mismatch) => `${mismatch.path} (${mismatch.reason})`)
                     .join(
                         ", ",
-                    )}. Rebuild the mini tree (the deploy merges rather than mirrors; delete obsolete files first).`,
+                    )}. Move unexpected files aside and rebuild the mini tree.`,
             );
-    }
+        if (payload.label === "shaders" && files.size === 0)
+            throw new Error(
+                `No deployed shaders selected under ${payload.source}.`,
+            );
+        return { label: payload.label, source: payload.source, files };
+    });
     if (target.platform === "darwin") {
         const architecture = architectureOf(executable);
         if (architecture !== target.architectures[index])
@@ -319,6 +327,7 @@ function readSlice(
             );
     }
     return {
+        payloads,
         buildDirectory,
         cache,
         executable,
@@ -558,25 +567,20 @@ function readme(
     return `${lines.join(target.newline)}${target.newline}`;
 }
 
-/**
- * The shader files a package of `backend` carries: SDL_GPU loads .dxil,
- * .spv or Metal .msl plus the .slots sidecars naming each pinned variant's
- * register order; Dawn compiles the .native.wgsl text in-process. Other
- * intermediates are development artifacts.
- */
-export function desktopShaderSuffixes(
-    backend: CompiledNativeBackend,
-    platform: ShippingPlatform,
-): string[] {
-    if (backend === "DAWN") return [".native.wgsl", ".slots"];
-    return [
-        platform === "win32"
-            ? ".dxil"
-            : platform === "darwin"
-              ? ".msl"
-              : ".spv",
-        ".slots",
-    ];
+/** Copy exactly the recursive membership qualified for this slice. */
+export function stageDesktopPayloads(
+    slice: Slice,
+    packageDirectory: string,
+): void {
+    for (const { label, source, files } of slice.payloads) {
+        const destination = join(packageDirectory, label);
+        mkdirSync(destination, { recursive: true });
+        for (const file of files) {
+            const output = join(destination, file);
+            mkdirSync(dirname(output), { recursive: true });
+            copyFileSync(join(source, file), output);
+        }
+    }
 }
 
 /**
@@ -628,6 +632,12 @@ export function validateDesktopBuilds(
                 architectureOf,
             ),
         );
+    const stamp = computeBuildStamp(slices[0]!.generatedDirectory, root).stamp;
+    for (const { executable } of slices)
+        if (!binaryCarriesStamp(executable, stamp))
+            throw new Error(
+                `Stale shipping executable: ${executable} does not carry the current build stamp. Rebuild this mini tree before packaging.`,
+            );
     return slices;
 }
 
@@ -655,8 +665,7 @@ export function packageDesktopDemo(
     const packageDirectory = join(plan.staging, name);
     const exeName = `bblitec-${scene}${target.exeExtension}`;
     const staged = join(packageDirectory, exeName);
-    mkdirSync(join(packageDirectory, "shaders"), { recursive: true });
-    mkdirSync(join(packageDirectory, "assets"), { recursive: true });
+    mkdirSync(packageDirectory, { recursive: true });
 
     if (target.platform === "darwin") {
         runCaptured(
@@ -709,29 +718,7 @@ export function packageDesktopDemo(
         throw new Error(
             `Shipping requires the fully static mini dependencies; runtime DLLs were found beside ${first.executable}.`,
         );
-    const assets = join(runtimeDirectory, "assets");
-    if (existsSync(assets))
-        cpSync(assets, join(packageDirectory, "assets"), { recursive: true });
-    // The runtime reads only its compiled backend's shader formats: SDL_GPU
-    // loads .dxil/.spv or Metal .msl plus the .slots sidecars naming each
-    // pinned variant's register order; Dawn compiles the .native.wgsl text
-    // in-process. Other intermediates are development artifacts.
-    const suffixes = desktopShaderSuffixes(backend, target.platform);
-    const shaderSource = join(runtimeDirectory, "shaders");
-    const shaders = readdirSync(shaderSource, { withFileTypes: true }).filter(
-        (entry) =>
-            entry.isFile() &&
-            suffixes.some((suffix) => entry.name.endsWith(suffix)),
-    );
-    if (shaders.length === 0)
-        throw new Error(
-            `No shader payload matched ${suffixes.join(", ")} under ${shaderSource}.`,
-        );
-    for (const shader of shaders)
-        copyFileSync(
-            join(shaderSource, shader.name),
-            join(packageDirectory, "shaders", shader.name),
-        );
+    stageDesktopPayloads(first, packageDirectory);
 
     const profile = readShippingProfile(
         options.cmake,
@@ -806,7 +793,7 @@ export function packageDesktopDemo(
         previousZipBytes: existsSync(previousZip)
             ? statSync(previousZip).size
             : null,
-        smokeFrames,
+        smokeFrameLimit,
         smokeExit: smoke.exit,
         architectures: target.architectures,
         smokeArchitecture: smoke.architecture,
@@ -819,7 +806,7 @@ export function packageDesktopDemo(
 
 /**
  * The staged package must start: it runs from the package directory for a
- * few frames (BBLITE_MAX_FRAMES, the run limit every backend's loop honours)
+ * bounded number of frames (BBLITE_MAX_FRAMES is a limit, not an observation)
  * with GPU validation and must exit cleanly. A shader the payload lacks, a
  * device the trimmed dependencies cannot bring up or a library the loader
  * cannot resolve fails here, before the archive exists, with the tail of the
@@ -843,7 +830,7 @@ function smokeRun(
         environment[key] = value;
     }
     Object.assign(environment, {
-        BBLITE_MAX_FRAMES: String(smokeFrames),
+        BBLITE_MAX_FRAMES: String(smokeFrameLimit),
         BBLITE_GPU_DEBUG: "1",
         BBLITE_TEST_PASS: "1",
         BBLITE_LOCAL_STORAGE_ROOT: join(staging, "smoke-storage"),
@@ -879,14 +866,14 @@ function smokeRun(
     const exeName = basename(staged);
     if (result.error)
         throw new Error(
-            `Package smoke run did not complete: ${exeName}: ${result.error.message} (${smokeTimeoutMs / 1000} s bound, ${smokeFrames} frames). Output tail:\n${tail}`,
+            `Package smoke run did not complete: ${exeName}: ${result.error.message} (${smokeTimeoutMs / 1000} s bound, ${smokeFrameLimit} frames). Output tail:\n${tail}`,
         );
     if (result.status !== 0)
         throw new Error(
-            `Package smoke run failed: ${exeName} exited with ${result.status ?? result.signal} after at most ${smokeFrames} frames. Output tail:\n${tail}`,
+            `Package smoke run failed: ${exeName} exited with ${result.status ?? result.signal} after at most ${smokeFrameLimit} frames. Output tail:\n${tail}`,
         );
     console.log(
-        `Smoke run: ${exeName} rendered ${smokeFrames} frames and exited 0.`,
+        `Smoke run: ${exeName} exited 0 (frame limit: ${smokeFrameLimit}).`,
     );
     return { exit: result.status, architecture };
 }

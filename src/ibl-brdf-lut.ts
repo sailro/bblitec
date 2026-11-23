@@ -1,97 +1,94 @@
-// The shipped gltf-ibl-brdf-lut.rgba16f asset, produced by executing the
-// pinned BRDF-LUT compute shader in a headless Chromium instead of
-// re-deriving its math in JS. The WGSL is `brdfLutWGSL`, bundled as the
-// hdr-brdf-lut.compute chunk of the pinned package and consumed by
-// `generateBrdfLut` in lib/loader-gltf/ibl-env-assembly.js; the dispatch
-// below mirrors that function's parameters exactly (size, format, layout,
-// entry point, bind group, workgroup counts).
-import { createServer } from "node:http";
+import { bakeReplayEnabled, cachedBake, moduleIdentity } from "./bake-cache.js";
 import {
     decodePageBase64,
     pageBase64Script,
     pageTextureLevelsScript,
+    runPageGlobal,
     webgpuComputeBrowserArgs,
-    withBrowserPage,
 } from "./browser-harness.js";
-import { cachedBake, moduleIdentity } from "./bake-cache.js";
-import { readPinnedRawShader } from "./pinned-shader-composer.js";
+import {
+    createSuiteSceneServer,
+    pinnedBrowserModuleUrl,
+} from "./capture-suite-reference.js";
+import {
+    readPinnedLibraryModule,
+    readPinnedRawShader,
+} from "./pinned-shader-composer.js";
 
-// generateBrdfLut's `const size = 256` and the shader's own 256u bounds.
-const lutSize = 256;
-// rgba16float: four 2-byte half floats per texel.
-const lutBytes = lutSize * lutSize * 8;
+const assembly = "loader-gltf/ibl-env-assembly.js";
+// The native .rgba16f asset has no header: validate its transport shape, not the dispatch.
+export const brdfLutShape = {
+    width: 256,
+    height: 256,
+    depthOrArrayLayers: 1,
+    mipLevelCount: 1,
+    format: "rgba16float",
+} as const;
+const texelBytes = 8;
 
-// The raw WGSL import ships in a hashed chunk, reached through the imports
-// of ibl-env-assembly.js — the same module whose generateBrdfLut dispatch
-// this harness mirrors — rather than by a hard-coded chunk name.
 export function loadPinnedBrdfLutShader(): string {
-    const shader = readPinnedRawShader(
-        "loader-gltf/ibl-env-assembly.js",
-        "shaders/hdr-brdf-lut.compute.wgsl",
+    return readPinnedRawShader(assembly, "shaders/hdr-brdf-lut.compute.wgsl");
+}
+
+export function generateIblBrdfLutRgba16f(): Promise<Uint8Array> {
+    if (!bakeReplayEnabled()) return runBrdfLutInChromium();
+    return cachedIblBrdfLut(
+        readPinnedLibraryModule(assembly),
+        loadPinnedBrdfLutShader(),
+        runBrdfLutInChromium,
     );
-    if (
-        !shader.includes("texture_storage_2d<rgba16float,write>") ||
-        !shader.includes("@workgroup_size(8,8)") ||
-        !shader.includes("=1024u") ||
-        !shader.includes(">=256u") ||
-        !shader.includes(",0.001)") ||
-        !shader.includes(",0.04)") ||
-        // Bias in red, scale+bias in green — the byte contract of the
-        // .rgba16f asset (identifier-independent).
-        !/vec4f\((\w+)\.y,\1\.x\+\1\.y,0\.0,1\.0\)/.test(shader)
-    ) {
-        throw new Error("Pinned Babylon Lite BRDF LUT semantics changed.");
-    }
-    return shader;
 }
 
-/**
- * The pinned EXT_lights_image_based BRDF LUT, executed on a real WebGPU
- * device and read back as the .rgba16f asset bytes.
- *
- * The readback is row-major with four half floats per texel — the same
- * `(y * 256 + x) * 4` Uint16 layout the former JS re-derivation wrote —
- * so the asset's byte order is unchanged; individual texel values may
- * differ from the old JS output by float16-rounding ULPs.
- */
-export async function generateIblBrdfLutRgba16f(): Promise<Uint8Array> {
-    return cachedIblBrdfLut(loadPinnedBrdfLutShader(), runBrdfLutInChromium);
-}
-
-/**
- * The bake-cache wrapper around the LUT compute. The asset is
- * deterministic in (pinned shader text, size, format, pin, browser) —
- * the bake-cache key — so a repeat compile of a reached scene replays
- * the exact `.rgba16f` bytes instead of launching Chromium. The LUT
- * takes no per-scene inputs, so after one warm run every compile
- * replays. The bake is injectable so the replay contract is testable
- * without a browser launch.
- */
-export async function cachedIblBrdfLut(
+export function cachedIblBrdfLut(
+    producer: string,
     shader: string,
-    bake: (shader: string) => Promise<Uint8Array>,
+    bake: () => Promise<Uint8Array>,
 ): Promise<Uint8Array> {
     return cachedBake(
         {
             kind: "ibl-brdf-lut",
-            version: "1",
+            version: "2",
             module: moduleIdentity(import.meta.url),
             browser: true,
-            buildConditions: false,
-            parameters: { lutSize, format: "rgba16float" },
-            inputs: [Buffer.from(shader, "utf8")],
+            buildConditions: true,
+            parameters: brdfLutShape,
+            inputs: [Buffer.from(producer), Buffer.from(shader)],
         },
-        async () => bake(shader),
+        bake,
     );
 }
 
-async function runBrdfLutInChromium(shader: string): Promise<Uint8Array> {
-    const server = createServer((_request, response) => {
-        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        response.end("<!doctype html><title>IBL BRDF LUT</title>");
-    });
-    return withBrowserPage(
-        server,
+async function runBrdfLutInChromium(): Promise<Uint8Array> {
+    const source = `import { generateBrdfLut } from ${JSON.stringify(pinnedBrowserModuleUrl(assembly))};
+${pageBase64Script}
+${pageTextureLevelsScript}
+window.__bakeBrdfLut = async () => {
+    const adapter = await navigator.gpu?.requestAdapter();
+    if (!adapter) throw new Error("No WebGPU adapter is available for the BRDF LUT.");
+    const device = await adapter.requestDevice();
+    let texture;
+    try {
+        // Only add readback usage; WebGPU methods must keep the real device as receiver.
+        const readable = new Proxy(device, { get(target, key) {
+            if (key === "createTexture") return descriptor => target.createTexture({
+                ...descriptor, usage: descriptor.usage | GPUTextureUsage.COPY_SRC,
+            });
+            const value = Reflect.get(target, key, target);
+            return typeof value === "function" ? value.bind(target) : value;
+        }});
+        device.pushErrorScope("validation");
+        texture = generateBrdfLut({_device: readable});
+        if (!Object.entries(${JSON.stringify(brdfLutShape)}).every(([key, value]) => texture[key] === value))
+            throw new Error("Unsupported glTF IBL BRDF bake contract.");
+        const { packed } = await bblReadTextureLevels(device, texture, ${texelBytes});
+        const error = await device.popErrorScope();
+        if (error) throw new Error(error.message);
+        return bblBase64(packed);
+    } finally { texture?.destroy(); device.destroy(); }
+};`;
+    const result = await runPageGlobal(
+        createSuiteSceneServer(source),
+        "__bakeBrdfLut",
         {
             serverName: "BRDF LUT server",
             shared: true,
@@ -99,70 +96,13 @@ async function runBrdfLutInChromium(shader: string): Promise<Uint8Array> {
                 "Exact IBL BRDF LUT generation requires Chrome or Edge.",
             browserArgs: webgpuComputeBrowserArgs,
         },
-        async (page, origin) => {
-            await page.goto(origin);
-            await page.evaluate((value) => {
-                (
-                    globalThis as typeof globalThis & {
-                        brdfLutShader: string;
-                    }
-                ).brdfLutShader = value;
-            }, shader);
-
-            const result: unknown = await page.evaluate(`(async () => {
-            const adapter = await navigator.gpu?.requestAdapter();
-            if (!adapter) throw new Error("No WebGPU adapter is available for the BRDF LUT.");
-            const device = await adapter.requestDevice();
-            // Mirrors generateBrdfLut() in the pinned package's
-            // lib/loader-gltf/ibl-env-assembly.js: size 256, rgba16float,
-            // layout "auto", entry point "main", a single storage-texture
-            // binding 0, dispatchWorkgroups(ceil(256/8), ceil(256/8)) over
-            // the shader's @workgroup_size(8,8). COPY_SRC is the harness's
-            // readback addition; the pin keeps TEXTURE_BINDING to sample
-            // the LUT it never reads back.
-            const size = ${lutSize};
-            const module = device.createShaderModule({ code: globalThis.brdfLutShader });
-            const compilation = await module.getCompilationInfo();
-            const errors = compilation.messages.filter((message) => message.type === "error");
-            if (errors.length > 0) throw new Error(errors.map((message) => message.message).join("\\n"));
-            const pipeline = device.createComputePipeline({
-                layout: "auto",
-                compute: { module, entryPoint: "main" },
-            });
-            const texture = device.createTexture({
-                size: { width: size, height: size },
-                format: "rgba16float",
-                usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC,
-            });
-            const bindGroup = device.createBindGroup({
-                layout: pipeline.getBindGroupLayout(0),
-                entries: [{ binding: 0, resource: texture.createView() }],
-            });
-            const encoder = device.createCommandEncoder();
-            const pass = encoder.beginComputePass();
-            pass.setPipeline(pipeline);
-            pass.setBindGroup(0, bindGroup);
-            pass.dispatchWorkgroups(Math.ceil(size / 8), Math.ceil(size / 8));
-            pass.end();
-            device.queue.submit([encoder.finish()]);
-            ${pageBase64Script}
-            ${pageTextureLevelsScript}
-            const encoded = bblBase64((await bblReadTextureLevels(device, texture, 8)).packed);
-            texture.destroy();
-            device.destroy();
-            return encoded;
-        })()`);
-            if (typeof result !== "string") {
-                throw new Error(
-                    "The BRDF LUT compute returned an invalid result.",
-                );
-            }
-            return decodePageBase64(
-                result,
-                [],
-                lutBytes,
-                "The BRDF LUT readback",
-            );
-        },
+    );
+    if (typeof result !== "string")
+        throw new Error("The BRDF LUT compute returned an invalid result.");
+    return decodePageBase64(
+        result,
+        [],
+        brdfLutShape.width * brdfLutShape.height * texelBytes,
+        "The BRDF LUT readback",
     );
 }

@@ -167,10 +167,7 @@ public:
         return FramePreparation::ready;
     }
     void complete() {
-        FrameSession::complete([&] {
-            if (memory_profile_.due(frame))
-                memory_profile_.print(frame, engine, 0, 0, 0, 0);
-        });
+        FrameSession::complete([&] { MemoryProfile::on_frame(engine); });
         derived().discard_frame();
     }
     void poll_events() { poll_platform_events(engine, running, frame_options.test_pass); }
@@ -182,7 +179,6 @@ public:
 
 private:
     Derived& derived() { return static_cast<Derived&>(*this); }
-    const MemoryProfile memory_profile_;
 };
 
 } // namespace bbl::pal

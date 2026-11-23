@@ -285,9 +285,9 @@ void print_cpu_frame_profile(long frame, double total_ms, double acquire_ms, dou
 #endif
 }
 
-void MemoryProfile::print(long frame, const bbl::Engine& engine, std::size_t scene_meshes,
+void MemoryProfile::print(std::uint64_t frame, const bbl::Engine& engine, std::size_t scene_meshes,
                           std::size_t gpu_meshes, std::size_t shared_geometries,
-                          std::size_t shared_geometry_bytes) const {
+                          std::size_t shared_geometry_bytes) {
     std::size_t live_geometries = 0;
     std::size_t geometry_bytes = 0;
     for (const bbl::ModelGeometry& geometry : engine.geometries) {
@@ -305,8 +305,9 @@ void MemoryProfile::print(long frame, const bbl::Engine& engine, std::size_t sce
     }
     constexpr double mb = 1024.0 * 1024.0;
     std::ostringstream line;
-    line << std::fixed << std::setprecision(1) << "[mem][frame] engine=" << stream_
-         << " frame=" << frame << " working_set_mb=" << bbl::pal::process_working_set_bytes() / mb
+    line << std::fixed << std::setprecision(1)
+         << "[mem][frame] engine=" << engine.memory_profile_stream << " frame=" << frame
+         << " working_set_mb=" << bbl::pal::process_working_set_bytes() / mb
          << " mesh_records=" << engine.meshes.size() - engine.free_mesh_slots.size()
          << " scene_meshes=" << scene_meshes << " transform_node_records="
          << engine.transform_nodes.size() - engine.free_transform_node_slots.size()

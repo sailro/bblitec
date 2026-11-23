@@ -116,7 +116,8 @@ export function installVcpkgManifest(
     vcpkgExecutable: string,
     install: VcpkgManifestInstall,
     environment: NodeJS.ProcessEnv,
-): void {
+    shippingToolchain?: string,
+): string {
     const stampPath = join(install.installedDirectory, stampName);
     const stamp = hashEntries([
         "vcpkg-install v3",
@@ -124,11 +125,22 @@ export function installVcpkgManifest(
         `features ${install.features.join(";")}`,
         `vcpkg ${toolIdentity(vcpkgExecutable)}`,
         `manifest ${manifestIdentity()}`,
+        ...(shippingToolchain
+            ? [`shipping toolchain ${shippingToolchain}`]
+            : []),
     ]);
     if (
         !existsSync(stampPath) ||
         readFileSync(stampPath, "utf8").trim() !== stamp
     ) {
+        if (
+            shippingToolchain &&
+            existsSync(install.installedDirectory) &&
+            readdirSync(install.installedDirectory).length
+        )
+            throw new Error(
+                `Refusing to replace the shipping install at ${install.installedDirectory}: missing or mismatched install stamp. Move it aside first.`,
+            );
         runChecked(
             vcpkgExecutable,
             [
@@ -145,7 +157,8 @@ export function installVcpkgManifest(
         const now = new Date();
         utimesSync(stampPath, now, now);
     }
-    pruneManifestInstalls(install.installedDirectory);
+    if (!shippingToolchain) pruneManifestInstalls(install.installedDirectory);
+    return stamp;
 }
 
 /**

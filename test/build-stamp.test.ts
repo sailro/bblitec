@@ -21,6 +21,7 @@ import {
     incompatibleCacheEntries,
     payloadOrphans,
     readCacheConfiguration,
+    readCacheSnapshot,
     sameCachePath,
 } from "../src/build-stamp.js";
 
@@ -252,6 +253,33 @@ test("compares a deployed payload against its generated source", (t) => {
     assert.deepEqual(payloadOrphans(payload), ["orphan.dxil"]);
 });
 
+test("losing the entire source payload reports leftovers without authorizing deletion", (t) => {
+    const root = mkdtempSync(join(tmpdir(), "bblitec-payload-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const source = join(root, "generated/assets");
+    const deployed = join(root, "build/assets");
+    const payload = { source, deployed, deploys: () => true };
+    assert.deepEqual(comparePayload(payload), []);
+    assert.deepEqual(payloadOrphans(payload), []);
+    for (const directory of [source, deployed]) {
+        mkdirSync(directory, { recursive: true });
+        writeFileSync(join(directory, "model.glb"), "model");
+    }
+    assert.deepEqual(comparePayload(payload), []);
+    rmSync(source, { recursive: true });
+    writeFileSync(join(deployed, "user.txt"), "not a generated asset");
+    assert.deepEqual(comparePayload(payload), [
+        { path: "model.glb", reason: "unexpected" },
+        { path: "user.txt", reason: "unexpected" },
+    ]);
+    assert.throws(() => payloadOrphans(payload), /Refusing to prune/);
+    assert.deepEqual(payloadOrphans(payload, [".deployment-stamp"]), []);
+    assert.throws(
+        () => payloadOrphans(payload, [".deployment-stamp", "user.txt"]),
+        /source|is absent/,
+    );
+});
+
 test("deploys the shader files the build's CMake cache records", (t) => {
     const root = mkdtempSync(join(tmpdir(), "bblitec-payload-"));
     t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -308,6 +336,7 @@ test("deploys the shader files the build's CMake cache records", (t) => {
         writeFileSync(resolve(bundle, "shaders", name), name);
     const staged = deployedPayloads(bundle, generated, build)[0]!;
     assert.deepEqual(comparePayload(staged), []);
+    const snapshot = readCacheSnapshot(build)!;
     writeFileSync(resolve(bundle, "shaders/pbr.frag.slots"), "stale");
     assert.deepEqual(comparePayload(staged), [
         { path: "pbr.frag.slots", reason: "changed" },
@@ -323,6 +352,14 @@ test("deploys the shader files the build's CMake cache records", (t) => {
     );
     const release = resolve(build, "Release");
     mkdirSync(release);
+    assert.notEqual(readCacheSnapshot(build)!.digest, snapshot.digest);
+    const preflight = deployedPayloads(
+        build,
+        generated,
+        build,
+        snapshot.configuration,
+    )[0]!;
+    assert.equal(preflight.deploys("pbr.frag.dxil"), false);
     assert.deepEqual(executableDeployedShaderSuffixes(release), [
         ".dxil",
         ".slots",

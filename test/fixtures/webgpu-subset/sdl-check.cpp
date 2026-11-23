@@ -9,6 +9,27 @@
 
 namespace {
 
+void check_malformed_roles() {
+    for (
+        const auto* metadata : {
+            "@workgroup 1 1 1\nr0 old 0 0 -1 -1\n",
+            "@compute-slots 2\n@workgroup 1 1 1\nr0 missing 0 0 -1 -1\n",
+            "@compute-slots 2\n@workgroup 1 1 1\nr0 unknown 0 0 -1 -1 other\n",
+            "@compute-slots 2\n@workgroup 1 1 1\nw0 wrong 0 0 -1 -1 dispatch-counts\n",
+            "@compute-slots 2\n@workgroup 1 1 1\nr0 a 0 0 -1 -1 dispatch-counts\nr1 b 0 1 -1 -1 dispatch-counts\n",
+        }) {
+        std::istringstream input(metadata);
+        bbl::pal::SdlComputePipeline pipeline;
+        SDL_GPUComputePipelineCreateInfo info{};
+        try {
+            bbl::pal::read_sdl_compute_metadata(input, info, pipeline);
+        } catch (const std::runtime_error&) {
+            continue;
+        }
+        throw std::runtime_error("accepted malformed compute slot metadata");
+    }
+}
+
 /** The scene pass an SDL_GPU renderer opens: rgba8 colour and its depth format. */
 struct SdlTarget final : stream_check::RenderTarget {
     SDL_GPUDevice* native;
@@ -111,6 +132,8 @@ bbl::js::Promise<bbl::js::PromiseVoid> run(std::shared_ptr<bbl::pal::SdlWebGpuDe
     stream_check::Library library(device);
     stream_check::check_limits(*device, limits);
     co_await stream_check::check_mapping(*device);
+    check_malformed_roles();
+    co_await stream_check::check_compute_roles(*device);
     co_await stream_check::check_sort(library, 70000, 69123, 0x13579bdfu);
     co_await stream_check::check_projection(library);
     const auto sog = stream_check::sog_images();

@@ -64,6 +64,7 @@ import {
     defaultCaptureDirectory,
     isOwnedArtifact,
     measuredBackends,
+    optionalBackend,
     parityReportPath,
     readCaptureMeta,
     resolveBackend,
@@ -136,6 +137,7 @@ import {
 } from "./capture-native.js";
 import { compareImages } from "./parity.js";
 import {
+    applicationScenes,
     configureAdHocScenes,
     resolveScene,
     scenes,
@@ -1725,7 +1727,7 @@ interface RenderDiffOptions {
 async function runRenderDiff(
     idOrSource: string,
     options: RenderDiffOptions,
-): Promise<{ findings: string[]; reportPath: string }> {
+): Promise<string[]> {
     const scene = resolveScene(idOrSource);
     const backend = resolveBackend(options.backend, "diff");
     const token = backendFileToken(backend);
@@ -1799,7 +1801,7 @@ async function runRenderDiff(
                 "the environment or pinned package moved since the golden was captured.",
         );
     }
-    return { findings: report.findings, reportPath };
+    return report.findings;
 }
 
 /**
@@ -2450,11 +2452,7 @@ async function runDiagnose(
         throw new Error(`Scene '${scene.id}' has no parity definition.`);
     }
     const parityDefinition = scene.parity;
-    const backendFlag = parsed.values.get("--backend");
-    const backend =
-        backendFlag === undefined
-            ? undefined
-            : resolveBackend(backendFlag, "diagnose");
+    const backend = optionalBackend(parsed, "diagnose");
     const seek = flagNumber(parsed, "--seek", "diagnose");
     const pose = resolvePose(scene, seek);
     const backends = measuredBackends(backend, "diagnose");
@@ -2497,21 +2495,19 @@ async function runDiagnose(
     // The capture pairing, which recaptures stale evidence on its own and
     // reports value/draw/shader findings worst-first.
     heading("diff");
-    let diffFindings: string[] | undefined;
     try {
-        const result = await runRenderDiff(idOrSource, {
+        const findings = await runRenderDiff(idOrSource, {
             ...(backend !== undefined ? { backend } : {}),
             ...(seek !== undefined ? { seekSeconds: seek } : {}),
             recapture: false,
         });
-        diffFindings = result.findings;
         steps.push({
             name: "diff",
             verdict:
-                result.findings.length === 0
+                findings.length === 0
                     ? "ok — no findings"
-                    : `${result.findings.length} finding(s); first: ${result.findings[0]}`,
-            ok: result.findings.length === 0,
+                    : `${findings.length} finding(s); first: ${findings[0]}`,
+            ok: findings.length === 0,
         });
     } catch (error) {
         steps.push({
@@ -2560,7 +2556,7 @@ async function runDiagnose(
         console.log(`  ${step.name}: ${step.verdict}`);
     }
     const ok = steps.every((step) => step.ok);
-    if (ok && diffFindings !== undefined) {
+    if (ok) {
         console.log(
             "  every step is clean at this pose; a remaining residual is " +
                 "below these instruments (docs/debugging.md#the-ladder).",
@@ -2573,7 +2569,7 @@ async function runDiagnose(
  *  the step itself just wrote; empty when they cannot be read. */
 function parityVerdict(
     outputDirectory: string,
-    backends: readonly string[],
+    backends: ReturnType<typeof measuredBackends>,
 ): string {
     try {
         if (backends.length === 2) {
@@ -2593,7 +2589,7 @@ function parityVerdict(
             readFileSync(
                 parityReportPath(
                     outputDirectory,
-                    backendFileToken(backends[0] ?? "sdl_gpu"),
+                    backendFileToken(backends[0]),
                 ),
                 "utf8",
             ),
@@ -3542,7 +3538,10 @@ async function main(): Promise<void> {
             await parity(id!, parityArgumentsFrom(parsed), rest);
             return;
         case "memory":
-            runMemoryReport(id!, memoryArgumentsFrom(parsed));
+            runMemoryReport(
+                id === "all" ? applicationScenes : [resolveScene(id!)],
+                memoryArgumentsFrom(parsed),
+            );
             return;
         case "capture":
             await runCapture(id!, parsed);

@@ -4,7 +4,7 @@ import { asObject, asRecords, type JsonObject } from "./json-fields.js";
 import type { GltfGeometryPacker } from "./gltf-mesh-geometry.js";
 import type { LoweringContext } from "./lowering/context.js";
 import { featureMethod } from "./lowering/gltf/shared.js";
-import { loadPinnedBrdfLutShader } from "./ibl-brdf-lut.js";
+import { brdfLutShape, loadPinnedBrdfLutShader } from "./ibl-brdf-lut.js";
 import { javascriptModuleUrl } from "./data-url.js";
 import { pinnedModuleTextUrl } from "./pinned-shader-composer.js";
 import { transpileForBrowser } from "./typescript-transpile.js";
@@ -408,15 +408,11 @@ export class GltfIblRecording {
                     );
                     if (
                         !texture ||
-                        texture.width !== 256 ||
-                        texture.height !== 256 ||
-                        texture.depthOrArrayLayers !== 1 ||
-                        texture.mipLevelCount !== 1 ||
-                        texture.format !== "rgba16float" ||
-                        dispatch.pipeline.descriptor.compute.constants !==
-                            undefined ||
-                        dispatch.workgroups.length !== 2 ||
-                        dispatch.workgroups.some((value) => value !== 32)
+                        !(
+                            Object.keys(
+                                brdfLutShape,
+                            ) as (keyof typeof brdfLutShape)[]
+                        ).every((key) => texture[key] === brdfLutShape[key])
                     )
                         throw new Error(
                             "Unsupported glTF IBL BRDF bake contract.",
@@ -641,7 +637,7 @@ export function packagedGltfIbl(document: JsonObject): GltfIblPlan {
             accessor.count !== 9 ||
             accessor.componentType !== 5126 ||
             harmonics === undefined ||
-            record.brdfWidth !== 256
+            record.brdfWidth !== brdfLutShape.width
         )
             throw new Error("Invalid packaged glTF IBL resources.");
         const faces = record.faces.map((value) => {

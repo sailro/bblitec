@@ -11,6 +11,7 @@ import { isRecord, isString } from "../json-fields.js";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
+    binaryCarriesStamp,
     comparePayload,
     computeBuildStamp,
     deployedPayloads,
@@ -309,9 +310,9 @@ export function readSceneStatus(
               mismatches: comparePayload(entry).length,
           }))
         : [];
-    const binaryCarriesStamp =
+    const carriesStamp =
         executableExists && expectedStamp !== undefined
-            ? readFileSync(executable).includes(expectedStamp)
+            ? binaryCarriesStamp(executable, expectedStamp)
             : undefined;
     const configuredBackend =
         readCacheConfiguration(buildDirectory)?.BBLITE_BACKEND;
@@ -322,14 +323,14 @@ export function readSceneStatus(
         executable,
         executableExists,
         payload,
-        binaryCarriesStamp,
+        binaryCarriesStamp: carriesStamp,
         ...(configuredBackend !== undefined ? { configuredBackend } : {}),
         current:
             generatedTreeExists &&
             generationCurrent &&
             executableExists &&
             payload.every((entry) => entry.mismatches === 0) &&
-            binaryCarriesStamp === true,
+            carriesStamp === true,
     };
 }
 

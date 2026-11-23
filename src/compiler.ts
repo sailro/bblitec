@@ -14,6 +14,7 @@ import { outlineEmittedBody } from "./compiler/body-outlining.js";
 import { cppIdentifiers } from "./compiler/cpp-identifiers.js";
 import {
     hasScalarFacts,
+    staticStringValue,
     isStringValue,
     optionalPresentCpp,
     optionalValueCpp,
@@ -186,6 +187,8 @@ import {
     deploymentPublicUrl,
     deploymentUrl,
     moduleRelativeUrl,
+    nativeModuleOrigin,
+    nativeModuleUrl,
 } from "./compiler/deployment.js";
 import { browserGeneratedString } from "./compiler/browser-generated-string.js";
 import { compileBrowserTextureFunctionCall } from "./compiler/browser-texture-function.js";
@@ -251,11 +254,7 @@ import {
 } from "./compiler/data-types.js";
 import { metadataFieldsForKind } from "./compiler/values/metadata.js";
 import { engineFieldIdentities } from "./compiler/engine-field-identities.js";
-import {
-    ExpressionLowerer,
-    staticStringCoercion,
-    stringConcatPart,
-} from "./compiler/expressions.js";
+import { ExpressionLowerer } from "./compiler/expressions.js";
 import { NativeFunctionLowerer } from "./compiler/native-functions.js";
 import {
     emitReachableStatements,
@@ -352,6 +351,7 @@ import {
     writeSites,
     isValueReference,
     expressionHasEffects,
+    expressionMayRunCode,
     lastWriter,
     objectLiteralMembers,
     plainDataMembers,
@@ -367,7 +367,11 @@ import {
     notJson,
     type SupportedFunction,
 } from "./compiler/syntax.js";
-import { CompileError, unlessRefused } from "./compiler/compile-error.js";
+import {
+    CompileError,
+    unlessRefused,
+    unlessRuntimeValue,
+} from "./compiler/compile-error.js";
 import { packagedValueDomain } from "./compiler/asset-url-domain.js";
 import {
     isEffectTaskMethodName,
@@ -4960,15 +4964,13 @@ class Compiler implements LoweringServices {
         return initializer;
     }
 
-    /**
-     * A browser module resolves runtime assets with a tiny `new URL(path,
-     * import.meta.url)` helper. Native packaging needs the logical public-root
-     * path, not the browser bundle URL, so recognize that pure helper by its
-     * structure and fold it before the ordinary string evaluator runs.
-     */
-    public moduleRelativeAssetUrl(
-        expression: ts.Expression,
-    ): string | undefined {
+    /** The path and pathname rewrites of a pure helper called against the module's URL. */
+    private moduleRelativeAssetCall(expression: ts.Expression):
+        | {
+              path: ts.Expression;
+              replacements: readonly (readonly [string, string])[];
+          }
+        | undefined {
         const resolved = this.resolveStaticExpression(expression);
         if (
             !ts.isCallExpression(resolved) ||
@@ -4981,7 +4983,12 @@ class Compiler implements LoweringServices {
         const declaration = this.symbols
             .valueSymbol(resolved.expression)
             ?.declarations?.find(ts.isFunctionDeclaration);
-        if (!declaration?.body || declaration.parameters.length !== 2) {
+        if (
+            !declaration?.body ||
+            functionKind(declaration) !== "plain" ||
+            declaration.parameters.length !== 2 ||
+            declaration.parameters.some((parameter) => parameter.dotDotDotToken)
+        ) {
             return undefined;
         }
         const pathParameter = declaration.parameters[0]!.name;
@@ -4997,91 +5004,86 @@ class Compiler implements LoweringServices {
             pathParameter.text,
             moduleParameter.text,
         );
-        if (!replacements) return undefined;
-        if (ts.isTemplateExpression(argumentAt(resolved, 0))) {
-            return undefined;
-        }
-        return moduleRelativeUrl(
-            this.evaluator.compileStringLiteral(argumentAt(resolved, 0)),
-            replacements,
-        );
+        return replacements
+            ? { path: argumentAt(resolved, 0), replacements }
+            : undefined;
     }
 
-    /** Runtime final segment of the same pure module-relative URL helper. */
-    public compileDynamicModuleRelativeAssetUrl(
+    public isModuleRelativeAssetCall(expression: ts.Expression): boolean {
+        return this.moduleRelativeAssetCall(expression) !== undefined;
+    }
+
+    /** A folded module URL for static asset sinks and package discovery. */
+    private moduleRelativeAssetUrl(
         expression: ts.Expression,
-    ): Value | undefined {
-        const resolved = this.resolveStaticExpression(expression);
-        if (
-            !ts.isCallExpression(resolved) ||
-            !ts.isIdentifier(resolved.expression) ||
-            resolved.arguments.length !== 2 ||
-            !this.isImportMetaUrl(argumentAt(resolved, 1))
-        ) {
-            return undefined;
-        }
-        const declaration = this.symbols
-            .valueSymbol(resolved.expression)
-            ?.declarations?.find(ts.isFunctionDeclaration);
-        if (!declaration?.body || declaration.parameters.length !== 2) {
-            return undefined;
-        }
-        const pathParameter = declaration.parameters[0]!.name;
-        const moduleParameter = declaration.parameters[1]!.name;
-        if (
-            !ts.isIdentifier(pathParameter) ||
-            !ts.isIdentifier(moduleParameter)
-        ) {
-            return undefined;
-        }
-        const replacements = this.moduleUrlPathReplacements(
-            declaration.body,
-            pathParameter.text,
-            moduleParameter.text,
+    ): string | undefined {
+        const helper = this.moduleRelativeAssetCall(expression);
+        if (!helper || expressionMayRunCode(helper.path)) return undefined;
+        const text = unlessRuntimeValue(() =>
+            this.evaluator.compileStringLiteral(helper.path),
         );
-        if (!replacements) return undefined;
-        const path = this.unwrap(argumentAt(resolved, 0));
+        return text === undefined
+            ? undefined
+            : moduleRelativeUrl(text, helper.replacements);
+    }
+
+    public compileModuleRelativeAssetUrl(
+        call: ts.CallExpression,
+    ): Value | undefined {
+        const helper = this.moduleRelativeAssetCall(call);
+        if (!helper) return undefined;
+        const path = this.compileValue(helper.path);
+        const folded =
+            path.staticString !== undefined && !path.parameterBinding
+                ? moduleRelativeUrl(path.staticString, helper.replacements)
+                : undefined;
+        if (folded !== undefined) {
+            if (path.impure) this.emitDiscardedValue(path);
+            return staticStringValue(folded, (text) => this.cppString(text));
+        }
+        // The literal directory is a package inventory hint, never the value of the URL.
+        const template = this.unwrap(helper.path);
         if (
-            !ts.isTemplateExpression(path) ||
-            path.templateSpans.length !== 1 ||
-            path.templateSpans[0]!.literal.text.length !== 0
+            ts.isTemplateExpression(template) &&
+            template.head.text.endsWith("/")
         ) {
-            return undefined;
-        }
-        const span = path.templateSpans[0]!.expression;
-        const suffix = this.compileValue(span);
-        const prefix = moduleRelativeUrl(path.head.text, replacements);
-        // Any other substitution converts as in every template literal.
-        const text = isStringValue(suffix)
-            ? suffix.staticString
-            : staticStringCoercion(suffix);
-        if (text !== undefined) {
-            const staticString = prefix + text;
-            return {
-                kind: "string",
-                cpp: this.cppString(staticString),
-                staticString,
-            };
-        }
-        if (prefix.endsWith("/")) {
+            const prefix = moduleRelativeUrl(
+                template.head.text,
+                helper.replacements,
+            );
             const candidates = this.staticAssetUrlCandidates();
-            if (!candidates.includes(prefix))
+            if (
+                prefix !== undefined &&
+                prefix.endsWith("/") &&
+                !candidates.includes(prefix)
+            )
                 this.staticAssetUrlCandidateCache = [
                     ...candidates,
                     prefix,
                 ].sort();
         }
-        if (isStringValue(suffix))
-            return {
-                kind: "data",
-                cpp: `(${this.cppString(prefix)} + ${suffix.cpp})`,
-                dataType: { kind: "string" },
-            };
         this.reachJsData();
+        const input = this.dataLowerer.compileKnownValueForSink(
+            path,
+            { kind: "string" },
+            helper.path,
+        );
+        const urlType = this.dataTypes.cppType({ kind: "url" });
+        const url = this.allocateTemporaryCppName("module_url");
+        this.emit({
+            kind: "declaration",
+            type: urlType,
+            name: url,
+            initializer: `${urlType}(${input}, std::string_view(${this.cppString(nativeModuleUrl)}))`,
+        });
+        for (const [from, to] of helper.replacements)
+            this.emit(
+                `${url}.set_pathname(bbl::js::string_replace(${url}.pathname(), ${this.cppString(from)}, ${this.cppString(to)}, false));`,
+            );
         return {
             kind: "data",
-            cpp: `bbl::js::concat(${this.cppString(prefix)}, ${stringConcatPart(this, suffix, span)})`,
             dataType: { kind: "string" },
+            cpp: `(${url}.origin() == ${this.cppString(nativeModuleOrigin)} ? ${url}.pathname() + ${url}.search() + ${url}.hash() : ${url}.href())`,
         };
     }
 

@@ -30,6 +30,10 @@ const program = `
         first === undefined ? "U" + whole : "D");
     if (replaced !== "Ub") throw new Error("replace callback");
     if ("b".replace(/(a)?b/, "[$1]") !== "[]") throw new Error("replace $1");
+    const subject = Math.random() >= 0 ? "a" : "b";
+    if (subject.replace(/(a)/, "$12") !== "a2" || subject.replace(/a/, "$1") !== "$1"
+        || subject.replace(/(a)/u, "$12") !== "a2" || subject.replace(/a/u, "$1") !== "$1")
+        throw new Error("out-of-range replacement capture");
     const pieces = "a1b-c".split(/(\\d)|-/);
     if (pieces.length !== 5 || pieces[1] !== "1" || pieces[3] !== undefined || pieces[4] !== "c")
         throw new Error("split " + pieces.length);

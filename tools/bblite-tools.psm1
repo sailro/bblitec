@@ -190,16 +190,22 @@ function Sync-PinnedCheckout(
 # Runs native/patch-identity.cmake, the one owner of the maintained patch
 # series and of the record an artifact carries, and returns the lines it wrote.
 function Invoke-PatchIdentity(
-    [ValidateSet('series', 'record')][string]$Action,
+    [ValidateSet('series', 'record', 'state')][string]$Action,
     [string]$Library,
     [string[]]$Variants = @(),
-    [string]$CMake = ""
+    [string]$CMake = "",
+    [string]$Artifact,
+    [string[]]$RequiredVariants
 ) {
     $cmakePath = Find-CMake $CMake
+    $options = @("-DBBLITE_PATCH_VARIANTS=$($Variants -join ';')")
+    if ($PSBoundParameters.ContainsKey('Artifact')) { $options += "-DBBLITE_PATCH_ARTIFACT=$Artifact" }
+    # Omitted accepts the recorded variants; an explicit empty set requires none.
+    if ($PSBoundParameters.ContainsKey('RequiredVariants')) { $options += "-DBBLITE_PATCH_REQUIRE=$($RequiredVariants -join ';')" }
     $output = [IO.Path]::GetTempFileName()
     try {
         & $cmakePath "-DBBLITE_PATCH_ACTION=$Action" "-DBBLITE_PATCH_LIBRARY=$Library" `
-            "-DBBLITE_PATCH_VARIANTS=$(@($Variants) -join ';')" "-DBBLITE_PATCH_OUTPUT=$output" `
+            @options "-DBBLITE_PATCH_OUTPUT=$output" `
             -P (Join-Path (Get-RepositoryRoot) "native/patch-identity.cmake") | Out-Host
         if ($LASTEXITCODE -ne 0) { throw "native/patch-identity.cmake $Action $Library failed ($LASTEXITCODE)." }
         return @(Get-Content -LiteralPath $output | Where-Object { $_ -ne "" })
@@ -435,6 +441,7 @@ Export-ModuleMember -Function @(
     "Get-DevToolchain",
     "Sync-PinnedCheckout",
     "Sync-PatchedCheckout",
+    "Invoke-PatchIdentity",
     "Get-MaintainedPatches",
     "Get-DependencyInputs",
     "Install-MaintainedPatches",

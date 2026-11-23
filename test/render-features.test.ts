@@ -175,7 +175,9 @@ int main() {
     engine.vat_bakes.push_back(VatBakeRecord{});
     engine.vat_bakes[0].clips.push_back(VatClipRow{"swim", 2.0, 5.0, 30.0});
     engine.meshes[0].skinned = true;
+    engine.meshes[0].skeleton_attached = true;
     const VatHandle handle = attach_vat(engine, MeshHandle{0}, VatBake{0}, std::string("swim"));
+    if (engine.meshes[0].skeleton_attached) return 2;
     const auto& block = engine.meshes[0].vat.settings;
     std::string lanes;
     const auto lane = [&] {

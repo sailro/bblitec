@@ -1,6 +1,19 @@
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import {
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    readdirSync,
+    readFileSync,
+    rmSync,
+    statSync,
+    utimesSync,
+    writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { discoverDevelopmentTools } from "../src/development-tools.js";
+import { runCaptured } from "../src/tooling/logged-process.js";
 import test from "node:test";
 import {
     canonicalCompiledBackend,
@@ -799,12 +812,87 @@ test("shader sidecar loading rejects unbounded generated indices", () => {
     );
 });
 
-test("native shader snapshots track additions and removals", () => {
-    const cmake = readFileSync("native/CMakeLists.txt", "utf8");
-    assert.match(cmake, /list\(SORT BBLITE_GENERATED_SHADER_FILES\)/);
-    assert.match(cmake, /bblite-generated-shaders\.manifest/);
-    assert.match(
-        cmake,
-        /DEPENDS\s+\$\{BBLITE_GENERATED_SHADER_FILES\}\s+"\$\{BBLITE_GENERATED_SHADER_MANIFEST\}"/,
+test("shader deployment tracks only the selected backend, including the last removal", (t) => {
+    const { cmake, ninja: pathNinja } = discoverDevelopmentTools();
+    const ninja = pathNinja ?? optionalNativeFixtureTools(false)?.ninja;
+    if (!cmake || !ninja) return t.skip("CMake and Ninja required");
+    const root = mkdtempSync(join(tmpdir(), "bblite-shaders-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const build = join(root, "build");
+    const source = join(root, "upstream/shaders");
+    const payload = join(build, "bin/shaders");
+    mkdirSync(join(source, "mesh"), { recursive: true });
+    writeFileSync(
+        join(root, "CMakeLists.txt"),
+        [
+            "cmake_minimum_required(VERSION 3.24)",
+            "project(deploy NONE)",
+            "add_executable(bblite_native IMPORTED)",
+            'set_target_properties(bblite_native PROPERTIES IMPORTED_LOCATION "${CMAKE_BINARY_DIR}/bin/app")',
+            "set(BBLITE_BACKEND_DAWN ON)",
+            'set(BBLITE_GENERATED_DIR "${CMAKE_SOURCE_DIR}")',
+            `include("${resolve("native/shader-deployment.cmake").replaceAll("\\", "/")}")`,
+        ].join("\n") + "\n",
     );
+    const shader = join(source, "mesh/p.native.wgsl");
+    writeFileSync(shader, "first");
+    runCaptured(
+        cmake,
+        [
+            "-G",
+            "Ninja",
+            `-DCMAKE_MAKE_PROGRAM=${ninja}`,
+            "-S",
+            root,
+            "-B",
+            build,
+        ],
+        "configure shader fixture",
+    );
+    const deploy = () =>
+        runCaptured(cmake, ["--build", build], "deploy shader fixture");
+    deploy();
+    assert.equal(
+        readFileSync(join(payload, "mesh/p.native.wgsl"), "utf8"),
+        "first",
+    );
+    writeFileSync(join(source, "mesh/p.hlsl"), "diagnostic");
+    assert.doesNotMatch(deploy(), /Generating bblite-shaders-deployed/);
+    assert.deepEqual(readdirSync(join(payload, "mesh")), ["p.native.wgsl"]);
+    const slots = join(source, "mesh/p.slots");
+    writeFileSync(slots, "bindings");
+    utimesSync(slots, 1, 1);
+    deploy();
+    assert.equal(
+        readFileSync(join(payload, "mesh/p.slots"), "utf8"),
+        "bindings",
+    );
+    const deployedSlots = join(payload, "mesh/p.slots");
+    utimesSync(deployedSlots, 1, 1);
+    const unchangedMtime = statSync(deployedSlots).mtimeMs;
+    const unowned = join(payload, "mesh/unowned.slots");
+    writeFileSync(unowned, "not installed by this build");
+    writeFileSync(shader, "second");
+    deploy();
+    assert.equal(
+        readFileSync(join(payload, "mesh/p.native.wgsl"), "utf8"),
+        "second",
+    );
+    assert.equal(statSync(deployedSlots).mtimeMs, unchangedMtime);
+    rmSync(slots);
+    rmSync(shader);
+    deploy();
+    assert.ok(!existsSync(join(payload, "mesh/p.slots")));
+    assert.ok(!existsSync(join(payload, "mesh/p.native.wgsl")));
+    assert.equal(readFileSync(unowned, "utf8"), "not installed by this build");
+
+    const outside = join(payload, "../unowned.slots");
+    writeFileSync(outside, "outside the shader directory");
+    writeFileSync(
+        join(payload, ".bblite-deployed-shaders"),
+        "../unowned.slots",
+    );
+    writeFileSync(shader, "new");
+    assert.throws(deploy, /Invalid deployed shader path/);
+    assert.equal(readFileSync(outside, "utf8"), "outside the shader directory");
 });

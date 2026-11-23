@@ -3157,14 +3157,8 @@ struct MeshRecord {
      */
     bool pinned_bone_palette = false;
     /**
-     * Whether the glTF node this record was flattened from carried a
-     * `skin` AND the file carried animation: the loader writes it inside
-     * its animated branch, so a skinned file with no clips leaves it
-     * false where the pin's `mesh.skeleton` would answer the mesh. Both
-     * readers -- the first-skinned search and the VAT bake -- want a mesh
-     * whose palette some clip poses, so neither can observe the gap; a
-     * reader that only wanted the skin binding would have to widen this.
-     * Written only in VAT builds, since those two are its only readers.
+     * The skin palette flag for VAT and deformation transport. A source
+     * test of `mesh.skeleton` reads skeleton_attached below.
      */
     bool skinned = false;
     /**
@@ -5229,6 +5223,9 @@ struct Engine {
     std::function<void()> flush_gpu_retirements;
     std::function<void()> dispose_gpu_retirements;
     std::uint64_t device_generation = 1;
+    /** Memory samples follow this engine across renderer replacement on device loss. */
+    std::uint32_t memory_profile_stream = 0;
+    std::uint64_t memory_profile_frame = 0;
     /** The last ordinal a GPU texture, view or device-made sampler took. */
     std::uint64_t published_gpu_objects = 0;
     bool device_disposed = false;
@@ -6478,7 +6475,8 @@ inline void reclaim_transform_nodes(Engine& engine) {
         record.children = {};
         record.parented_nodes = {};
         std::string().swap(record.name);
-        engine.free_transform_node_slots.push_back(slot);
+        if (has_next_generation(generation))
+            engine.free_transform_node_slots.push_back(slot);
     }
 }
 
@@ -6513,7 +6511,7 @@ inline void release_unowned_geometry(Engine& engine, std::uint32_t geometry) {
 inline void offer_retired_mesh_slot(Engine& engine, MeshHandle mesh) {
     MeshRecord* record = handle_find(engine.meshes, mesh);
     if (record && record->retired && !record->slot_offered && record->parented_meshes.empty() &&
-        record->names.expired()) {
+        record->names.expired() && has_next_generation(record->generation)) {
         record->slot_offered = true;
         engine.free_mesh_slots.push_back(mesh.value);
     }
@@ -6599,8 +6597,7 @@ inline void require_live_mesh_parent(const MeshRecord& parent) {
  * The pin's JavaScript collector frees a disposed mesh once nothing
  * references it. Here a retired record's slot is offered
  * (`offer_retired_mesh_slot`) and the next record takes it under the next
- * generation, so a program that keeps building and retiring meshes holds a
- * table no larger than the most meshes it held at once. The record takes
+ * generation unless the retired slot has exhausted its generations. The record takes
  * its composition row here (`stored_mesh_composition_row`).
  */
 inline MeshHandle store_mesh_record(Engine& engine, MeshRecord record) {
@@ -6664,6 +6661,20 @@ inline void retire_mesh_record(
 
 inline MaterialHandle render_task_mesh_material(const Engine& engine, const RenderTaskMesh& entry) {
     return entry.follows_material ? handle_at(engine.meshes, entry.mesh).material : entry.material;
+}
+
+/** buildNodeHierarchy's root contributes the glTF registration's meshes in DFS order.
+ * Read the live skeleton binding: attaching a VAT can clear it after the load. */
+inline MeshHandle first_skinned_gltf_descendant(const Engine& engine, AssetHandle asset) {
+    const auto& record = handle_at(engine.assets, asset);
+    if (!record.source_mesh_walks || !record.source_mesh_walks->scene)
+        throw std::runtime_error("Missing glTF scene mesh traversal.");
+    for (const auto index : *record.source_mesh_walks->scene) {
+        const auto mesh = record.meshes.at(index);
+        if (handle_at(engine.meshes, mesh).skeleton_attached)
+            return mesh;
+    }
+    return {};
 }
 
 inline std::vector<MeshHandle> asset_mesh_walk(const Engine& engine, AssetHandle asset,

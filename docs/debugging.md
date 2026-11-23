@@ -88,10 +88,14 @@ npm run scene -- check <check-id> [--backend sdl_gpu|dawn] [--phase <id>] [--kee
 
 ## Memory
 
+For the Windows allocator and GC fixtures, run `npm run build`, set `$env:BBLITE_GC_ASAN = '1'`, then run
+`node --test dist/test/js-gc-reentrant.test.js`. Unset the variable afterward. This instruments the fixture
+translation units with clang-cl AddressSanitizer; it does not check leaks or instrument third-party libraries.
+
 `memory` runs 6,000 frames (or a demo tape's `frames`) and judges samples after the warm-up third. It fails on a
 working-set slope above `--max-slope-mb` (MB per 1,000 frames, default 2, Theil–Sen over the window and its later half),
 accumulating undrawn mesh records or vertex-less geometry, rising GC nodes, or missing samples. Every engine stream is
-judged. `all` selects application demos; `checks/memory/<id>.json` supplies the default tape; `--replay -` idles.
+judged. Each native memory run has a ten-minute wall-clock limit. `all` selects application demos; `checks/memory/<id>.json` supplies the default tape; `--replay -` idles.
 
 ## Artifacts
 

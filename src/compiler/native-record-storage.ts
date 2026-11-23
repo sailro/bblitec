@@ -229,7 +229,7 @@ export function mergeNativeRecordStorage(
  * A demanded record no native object can hold (`predeclareOwnedRecord`):
  * the demand stands refused, and a statement demanding it again refuses.
  */
-export class NativeRecordDemandRefused extends StorageDemand {
+class NativeRecordDemandRefused extends StorageDemand {
     constructor(
         readonly demand: NativeRecordStorageDemand,
         readonly refusal: CompileError,

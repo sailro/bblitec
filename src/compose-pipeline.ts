@@ -22,7 +22,6 @@ import {
 // context mirrors the host's names (`result`, `outputPath`, ...) so the
 // moved body reads exactly as it did inline, and the values the remainder
 // of `main` consumes travel back in the returned record.
-import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { executeModuleGraph } from "./executed-module-graph.js";
 import {
@@ -73,7 +72,6 @@ import { pinnedSceneArms } from "./pinned-scene-arms.js";
 import { reachedRectAreaLightings } from "./pinned-rect-area-lights.js";
 import { reachedLightKinds, type LightKind } from "./compiler/types.js";
 import {
-    babylonRenderableCount,
     composeSceneStandardVariants,
     type StandardSceneComposition,
 } from "./pinned-standard-variants.js";
@@ -459,12 +457,9 @@ export async function composeScenePipeline({
     // but retaining the default makes this orchestration safe for a caller
     // constructing a minimal manifest directly.
     if (toneMappingStates.length === 0) toneMappingStates.push(false);
-    const assetLightsReached =
-        assetJoin.assetLightNodes !== undefined ||
-        assetJoin.babylonLights.length > 0;
     const staticLightKinds =
         !result.manifest.dynamicSceneLights &&
-        !assetLightsReached &&
+        !assetJoin.assetLightsReached &&
         !result.manifest.registeredSceneLightKinds?.includes(null)
             ? result.manifest.sceneLightKinds
             : undefined;
@@ -1164,135 +1159,120 @@ export async function composeScenePipeline({
                       runtimeStandardFeatureValues,
                       receiveShadowsBit,
                   );
-        const babylonAssets = result.manifest.assets
-            .filter((asset) => asset.kind === "babylon")
-            .map((asset) => resolve(outputPath, "assets", asset.output));
+        const { babylonAssets } = assetJoin;
         const sceneStandardMaterials =
             result.manifest.sceneMaterialCount >
             result.manifest.scenePbrMaterials.length;
-        standardComposition = await composeSceneStandardVariants(
-            {
-                babylonAssets,
-                babylonTextureModes: new Map(
-                    result.manifest.assets
-                        .filter((asset) => asset.kind === "babylon")
-                        .map((asset) => [
-                            resolve(outputPath, "assets", asset.output),
-                            asset.babylonTextureModes ?? [true],
-                        ]),
+        standardComposition = await composeSceneStandardVariants({
+            babylonAssets: [...babylonAssets.values()],
+            fog: result.manifest.features.includes("renderer:fog"),
+            ...(rectAreaLightings ? { rectAreaLightings } : {}),
+            vertexColors: result.manifest.features.includes(
+                "material:standard-vertex-colors",
+            ),
+            skeleton: result.manifest.features.includes(
+                "material:standard-skeleton",
+            ),
+            vertexAlpha: result.manifest.features.includes("mesh:vertex-alpha"),
+            noColorViews: result.manifest.features.includes(
+                "material:no-color-view",
+            ),
+            esmShadowViews: result.manifest.features.includes("shadow:esm"),
+            emissiveRenderTexture: result.manifest.features.includes(
+                "material:standard-emissive-render-texture",
+            ),
+            diffuseRenderTexture: result.manifest.features.includes(
+                "material:standard-diffuse-render-texture",
+            ),
+            diffusePixelsTexture: result.manifest.features.includes(
+                "material:standard-diffuse-pixels-texture",
+            ),
+            diffuseSolidTexture: result.manifest.features.includes(
+                "material:standard-diffuse-solid-texture",
+            ),
+            diffuseFileTexture: result.manifest.features.includes(
+                "material:standard-diffuse-file-texture",
+            ),
+            emissiveFileTexture: result.manifest.features.includes(
+                "material:standard-emissive-file-texture",
+            ),
+            lightmapFileTexture: result.manifest.features.includes(
+                "material:standard-lightmap",
+            ),
+            bumpFileTexture: result.manifest.features.includes(
+                "material:standard-bump",
+            ),
+            parallaxOcclusion: result.manifest.features.includes(
+                "material:parallax-occlusion",
+            ),
+            uvTransform: result.manifest.features.includes(
+                "material:standard-uv-transform",
+            ),
+            standardMaterialPlugins: result.manifest.standardMaterialPlugins,
+            standardMaterialPluginInputs:
+                result.manifest.standardMaterialPluginInputs,
+            standardMaterialPluginMeshFeatureValues:
+                standardPluginMeshFeatureValues(
+                    result.manifest.standardMaterialPlugins.length,
+                    result.manifest.sceneMeshes,
+                    standardSceneMeshFeatures,
+                    thinInstancesBit,
+                    instanceColorBit,
+                    meshOpacity,
                 ),
-                fog: result.manifest.features.includes("renderer:fog"),
-                ...(rectAreaLightings ? { rectAreaLightings } : {}),
-                vertexColors: result.manifest.features.includes(
-                    "material:standard-vertex-colors",
-                ),
-                skeleton: result.manifest.features.includes(
-                    "material:standard-skeleton",
-                ),
-                vertexAlpha:
-                    result.manifest.features.includes("mesh:vertex-alpha"),
-                noColorViews: result.manifest.features.includes(
-                    "material:no-color-view",
-                ),
-                esmShadowViews: result.manifest.features.includes("shadow:esm"),
-                emissiveRenderTexture: result.manifest.features.includes(
-                    "material:standard-emissive-render-texture",
-                ),
-                diffuseRenderTexture: result.manifest.features.includes(
-                    "material:standard-diffuse-render-texture",
-                ),
-                diffusePixelsTexture: result.manifest.features.includes(
-                    "material:standard-diffuse-pixels-texture",
-                ),
-                diffuseSolidTexture: result.manifest.features.includes(
-                    "material:standard-diffuse-solid-texture",
-                ),
-                diffuseFileTexture: result.manifest.features.includes(
-                    "material:standard-diffuse-file-texture",
-                ),
-                emissiveFileTexture: result.manifest.features.includes(
-                    "material:standard-emissive-file-texture",
-                ),
-                lightmapFileTexture: result.manifest.features.includes(
-                    "material:standard-lightmap",
-                ),
-                bumpFileTexture: result.manifest.features.includes(
-                    "material:standard-bump",
-                ),
-                parallaxOcclusion: result.manifest.features.includes(
-                    "material:parallax-occlusion",
-                ),
-                uvTransform: result.manifest.features.includes(
-                    "material:standard-uv-transform",
-                ),
-                standardMaterialPlugins:
-                    result.manifest.standardMaterialPlugins,
-                standardMaterialPluginInputs:
-                    result.manifest.standardMaterialPluginInputs,
-                standardMaterialPluginMeshFeatureValues:
-                    standardPluginMeshFeatureValues(
-                        result.manifest.standardMaterialPlugins.length,
-                        result.manifest.sceneMeshes,
-                        standardSceneMeshFeatures,
-                        thinInstancesBit,
-                        instanceColorBit,
-                        meshOpacity,
-                    ),
-                thinInstances: hasRuntimeThinInstances,
-                thinInstanceColors: hasRuntimeThinInstanceColors,
-                ...(meshOpacity.bit !== undefined
-                    ? {
-                          meshOpacity: {
-                              bit: meshOpacity.bit,
-                              ...(meshOpacity.reaches()
-                                  ? {}
-                                  : {
-                                        values: [
-                                            ...new Set(
-                                                expandRuntimeMeshFeatureSets(
-                                                    standardSceneMeshFeatures.filter(
-                                                        (_, index) =>
-                                                            meshOpacity.reaches(
-                                                                index,
-                                                            ),
-                                                    ),
-                                                    dynamicReceiverBits,
+            thinInstances: hasRuntimeThinInstances,
+            thinInstanceColors: hasRuntimeThinInstanceColors,
+            ...(meshOpacity.bit !== undefined
+                ? {
+                      meshOpacity: {
+                          bit: meshOpacity.bit,
+                          ...(meshOpacity.reaches()
+                              ? {}
+                              : {
+                                    values: [
+                                        ...new Set(
+                                            expandRuntimeMeshFeatureSets(
+                                                standardSceneMeshFeatures.filter(
+                                                    (_, index) =>
+                                                        meshOpacity.reaches(
+                                                            index,
+                                                        ),
                                                 ),
+                                                dynamicReceiverBits,
                                             ),
-                                        ],
-                                    }),
-                          },
-                      }
-                    : {}),
-                morphTargets:
-                    result.manifest.features.includes("mesh:morph-targets"),
-                deformationVelocity: result.manifest.features.includes(
-                    "renderer:geometry-velocity",
-                ),
-                sceneMaterials: sceneStandardMaterials,
-                sceneMeshFeatureValues: [
-                    ...new Set(
-                        expandRuntimeMeshFeatureSets(
-                            result.manifest.standardMaterialUnknownMesh
-                                ? renderableMeshFeatures
-                                : standardSceneMeshFeatures,
-                            dynamicReceiverBits,
-                        ),
+                                        ),
+                                    ],
+                                }),
+                      },
+                  }
+                : {}),
+            morphTargets:
+                result.manifest.features.includes("mesh:morph-targets"),
+            deformationVelocity: result.manifest.features.includes(
+                "renderer:geometry-velocity",
+            ),
+            sceneMaterials: sceneStandardMaterials,
+            sceneMeshFeatureValues: [
+                ...new Set(
+                    expandRuntimeMeshFeatureSets(
+                        result.manifest.standardMaterialUnknownMesh
+                            ? renderableMeshFeatures
+                            : standardSceneMeshFeatures,
+                        dynamicReceiverBits,
                     ),
-                ],
-                shadowLights,
-                geometryTasks: result.manifest.geometryOutputTasks.map(
-                    (task, index) => ({
-                        index,
-                        attachments: task.attachments,
-                        emitColor: task.emitColor,
-                        ...(task.velocity ? { velocity: true } : {}),
-                    }),
                 ),
-            },
-            (path) => readFileSync(path, "utf8"),
-        );
-        if (babylonAssets.length === 0) {
+            ],
+            shadowLights,
+            geometryTasks: result.manifest.geometryOutputTasks.map(
+                (task, index) => ({
+                    index,
+                    attachments: task.attachments,
+                    emitColor: task.emitColor,
+                    ...(task.velocity ? { velocity: true } : {}),
+                }),
+            ),
+        });
+        if (babylonAssets.size === 0) {
             // The PBR-family walk above is actually a shared mesh-feature
             // walk: with glTF plus scene builders it already follows runtime
             // creation order, including a scene mesh created before a later
@@ -1313,12 +1293,9 @@ export async function composeScenePipeline({
                     );
                     gltfAssetIndex += 1;
                 } else if (asset.kind === "babylon") {
-                    const count = babylonRenderableCount(
-                        readFileSync(
-                            resolve(outputPath, "assets", asset.output),
-                            "utf8",
-                        ),
-                    );
+                    const count = babylonAssets.get(
+                        asset.output,
+                    )!.renderableCount;
                     for (let index = 0; index < count; index += 1) {
                         standardRenderableMeshFeatures.push(0);
                     }

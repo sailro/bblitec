@@ -208,7 +208,6 @@ interface DeclarationContext
             | "evaluator"
             | "handleCollections"
             | "isNativeHostUiLookup"
-            | "moduleRelativeAssetUrl"
             | "nativeBindingCheckpoint"
             | "nativeLocalSince"
             | "options"
@@ -1489,9 +1488,7 @@ export class DeclarationLowerer {
         if (
             this.context.browserErasure.isBrowserOnlyExpression(
                 declaration.initializer,
-            ) &&
-            this.context.moduleRelativeAssetUrl(declaration.initializer) ===
-                undefined
+            )
         ) {
             const browserValue =
                 this.context.browserErasure.evaluateBrowserValue(

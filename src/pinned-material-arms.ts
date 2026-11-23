@@ -18,7 +18,6 @@
  * a fragment carrying more than the assets need is normal. Carrying less is not.
  */
 import {
-    animatedMaterialPointerPatterns,
     asIndex,
     glbDocument,
     GLTF_TRANSMISSION_PLAN,
@@ -29,7 +28,6 @@ import {
     ensurePinnedLoaderExecution,
     preparePinnedMaterialFeatures,
     gltfAnimatedExtensionTargets,
-    gltfAnimatedMaterialPointers,
     gltfImageResolver,
     pinnedMaterialInputFromGltf,
 } from "./pinned-material-input.js";
@@ -70,6 +68,8 @@ import { refuseGeneration } from "./generation-refusal.js";
 import { gltfVariantPlan } from "./gltf-variant-plan.js";
 import {
     packagedGltfMeshPlan,
+    gltfFeatureModules,
+    pinnedGltfFeatureId,
     type GltfConstructedMaterialPlan,
 } from "./gltf-mesh-plan.js";
 import { packagedGltfLights, type GltfLight } from "./gltf-light-plan.js";
@@ -85,6 +85,7 @@ import {
     numericValue,
     unwrapExpression,
     variableInitializer,
+    sharedPinnedContext,
     type LoweringContext,
 } from "./lowering/context.js";
 
@@ -597,32 +598,29 @@ export async function materialSubjects(
     const view = document as GltfDocument;
     const materials = view.materials ?? [];
     const imageOf = gltfImageResolver(document);
-    const prepareAnimationPointers = !construction?.deferAnimationPointers;
+    const basePlan = construction?.meshPlan ?? packagedGltfMeshPlan(document);
+    const prepareAnimationPointers =
+        !construction?.deferAnimationPointers &&
+        basePlan.features.includes(
+            pinnedGltfFeatureId(
+                construction?.context ?? sharedPinnedContext(),
+                gltfFeatureModules.animationPointer,
+            ),
+        );
     const animatedBaseColor = prepareAnimationPointers
-        ? gltfAnimatedMaterialPointers(
-              document,
-              animatedMaterialPointerPatterns.baseColorFactor,
-          )
+        ? new Set(basePlan.baseColorDefinitions)
         : undefined;
-    const animatedUvTransform = prepareAnimationPointers
-        ? gltfAnimatedMaterialPointers(
-              document,
-              animatedMaterialPointerPatterns.uvTransform,
-          )
-        : undefined;
-    const animatedEmissive = prepareAnimationPointers
-        ? new Set(
-              animatedMaterialPointerPatterns.emissive.flatMap((pointer) => [
-                  ...gltfAnimatedMaterialPointers(document, pointer),
-              ]),
-          )
-        : undefined;
+    const preparedMaterials = new Map(
+        (prepareAnimationPointers
+            ? (basePlan.animation?.materialState ?? [])
+            : []
+        ).map((state) => [state.index, state]),
+    );
     const animatedExtensions = prepareAnimationPointers
         ? gltfAnimatedExtensionTargets(document)
         : undefined;
     // Which primitive first names each material, for the subject's mesh half:
     // a second UV set or a vertex-colour stream changes the composed fragment.
-    const basePlan = construction?.meshPlan ?? packagedGltfMeshPlan(document);
     const primitiveOf = new Map<
         number,
         {
@@ -680,10 +678,9 @@ export async function materialSubjects(
             ...scene,
             animatedBaseColorFactor:
                 animatedBaseColor?.has(sourceIndex) === true,
-            animatedEmissive:
-                !variant && animatedEmissive?.has(sourceIndex) === true,
-            animatedUvTransform:
-                !variant && animatedUvTransform?.has(sourceIndex) === true,
+            ...(preparedMaterials.has(index)
+                ? { preparedPointerMaterial: preparedMaterials.get(index)! }
+                : {}),
             ...(!variant && animatedExtensions?.has(sourceIndex)
                 ? {
                       animatedExtensionTargets:

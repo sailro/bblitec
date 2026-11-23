@@ -363,9 +363,9 @@ export interface LoweringServices {
     compilePropertyKey(name: ts.PropertyName): string | undefined;
     compileStringLiteral(expression: ts.Expression): string;
     staticAssetUrlCandidates(): readonly string[];
-    moduleRelativeAssetUrl(expression: ts.Expression): string | undefined;
-    compileDynamicModuleRelativeAssetUrl(
-        expression: ts.Expression,
+    isModuleRelativeAssetCall(expression: ts.Expression): boolean;
+    compileModuleRelativeAssetUrl(
+        expression: ts.CallExpression,
     ): Value | undefined;
     compileEngineCreation(call: ts.CallExpression, cppName: string): Value;
     allocateTemporaryCppName(label: string): string;

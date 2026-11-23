@@ -60,21 +60,24 @@ export function deploymentUrl(options: DeploymentOptions): URL {
  * (`new URL(path, import.meta.url)`) is read against this root.
  */
 export const nativeModuleUrl = "https://bblite.invalid/";
+export const nativeModuleOrigin = new URL(nativeModuleUrl).origin;
 
 /**
  * `new URL(path, import.meta.url)` as the package resolves it: the
  * root-relative path beneath the module's public root (after the module
  * helper's own path `replacements`), or the absolute URL `path` already is.
+ * An invalid input has no folded value: the runtime constructor must throw at its call.
  */
 export function moduleRelativeUrl(
     path: string,
     replacements: readonly (readonly [string | RegExp, string])[] = [],
-): string {
-    const url = new URL(path, nativeModuleUrl);
+): string | undefined {
+    const url = URL.parse(path, nativeModuleUrl);
+    if (!url) return undefined;
     for (const [search, replacement] of replacements) {
         url.pathname = url.pathname.replace(search, replacement);
     }
-    return url.origin === new URL(nativeModuleUrl).origin
+    return url.origin === nativeModuleOrigin
         ? `${url.pathname}${url.search}${url.hash}`
         : url.href;
 }

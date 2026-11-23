@@ -17436,6 +17436,12 @@ check(
 `,
 );
 
+check(
+    "a-type-parameter-can-be-determined-by-its-declared-default",
+    `function count<T = number>(): number { const xs: T[] = []; return xs.length; }
+     if (count() !== 0) throw new Error("default type");`,
+);
+
 test("a type parameter no argument determines and no constraint fixes still refuses", () => {
     assert.throws(
         () =>

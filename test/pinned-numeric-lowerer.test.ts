@@ -69,6 +69,36 @@ function lower(
     return lowerer.statements(file.statements, "").join("\n");
 }
 
+test("numeric builtins honor receiver identity under parentheses", () => {
+    assert.match(
+        lower("const finite = (Number).isFinite(1);"),
+        /std::isfinite/,
+    );
+    assert.match(
+        lower("const equal = (Object).is(1, 1);"),
+        /bbl::js::same_value/,
+    );
+    for (const [owner, call] of [
+        ["Number", "isFinite(1)"],
+        ["Object", "is(1,1)"],
+    ] as const) {
+        const file = ts.createSourceFile(
+            "pinned.ts",
+            `const ${owner} = {}; ${owner}.${call};`,
+            ts.ScriptTarget.Latest,
+            true,
+        );
+        const lowerer = new PinnedNumericLowerer(file, {
+            bindings: new Map(),
+            calls: new Map(),
+        });
+        assert.throws(
+            () => lowerer.statements(file.statements.slice(1), ""),
+            /call '/,
+        );
+    }
+});
+
 test("an absent specialized value selects a numeric or string logical fallback", () => {
     for (const value of ["undefined", "null"] as const) {
         const bindings: [string, PinnedBinding][] = [

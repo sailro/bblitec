@@ -1,3 +1,5 @@
+import { brdfLutShape } from "../../ibl-brdf-lut.js";
+
 /** The packaged BRDF table every loaded IBL environment reads. */
 export function gltfIblBrdfLutCpp(): string {
     return `/** EXT_lights_image_based's split-sum BRDF table, packaged as rgba16f. */
@@ -40,7 +42,7 @@ export function gltfIblLoadingCpp(): string {
             environment.specular_faces.push_back(image_data(buffer, container, views, faces, index));
         environment.lod_generation_scale = static_cast<float>(required(prepared, "lodScale").as_number());
         environment.brdf_lut_width = static_cast<std::uint32_t>(unsigned_value(required(prepared, "brdfWidth")));
-        if (environment.brdf_lut_width != 256) throw std::runtime_error("Unsupported glTF IBL BRDF storage.");
+        if (environment.brdf_lut_width != ${brdfLutShape.width}) throw std::runtime_error("Unsupported glTF IBL BRDF storage.");
         environment.brdf_lut.bytes = take_prepared(&file.brdf_lut, gltf_ibl_brdf_lut);
         environment.brdf_lut_rgba16f = true;
         ibl_textures.push_back({std::move(environment), next_scene_uniform_object_identity()});

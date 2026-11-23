@@ -137,6 +137,7 @@ export interface GltfMeshPlan extends GltfLightPlan, GltfCameraPlan {
      * features appended after them, in the loader's order.
      */
     features: string[];
+    eightInfluenceSkinning: boolean;
     animationBindings: GltfAnimationBindings | null;
     animation: GltfAnimationReceipt | null;
     ibl: GltfIblPlan;
@@ -175,7 +176,13 @@ export interface GltfMeshPlan extends GltfLightPlan, GltfCameraPlan {
 /** Actual material/geometry construction available before final animation packaging. */
 export type GltfConstructedMaterialPlan = Pick<
     GltfMeshPlan,
-    "cores" | "materials" | "meshes" | "geometries"
+    | "cores"
+    | "materials"
+    | "meshes"
+    | "geometries"
+    | "features"
+    | "baseColorDefinitions"
+    | "animation"
 >;
 export interface GltfLoadFeatures {
     cameras?: boolean;
@@ -1232,6 +1239,9 @@ export async function recordMeshPlan(
                       {},
                       {
                           meshPlan: {
+                              animation: null,
+                              features: featureIds,
+                              baseColorDefinitions,
                               cores,
                               materials,
                               meshes: plannedMeshes,
@@ -1246,6 +1256,9 @@ export async function recordMeshPlan(
                 (subject) => subject.input,
             );
             if (pointerPreparation) {
+                loader.__animationPointerBridge.enableDocumentPointers(
+                    document,
+                );
                 const assembleCore = pinnedGltfMaterialCore(context);
                 materialSubjects.forEach(
                     ({ input, sourceIndex: definitionIndex }) => {
@@ -1338,6 +1351,10 @@ export async function recordMeshPlan(
             plan: {
                 ...(hierarchy ? { hierarchy } : {}),
                 features: featureIds,
+                eightInfluenceSkinning: meshes.some(
+                    ({ skeleton }) =>
+                        skeleton?.joints1Buffer && skeleton.weights1Buffer,
+                ),
                 cores,
                 materials,
                 baseColorDefinitions,
@@ -1390,6 +1407,7 @@ export function packagedGltfMeshPlan(document: JsonObject): GltfMeshPlan {
     const sourceMaterialCount = asRecords(document.materials).length;
     if (
         !plan ||
+        typeof plan.eightInfluenceSkinning !== "boolean" ||
         !Array.isArray(plan.features) ||
         !plan.features.every(
             (id: unknown): id is string => typeof id === "string",
@@ -1529,6 +1547,7 @@ export function packagedGltfMeshPlan(document: JsonObject): GltfMeshPlan {
                   ),
               }),
         features: plan.features,
+        eightInfluenceSkinning: plan.eightInfluenceSkinning,
         cores: plan.cores,
         materials: plan.materials,
         baseColorDefinitions: plan.baseColorDefinitions,
@@ -1554,6 +1573,7 @@ export function packagedGltfMeshPlan(document: JsonObject): GltfMeshPlan {
 interface PackagedGltfLoaderFacts {
     features: ReadonlySet<string>;
     topologies: readonly string[];
+    eightInfluenceSkinning: boolean;
 }
 
 export function packagedGltfLoaderFacts(
@@ -1563,6 +1583,7 @@ export function packagedGltfLoaderFacts(
     return {
         features: new Set(plan.features),
         topologies: plan.meshes.map((mesh) => mesh.setup.topology),
+        eightInfluenceSkinning: plan.eightInfluenceSkinning,
     };
 }
 
