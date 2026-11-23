@@ -7661,6 +7661,39 @@ checkInRealm(
 `,
 );
 
+checkInRealm(
+    "a-document-member-called-with-a-dynamic-parameter-runs-or-throws-as-javascript-does",
+    `
+    async function sameEntry(a: unknown, b: unknown): Promise<boolean> {
+        if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
+        if (a === b) return true;
+        const native = a as { isSameEntry?: (other: unknown) => Promise<boolean> };
+        if (typeof native.isSameEntry !== "function") return false;
+        try {
+            return await native.isSameEntry(b);
+        } catch {
+            return false;
+        }
+    }
+    const list: unknown[] = JSON.parse('[{"name":"a"},{"name":"b"}]');
+    const one: unknown = JSON.parse('{"name":"a"}');
+    void (async () => {
+        const answers = [await sameEntry(list, list.slice()), await sameEntry(one, list), await sameEntry(one, one)];
+        if (answers.join() !== "false,false,true") throw new Error("answers " + answers.join());
+        // A member that holds no function throws, as JavaScript does.
+        const held = JSON.parse('{"run":3}') as { run?: (value: unknown) => boolean };
+        let thrown = "";
+        try {
+            held.run!(1);
+        } catch (error) {
+            thrown = error instanceof TypeError ? "type" : "other";
+        }
+        if (thrown !== "type") throw new Error("thrown " + thrown);
+        globalThis.close();
+    })();
+`,
+);
+
 check(
     "a-conditional-of-two-boolean-literals-knows-neither",
     `

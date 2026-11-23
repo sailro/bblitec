@@ -489,6 +489,14 @@ export function calledFunction(
         : undefined;
 }
 
+/** The signature a call, construction or tag resolves to, its type arguments instantiated. */
+export function calledSignature(
+    checker: ts.TypeChecker,
+    call: ts.CallLikeExpression,
+): ts.Signature | undefined {
+    return checker.getResolvedSignature(call);
+}
+
 /**
  * The type a call gives the parameter at `index` of the signature it
  * resolves to, its type arguments instantiated; undefined past its
@@ -499,7 +507,7 @@ export function calledParameterType(
     call: ts.CallLikeExpression,
     index: number,
 ): ts.Type | undefined {
-    const parameter = checker.getResolvedSignature(call)?.parameters[index];
+    const parameter = calledSignature(checker, call)?.parameters[index];
     return parameter && checker.getTypeOfSymbol(parameter);
 }
 

@@ -19,11 +19,13 @@ import ts from "typescript";
 import { undefinedValue, absenceOfNull } from "./values/model.js";
 import { argumentAt, accessKey } from "./syntax.js";
 import { functionUsesDynamicThis } from "./user-functions.js";
-import { isNullishLiteral, namedMember } from "./symbols.js";
+import { calledSignature, isNullishLiteral, namedMember } from "./symbols.js";
 import {
     absenceKind,
     holdsOnly,
+    isVoid,
     PRIMITIVE_KINDS,
+    signatureParameterTypes,
     type Nullability,
 } from "./type-facts.js";
 
@@ -371,10 +373,38 @@ export function compileJsonMemberCall(
         holdsOnly(declaredReceiver, PRIMITIVE_KINDS)
     )
         return undefined;
-    const declared = context.dataTypes.fromStoredTsType(
+    const stored = (type: ts.Type): DataType | undefined =>
+        context.dataTypes.fromStoredTsType(type, call.expression) ??
+        context.dataTypes.dynamicJsonType(type);
+    let declared = context.dataTypes.fromStoredTsType(
         checker.getTypeAtLocation(call.expression),
         call.expression,
     );
+    // A signature generic in a dynamic parameter (`(other: unknown) => R`)
+    // is the one this call reaches: each parameter as its argument's type,
+    // a dynamic one a document, as the document holds it.
+    if (declared?.kind === "function" && declared.generic) {
+        const resolved = calledSignature(checker, call);
+        if (!resolved) return undefined;
+        const parameters: DataType[] = [];
+        for (const parameterType of signatureParameterTypes(
+            checker,
+            resolved,
+            call,
+        )) {
+            const type = stored(parameterType);
+            if (!type) return undefined;
+            parameters.push(type);
+        }
+        const returned = resolved.getReturnType();
+        const result = isVoid(returned) ? undefined : stored(returned);
+        if (!isVoid(returned) && !result) return undefined;
+        declared = {
+            kind: "function",
+            parameters,
+            ...(result ? { result } : {}),
+        };
+    }
     if (declared?.kind !== "function" || declared.generic) return undefined;
     const parameters = declared.parameters;
     if (call.arguments.length > parameters.length)
