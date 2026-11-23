@@ -108,6 +108,31 @@ test("undefined suppliers preserve contextual optional results and callback effe
         t,
     ));
 
+test("a stored function returning nothing returns undefined through a wider result", (t) =>
+    nativeCheck(
+        "void-into-optional-result",
+        `
+    interface Action { id: string; run: () => void | boolean }
+    let calls = 0;
+    const links = new Set(["a"]);
+    function link(page: string, open: () => void): (() => void) | undefined {
+        return links.has(page) ? open : undefined;
+    }
+    function press(action: Action): boolean | undefined {
+        const result = action.run();
+        return result === undefined ? undefined : result;
+    }
+    const open = () => { calls++; };
+    const found = link("a", open);
+    if (!found) throw new Error("link");
+    const action: Action = { id: "a", run: found };
+    if (press(action) !== undefined || calls !== 1) throw new Error("void result");
+    if (action.run !== found) throw new Error("identity");
+    if (press({ id: "b", run: () => calls > 0 }) !== true) throw new Error("boolean result");
+`,
+        t,
+    ));
+
 test("forwarded array predicates preserve captured state, truthiness and short circuiting", (t) =>
     nativeCheck(
         "predicates",

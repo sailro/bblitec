@@ -378,6 +378,10 @@ struct UiComputedStyle {
     std::string transform;
     std::string visibility;
     std::string z_index;
+    std::string box_sizing;
+    /** Used padding and border widths, top, right, bottom, left, in the layout's pixels. */
+    std::array<double, 4> padding{};
+    std::array<double, 4> border_width{};
     /** The computed (specified, var()-substituted) values of the custom properties read, by name. */
     std::vector<std::pair<std::string, std::string>> custom_properties;
     [[nodiscard]] bool operator==(const UiComputedStyle&) const = default;

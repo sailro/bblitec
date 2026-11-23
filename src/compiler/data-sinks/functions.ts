@@ -336,8 +336,9 @@ function widenedTaggedResult(
  * passed to an optional parameter), or for a value declared with a rest
  * parameter the leading ones plus the remaining sink parameters packed
  * into its array; a result the sink does not read is dropped, one it
- * reads converted the same way. `undefined` when the value needs
- * something the sink does not supply.
+ * reads converted the same way, and a value returning nothing returns
+ * the sink's undefined. `undefined` when the value needs something the
+ * sink does not supply.
  */
 function adaptedCall(
     lowerer: DataSinkHost,
@@ -396,7 +397,19 @@ function adaptedCall(
             named,
             body: [...lines, `static_cast<void>(${call});`].join(" "),
         };
-    if (source.result === undefined) return undefined;
+    // A function returning nothing returns undefined: the sink's own
+    // absence where its result admits undefined alone.
+    if (source.result === undefined)
+        return sink.result.kind === "optional" && sink.result.undefinedOnly
+            ? {
+                  named,
+                  body: [
+                      ...lines,
+                      `static_cast<void>(${call});`,
+                      `return ${lowerer.context.dataTypes.absentValue(sink.result)};`,
+                  ].join(" "),
+              }
+            : undefined;
     if (dataTypesEqual(source.result, sink.result))
         return { named, body: [...lines, `return ${call};`].join(" ") };
     lines.push(`const auto result = ${call};`);

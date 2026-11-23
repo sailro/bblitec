@@ -1407,6 +1407,10 @@ void publish_window_document(DocumentPublication mode) {
             record.client_rect = laid.rectangle;
             record.content_box = laid.content_box;
             record.computed_style = laid.style;
+            for (auto* lengths :
+                 {&record.computed_style.padding, &record.computed_style.border_width})
+                for (double& length : *lengths)
+                    length /= layout->pixel_ratio;
         }
         for (const auto& [index, canvas] : doc.canvases) {
             if (index >= layout->elements.size())

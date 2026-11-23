@@ -1009,6 +1009,38 @@ UiElementHandle ui_create_text_node(Engine& engine, std::string text) {
     return handle;
 }
 
+UiElementHandle ui_clone_node(Engine& engine, UiElementHandle node, bool deep) {
+    // Copied before any creation: element storage may grow.
+    const UiElementRecord source = ui_element(engine, node);
+    if (source.markup_owner.value != invalid_handle || !source.inner_rml.empty() ||
+        !source.markup_children.empty())
+        throw std::runtime_error("Cloning innerHTML content requires an authored markup tree.");
+    if (source.canvas || source.external_gpu_canvas || source.tag == "script" ||
+        source.file_input || source.download_url.slot != invalid_handle ||
+        static_cast<bool>(source.selected_file))
+        throw js::make_dom_exception("Cloning a canvas, script, file input or object-URL "
+                                     "link is not supported natively.",
+                                     "NotSupportedError");
+    const UiElementHandle clone = ui_create_element(engine, source.tag);
+    {
+        UiElementRecord& record = ui_element(engine, clone);
+        record.svg_namespace = source.svg_namespace;
+        record.text = source.text;
+        record.attributes = source.attributes;
+        record.attribute_order = source.attribute_order;
+        record.checked = source.checked;
+        record.selected = source.selected;
+        record.style_properties = source.style_properties;
+        record.style_property_order = source.style_property_order;
+        record.style_rules = source.style_rules;
+        record.style_keyframes = source.style_keyframes;
+    }
+    if (deep)
+        for (const UiElementHandle child : source.children)
+            static_cast<void>(ui_append_child(engine, clone, ui_clone_node(engine, child, true)));
+    return clone;
+}
+
 void ui_append_text(Engine& engine, UiElementHandle parent, std::string text) {
     if (parent.value == invalid_handle && engine.ui_document_roots.active())
         parent = engine.ui_document_roots.body;
@@ -1166,6 +1198,19 @@ std::string ui_computed_style(Engine& engine, UiElementHandle element, std::stri
         return style.visibility;
     if (property == "z-index")
         return style.z_index;
+    if (property == "box-sizing")
+        return style.box_sizing;
+    static constexpr std::array<std::string_view, 4> sides{"top", "right", "bottom", "left"};
+    for (std::size_t side = 0; side < sides.size(); ++side) {
+        const bool padding = property == "padding-" + std::string(sides[side]);
+        if (!padding && property != "border-" + std::string(sides[side]) + "-width")
+            continue;
+        // A Window layout adopts its lengths in CSS pixels; the page canvas scales them here.
+        const double length = padding ? style.padding[side] : style.border_width[side];
+        return pal::detail::css_serialized_number(
+                   engine.ui_measure_element ? length : length * ui_layout_css_scale(engine)) +
+               "px";
+    }
     if (custom) {
         for (const auto& [name, value] : style.custom_properties)
             if (name == property)
@@ -3709,6 +3754,14 @@ UiComputedStyle ui_serialized_computed_style(Rml::Element& element,
     style.z_index = z_index.type == Rml::Style::NumberAuto::Auto
                         ? "auto"
                         : std::to_string(static_cast<int>(z_index.value));
+    style.box_sizing =
+        computed.box_sizing() == Rml::Style::BoxSizing::BorderBox ? "border-box" : "content-box";
+    const Rml::Box& box = element.GetBox();
+    for (std::size_t side = 0; side < 4; ++side) {
+        const auto edge = static_cast<Rml::BoxEdge>(side);
+        style.padding[side] = box.GetEdge(Rml::BoxArea::Padding, edge);
+        style.border_width[side] = box.GetEdge(Rml::BoxArea::Border, edge);
+    }
     // An undefined custom property computes to nothing: an empty read.
     for (const std::string& name : custom_properties) {
         const Rml::Property* value = element.GetProperty(specified_custom_property(name));

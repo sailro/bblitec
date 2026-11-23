@@ -5,7 +5,10 @@ import { journaled } from "./emission-transaction.js";
 import { deferredCapabilityDescriptor } from "./deferred-capabilities.js";
 import ts from "typescript";
 import { namedMember, type NamedMember } from "./symbols.js";
-import { uiComputedStyleRead } from "./properties.js";
+import {
+    uiComputedStyleRead,
+    unrepresentedComputedStyle,
+} from "./properties.js";
 import { compileSyntheticEventDispatch } from "./synthetic-events.js";
 import { registerUiImageAsset } from "./assets.js";
 import {
@@ -1472,7 +1475,7 @@ export class PlatformCalls {
             if (!read)
                 this.context.fail(
                     argumentAt(call, 0),
-                    `Computed style '${written}' is not represented; display, opacity, transform, visibility, z-index and custom properties are.`,
+                    unrepresentedComputedStyle(written, "property"),
                 );
             return read;
         }
@@ -2748,6 +2751,22 @@ export class PlatformCalls {
                     element,
                     `bbl::ui_remove(${engine}, ${element.cpp})`,
                 ),
+            };
+        }
+        if (element && callee.name === "cloneNode") {
+            this.context.expectArgumentCount(call, 0, 1);
+            const engine = this.context.requireEngine(element, call);
+            const deep = call.arguments[0]
+                ? this.context.compileBoolean(call.arguments[0])
+                : "false";
+            // A detached copy no static element describes: the parent it
+            // joins holds children of unknown shape.
+            return {
+                kind: "ui-element",
+                cpp: `bbl::ui_clone_node(${engine}, ${element.cpp}, ${deep})`,
+                engineCpp: engine,
+                ...(element.uiTag ? { uiTag: element.uiTag } : {}),
+                impure: true,
             };
         }
         if (element && callee.name === "getBoundingClientRect") {

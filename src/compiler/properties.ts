@@ -2529,7 +2529,31 @@ const UI_COMPUTED_STYLES: ReadonlyMap<string, string> = new Map([
     ["transform", "transform"],
     ["visibility", "visibility"],
     ["zIndex", "z-index"],
+    ["boxSizing", "box-sizing"],
+    ["paddingTop", "padding-top"],
+    ["paddingRight", "padding-right"],
+    ["paddingBottom", "padding-bottom"],
+    ["paddingLeft", "padding-left"],
+    ["borderTopWidth", "border-top-width"],
+    ["borderRightWidth", "border-right-width"],
+    ["borderBottomWidth", "border-bottom-width"],
+    ["borderLeftWidth", "border-left-width"],
 ]);
+
+/**
+ * The refusal of a computed style read `property` names, listing the
+ * represented ones as a member read (`zIndex`) or a property name
+ * (`z-index`) spells them.
+ */
+export function unrepresentedComputedStyle(
+    property: string,
+    spelling: "member" | "property",
+): string {
+    const names = [...UI_COMPUTED_STYLES].map(([member, name]) =>
+        spelling === "member" ? member : name,
+    );
+    return `Computed style '${property}' is not represented; ${names.join(", ")} and custom properties are.`;
+}
 /**
  * A computed style read of a CSS property name: one of the represented
  * properties, or a custom property, whose computed value is its specified
@@ -3814,7 +3838,7 @@ export class PropertyAccessLowerer {
             if (!read)
                 this.context.fail(
                     expression.name,
-                    `Computed style '${property}' is not represented; display, opacity, transform, visibility, zIndex and custom properties are.`,
+                    unrepresentedComputedStyle(property, "member"),
                 );
             return read;
         }

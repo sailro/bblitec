@@ -45,6 +45,13 @@ double ui_image_height(Engine&, UiElementHandle);
 js::Promise<js::PromiseVoid> ui_decode_image(Engine&, UiElementHandle);
 #endif
 UiElementHandle ui_create_text_node(Engine& engine, std::string text);
+/**
+ * `node.cloneNode(deep)`: a detached copy of an authored node's tag, text, attributes, inline
+ * style, checkedness and stylesheet rules, without its listeners; `deep` clones its children.
+ * innerHTML content refuses; a canvas, script, file input or object-URL link throws
+ * NotSupportedError.
+ */
+UiElementHandle ui_clone_node(Engine& engine, UiElementHandle node, bool deep);
 // An invalid parent denotes the document root.
 void ui_append_text(Engine& engine, UiElementHandle parent, std::string text);
 js::Nullable<UiElementHandle> ui_find_element_by_id(Engine& engine, std::string_view id);
