@@ -151,6 +151,43 @@ test("a later call of a text helper gives the text a compile gives", () => {
     }
 });
 
+test("an entry-only survey lowers a body its probes reach, which no root lowers later", () => {
+    // `defaults` is called only from a conditional arm and a catch block, which
+    // the survey lowers inside probes; with roots a later root lowers its body,
+    // without them the probe must, or its refusal (and its storage demands)
+    // waits for the compile.
+    const helper = `
+    function defaults(): number {
+        const registry = new FinalizationRegistry(() => {});
+        return registry ? 1 : 0;
+    }`;
+    const sources = [
+        `${helper}
+    function load(): number {
+        const raw = localStorage.getItem("k");
+        return raw ? Number(raw) : defaults();
+    }
+    localStorage.setItem("t", String(load()));`,
+        `${helper}
+    function load(): number {
+        try { return Number(JSON.parse(localStorage.getItem("k") ?? "0")); } catch { return defaults(); }
+    }
+    localStorage.setItem("t", String(load()));`,
+    ];
+    for (const source of sources) {
+        const { report } = surveySource(
+            source,
+            { fileName: resolve("survey-probe-body.ts") },
+            { roots: false },
+        );
+        assert.match(
+            listed(report),
+            /^3: Unsupported constructor expression\./m,
+            listed(report),
+        );
+    }
+});
+
 test("an entry-only survey reports the entry's own refusals, without roots", () => {
     // `unused` is never called: only a root reaches its refusal.
     const source = `${refusing}

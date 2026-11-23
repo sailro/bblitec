@@ -2640,7 +2640,9 @@ export class UserFunctionLowerer {
      * statements recover (a call outside a probe, or a root); the call
      * returns empty storage of the declared result as a later call does.
      * Undefined outside a survey's probe, for a body already lowered (the
-     * call's own lowering answers), and for a result with no storage.
+     * call's own lowering answers), for a result with no storage, and in a
+     * survey that lowers no roots: no later root would lower the body, and
+     * the storage demands it meets would wait for the compile.
      */
     private deferredSurveyCall(
         context: UserFunctionContext,
@@ -2649,7 +2651,8 @@ export class UserFunctionLowerer {
         discardReturn: boolean,
     ): Value | undefined {
         const survey = context.speculating ? activeSurvey() : undefined;
-        if (!survey || survey.lowers(ir.declaration)) return undefined;
+        if (!survey?.lowersRoots || survey.lowers(ir.declaration))
+            return undefined;
         return this.emptyCallResult(context, ir, argumentValues, discardReturn);
     }
 
