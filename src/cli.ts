@@ -746,8 +746,9 @@ function writeSurvey(
 
 /**
  * Runs `lower` under `--coverage`, writing what it observed when it ends.
- * `leave` writes what stands so far: a survey calls it at each restart, so
- * one stopped early still leaves its furthest attempt's coverage.
+ * `leave` writes what stands so far: a survey and a long compile call it
+ * as they go, so one stopped early still leaves its furthest attempt's
+ * coverage.
  */
 function withCoverage<T>(
     path: string | undefined,
@@ -825,13 +826,21 @@ async function main(): Promise<void> {
         return;
     }
     const outputPath = resolve(options.target.output);
-    const result = withCoverage(options.coverage, () =>
-        compileSource(source, {
+    // A long compile leaves its furthest attempt's coverage every ten minutes,
+    // between attempts, as a survey does: one stopped early is still read.
+    const result = withCoverage(options.coverage, (leave) => {
+        let coverageLeftAt = Date.now();
+        return compileSource(source, {
             ...compileOptions,
             readAssetBytes: readAssetBytesSync,
-            compileProgress: (line) => console.error(line),
-        }),
-    );
+            compileProgress: (line) => {
+                console.error(line);
+                if (Date.now() - coverageLeftAt < 10 * 60 * 1000) return;
+                coverageLeftAt = Date.now();
+                leave();
+            },
+        });
+    });
 
     // The frozen node-particle bake is a Chromium run that nothing between
     // here and the emitters depends on, so it is started rather than

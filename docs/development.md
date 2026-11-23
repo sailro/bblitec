@@ -147,8 +147,8 @@ compile reports on stderr each lowering attempt a replay ends (`Compile attempt 
 the seconds so far). Group by shared
 capability and probe source shapes before implementing. The
 compiler's `--coverage <coverage.json>` (with `--out` or `--survey`) records statement-level retained, refused and
-rolled-back lowering; it does not prove native support. A survey rewrites it every ten minutes (`complete: false` until it
-ends).
+rolled-back lowering; it does not prove native support. A survey, and an ordinary compile between its attempts, rewrite it every ten minutes
+(`complete: false` until it ends).
 
 ### Required files
 
