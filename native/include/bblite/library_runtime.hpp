@@ -348,15 +348,9 @@ struct RenderTaskView {
     return task.scene;
 }
 
-/**
- * `gpsRenderTask(scene, signature)`: the scene's own task for its pass,
- * whose depth is the task's own, cleared at the pass's start
- * (scene-core.ts `_createAutomaticRenderTask`); none for another target.
- */
-[[nodiscard]] inline js::Nullable<RenderTaskView>
-gps_render_task(const LibraryScene& scene, const LibraryTargetSignature& signature) {
-    if (!scene->pausable_pass || scene->pausable_pass != signature)
-        return std::nullopt;
+/** Transport the native scene pass as the task and depth view read by gps-scene-depth.ts. */
+[[nodiscard]] inline RenderTaskView scene_pass_view(const LibraryScene& scene,
+                                                    const LibraryTargetSignature& signature) {
     RenderTaskView task;
     task.scene = scene;
     if (signature->depth_stencil_format) {
@@ -395,19 +389,6 @@ gps_install_passes(const LibraryScene& scene, js::Callback<bool()> is_rendering 
 
 /** `gpsRefreshPasses`: the renderer follows its own passes. */
 inline void gps_refresh_passes(const LibraryScene&) {}
-
-/**
- * `gpsDefersDraw(scene, signature)`: a held pass with depth defers its
- * renderer's work to its draw. Only the scene pass pauses natively.
- */
-[[nodiscard]] inline bool gps_defers_draw(const LibraryScene& scene,
-                                          const LibraryTargetSignature& signature) {
-    if (scene->pass_controllers.empty() || !signature || !signature->depth_stencil_format)
-        return false;
-    if (scene->pausable_pass != signature)
-        throw std::runtime_error("Pausing a render task's pass is not lowered.");
-    return true;
-}
 
 /** `gpsPassHasDraws(pass)`: undefined for a pass the renderer did not split. */
 [[nodiscard]] inline js::Nullable<bool> gps_pass_has_draws(const GpuEncoderHandle& pass) {

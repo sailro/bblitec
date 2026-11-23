@@ -225,18 +225,3 @@ export async function pinnedVatMeshFeatures(
             : word,
     );
 }
-
-/** The set of nodes whose mesh is skinned, so primitives can be keyed by it. */
-export function skinnedMeshIndices(document: JsonObject): ReadonlySet<number> {
-    const nodes = Array.isArray(document["nodes"])
-        ? (document["nodes"] as JsonObject[])
-        : [];
-    const skinned = new Set<number>();
-    for (const node of nodes) {
-        const mesh = node["mesh"];
-        if (typeof mesh === "number" && node["skin"] !== undefined) {
-            skinned.add(mesh);
-        }
-    }
-    return skinned;
-}

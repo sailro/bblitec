@@ -591,7 +591,7 @@ export function pickDiscardStem(
  * and type, each text ended by a NUL. The native pick frames the rule it is
  * handed the same way (`prepare_pick_discard`).
  */
-export function pickDiscardContentKey(rule: PickDiscardRuleManifest): string {
+function pickDiscardContentKey(rule: PickDiscardRuleManifest): string {
     return contentKey(
         new TextEncoder().encode(
             [

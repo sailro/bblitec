@@ -1,9 +1,26 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import {
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    readdirSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
+import { compileOfflineShaders } from "../src/compile-shaders.js";
+import { discoverDevelopmentTools } from "../src/development-tools.js";
+import {
+    sdlComputeSlotRoles,
+    sdlWorkgroupCountsSource,
+} from "../src/shader-bindings.js";
+import {
+    compileLibraryShaders,
+    computeRoleShaders,
+} from "./webgpu-subset-fixture.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerComputeBindingDecl } from "../src/lowering/compute-binding-decl-lowerer.js";
 import { lowerComputeShader } from "../src/lowering/compute-shader-lowerer.js";
@@ -21,6 +38,70 @@ const disposedShader = pinnedError('ComputeShader "${a0}" has been disposed.');
 const staleShader = pinnedError(
     'ComputeShader "${a0}" belongs to a lost or replaced GPU device; recreate the compute graph.',
 );
+
+test("dispatch-counts adaptation avoids authored module and function names and uses binding identity", () => {
+    const [authored, , mixed] = computeRoleShaders;
+    assert.equal(sdlWorkgroupCountsSource(authored!.code), undefined);
+    const adapted = sdlWorkgroupCountsSource(mixed!.code);
+    assert.ok(adapted);
+    assert.deepEqual(adapted.point, { group: 0, binding: 2 });
+    assert.match(adapted.source, /let counts = bbl_num_workgroups_2;/);
+    const rows = ["r0 bbl_num_workgroups 0 1 -1 -1", "r1 renamed 0 2 -1 -1"];
+    assert.deepEqual(sdlComputeSlotRoles(rows, adapted.point), [
+        "@compute-slots 2",
+        `${rows[0]} resource`,
+        `${rows[1]} dispatch-counts`,
+    ]);
+    for (const invalid of [[rows[1]!, rows[1]!], ["w0 wrong 0 2 -1 -1"]])
+        assert.throws(
+            () => sdlComputeSlotRoles(invalid, adapted.point),
+            /Invalid reflected dispatch-counts slot/,
+        );
+});
+
+test("Tint compute roles are per entry and restored byte-for-byte from the shader cache", async (t) => {
+    const tools = discoverDevelopmentTools();
+    if (!tools.bbliteTint || !tools.dxc)
+        return t.skip("Requires bblite-tint and DXC.");
+    mkdirSync("artifacts", { recursive: true });
+    const root = mkdtempSync(resolve("artifacts/test-compute-roles-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const directory = await compileLibraryShaders(root, [], computeRoleShaders);
+    const cold = new Map(
+        readdirSync(directory)
+            .filter((name) => name.endsWith(".slots"))
+            .map((name) => [name, readFileSync(join(directory, name))]),
+    );
+    assert.equal(cold.size, 4);
+    for (const [name, bytes] of cold) {
+        const rows = bytes.toString("utf8").trim().split(/\r?\n/);
+        const entry = name.split(".")[1];
+        assert.equal(rows[0], "@compute-slots 2");
+        assert.equal(
+            rows.filter((row) => row.endsWith(" dispatch-counts")).length,
+            entry === "both" || entry === "builtinOnly" ? 1 : 0,
+            name,
+        );
+        assert.equal(
+            rows.some((row) =>
+                /^r\d+ bbl_num_workgroups 0 1 -1 -1 resource$/.test(row),
+            ),
+            entry !== "builtinOnly",
+            name,
+        );
+        rmSync(join(directory, name));
+    }
+    const warm = await compileOfflineShaders({
+        repositoryRoot: root,
+        directories: [directory],
+        target: "d3d12",
+        tools,
+    });
+    assert.equal(warm.tintReused, cold.size);
+    assert.equal(warm.tintCompiled, 0);
+    for (const [name, bytes] of cold)
+        assert.deepEqual(readFileSync(join(directory, name)), bytes);
+});
 
 test("compute shader descriptors preserve sorting, dynamic slots, limits and disposal", async (t) => {
     const tools = optionalNativeFixtureTools(false);

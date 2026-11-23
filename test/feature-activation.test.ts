@@ -91,7 +91,6 @@ function emitOptions(
         transmission: false,
         selectedMaterialVariant: "",
         standardLightLists: false,
-        standardDiffuseUv2: false,
         textureTransform: false,
         imageBasedLighting: false,
         gpuInstancing: false,
@@ -328,7 +327,6 @@ function everythingOnInputs(): FeatureActivationInputs {
 
             transmission: true,
             standardLightLists: true,
-            standardDiffuseUv2: true,
             textureTransform: true,
             imageBasedLighting: true,
             gpuInstancing: true,

@@ -224,6 +224,7 @@ function hasNativeSpelling(value: NonNullable<Value["browserValue"]>): boolean {
 interface BrowserErasureContext extends Pick<
     LoweringServices,
     | "isNativeWorkerExpression"
+    | "isModuleRelativeAssetCall"
     | "dynamicBindings"
     | "unwrap"
     | "canvasSizeProperty"
@@ -1046,11 +1047,12 @@ export class BrowserErasure {
             valueOperands(expression, this.context.unwrap).some(
                 (candidate) =>
                     (ts.isCallExpression(candidate) &&
-                        this.context.options.deferredCapabilities &&
-                        deferredCapabilityDescriptor(
-                            this.context.checker,
-                            candidate,
-                        )) ||
+                        (this.context.isModuleRelativeAssetCall(candidate) ||
+                            (this.context.options.deferredCapabilities &&
+                                deferredCapabilityDescriptor(
+                                    this.context.checker,
+                                    candidate,
+                                )))) ||
                     hasDomLowering(this.context.checker, candidate),
             )
         )
@@ -2083,11 +2085,15 @@ export class BrowserErasure {
         ) {
             const path = this.browserValueOf(argumentAt(constructed, 0));
             const base = this.browserValueOf(argumentAt(constructed, 1));
-            return path?.kind === "string" &&
+            const url =
+                path?.kind === "string" &&
                 base?.kind === "object" &&
-                base.moduleUrl === true
-                ? { kind: "string", value: moduleRelativeUrl(path.value) }
-                : undefined;
+                base.moduleUrl
+                    ? moduleRelativeUrl(path.value)
+                    : undefined;
+            return url === undefined
+                ? undefined
+                : { kind: "string", value: url };
         }
         if (
             ts.isNewExpression(unwrapped) &&

@@ -134,35 +134,6 @@ if(BBLITE_NATIVE_CACHE_ACTIVE)
     include("${BBLITE_NATIVE_ROOT}/native-header-cache.cmake")
 endif()
 
-set(BBLITE_GENERATED_SHADER_DIR "${BBLITE_GENERATED_DIR}/upstream/shaders")
-set(BBLITE_BUILD_SHADER_DIR "${CMAKE_CURRENT_BINARY_DIR}/bblite-shaders")
-file(
-    GLOB_RECURSE BBLITE_GENERATED_SHADER_FILES
-    CONFIGURE_DEPENDS
-    LIST_DIRECTORIES false
-    "${BBLITE_GENERATED_SHADER_DIR}/*"
-)
-list(SORT BBLITE_GENERATED_SHADER_FILES)
-string(
-    JOIN "\n"
-    BBLITE_GENERATED_SHADER_MANIFEST_CONTENT
-    ${BBLITE_GENERATED_SHADER_FILES}
-)
-set(
-    BBLITE_GENERATED_SHADER_MANIFEST
-    "${CMAKE_CURRENT_BINARY_DIR}/bblite-generated-shaders.manifest"
-)
-# A cached shader sidecar can be newly materialized with an mtime older than
-# the existing snapshot stamp. File dependencies alone then look current even
-# though the reached shader set changed. CMake rewrites file(GENERATE) output
-# only when its content changes, so this sorted membership manifest invalidates
-# additions/removals without making unchanged builds redeploy.
-file(
-    GENERATE
-    OUTPUT "${BBLITE_GENERATED_SHADER_MANIFEST}"
-    CONTENT "${BBLITE_GENERATED_SHADER_MANIFEST_CONTENT}\n"
-)
-
 # Native GPU render backend selection. BOTH compiles the dual-backend
 # development binary (the differential gate); SDL_GPU and DAWN produce
 # single-backend release shapes whose runtime payloads follow the
@@ -364,32 +335,6 @@ if(NOT EXISTS "${BBLITE_GENERATED_DIR}/upstream/include/bblite/features")
     )
 endif()
 
-if(BBLITE_GENERATED_SHADER_FILES)
-    # The snapshot is ordered before the executable by a target dependency,
-    # and reruns only when a generated shader file is newer than the stamp.
-    add_custom_command(
-        OUTPUT "${BBLITE_BUILD_SHADER_DIR}/.snapshot-stamp"
-        COMMAND "${CMAKE_COMMAND}" -E remove_directory "${BBLITE_BUILD_SHADER_DIR}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${BBLITE_BUILD_SHADER_DIR}"
-        COMMAND
-            "${CMAKE_COMMAND}" -E copy_directory
-            "${BBLITE_GENERATED_SHADER_DIR}"
-            "${BBLITE_BUILD_SHADER_DIR}"
-        COMMAND
-            "${CMAKE_COMMAND}" -E touch
-            "${BBLITE_BUILD_SHADER_DIR}/.snapshot-stamp"
-        DEPENDS
-            ${BBLITE_GENERATED_SHADER_FILES}
-            "${BBLITE_GENERATED_SHADER_MANIFEST}"
-        VERBATIM
-    )
-    add_custom_target(
-        bblite_shader_snapshot
-        DEPENDS "${BBLITE_BUILD_SHADER_DIR}/.snapshot-stamp"
-    )
-    add_dependencies(bblite_native bblite_shader_snapshot)
-endif()
-
 target_compile_features(bblite_core INTERFACE cxx_std_20)
 target_include_directories(bblite_core INTERFACE "${BBLITE_NATIVE_ROOT}/include")
 target_compile_definitions(bblite_core INTERFACE BBLITE_ASSET_DIR="assets")
@@ -407,11 +352,17 @@ if(EXISTS "${BBLITE_GENERATED_DIR}/assets")
     # POST_BUILD copy never fires. The measured run then reads the previous
     # asset beside a current executable. `copy_directory_if_different`
     # keeps that honest without rewriting megabytes on every build.
+    # CMake 3.24/3.25 lack the content-comparing directory command.
+    if(CMAKE_VERSION VERSION_LESS 3.26)
+        set(bblite_asset_copy copy_directory)
+    else()
+        set(bblite_asset_copy copy_directory_if_different)
+    endif()
     add_custom_target(
         bblite_assets
         ALL
         COMMAND
-            "${CMAKE_COMMAND}" -E copy_directory_if_different
+            "${CMAKE_COMMAND}" -E ${bblite_asset_copy}
             "${BBLITE_GENERATED_DIR}/assets"
             "$<TARGET_FILE_DIR:bblite_native>/assets"
         VERBATIM
@@ -419,62 +370,7 @@ if(EXISTS "${BBLITE_GENERATED_DIR}/assets")
     add_dependencies(bblite_assets bblite_native)
 endif()
 
-if(BBLITE_GENERATED_SHADER_FILES)
-    # The runtime reads only its compiled renderers' shader formats: SDL_GPU
-    # the platform's offline binary, Dawn the `.native.wgsl` text it
-    # compiles in-process. Both read `.slots` binding sidecars.
-    # HLSL, reflection dumps, WGSL sources and tool
-    # manifests stay in the generated tree as development artifacts.
-    # The cache records the table for the deployment check
-    # (`executableDeployedShaderSuffixes`, src/build-stamp.ts).
-    set(BBLITE_DEPLOYED_SHADER_SUFFIXES ".slots")
-    if(BBLITE_BACKEND_SDL_GPU)
-        if(WIN32)
-            list(APPEND BBLITE_DEPLOYED_SHADER_SUFFIXES ".dxil")
-        elseif(APPLE)
-            list(APPEND BBLITE_DEPLOYED_SHADER_SUFFIXES ".msl")
-        else()
-            list(APPEND BBLITE_DEPLOYED_SHADER_SUFFIXES ".spv")
-        endif()
-    endif()
-    if(BBLITE_BACKEND_DAWN)
-        list(APPEND BBLITE_DEPLOYED_SHADER_SUFFIXES ".native.wgsl")
-    endif()
-    set(
-        BBLITE_DEPLOYED_SHADER_SUFFIXES
-        "${BBLITE_DEPLOYED_SHADER_SUFFIXES}"
-        CACHE INTERNAL
-        "Shader file suffixes the compiled renderers read"
-    )
-    # Deployed by a stamped target rather than POST_BUILD on the executable,
-    # for the reason the asset target above records: a shader-only change
-    # relinks nothing, so a POST_BUILD copy never fires and the measured run
-    # reads the previous shaders beside a current executable. Driving it from
-    # the snapshot stamp keeps an unchanged build a no-op without owning an
-    # empty translation unit purely to force a relink.
-    add_custom_command(
-        OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/bblite-shaders-deployed.stamp"
-        COMMAND
-            "${CMAKE_COMMAND}"
-            "-DBBLITE_SOURCE=${BBLITE_BUILD_SHADER_DIR}"
-            "-DBBLITE_DESTINATION=$<TARGET_FILE_DIR:bblite_native>/shaders"
-            "-DBBLITE_SUFFIXES=${BBLITE_DEPLOYED_SHADER_SUFFIXES}"
-            -P "${BBLITE_NATIVE_ROOT}/deploy-shaders.cmake"
-        COMMAND
-            "${CMAKE_COMMAND}" -E touch
-            "${CMAKE_CURRENT_BINARY_DIR}/bblite-shaders-deployed.stamp"
-        DEPENDS
-            "${BBLITE_BUILD_SHADER_DIR}/.snapshot-stamp"
-            "${BBLITE_NATIVE_ROOT}/deploy-shaders.cmake"
-        VERBATIM
-    )
-    add_custom_target(
-        bblite_shader_deploy
-        ALL
-        DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/bblite-shaders-deployed.stamp"
-    )
-    add_dependencies(bblite_shader_deploy bblite_native)
-endif()
+include("${BBLITE_NATIVE_ROOT}/shader-deployment.cmake")
 
 if(BBLITE_SDL_DIR)
     # find_package prefers a cached SDL3_DIR from an earlier

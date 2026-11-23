@@ -3,6 +3,8 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import ts from "typescript";
+import { methodAccess } from "../src/lowering/navigation-wrappers.js";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { NavigationLowerer } from "../src/lowering/navigation-lowerer.js";
@@ -21,6 +23,30 @@ import {
     runGeneratedProgram,
 } from "./native-fixture.js";
 import { pinnedError } from "./pinned-errors.js";
+
+test("raw navigation calls forward their parameters in order, ignoring type wrappers", () => {
+    const file = ts.createSourceFile(
+        "core.ts",
+        `class RawView {
+        get(i: number) { return this.raw.get_item((i as number)!); }
+        set(i: number, value: number) { this.raw.set_item((i), value!); }
+        reversed(i: number, value: number) { this.raw.set_item(value, i); }
+        computed(i: number) { return this.raw.get_item(i + 1); }
+    }`,
+        ts.ScriptTarget.Latest,
+        true,
+    );
+    const cls = file.statements.find(ts.isClassDeclaration)!;
+    assert.deepEqual(
+        cls.members.filter(ts.isMethodDeclaration).map(methodAccess),
+        [
+            { kind: "read", source: { kind: "element", field: "item" } },
+            { kind: "store", field: "item", element: true },
+            undefined,
+            undefined,
+        ],
+    );
+});
 
 const imports = `import {createNavigationPluginAsync,createNavMeshFromSources,findClosestPointWithinInto,navRayBlockedFast,disposeNavigationPlugin,computePath} from 'babylon-lite';`;
 const sourceProgram = `${imports}

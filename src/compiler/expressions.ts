@@ -405,8 +405,7 @@ export interface ExpressionContext
             | "compileBoolean"
             | "compileStringLiteral"
             | "assetRegistry"
-            | "moduleRelativeAssetUrl"
-            | "compileDynamicModuleRelativeAssetUrl"
+            | "compileModuleRelativeAssetUrl"
             | "propertyName"
             | "objectProperty"
             | "compilePropertyKey"
@@ -1452,18 +1451,6 @@ export class ExpressionLowerer {
                         staticString: value,
                         dataType: { kind: "string" },
                     };
-            }
-            // A pure module-URL helper remains a compile-time string even
-            // though its implementation uses browser URL objects. Recognize
-            // it before the general browser-erasure gate so the value can
-            // travel through ordinary inlined parameters into an asset sink.
-            const moduleAsset = this.context.moduleRelativeAssetUrl(unwrapped);
-            if (moduleAsset !== undefined) {
-                return {
-                    kind: "string",
-                    cpp: this.context.cppString(moduleAsset),
-                    staticString: moduleAsset,
-                };
             }
             if (this.isNavigatorGetGamepadsCall(unwrapped)) {
                 return this.compileCall(unwrapped);
@@ -4109,6 +4096,8 @@ export class ExpressionLowerer {
     }
 
     private compileCall(call: ts.CallExpression): Value {
+        const moduleAsset = this.context.compileModuleRelativeAssetUrl(call);
+        if (moduleAsset !== undefined) return moduleAsset;
         const reflected = this.context.recordProxies.reflect(call);
         if (reflected) return reflected;
         // Forwarded calls, random values and borrowed prototype methods are
@@ -4289,18 +4278,6 @@ export class ExpressionLowerer {
         // scene pins its measured pose with.
         if (this.context.browserErasure.isDeferredCallbackCall(call)) {
             return this.compileDeferredCallback(call);
-        }
-        // A pure module-URL helper is a compile-time string whether it feeds a
-        // registered asset intrinsic directly or first travels through an
-        // inlined user-function parameter. Recognize the call at the value
-        // boundary so both data flows observe the same public-root path.
-        const moduleAsset = this.context.moduleRelativeAssetUrl(call);
-        if (moduleAsset !== undefined) {
-            return {
-                kind: "string",
-                cpp: this.context.cppString(moduleAsset),
-                staticString: moduleAsset,
-            };
         }
         const symbol = compileSymbolCall(this.context, call);
         if (symbol) return symbol;
@@ -4674,10 +4651,6 @@ export class ExpressionLowerer {
                 this.context.conditions.compileCondition(argumentAt(call, 0)),
             );
         }
-
-        const dynamicModuleAsset =
-            this.context.compileDynamicModuleRelativeAssetUrl(call);
-        if (dynamicModuleAsset) return dynamicModuleAsset;
 
         const fetched = this.context.compileStaticFetch(call, callee);
         if (fetched) return fetched;

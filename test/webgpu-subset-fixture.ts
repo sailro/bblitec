@@ -6,6 +6,7 @@ import {
     copyFileSync,
     existsSync,
     mkdirSync,
+    readFileSync,
     rmSync,
     writeFileSync,
 } from "node:fs";
@@ -24,6 +25,15 @@ import {
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
 
+export const computeRoleShaders = ["authored", "builtin", "mixed"].map(
+    (name) => {
+        const source = resolve(
+            `test/fixtures/webgpu-subset/roles-${name}.wgsl`,
+        );
+        return { source, code: readFileSync(source, "utf8") };
+    },
+);
+
 /**
  * A lowered library's run-time WGSL as SDL_GPU deploys it (`runtimeWgslModules`):
  * each module's every stage, compiled under the name its text and entry
@@ -32,15 +42,17 @@ import {
 export async function compileLibraryShaders(
     root: string,
     modules: readonly string[],
+    fixtures: readonly { source: string; code: string }[] = [],
 ): Promise<string> {
     const directory = join(root, "generated/library/upstream/shaders");
     rmSync(directory, { recursive: true, force: true });
     mkdirSync(directory, { recursive: true });
     mkdirSync(join(root, "upstream"), { recursive: true });
     copyFileSync("upstream/tint.json", join(root, "upstream/tint.json"));
-    const compiled = runtimeWgslModules(
-        pinnedRawShaderImports(sharedPinnedContext(), modules),
-    ).map(({ output, data, entryPoint, alsoStages }) => {
+    const compiled = runtimeWgslModules([
+        ...pinnedRawShaderImports(sharedPinnedContext(), modules),
+        ...fixtures,
+    ]).map(({ output, data, entryPoint, alsoStages }) => {
         writeFileSync(join(directory, basename(output)), data);
         return {
             output: basename(output),

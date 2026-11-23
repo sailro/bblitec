@@ -1,18 +1,27 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
+    copyFileSync,
     existsSync,
     mkdirSync,
     mkdtempSync,
     readFileSync,
     readdirSync,
     rmSync,
+    statSync,
     symlinkSync,
+    utimesSync,
     writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import test from "node:test";
+import {
+    buildShippingTree,
+    shippingBuildState,
+} from "../src/shipping-iteration.js";
+import { contentDigest } from "../src/tooling/records.js";
+import { installVcpkgManifest } from "../src/vcpkg-install.js";
 import { computeBuildStamp } from "../src/build-stamp.js";
 import {
     discoverDevelopmentTools,
@@ -21,19 +30,19 @@ import {
 import { applicationScenes } from "../src/scene-registry.js";
 import type { CompiledNativeBackend } from "../src/tooling/backends.js";
 import {
-    desktopShaderSuffixes,
     importedLibraries,
     shippingPlatform,
+    stageDesktopPayloads,
     validateDesktopBuilds,
 } from "../src/package-demo.js";
 import {
     assertPackageChild,
     newPackageOutput,
+    packageFiles,
     publishPackageOutput,
 } from "../src/package-output.js";
 import {
     packageSizeReport,
-    preserveShippingPayload,
     selectShippingScenes,
     shippingConfigureArguments,
     shippingPlan,
@@ -48,25 +57,9 @@ const sample = applicationScenes[0]!;
 const core: ShippingFeatures = { features: [], codecs: [], runtime: [] };
 
 test(
-    "shipping selects host shader payloads and trims unreached SVG on both platforms",
+    "shipping trims unreached SVG on both platforms",
     { skip: !tools.powershell },
     (t) => {
-        assert.deepEqual(desktopShaderSuffixes("SDL_GPU", "win32"), [
-            ".dxil",
-            ".slots",
-        ]);
-        assert.deepEqual(desktopShaderSuffixes("SDL_GPU", "linux"), [
-            ".spv",
-            ".slots",
-        ]);
-        assert.deepEqual(desktopShaderSuffixes("SDL_GPU", "darwin"), [
-            ".msl",
-            ".slots",
-        ]);
-        assert.deepEqual(desktopShaderSuffixes("DAWN", "win32"), [
-            ".native.wgsl",
-            ".slots",
-        ]);
         const directory = mkdtempSync(
             join(tmpdir(), "bblite-shipping-policy-"),
         );
@@ -235,6 +228,9 @@ test("desktop packaging refuses a build that is not the exact mini shape, and st
         mkdirSync(join(root, path, ".."), { recursive: true });
         writeFileSync(join(root, path), content);
     };
+    write("native/CMakeLists.txt", "project(demo)");
+    write("generated/demo/main.cpp", "int main() { return 0; }");
+    const stamp = computeBuildStamp(join(root, "generated/demo"), root).stamp;
     write("generated/demo/assets/data.bin", "current asset");
     write("generated/demo/upstream/shaders/main.msl", "current shader");
     write("generated/demo/upstream/shaders/main.dxil", "current dxil");
@@ -257,7 +253,7 @@ test("desktop packaging refuses a build that is not the exact mini shape, and st
     const reset = (): void => {
         for (const arch of ["x86_64", "arm64"]) {
             write(`native/${arch}/CMakeCache.txt`, cacheText(mac(arch)));
-            write(`native/${arch}/bblite_native`, arch);
+            write(`native/${arch}/bblite_native`, `${arch}\n${stamp}`);
             write(`native/${arch}/assets/data.bin`, "current asset");
             write(`native/${arch}/shaders/main.msl`, "current shader");
             write(`native/${arch}/shaders/main.slots`, "slots");
@@ -275,7 +271,7 @@ test("desktop packaging refuses a build that is not the exact mini shape, and st
                 platform: "darwin",
                 root,
             },
-            (executable) => readFileSync(executable, "utf8"),
+            (executable) => readFileSync(executable, "utf8").split("\n")[0]!,
         );
     reset();
     assert.deepEqual(
@@ -294,6 +290,7 @@ test("desktop packaging refuses a build that is not the exact mini shape, and st
             /Expected CMAKE_OSX_ARCHITECTURES=arm64/,
         ],
         ["bblite_native", "x86_64", /Expected a thin arm64/],
+        ["bblite_native", "arm64", /Stale shipping executable/],
         ["assets/data.bin", "old asset", /data\.bin \(changed\)/],
         ["shaders/main.msl", "old shader", /main\.msl \(changed\)/],
         ["shaders/orphan.msl", "left behind", /orphan\.msl \(unexpected\)/],
@@ -316,7 +313,7 @@ test("desktop packaging refuses a build that is not the exact mini shape, and st
         BBLITE_GENERATED_DIR: join(root, "generated/demo"),
         BBLITE_DEPLOYED_SHADER_SUFFIXES: ".dxil;.slots",
     };
-    write("native/win/bblite_native.exe", "exe");
+    write("native/win/bblite_native.exe", stamp);
     write("native/win/assets/data.bin", "current asset");
     write("native/win/shaders/main.dxil", "current dxil");
     write("native/win/shaders/main.slots", "slots");
@@ -336,7 +333,38 @@ test("desktop packaging refuses a build that is not the exact mini shape, and st
             ...(expectBackend ? { expectBackend } : {}),
         });
     };
-    assert.equal(validateWindows(windows).length, 1);
+    for (const prefix of ["generated/demo", "native/win"]) {
+        const shaders =
+            prefix === "native/win" ? "shaders" : "upstream/shaders";
+        write(`${prefix}/${shaders}/mesh/sub/detail.dxil`, "nested shader");
+        write(`${prefix}/assets/mesh/model.bin`, "nested asset");
+    }
+    write(
+        "generated/demo/upstream/shaders/mesh/sub/detail.hlsl",
+        "intermediate",
+    );
+    write("native/win/shaders/.snapshot-stamp", "build marker");
+    const [slice] = validateWindows(windows);
+    assert.ok(slice);
+    const staged = join(root, "stage");
+    stageDesktopPayloads(slice, staged);
+    assert.deepEqual(packageFiles(staged), [
+        "assets/data.bin",
+        "assets/mesh/model.bin",
+        "shaders/main.dxil",
+        "shaders/main.slots",
+        "shaders/mesh/sub/detail.dxil",
+    ]);
+    assert.equal(
+        readFileSync(join(staged, "shaders/mesh/sub/detail.dxil"), "utf8"),
+        "nested shader",
+    );
+    rmSync(join(root, "generated/demo/assets"), { recursive: true });
+    assert.throws(() => validateWindows(windows), /data\.bin \(unexpected\)/);
+    write("generated/demo/assets/data.bin", "current asset");
+    write("generated/demo/assets/mesh/model.bin", "nested asset");
+    write("generated/demo/main.cpp", "int main() { return 1; }");
+    assert.throws(() => validateWindows(windows), /Stale shipping executable/);
     for (const [values, message] of [
         [{ ...windows, BBLITE_BACKEND: "BOTH" }, /requires a single backend/],
         [{ ...windows, BBLITE_MINSIZE: "OFF" }, /BBLITE_MINSIZE=ON/],
@@ -368,10 +396,11 @@ test("desktop packages start before they are archived and name each import the t
     // The staged executable runs a few frames with GPU validation and an
     // aborting SDL assertion handler, from its own directory, bounded.
     const source = readFileSync("src/package-demo.ts", "utf8");
-    assert.match(source, /BBLITE_MAX_FRAMES: String\(smokeFrames\)/);
+    assert.match(source, /BBLITE_MAX_FRAMES: String\(smokeFrameLimit\)/);
     assert.match(source, /SDL_ASSERT: "abort"/);
     assert.match(source, /cwd: packageDirectory/);
-    assert.match(source, /const smokeFrames = 5;/);
+    assert.match(source, /const smokeFrameLimit = 5;/);
+    assert.doesNotMatch(source, /\bsmokeFrames\b/);
     assert.match(source, /Output tail:/);
     assert.ok(
         source.indexOf("smokeRun(staged") <
@@ -520,98 +549,311 @@ test(
 );
 
 test(
-    "fresh shipping configure removes obsolete package paths and pins the static MSVC shape",
-    { skip: process.platform !== "win32" || !tools.cmake },
-    (t) => {
-        const directory = mkdtempSync(join(tmpdir(), "bblite-shipping-cache-"));
-        t.after(() => rmSync(directory, { recursive: true, force: true }));
-        const native = join(directory, "native");
-        mkdirSync(native);
-        writeFileSync(
-            join(native, "CMakeLists.txt"),
-            "cmake_minimum_required(VERSION 3.24)\nproject(shipping_cache NONE)\n",
-        );
-        const toolchainFile = join(directory, "toolchain.cmake");
-        writeFileSync(toolchainFile, "");
-        const toolchain = discoverWindowsBuildTools("msvc");
-        const scene = shippingPlan(directory, [
-            { scene: sample, reached: core },
-        ]).scenes[0]!;
-        const args = shippingConfigureArguments(
-            directory,
-            scene,
-            toolchain,
-            toolchainFile,
-        );
-        for (const required of [
-            "--fresh",
-            "-DBBLITE_MINSIZE=ON",
-            "-DBBLITE_BACKEND=SDL_GPU",
-            "-DBBLITE_PCH=OFF",
-            "-DVCPKG_TARGET_TRIPLET=x64-windows-static",
-            "-DVCPKG_MANIFEST_INSTALL=OFF",
-            "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded",
-            "-DBBLITE_VISUAL_CAPTURE=OFF",
-            "-DBBLITE_AUDIO_CAPTURE=OFF",
-        ])
-            assert.ok(args.includes(required), required);
-        assert.ok(args.includes(`-DCMAKE_CXX_COMPILER=${toolchain.compiler}`));
-        for (const extra of [
-            ["-DSDL3_image_DIR=C:/obsolete/static-superset"],
-            [],
-        ]) {
-            const result = spawnSync(tools.cmake!, [...args, ...extra], {
+    "shipping Ninja iteration builds only changed work and refuses incompatible inputs",
+    {
+        skip:
+            !tools.cmake ||
+            !tools.powershell ||
+            (process.platform !== "win32" && (!tools.cxx || !tools.ninja)),
+    },
+    async (t) => {
+        const root = mkdtempSync(join(tmpdir(), "bblite-shipping-iteration-"));
+        t.after(() => rmSync(root, { recursive: true, force: true }));
+        const windows =
+            process.platform === "win32"
+                ? discoverWindowsBuildTools("msvc")
+                : undefined;
+        const toolchain = windows ?? {
+            compiler: tools.cxx!,
+            ninja: tools.ninja!,
+        };
+        const env = {
+            ...process.env,
+            ...windows?.environment,
+            CMAKE_COMMAND: tools.cmake!,
+        };
+        const exec = (command: string, args: string[]) => {
+            const result = spawnSync(command, args, {
+                cwd: root,
+                env,
                 encoding: "utf8",
                 windowsHide: true,
             });
             assert.equal(result.status, 0, result.stdout + result.stderr);
-            const cache = readFileSync(
-                join(scene.buildDirectory, "CMakeCache.txt"),
-                "utf8",
+            return result.stdout;
+        };
+        const scene = shippingPlan(root, [
+            {
+                scene: {
+                    ...sample,
+                    id: "iteration-fixture",
+                    output: "generated/iteration-fixture",
+                },
+                reached: core,
+            },
+        ]).scenes[0]!;
+        for (const name of [
+            "native/patches",
+            "tools",
+            scene.output + "/upstream/shaders",
+        ])
+            mkdirSync(resolve(root, name), { recursive: true });
+        const native = join(root, "native");
+        const fixture = "test/fixtures/shipping-iteration";
+        for (const name of [
+            "shader-deployment.cmake",
+            "deploy-shaders.cmake",
+            "patch-identity.cmake",
+        ])
+            copyFileSync(join("native", name), join(native, name));
+        copyFileSync(
+            join(fixture, "CMakeLists.txt"),
+            join(native, "CMakeLists.txt"),
+        );
+        copyFileSync(
+            join(fixture, "fake-sdl.ps1"),
+            join(root, "tools/fake-sdl.ps1"),
+        );
+        for (const name of [
+            "prepare-shipping-dependency.ps1",
+            "bblite-tools.psm1",
+        ])
+            copyFileSync(join("tools", name), join(root, "tools", name));
+        writeFileSync(
+            join(native, "patches/manifest.json"),
+            JSON.stringify({
+                libraries: {
+                    sdl3: {
+                        pin: { file: "pin.json", field: "version" },
+                        builder: "tools/fake-sdl.ps1",
+                        variants: ["trimmed"],
+                        record: {
+                            prefix: "BBLITE_SDL",
+                            file: "bblite-sdl-features.cmake",
+                        },
+                    },
+                },
+                patches: [
+                    {
+                        library: "sdl3",
+                        file: "example.patch",
+                        variants: ["trimmed"],
+                    },
+                ],
+            }),
+        );
+        writeFileSync(join(root, "pin.json"), '{"version":"disposable"}');
+        writeFileSync(join(root, "example.patch"), "fixture patch");
+        writeFileSync(
+            join(native, "main.cpp"),
+            "int edited(); int main() { return edited(); }\n",
+        );
+        const edited = join(native, "edited.cpp");
+        writeFileSync(edited, "int edited() { return 0; }\n");
+        writeFileSync(
+            join(scene.output, "upstream/shaders/scene.slots"),
+            "fixture shader",
+        );
+        mkdirSync(join(scene.output, "assets"));
+        writeFileSync(
+            join(scene.output, "assets/texture.bin"),
+            "fixture asset",
+        );
+        const toolchainFile = join(root, "fixture-toolchain.cmake");
+        writeFileSync(toolchainFile, "");
+        const args = shippingConfigureArguments(
+            root,
+            scene,
+            toolchain,
+            toolchainFile,
+        );
+        assert.ok(!args.includes("--fresh"));
+        if (windows)
+            assert.ok(
+                args.includes("-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded"),
             );
+        const key = "fixture compiler";
+        const state = (candidate = scene, config = args, toolKey = key) =>
+            shippingBuildState(root, candidate, config, toolKey, core.features);
+        const calls = join(root, "tools/builder-calls.txt");
+        const builderCalls = () =>
+            existsSync(calls)
+                ? readFileSync(calls, "utf8").trim().split(/\r?\n/).length
+                : 0;
+        const dependency = () =>
+            exec(tools.powershell!, [
+                "-NoProfile",
+                "-File",
+                join(root, "tools/prepare-shipping-dependency.ps1"),
+                "-Library",
+                "sdl3",
+                "-OutputDirectory",
+                scene.sdlDirectory,
+                "-ToolchainIdentity",
+                key,
+                "-Jobs",
+                "1",
+            ]);
+        const ninjaLog = join(scene.buildDirectory, ".ninja_log");
+        const outputs = () =>
+            existsSync(ninjaLog)
+                ? readFileSync(ninjaLog, "utf8")
+                      .trimEnd()
+                      .split(/\r?\n/)
+                      .slice(1)
+                      .map((line) => line.split("\t")[3]!)
+                : [];
+        const shader = join(scene.buildDirectory, "shaders/scene.slots");
+        const iterate = async (
+            label: string,
+            expectedObjects: number,
+            links: number,
+            builder: number,
+        ) => {
+            const start = performance.now(),
+                before = outputs().length,
+                callsBefore = builderCalls();
+            const buildState = state();
+            dependency();
+            const stages: string[] = [];
+            await buildShippingTree(
+                root,
+                scene,
+                args,
+                buildState,
+                contentDigest(
+                    join(scene.sdlDirectory, "dependency-build-inputs.txt"),
+                ),
+                1,
+                async (stage, commandArgs) => {
+                    stages.push(stage);
+                    exec(tools.cmake!, commandArgs);
+                },
+            );
+            const work = outputs().slice(before);
+            const objects = work.filter((file) => /\.(obj|o)$/.test(file));
+            assert.equal(objects.length, expectedObjects, work.join("\n"));
+            if (label === "one TU") assert.match(objects[0]!, /edited\.cpp/);
             assert.equal(
-                cache.includes("C:/obsolete/static-superset"),
-                extra.length > 0,
+                work.filter((file) => /^bblite_native(?:\.exe)?$/.test(file))
+                    .length,
+                links,
             );
-        }
+            assert.equal(builderCalls() - callsBefore, builder);
+            assert.deepEqual(
+                stages,
+                label === "cold" ? ["configure", "build"] : ["build"],
+            );
+            t.diagnostic(
+                `${label}: ${Math.round(performance.now() - start)} ms, jobs=1, ${objects.length} compile, ${links} link, ${builder} dependency build; Ninja: ${work.join(", ") || "no work"}`,
+            );
+        };
+        await iterate("cold", 2, 1, 1);
+        const asset = join(scene.buildDirectory, "assets/texture.bin");
+        for (const file of [shader, asset]) utimesSync(file, 100, 100);
+        await iterate("warm", 0, 0, 0);
+        for (const file of [shader, asset])
+            assert.equal(statSync(file).mtimeMs, 100000);
+        writeFileSync(edited, "int edited() { return 1; }\n");
+        await iterate("one TU", 1, 1, 0);
+        for (const file of [shader, asset])
+            assert.equal(statSync(file).mtimeMs, 100000);
+        const start = performance.now();
+        const userFile = join(scene.buildDirectory, "keep.txt");
+        writeFileSync(userFile, "untouched");
+        assert.throws(
+            () => state({ ...scene, codecs: ["png"] }),
+            /mismatched shipping configuration/,
+        );
+        assert.throws(
+            () => state(scene, args, "other compiler"),
+            /mismatched shipping configuration/,
+        );
+        assert.throws(
+            () => state(scene, [...args, "-DBBLITE_BACKEND=DAWN"]),
+            /mismatched shipping configuration/,
+        );
+        assert.equal(readFileSync(userFile, "utf8"), "untouched");
+        await assert.rejects(
+            buildShippingTree(
+                root,
+                scene,
+                args,
+                state(),
+                "different dependency stamp",
+                1,
+                async () => {
+                    assert.fail("dependency mismatch must not run CMake");
+                },
+            ),
+            /dependency identity changed/,
+        );
+        t.diagnostic(
+            `codec, compiler and backend mismatch: ${Math.round(performance.now() - start)} ms, refused before configure or build`,
+        );
+        // The fixture carries a trimmed record. Omitting required variants
+        // accepts it; explicitly requiring no variants refuses it.
+        const probe = join(root, "patch-state.ps1");
+        writeFileSync(
+            probe,
+            [
+                "param([string]$Artifact)",
+                'Import-Module "$PSScriptRoot/tools/bblite-tools.psm1"',
+                "$recorded = @(Invoke-PatchIdentity state sdl3 -Artifact $Artifact)",
+                "$none = @(Invoke-PatchIdentity state sdl3 -Artifact $Artifact -RequiredVariants @())",
+                "if ($recorded[0] -ne 'current' -or $none[0] -ne 'stale') { throw \"unexpected states: $recorded; $none\" }",
+            ].join("\n"),
+        );
+        exec(tools.powershell!, [
+            "-NoProfile",
+            "-File",
+            probe,
+            scene.sdlDirectory,
+        ]);
+        writeFileSync(
+            join(scene.sdlDirectory, "bblite-sdl-features.cmake"),
+            "set(BBLITE_SDL_PATCHES wrong)",
+        );
+        assert.throws(dependency, /stale/);
+        writeFileSync(join(root, "example.patch"), "changed patch");
+        assert.throws(dependency, /mismatched artifact stamp/);
+        assert.equal(builderCalls(), 1);
+        const link = join(scene.buildDirectory, "assets/nested-link");
+        symlinkSync(join(scene.output, "assets"), link, "junction");
+        assert.throws(() => state(), /payload holds a link/);
+        rmSync(link);
+        writeFileSync(
+            join(scene.buildDirectory, "shaders/unknown.slots"),
+            "user shader",
+        );
+        assert.throws(() => state(), /Unexpected shipping payload/);
+        writeFileSync(
+            join(scene.buildDirectory, "CMakeCache.txt"),
+            "bad cache",
+        );
+        assert.throws(() => state(), /mismatched shipping configuration/);
+        assert.equal(readFileSync(userFile, "utf8"), "untouched");
     },
 );
 
-test("obsolete deployment is preserved without moving the executable or native objects", (t) => {
-    const root = mkdtempSync(join(tmpdir(), "bblite-shipping-payload-"));
-    t.after(() => rmSync(root, { recursive: true, force: true }));
-    const directory = join(root, "native/build-demo-min-sdl");
-    mkdirSync(directory, { recursive: true });
-    mkdirSync(join(directory, "assets"));
-    writeFileSync(join(directory, "assets/old.bin"), "old asset");
-    writeFileSync(join(directory, "SDL3.dll"), "old dll");
-    writeFileSync(join(directory, "bblite-shaders-deployed.stamp"), "deployed");
-    writeFileSync(join(directory, "bblite_native.exe"), "old executable");
-    writeFileSync(join(directory, "object.obj"), "cached object");
-    assert.throws(() => preserveShippingPayload(root, "../escape"));
-    preserveShippingPayload(root, "demo");
-    const backup = readdirSync(directory).find((name) =>
-        name.startsWith(".payload-"),
+test("shipping never reconciles an unknown manifest install in place", (t) => {
+    const installedDirectory = mkdtempSync(
+        join(tmpdir(), "bblite-shipping-vcpkg-"),
     );
-    assert.ok(backup);
-    assert.equal(
-        readFileSync(join(directory, backup, "assets/old.bin"), "utf8"),
-        "old asset",
+    t.after(() => rmSync(installedDirectory, { recursive: true, force: true }));
+    const keep = join(installedDirectory, "keep.txt");
+    writeFileSync(keep, "user file");
+    assert.throws(
+        () =>
+            installVcpkgManifest(
+                join(installedDirectory, "no-vcpkg"),
+                { installedDirectory, triplet: "fixture", features: [] },
+                {},
+                "fixture compiler",
+            ),
+        /missing or mismatched install stamp/,
     );
-    assert.equal(
-        readFileSync(join(directory, backup, "SDL3.dll"), "utf8"),
-        "old dll",
-    );
-    assert.equal(
-        readFileSync(join(directory, "bblite_native.exe"), "utf8"),
-        "old executable",
-    );
-    assert.ok(existsSync(join(directory, "object.obj")));
-    assert.ok(!existsSync(join(directory, "assets")));
-    assert.ok(
-        !existsSync(join(directory, "bblite-shaders-deployed.stamp")),
-        "Ninja must redeploy after moving the shader directory",
-    );
+    assert.equal(readFileSync(keep, "utf8"), "user file");
 });
 
 test("extracted dependency choices remain part of the native build stamp", (t) => {

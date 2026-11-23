@@ -178,20 +178,16 @@ export function sdlUniformSource(
     return undefined;
 }
 
-/**
- * The read-only storage binding SDL_GPU stages read `@builtin(num_workgroups)`
- * from: D3D12 places the builtin outside SDL_GPU's compute bindings, so each
- * dispatch binds its own counts there (`sdl_workgroup_counts_binding`,
- * native/src/pal_sdl_gpu_compute_pipeline.hpp).
- */
-const SDL_WORKGROUP_COUNTS = "bbl_num_workgroups";
+type BindingPoint = Pick<ReflectedBinding, "group" | "binding">;
 
 /**
  * The module with every entry point's `@builtin(num_workgroups)` parameter
- * read from {@link SDL_WORKGROUP_COUNTS} instead, declared after group 0's
- * last binding; undefined when no function takes the builtin.
+ * read from a private storage binding instead. Only the returned binding
+ * point, never its spelling, identifies dispatch counts in Tint's slots.
  */
-export function sdlWorkgroupCountsSource(wgsl: string): string | undefined {
+export function sdlWorkgroupCountsSource(
+    wgsl: string,
+): { source: string; point: BindingPoint } | undefined {
     if (!wgsl.includes("num_workgroups")) return undefined;
     const reading = reflectWgslModule(wgsl).declarations.flatMap(
         (declaration) =>
@@ -210,6 +206,10 @@ export function sdlWorkgroupCountsSource(wgsl: string): string | undefined {
                 : [],
     );
     if (reading.length === 0) return undefined;
+    const base = "bbl_num_workgroups";
+    let identifier = base;
+    for (let suffix = 1; wgsl.includes(identifier); ++suffix)
+        identifier = `${base}_${suffix}`;
     const edits = reading.flatMap(({ declaration, parameter, index }) => {
         const { parameters, body } = declaration;
         const removed =
@@ -224,7 +224,7 @@ export function sdlWorkgroupCountsSource(wgsl: string): string | undefined {
             {
                 start: body.start,
                 end: body.start,
-                text: `\n    let ${parameter.name} = ${SDL_WORKGROUP_COUNTS};`,
+                text: `\n    let ${parameter.name} = ${identifier};`,
             },
         ];
     });
@@ -236,7 +236,41 @@ export function sdlWorkgroupCountsSource(wgsl: string): string | undefined {
                 .filter(({ group }) => group === 0)
                 .map(({ binding }) => binding),
         ) + 1;
-    return `${adapted}\n@group(0) @binding(${binding}) var<storage, read> ${SDL_WORKGROUP_COUNTS}: vec3<u32>;\n`;
+    return {
+        source: `${adapted}\n@group(0) @binding(${binding}) var<storage, read> ${identifier}: vec3<u32>;\n`,
+        point: { group: 0, binding },
+    };
+}
+
+/** Versioned SDL compute rows: Tint reports only resources reached by this entry point. */
+export function sdlComputeSlotRoles(
+    rows: readonly string[],
+    counts: BindingPoint | undefined,
+): string[] {
+    let marked = false;
+    return [
+        "@compute-slots 2",
+        ...rows.map((row) => {
+            if (row.startsWith("@")) return row;
+            const fields = row.split(/\s+/);
+            const [slot, , group, binding] = fields;
+            if (fields.length !== 6 || !slot || !/^[tirjwbs]\d+$/.test(slot))
+                throw new Error(`Invalid Tint compute slot: ${row}`);
+            if (
+                counts &&
+                group === String(counts.group) &&
+                binding === String(counts.binding)
+            ) {
+                if (marked || !slot.startsWith("r"))
+                    throw new Error(
+                        `Invalid reflected dispatch-counts slot: ${row}`,
+                    );
+                marked = true;
+                return `${row} dispatch-counts`;
+            }
+            return `${row} resource`;
+        }),
+    ];
 }
 
 /** Every binding Tint reflects is one the module declares. */

@@ -7,7 +7,7 @@ runtime check. There is no JavaScript interpreter or dynamic module loader.
 
 `--deferred-capabilities runtime-throw` (`CompileOptions.deferredCapabilities`) compiles registered missing APIs
 as typed throwing/rejecting boundaries, listed in `manifest.deferredCapabilities`. Registered: Babylon microphone
-sources, the unmute UI and the visualizer, Gaussian point splatting, `prompt`, and the [UI](ui.md) items
+sources, the unmute UI and the visualizer, `prompt`, and the [UI](ui.md) items
 marked deferred. Unregistered APIs still refuse. Registry scenes opt in with `deferredCapabilities`.
 
 ## Language
@@ -201,7 +201,8 @@ cancel })` is a program source; `new Response(stream, { status, statusText, head
   selects, by the bytes' content, the chain packaged from the same KTX2 image in a file the program fetches as bytes
   (the whole file or a member of a zip archive), and rejects other bytes. A realm settles both as promises.
 - `loadGaussianSplatStream` runs the lowered pinned streaming library on the WebGPU-subset device; options are the pin's
-  numeric budgets and `signal`. `splatsData`/`updateData` admit equal-count replacement.
+  numeric budgets and `signal`. `enableGaussianPointSplatting` and `disableGaussianPointSplatting` use the pinned
+  point renderer for streams. `splatsData`/`updateData` admit equal-count replacement.
 - MeshLoD (`loadMeshLoD`, instances, scene, setters, diagnostics) runs the lowered pinned library on the WebGPU-subset
   device: packaged `.mlod` sources (or absolute HTTP(S) URLs) read by range, meshopt pages, GPU selection, the pin's PBR
   over `PbrMaterialProps`.

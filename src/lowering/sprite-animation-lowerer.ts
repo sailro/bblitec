@@ -54,9 +54,6 @@ function loweredStepper(context: LoweringContext): string {
             () => "target_is_alive(engine, animation.target)",
         ],
         ["normalizeDelay", (args) => `normalize_delay(${args[0]})`],
-        // The pin's finiteness guard, at the C++ spelling of the same
-        // predicate. Both bodies ask it, so the map is shared.
-        ["Number.isFinite", (args) => `std::isfinite(${args[0]})`],
         // `animation.onEnd?.()`: an animation here never carries one,
         // because the option that would set it refuses at generation. The
         // pin's optional call is therefore the no-op its own `?.` makes it

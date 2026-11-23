@@ -50,7 +50,7 @@ export function storesAsTexture2D(value: Value): boolean {
  * native constructor refuses a view of another texture or a size other
  * than the texture's, the fields the bindings do not read.
  */
-export function texture2DFromParts(
+function texture2DFromParts(
     context: Pick<LoweringServices, "requireEngine">,
     value: Value,
     node: ts.Node,
@@ -183,7 +183,7 @@ function colorViewSampling(
  * `sampler` when they build a bind group; the native binding resolves the
  * target's current colour at that point. Undefined for any other record.
  */
-export function renderTargetColorViewTexture(
+function renderTargetColorViewTexture(
     context: Texture2DRecordServices,
     value: Value,
     node: ts.Node,

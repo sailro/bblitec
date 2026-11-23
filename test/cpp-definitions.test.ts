@@ -97,7 +97,6 @@ test("node-only variant data owns its light declarations in an isolated translat
         transmission: false,
         selectedMaterialVariant: "",
         standardLightLists: false,
-        standardDiffuseUv2: false,
         textureTransform: false,
         imageBasedLighting: false,
         gpuInstancing: false,

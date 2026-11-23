@@ -19,7 +19,7 @@ npm run scene -- parity scene1
 - `scene` finds CMake through vswhere. Dependency scripts and Android need PATH, `CMAKE_COMMAND` or `-CMake`; on this
   Windows host: `$env:CMAKE_COMMAND = 'C:/Program Files/Microsoft Visual Studio/18/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe'`.
 - Patches: [native/patches/manifest.json](../native/patches/manifest.json) lists each patch series, its builds, purpose and
-  upstream state; only `native/patch-identity.cmake` reads it. `npm run patches:check` verifies manifest, files and consumers.
+  upstream state. `native/patch-identity.cmake` selects build series; `npm run patches:check` verifies the inventory and its consumers.
 - Built Dawn, LabSound, RmlUi and trimmed-SDL artifacts record source, patches and variants: configure refuses a mismatch,
   warns on an unrecorded artifact; `dev:setup` rebuilds stale ones. LabSound test fixtures also refuse an unrecorded one.
 
@@ -230,7 +230,8 @@ node dist/src/scene-command.js neutrality <saved-baseline-directory>
 - `--backend sdl_gpu|dawn|both` (default both; `BBLITE_BACKEND`), `--compiler auto|clangcl|msvc` (`BBLITE_DEV_COMPILER`),
   `BBLITE_CMAKE_GENERATOR`.
 - Build dirs: `native/build-<id>-release`, suffixed `-sdl_gpu`/`-dawn` for one backend. `parity`/`check` measure every
-  compiled backend unless `--backend` (or an ambient `BBLITE_GPU_BACKEND`) selects one.
+  compiled backend unless `--backend` (or an ambient `BBLITE_GPU_BACKEND`) selects one. Single-backend measurements
+  default to the first compiled backend (SDL_GPU in a dual build).
 - Generation writes `generated/<id>/features.cmake`; `native/dependency-features.cmake` maps features to vcpkg features
   and units. vcpkg SDL is used unless a trimmed SDL (`BBLITE_SDL_DIR`) replaces it.
 - Macros: each feature macro has its own `bblite/features/<name>.hpp` (`src/feature-macros.ts`), included wherever
@@ -283,7 +284,7 @@ npm run package:demo -- --platform ios --scene tetris --jobs 3
 - `demos:release` options: `--scene <id,id>`, `--workers N`, `--jobs N`, `--plan`. Plans/logs: `artifacts/shipping/`;
   receipts hold bytes, hashes, startup results. `@previous/` is preserved.
 - Notices are staged through `src/package-output.ts` and `src/package-notices.ts`.
-- The desktop packager runs five frames with GPU validation before publishing. Map sizes with
+- The desktop packager requires a successful GPU-validation startup with a five-frame limit before publishing. Map sizes with
   `node tools/map-size-report.mjs <executable.map>`.
 
 | Platform | Configuration |

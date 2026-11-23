@@ -25,6 +25,7 @@ import { stringLiteral } from "../cpp-literals.js";
  * keeps a changed pinned body visible instead of silently stale.
  */
 import ts from "typescript";
+import { numberPredicateCpp } from "../compiler/number-intrinsics.js";
 import { PinnedBindings } from "./pinned-bindings.js";
 import { findAnalysisNode } from "../compiler/analysis-walk.js";
 import { enclosingLoopControl } from "../compiler/loop-control.js";
@@ -832,7 +833,7 @@ const JS_BUILTIN_CALLS: ReadonlyMap<
         {
             arity: 1,
             spell: (args: readonly string[]) =>
-                `std::isfinite(static_cast<double>(${args[0]}))`,
+                `${numberPredicateCpp("isFinite")!}(${args[0]})`,
         },
     ],
 ]);
@@ -5118,21 +5119,34 @@ export class PinnedNumericLowerer {
               ? callee.text
               : undefined;
         if (!name) this.fail(node, "call target");
-        const builtin = JS_BUILTIN_CALLS.get(name);
-        if (!this.scope.calls.has(name) && builtin) {
+        const spelling = this.scope.calls.get(name);
+        if (spelling) {
+            const result = spelling(args);
+            this.translationActivity?.request("call", node, this.file);
+            return result;
+        }
+        const member = ts.isPropertyAccessExpression(callee)
+            ? callee
+            : undefined;
+        const global =
+            member && pinnedLibraryGlobal(unwrapExpression(member.expression));
+        const builtin =
+            global && member
+                ? JS_BUILTIN_CALLS.get(`${global}.${member.name.text}`)
+                : undefined;
+        if (builtin) {
             if (args.length !== builtin.arity) {
                 this.fail(node, `'${name}' arity`);
             }
             this.translationActivity?.request("call", node, this.file);
             return builtin.spell(args);
         }
-        const spelling = this.scope.calls.get(name);
         const math = mathMemberAccess(
             pinnedAliasedCallee(callee),
             pinnedLibraryGlobal,
             pinnedMember,
         );
-        if (!spelling && math) {
+        if (math) {
             const member = MATH_MEMBERS.get(math.name);
             if (member && !mathArityAccepts(member, args.length))
                 this.fail(node, `'${name}' arity`);
@@ -5146,10 +5160,7 @@ export class PinnedNumericLowerer {
             if (result !== undefined)
                 return this.scope.mathValue?.result(result) ?? result;
         }
-        if (!spelling) this.fail(node, `call '${name}'`);
-        const result = spelling(args);
-        this.translationActivity?.request("call", node, this.file);
-        return result;
+        return this.fail(node, `call '${name}'`);
     }
 
     private binary(node: ts.BinaryExpression): string | undefined {

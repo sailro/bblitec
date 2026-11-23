@@ -146,11 +146,6 @@ export function lightParameterHeader(
             bindings,
             calls: new Map([
                 [
-                    "Number.isFinite",
-                    (args: readonly string[]) =>
-                        `std::isfinite(${args.join(",")})`,
-                ],
-                [
                     "color.join",
                     (args: readonly string[]) =>
                         `js::number_to_string(color.x)+${args[0]}+js::number_to_string(color.y)+${args[0]}+js::number_to_string(color.z)`,

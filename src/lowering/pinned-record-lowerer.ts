@@ -3638,7 +3638,6 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     ) {
         const calls = new Map<string, PinnedCallSpelling>();
 
-        calls.set("Number.isFinite", (args) => `std::isfinite(${args[0]})`);
         const scope: PinnedNumericScope = {
             bindings: new Map(),
             calls,

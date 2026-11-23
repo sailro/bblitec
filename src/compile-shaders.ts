@@ -38,6 +38,7 @@ import {
     assertUniformBufferCap,
     parseStageLayoutRecord,
     prepareSdlUniformAdaptation,
+    sdlComputeSlotRoles,
     sdlUniformSource,
     sdlWorkgroupCountsSource,
     type SdlUniformAdaptation,
@@ -547,9 +548,13 @@ export async function compileOfflineShaders(
                         );
                         // The workgroup counts each dispatch binds itself,
                         // over any uniform move.
-                        const adapted =
-                            sdlWorkgroupCountsSource(uniformAdapted ?? wgsl) ??
-                            uniformAdapted;
+                        const counts =
+                            kind === "compute"
+                                ? sdlWorkgroupCountsSource(
+                                      uniformAdapted ?? wgsl,
+                                  )
+                                : undefined;
+                        const adapted = counts?.source ?? uniformAdapted;
                         if (adapted !== undefined) {
                             writeFileSync(pendingWgsl, `${adapted}${EOL}`);
                             await compile(pendingWgsl);
@@ -565,13 +570,24 @@ export async function compileOfflineShaders(
                         // and closes with the `@binding` lines of the module
                         // Dawn compiles, laid out as WebGPU binds it where SDL_GPU
                         // binds the compacted slots; lines end as the tree's do.
-                        for (const { extension } of written)
-                            tree.write(
-                                `${stage.stem}${extension}`,
-                                extension === ".slots"
-                                    ? `${lines(readFileSync(pending(extension), "utf8")).join(EOL)}${EOL}`
-                                    : readFileSync(pending(extension)),
+                        for (const { extension } of written) {
+                            const output = `${stage.stem}${extension}`;
+                            if (extension !== ".slots") {
+                                tree.write(
+                                    output,
+                                    readFileSync(pending(extension)),
+                                );
+                                continue;
+                            }
+                            const rows = lines(
+                                readFileSync(pending(extension), "utf8"),
                             );
+                            const slots =
+                                kind === "compute"
+                                    ? sdlComputeSlotRoles(rows, counts?.point)
+                                    : rows;
+                            tree.write(output, `${slots.join(EOL)}${EOL}`);
+                        }
                         // The reflection record: Tint's diagnostics for the
                         // module, then every entry point's bindings.
                         tree.write(

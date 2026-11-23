@@ -1,4 +1,3 @@
-import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import {
@@ -57,8 +56,6 @@ export function lowerNodeParticleProviderShared(
         "provider() as Mat4 | null | undefined",
         "provider sample",
     );
-    const calls = new Map<string, PinnedCallSpelling>();
-    calls.set("Number.isFinite", ([value]) => `std::isfinite(${value})`);
     const sample = lowerPinnedFunctionParts(
         context,
         module,
@@ -85,7 +82,6 @@ export function lowerNodeParticleProviderShared(
                     { cpp: "provided", type: "f32", staticBoolean: true },
                 ],
             ]),
-            calls,
         },
     );
     const translation = lowerPinnedFunction(

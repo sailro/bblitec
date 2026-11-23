@@ -22,7 +22,6 @@
 #include <cstdint>
 #include <functional>
 #include <initializer_list>
-#include <limits>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -255,7 +254,7 @@ inline void revoke_object_url(Engine& engine, ObjectUrlHandle handle) {
     record.active = false;
     record.bytes.reset();
     record.mime_type.clear();
-    if (record.generation != (std::numeric_limits<std::uint32_t>::max)()) {
+    if (has_next_generation(record.generation)) {
         ++record.generation;
         engine.free_object_url_slots.push_back(handle.slot);
     }

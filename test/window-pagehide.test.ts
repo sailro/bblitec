@@ -65,6 +65,9 @@ test("Window beforeunload and pagehide preserve targets, flags, callback orderin
         #undef main
         #include <cassert>
         #include <map>
+        #include <semaphore>
+        #include <bblite/pal_native_job.hpp>
+        #include <bblite/pal_offscreen.hpp>
         namespace bbl::pal {
             Engine document;
             std::map<std::string, std::string> stored;
@@ -78,25 +81,56 @@ test("Window beforeunload and pagehide preserve targets, flags, callback orderin
                 stored.insert_or_assign(key, value);
             }
             void remove_local_storage(const std::string& key) { stored.erase(key); }
+            OffscreenSurface surface(32,32);
+            OffscreenDevice device;
+            std::binary_semaphore job_started{0}, finish_job{0};
+            std::atomic<bool> job_finished{false}, settled{false};
+            std::weak_ptr<OffscreenImage> submitted;
+            void child_with_pending_work(WorkerRealm& child) {
+                child.loop().register_completion([](auto) {}, [] {finish_job.release();});
+                OffscreenRun producer(surface,device);
+                auto image = std::make_shared<OffscreenImage>();
+                submitted = image;
+                producer.publish(32,32,std::move(image));
+                start_native_job([] {
+                    job_started.release();
+                    finish_job.acquire();
+                    job_finished = true;
+                    return 1;
+                }, [](auto&) { settled = true; });
+            }
+
             int run_window_application(WorkerEntry initialize, EngineOptions) {
                 const js::RealmScope scope;
                 EventLoop loop;
-                WorkerRealm realm(loop);
-                bool cleaned = false;
-                loop.defer_cleanup([&] { cleaned = true; });
-                loop.run([&] { initialize(realm); }, [&] {
-                    assert(!cleaned);
-                    const auto ordinary = dom_event(PlatformMouseEvent{}, "click", {DomEventTarget::window()});
-                    document.dom_input->pointer.dispatch(ordinary, [&](auto& callback, const auto& payload) {
-                        loop.dispatch_callback([&] { callback(payload); });
-                    }, &document);
-                    for (const auto& event : {window_beforeunload_event(), window_pagehide_event()})
-                        assert(event.dom->path == std::vector<DomEventTarget>{DomEventTarget::window()});
-                    dispatch_page_lifecycle(document, [&](auto& callback, const auto& payload) {
-                        loop.dispatch_callback([&] { callback(payload); });
+                std::optional<OffscreenFrame> in_flight;
+                {
+                    WorkerRealm realm(loop);
+                    bool cleaned = false;
+                    loop.defer_cleanup([&] { cleaned = true; });
+                    loop.run([&] {
+                        realm.create_worker(child_with_pending_work, "closing worker");
+                        job_started.acquire();
+                        in_flight = surface.take_frame();
+                        assert(in_flight && in_flight->image && !job_finished);
+                        initialize(realm);
+                    }, [&] {
+                        assert(!cleaned && !job_finished && !submitted.expired());
+                        const auto ordinary = dom_event(PlatformMouseEvent{}, "click", {DomEventTarget::window()});
+                        document.dom_input->pointer.dispatch(ordinary, [&](auto& callback, const auto& payload) {
+                            loop.dispatch_callback([&] { callback(payload); });
+                        }, &document);
+                        for (const auto& event : {window_beforeunload_event(), window_pagehide_event()})
+                            assert(event.dom->path == std::vector<DomEventTarget>{DomEventTarget::window()});
+                        dispatch_page_lifecycle(document, [&](auto& callback, const auto& payload) {
+                            loop.dispatch_callback([&] { callback(payload); });
+                        });
                     });
-                });
-                assert(cleaned);
+                    assert(cleaned && !job_finished);
+                } // The realm terminates and joins its children after the closing turn.
+                assert(job_finished && !settled && !submitted.expired());
+                in_flight.reset();
+                assert(submitted.expired());
                 return 0;
             }
         }
@@ -105,6 +139,7 @@ test("Window beforeunload and pagehide preserve targets, flags, callback orderin
             assert(!bbl::dom_event_persisted(ordinary).has_value());
             const int result = generated_main();
             assert(result == 0);
+            assert(bbl::pal::job_finished && !bbl::pal::settled && bbl::pal::submitted.expired());
             assert(bbl::pal::stored.size() == 1);
             assert(bbl::pal::stored.at("pagehide-result") == "beforeunload;capture;target;microtask;");
             bbl::pal::document.dom_input.reset();

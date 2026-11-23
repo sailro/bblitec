@@ -27,7 +27,11 @@ import {
     gltfHasGaussianSplats,
     type AssetSpecializationFeatures,
 } from "./asset-specializer.js";
-import { babylonLights, type BabylonLight } from "./babylon-asset-features.js";
+import { resolve } from "node:path";
+import {
+    readBabylonAsset,
+    type BabylonCompositionAsset,
+} from "./babylon-asset-features.js";
 import { SPLAT_CONTAINERS } from "./compiler/assets.js";
 import type { JsonRecord } from "./json-fields.js";
 import {
@@ -123,8 +127,10 @@ export interface AssetFeatureJoin {
     assetLightNodes: { count: number; asset: string } | undefined;
     /** Any glTF asset installs its own EXT_lights_image_based environment. */
     imageBasedLight: boolean;
-    /** Every `.babylon` asset's own lights, in asset order. */
-    babylonLights: BabylonLight[];
+    /** A loaded point light selects meshes by id. */
+    standardLightLists: boolean;
+    assetLightsReached: boolean;
+    babylonAssets: ReadonlyMap<string, BabylonCompositionAsset>;
     plan: JoinedActivationPlan;
 }
 
@@ -229,13 +235,21 @@ export async function joinAssetFeatures({
     // A `.babylon` document's own lights are the scene's lights the way a
     // glTF's are: the generated loader fills point LightRecords (`type: 0` is
     // the only kind it accepts) for the pinned lights block to consume.
-    const assetBabylonLights: BabylonLight[] = [];
+    const babylonAssets = new Map<string, BabylonCompositionAsset>();
+    let assetLightsReached = assetLightNodes !== undefined;
+    let standardLightLists = false;
     for (const asset of manifest.assets) {
         if (asset.kind !== "babylon") continue;
-        const lights = babylonLights(outputPath, [asset]);
-        assetBabylonLights.push(...lights);
-        if (lights.some((light) => light.type === 0))
+        const facts = await readBabylonAsset(
+            resolve(outputPath, "assets", asset.output),
+            asset.babylonTextureModes ?? [true],
+        );
+        babylonAssets.set(asset.output, facts.composition);
+        if (facts.pointLights) {
+            assetLightsReached = true;
             join("light:point", asset.output);
+        }
+        standardLightLists ||= facts.standardLightLists;
     }
 
     // A LINEAR_VELOCITY geometry task's Standard preload loads the
@@ -292,7 +306,9 @@ export async function joinAssetFeatures({
         flowGraphs,
         assetLightNodes,
         imageBasedLight,
-        babylonLights: assetBabylonLights,
+        standardLightLists,
+        assetLightsReached,
+        babylonAssets,
         plan: {
             // Initial skin and morph state needs the local-vertex transport
             // animated nodes use, and so does a scene-authored deformation.

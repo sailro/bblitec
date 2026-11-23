@@ -499,9 +499,8 @@ void print_cpu_frame_profile(long frame, double total_ms, double acquire_ms, dou
  * scene or a geometry cache (the sprite renderers) prints zeros there.
  *
  * A process can run several engines at once (a Window host's canvases,
- * each on its realm's thread). Every loop counts its own frames and reads
- * its own thread's GC registry, so each prints one ordered stream under
- * its own `engine=` number, assigned in start order.
+ * each on its realm's thread). Sample completed frames per engine, not per
+ * renderer session: device recovery replaces the renderer but not the engine.
  */
 inline constexpr long memory_profile_frames = 30;
 
@@ -511,17 +510,28 @@ public:
         static const bool value = environment_variable("BBLITE_MEM_PROFILE") == "1";
         return value;
     }
-    [[nodiscard]] bool due(long frame) const {
-        return stream_ != 0 && frame % memory_profile_frames == 0;
+    template <typename... SceneData>
+    static void on_frame(bbl::Engine& engine, const SceneData&... scene_data) {
+        if (!enabled())
+            return;
+        if (engine.memory_profile_stream == 0) {
+            static std::atomic<std::uint32_t> started = 0;
+            engine.memory_profile_stream = ++started;
+        }
+        const auto frame = engine.memory_profile_frame++;
+        if (frame % memory_profile_frames == 0)
+            print(frame, engine, scene_data...);
     }
-    void print(long frame, const bbl::Engine& engine, std::size_t scene_meshes,
-               std::size_t gpu_meshes, std::size_t shared_geometries,
-               std::size_t shared_geometry_bytes) const;
+
+private:
+    static void print(std::uint64_t frame, const bbl::Engine& engine, std::size_t scene_meshes = 0,
+                      std::size_t gpu_meshes = 0, std::size_t shared_geometries = 0,
+                      std::size_t shared_geometry_bytes = 0);
     /** The scene-loop form: the backend's mesh list and shared-geometry cache. */
     template <typename GpuMesh, typename SharedGeometry>
-    void print(long frame, const bbl::Engine& engine, const bbl::Scene& scene,
-               const std::vector<GpuMesh>& gpu_meshes,
-               const std::vector<std::unique_ptr<SharedGeometry>>& cache) const {
+    static void print(std::uint64_t frame, const bbl::Engine& engine, const bbl::Scene& scene,
+                      const std::vector<GpuMesh>& gpu_meshes,
+                      const std::vector<std::unique_ptr<SharedGeometry>>& cache) {
         // The cache's own vertex type (`GpuVertex`), named through the entry
         // so this header stays free of the scene-shaped vertex.
         using Vertex = typename decltype(SharedGeometry::vertices)::value_type;
@@ -532,13 +542,6 @@ public:
         }
         print(frame, engine, scene.meshes.size(), gpu_meshes.size(), cache.size(), bytes);
     }
-
-private:
-    static std::uint32_t start() {
-        static std::atomic<std::uint32_t> started = 0;
-        return enabled() ? ++started : 0;
-    }
-    const std::uint32_t stream_ = start();
 };
 
 /**

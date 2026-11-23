@@ -263,6 +263,21 @@ test("base-color pointer resolution retains every physical material copy", async
     assert.equal(nullWriter.baseColorModule, true);
 });
 
+test("an undeclared material pointer does not change shader inputs", async () => {
+    const input = fixture(
+        [pointer("/materials/0/pbrMetallicRoughness/baseColorFactor", 2)],
+        false,
+    );
+    const plan = await gltfMeshPlan(input.document, input.bin);
+    assert.deepEqual(plan.baseColorDefinitions, []);
+    const [material] = await materialSubjects(
+        input.document,
+        {},
+        { meshPlan: plan },
+    );
+    assert.equal(material!.input.baseColorFactor, undefined);
+});
+
 test("actual pointer preparation supplies material initialization and base-color definition identities", async () => {
     const input = fixture([
         pointer("/materials/0/pbrMetallicRoughness/baseColorFactor", 2),
@@ -530,6 +545,48 @@ test("animated base color targets every default and variant instance of its mate
             ],
         },
     );
+});
+
+test("UV preparation follows the pinned material map, by physical slot", async () => {
+    const channel = pointer(
+        "/materials/0/normalTexture/extensions/KHR_texture_transform/offset",
+    );
+    const input = fixture([channel]);
+    input.document.extensionsUsed = [
+        "KHR_animation_pointer",
+        "KHR_materials_variants",
+    ];
+    input.document.extensions = {
+        KHR_materials_variants: { variants: [{ name: "shared" }] },
+    };
+    asRecords(asRecords(input.document.meshes)[0]!.primitives)[0]!.extensions =
+        {
+            KHR_materials_variants: {
+                mappings: [{ material: 0, variants: [0] }],
+            },
+        };
+    const flags = async (context?: LoweringContext) => {
+        const plan = await gltfMeshPlan(input.document, input.bin, context);
+        const materials = await materialSubjects(
+            input.document,
+            {},
+            { meshPlan: plan, ...(context ? { context } : {}) },
+        );
+        return materials.map((m) => m.input._hasUvTx === true);
+    };
+    assert.deepEqual(await flags(), [true, false]);
+    assert.deepEqual(
+        await flags(
+            doctoredContext(
+                "src/loader-gltf/gltf-feature-animation-pointer.ts",
+                "if (uvTransformAnimated.has(matIdx))",
+                "if (false)",
+            ),
+        ),
+        [false, false],
+    );
+    input.document.extensionsUsed = ["KHR_materials_variants"];
+    assert.deepEqual(await flags(), [false, false]);
 });
 
 test("each source controller selects only skeletons reached by that clip's joint ancestors", async () => {

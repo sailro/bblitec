@@ -338,5 +338,8 @@ export const SPLAT_STREAM_LIBRARY: LoweredLibrary = {
         ...libraryRecords.map((spec) => spec.pinned[0]!),
     ],
     batch: ["SplatStreamDrawBatch", "splat-stream-gpu.ts"],
-    includes: ["bblite/upstream/renderer_plan.hpp"],
+    includes: [
+        "bblite/upstream/renderer_plan.hpp",
+        "bblite/upstream/gps_pass_policy.hpp",
+    ],
 };

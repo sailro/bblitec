@@ -40,6 +40,26 @@ export function check(context) {
                     frames.every((frame) => frame.canvases.length === 2),
                 `${where}: missing two-canvas progress`,
             );
+            if (phase.id === "close-with-worker") {
+                const lastSample = frames.at(-1);
+                assert(
+                    lastSample &&
+                        lastSample.frame >= 135 &&
+                        lastSample.frame < 160,
+                    `${where}: close request did not end presentation before the frame limit`,
+                );
+                const first = sequences(frames[0], where);
+                const last = sequences(lastSample, where);
+                assert(
+                    last.worker > first.worker && last.main > first.main,
+                    `${where}: both canvases must present before close`,
+                );
+                context.log(
+                    where +
+                        ": Window closed while worker frames were being presented",
+                );
+                continue;
+            }
             const blocked = frames.filter(
                 (frame) => frame.frame >= 80 && frame.frame <= 180,
             );

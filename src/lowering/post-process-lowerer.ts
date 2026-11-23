@@ -25,6 +25,7 @@ import {
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
 
+import { lowerBloomTargetSize } from "./render-target-size.js";
 import { TaaPostProcessLowerer } from "./taa-post-process-lowerer.js";
 import { SceneUboLowerer } from "./scene-ubo-lowerer.js";
 import { refuseGeneration, type FeatureSites } from "../generation-refusal.js";
@@ -690,6 +691,13 @@ ${this.compositeAccessorDefinitions()}
     private compositeFactories(): string {
         let shaderIndex = this.tasks.length;
         const factories: string[] = [];
+        if (
+            this.composites.some(
+                (composite) =>
+                    composite.intrinsic === "createBloomPostProcessTask",
+            )
+        )
+            factories.push(lowerBloomTargetSize(this.context));
         for (const [index, composite] of this.composites.entries()) {
             factories.push(
                 this.compositeFactory(composite, index, shaderIndex),
@@ -774,20 +782,24 @@ ${accessor.setter}
     ): string {
         const lines: string[] = [];
         for (const [slot, target] of composite.intermediates.entries()) {
+            const options = intermediate(slot) + "_options";
             lines.push(
-                `    RenderTargetOptions ${intermediate(slot)}_options;`,
-                `    ${intermediate(slot)}_options.samples = 1u;`,
-                `    ${intermediate(slot)}_options.has_color = true;`,
-                `    ${intermediate(
-                    slot,
-                )}_options.scale_source = inputs.source;`,
-                `    ${intermediate(
-                    slot,
-                )}_options.width_ratio = ${dvalue(target.widthRatio)};`,
-                `    ${intermediate(
-                    slot,
-                )}_options.height_ratio = ${dvalue(target.heightRatio)};`,
+                `    RenderTargetOptions ${options};`,
+                `    ${options}.samples = 1u;`,
+                `    ${options}.has_color = true;`,
+                `    ${options}.scale_source = inputs.source;`,
             );
+            if ("bloomScale" in target.size) {
+                lines.push(
+                    `    ${options}.width_ratio = ${dvalue(target.size.bloomScale)};`,
+                    `    ${options}.resolve_surface_size = resolve_bloom_target_size;`,
+                );
+            } else {
+                lines.push(
+                    `    ${options}.width_ratio = ${dvalue(target.size.widthRatio)};`,
+                    `    ${options}.height_ratio = ${dvalue(target.size.heightRatio)};`,
+                );
+            }
             if (target.format) {
                 lines.push(
                     `    ${intermediate(slot)}_options.format = ` +

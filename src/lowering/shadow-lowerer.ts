@@ -418,10 +418,7 @@ function lowerComputeDirectionalLightMatrix(context: LoweringContext): string {
                 );
                 return [];
             },
-            calls: new Map<string, PinnedCallSpelling>([
-                ...shadowViewCalls,
-                ["Number.isFinite", (a) => `std::isfinite(${a.join(", ")})`],
-            ]),
+            calls: shadowViewCalls,
             matrixCalls: new Set(["getShadowLightView"]),
             returns: shadowLightMatrixResult(context, declaration),
         },

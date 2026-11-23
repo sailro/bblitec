@@ -221,12 +221,29 @@ test("attaches the emissive texture but gates the emissive colour", async () => 
         ],
         [1, 1, 1],
     );
-    // An animated emissive needs the field however the load-time factor reads.
+    // A source preparation write supersedes the static material's colour.
     assert.ok(
         (
             await pinnedMaterialInputFromGltf(
                 { emissiveTexture: { index: 1 }, emissiveFactor: [1, 1, 1] },
-                { animatedEmissive: true },
+                {
+                    preparedPointerMaterial: {
+                        index: 0,
+                        patches: [
+                            {
+                                path: ["_emissiveColor"],
+                                operation: "set",
+                                value: {
+                                    kind: "array",
+                                    values: [1, 1, 1].map((value) => ({
+                                        kind: "number",
+                                        value,
+                                    })),
+                                },
+                            },
+                        ],
+                    },
+                },
             )
         )["_emissiveColor"],
     );
@@ -600,7 +617,16 @@ test("an animated transform forces the UV fields the animation writes into", asy
         (
             await pinnedMaterialInputFromGltf(material, {
                 imageOf,
-                animatedUvTransform: true,
+                preparedPointerMaterial: {
+                    index: 0,
+                    patches: [
+                        {
+                            path: ["_hasUvTx"],
+                            operation: "set",
+                            value: { kind: "literal", value: true },
+                        },
+                    ],
+                },
             })
         )["_hasUvTx"],
         true,

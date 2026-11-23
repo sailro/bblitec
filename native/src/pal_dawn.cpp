@@ -562,7 +562,6 @@ class DawnSceneRun {
 
     struct State : FrameSession {
         const bool cpu_profile = environment_variable("BBLITE_CPU_PROFILE") == "1";
-        const MemoryProfile mem_profile;
         CpuStartupMark cpu_startup_mark{cpu_profile, "dawn"};
         const std::vector<std::shared_ptr<Scene>> active_registered_scenes =
             composited_scenes(engine);
@@ -4365,7 +4364,6 @@ public:
         [[maybe_unused]] auto& engine = data_.engine;
         [[maybe_unused]] auto& frame = data_.frame;
         [[maybe_unused]] auto& cpu_profile = data_.cpu_profile;
-        [[maybe_unused]] auto& mem_profile = data_.mem_profile;
         [[maybe_unused]] auto& scene = data_.scene;
         [[maybe_unused]] auto& state = data_.state;
         [[maybe_unused]] auto& render_plan = data_.render_plan;
@@ -4381,10 +4379,7 @@ public:
         const double end = cpu_profile ? monotonic_milliseconds() : 0.0;
         const long completed_frame = frame - 1;
         data_.frame_rate_profile.complete(completed_frame);
-        if (mem_profile.due(completed_frame)) {
-            mem_profile.print(completed_frame, engine, scene, state.meshes,
-                              state.shared_shader_geometries);
-        }
+        MemoryProfile::on_frame(engine, scene, state.meshes, state.shared_shader_geometries);
         if (cpu_profile && frame_profile_due(completed_frame, end - benchmark_start)) {
             std::size_t draw_commands = render_plan.draw_lists.opaque.commands.size() +
                                         render_plan.draw_lists.transparent.commands.size();

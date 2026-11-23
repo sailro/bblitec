@@ -114,10 +114,6 @@ function heightTextureBindings(
 
 const numberCalls: PinnedNumericScope["calls"] = new Map([
     [
-        "Number.isFinite",
-        (args) => `${numberPredicateCpp("isFinite")!}(${args[0]})`,
-    ],
-    [
         "Number.isInteger",
         (args) => `${numberPredicateCpp("isInteger")!}(${args[0]})`,
     ],

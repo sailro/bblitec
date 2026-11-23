@@ -1,4 +1,3 @@
-import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import {
@@ -438,10 +437,7 @@ interface Parameter {
 }
 
 function numericScope(): PinnedNumericScope {
-    const calls = new Map<string, PinnedCallSpelling>();
-
-    calls.set("Number.isFinite", (args) => `std::isfinite(${args.join(", ")})`);
-    return { bindings: new Map(), calls };
+    return { bindings: new Map(), calls: new Map() };
 }
 
 function bindParameters(

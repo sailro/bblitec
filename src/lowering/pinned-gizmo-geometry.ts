@@ -1191,16 +1191,9 @@ export function pinnedGizmoBoundsGeometry(context: LoweringContext): string {
         ["aabb[0]", { cpp: "aabb[0]", type: "f64-buffer" }],
         ["aabb[1]", { cpp: "aabb[1]", type: "f64-buffer" }],
     ]);
-    foldScope.calls = new Map([
-        [
-            "Number.isFinite",
-            (args: readonly string[]) => `std::isfinite(${args.join(", ")})`,
-        ],
-    ]);
     const fold = new PinnedNumericLowerer(file, foldScope);
 
     const finishScope = numericScope(bindings);
-    finishScope.calls = foldScope.calls;
     const finish = new PinnedNumericLowerer(file, finishScope);
     finishScope.returnValue = (expression) =>
         expression

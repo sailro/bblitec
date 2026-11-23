@@ -3401,21 +3401,6 @@ function emitOptionRows(
             ["loader flag", "renderer plan"],
         ),
         row(
-            "standardDiffuseUv2",
-            "emit-option",
-            emit.standardDiffuseUv2,
-            emit.standardDiffuseUv2
-                ? "a .babylon material authors its diffuse texture against " +
-                      "the second UV set"
-                : "no .babylon diffuse texture selects coordinatesIndex 1",
-            "src/loader-babylon/load-babylon.ts reads " +
-                "diffuseTexture.coordinatesIndex; the pinned Standard " +
-                "material samples the diffuse slot at the authored UV set " +
-                "(src/material/standard/standard-template.ts) — specular " +
-                "and ambient always carried the selection",
-            ["loader flag", "renderer plan"],
-        ),
-        row(
             "dispersion",
             "emit-option",
             emit.dispersion,
@@ -4003,15 +3988,12 @@ function refusalRows(inputs: FeatureActivationInputs): FeatureActivationRow[] {
             "generation-refusal",
             spec.eightInfluenceSkinning,
             spec.eightInfluenceSkinning
-                ? "an asset carries JOINTS_1/WEIGHTS_1; recorded as the " +
-                      "four-influence-skinning fidelity adaptation instead of " +
-                      "refusing (the second pair carries the small weight tail)"
+                ? "the pinned skeleton created a second influence pair: four-influence-skinning adaptation"
                 : "no asset carries a second influence pair",
             "src/loader-gltf/gltf-feature-skeleton.ts reads the second " +
                 "influence pair and skins eight influences " +
                 "(MSH_HAS_SKELETON_8); the generated loader reads four, and " +
-                "the bounded truncation is the documented refusal-relaxed " +
-                "case (docs/fidelity.md, gated by scene 7)",
+                "the truncation is documented in docs/fidelity.md",
             ["fidelity.json"],
         ),
     ];

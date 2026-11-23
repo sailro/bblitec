@@ -1,14 +1,28 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import test from "node:test";
+import { runCaptured } from "../src/tooling/logged-process.js";
 import {
     optionalNativeFixtureTools,
+    runFixtureExecutable,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
 
 const tools = optionalNativeFixtureTools(false);
+const asan = process.env.BBLITE_GC_ASAN === "1";
+if (asan && !tools)
+    throw new Error(
+        "BBLITE_GC_ASAN requires the Windows clang-cl fixture compiler.",
+    );
+const runtimeDirectory =
+    asan && tools
+        ? runCaptured(
+              tools.compiler,
+              ["--print-runtime-dir"],
+              "Find clang-cl's ASan runtime",
+          ).trim()
+        : undefined;
 
 for (const [name, fixture, expected] of [
     [
@@ -42,19 +56,27 @@ for (const [name, fixture, expected] of [
             t.skip("Native fixture compiler unavailable.");
             return;
         }
-        const directory = resolve("artifacts", fixture);
+        const directory = resolve("artifacts", fixture, asan ? "asan" : ".");
         mkdirSync(directory, { recursive: true });
         const executable = join(directory, "check.exe");
         runNativeFixtureCompiler(tools, [
+            ...(asan ? ["-fsanitize=address"] : []),
             `/Fo${directory}\\`,
             `/Fe${executable}`,
             resolve("test", "fixtures", `${fixture}.cpp`),
         ]);
         assert.equal(
-            execFileSync(executable, {
-                encoding: "utf8",
-                windowsHide: true,
-                timeout: 10000,
+            runFixtureExecutable(executable, {
+                ...(runtimeDirectory && {
+                    env: {
+                        ...process.env,
+                        PATH:
+                            runtimeDirectory +
+                            delimiter +
+                            (process.env.PATH ?? ""),
+                    },
+                }),
+                timeoutMs: 10000,
             }).trim(),
             expected,
         );

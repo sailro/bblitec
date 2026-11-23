@@ -44,9 +44,11 @@ native events to the owning realm; promise reactions stay on the realm thread.
 
 - bblite-tint (`tools/tint-sdl`) drives the pinned Tint's HLSL/MSL/SPIR-V writers with SDL's slots and writes the
   `.slots` sidecar from the same assignment. DXC compiles HLSL with Dawn's default-pipeline arguments (IEEE strict).
-- A `.slots` sidecar starts with `@entry <entry point>` and lists `@binding <group> <binding> <name> <resource>` for
+- A render `.slots` sidecar starts with `@entry <entry point>` and lists `@binding <group> <binding> <name> <resource>` for
   every declared binding: stage visibility, kind, slot order, uniform size. Uniform blocks exceeding SDL's size or slot
   limits may use read-only storage without changing their layout.
+- Compute `.slots` sidecars start with `@compute-slots 2`. Each reflected slot ends in `resource` or `dispatch-counts`;
+  SDL binds dispatch dimensions only for the latter. Regenerate older compute sidecars with the offline compiler.
 - Dawn layouts: sprite, billboard, picking, splat, post-process, ID-diagnostic and UI groups from `.slots` lines; the
   per-pass scene group from the pin's `getSceneBindGroupLayout`; composed material/effect/text/screen-space/compute
   layouts from generated descriptor tables; single-pipeline runtime modules from Dawn reflection.

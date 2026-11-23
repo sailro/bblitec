@@ -154,6 +154,9 @@ test("resolves the backend from the flag, the ambient variable, then the default
     withBackendEnvironment({}, () => {
         assert.equal(resolveBackend(undefined, "diff"), "sdl_gpu");
     });
+    withBackendEnvironment({ compiled: "DAWN" }, () => {
+        assert.equal(resolveBackend(undefined, "diff"), "dawn");
+    });
     withBackendEnvironment({ gpu: "dawn" }, () => {
         // The ambient variable is the fallback — the case that used to
         // silently measure sdl_gpu under BBLITE_GPU_BACKEND=dawn.

@@ -1467,6 +1467,54 @@ template <typename Storage>
 [[nodiscard]] inline std::u16string string_code_units(const std::string& value);
 [[nodiscard]] inline std::string string_from_code_units(const std::u16string& units);
 
+/** JavaScript GetSubstitution for a string or RegExp match over UTF-16 units. */
+[[nodiscard]] inline std::u16string match_substitution(const std::u16string& input,
+                                                       std::size_t position, std::size_t length,
+                                                       const std::u16string& pattern,
+                                                       const std::wsmatch* groups = nullptr) {
+    const std::size_t captures = groups ? groups->size() - 1 : 0;
+    std::u16string output;
+    for (std::size_t index = 0; index < pattern.size(); ++index) {
+        const char16_t unit = pattern[index];
+        if (unit != u'$' || index + 1 >= pattern.size()) {
+            output.push_back(unit);
+            continue;
+        }
+        const char16_t next = pattern[index + 1];
+        if (next == u'$') {
+            output.push_back(u'$');
+            ++index;
+        } else if (next == u'&') {
+            output.append(input, position, length);
+            ++index;
+        } else if (next == u'`') {
+            output.append(input, 0, position);
+            ++index;
+        } else if (next == u'\'') {
+            const auto tail = std::min(position + length, input.size());
+            output.append(input, tail, input.size() - tail);
+            ++index;
+        } else if (next >= u'0' && next <= u'9') {
+            const std::size_t one = static_cast<std::size_t>(next - u'0');
+            const bool two_digits = index + 2 < pattern.size() && pattern[index + 2] >= u'0' &&
+                                    pattern[index + 2] <= u'9';
+            const std::size_t both =
+                two_digits ? one * 10 + static_cast<std::size_t>(pattern[index + 2] - u'0') : 0;
+            const std::size_t group = two_digits && both >= 1 && both <= captures ? both : one;
+            if (group < 1 || group > captures) {
+                output.push_back(unit);
+                continue;
+            }
+            if (const auto& capture = (*groups)[group]; capture.matched)
+                output.append(capture.first, capture.second);
+            index += group == both && two_digits ? 2 : 1;
+        } else {
+            output.push_back(unit);
+        }
+    }
+    return output;
+}
+
 /** A replacement receives owned captures; unmatched groups remain undefined. */
 struct RegExpReplacement {
     std::vector<Nullable<std::string>> groups;
@@ -1634,16 +1682,18 @@ public:
 
     [[nodiscard]] std::string replace(const std::string& input,
                                       const std::string& replacement) const {
-        if (state().unicode)
-            return replace_with(input, [&replacement](const RegExpReplacement& match) {
-                return substitution(match, replacement);
-            });
-        const auto units = wide(input);
-        if (state().global)
-            last_index() = 0.0;
-        return narrow(std::regex_replace(units, state().expression, wide(replacement),
-                                         state().global ? std::regex_constants::format_default
-                                                        : std::regex_constants::format_first_only));
+        const auto pattern = string_code_units(replacement);
+        const auto units = string_code_units(input);
+        std::u16string output;
+        std::size_t consumed = 0;
+        for_each_replacement_match(units, [&](std::size_t position, const std::wsmatch& match) {
+            const auto length = static_cast<std::size_t>(match.length());
+            output.append(units, consumed, position - consumed);
+            output += match_substitution(units, position, length, pattern, &match);
+            consumed = position + length;
+        });
+        output.append(units, consumed);
+        return string_from_code_units(output);
     }
 
     template <typename Callback>
@@ -1652,8 +1702,16 @@ public:
         if (require_global && !state().global)
             throw std::runtime_error("String.replaceAll requires a global RegExp.");
         // Collect before invoking any callback: callback effects cannot change the match list.
-        const auto matches = replacements(input);
         const auto units = string_code_units(input);
+        std::vector<RegExpReplacement> matches;
+        for_each_replacement_match(units, [&](std::size_t position, const std::wsmatch& match) {
+            RegExpReplacement result{{}, static_cast<double>(position), input};
+            result.groups.reserve(match.size());
+            for (const auto& group : match)
+                result.groups.push_back(group.matched ? Nullable<std::string>(narrow(group.str()))
+                                                      : std::nullopt);
+            matches.push_back(std::move(result));
+        });
         std::u16string output;
         std::size_t end = 0;
         for (const auto& match : matches) {
@@ -1757,59 +1815,9 @@ private:
         return std::nullopt;
     }
 
-    /** GetSubstitution over UTF-16 units: `$$`, `$&`, `` $` ``, `$'` and `$n`/`$nn`. */
-    static std::string substitution(const RegExpReplacement& match,
-                                    const std::string& replacement) {
-        const auto pattern = string_code_units(replacement);
-        const auto input = string_code_units(match.input);
-        const auto matched = string_code_units(*match.groups[0]);
-        const auto position = static_cast<std::size_t>(match.offset);
-        const std::size_t captures = match.groups.size() - 1;
-        std::u16string output;
-        for (std::size_t index = 0; index < pattern.size(); ++index) {
-            const char16_t unit = pattern[index];
-            if (unit != u'$' || index + 1 >= pattern.size()) {
-                output.push_back(unit);
-                continue;
-            }
-            const char16_t next = pattern[index + 1];
-            if (next == u'$') {
-                output.push_back(u'$');
-                ++index;
-            } else if (next == u'&') {
-                output += matched;
-                ++index;
-            } else if (next == u'`') {
-                output.append(input, 0, position);
-                ++index;
-            } else if (next == u'\'') {
-                const auto tail = std::min(position + matched.size(), input.size());
-                output.append(input, tail, input.size() - tail);
-                ++index;
-            } else if (next >= u'0' && next <= u'9') {
-                const std::size_t one = static_cast<std::size_t>(next - u'0');
-                const bool two_digits = index + 2 < pattern.size() && pattern[index + 2] >= u'0' &&
-                                        pattern[index + 2] <= u'9';
-                const std::size_t both =
-                    two_digits ? one * 10 + static_cast<std::size_t>(pattern[index + 2] - u'0') : 0;
-                const std::size_t group = two_digits && both >= 1 && both <= captures ? both : one;
-                if (group < 1 || group > captures) {
-                    output.push_back(unit);
-                    continue;
-                }
-                if (const auto& captured = match.groups[group])
-                    output += string_code_units(*captured);
-                index += group == both && two_digits ? 2 : 1;
-            } else {
-                output.push_back(unit);
-            }
-        }
-        return string_from_code_units(output);
-    }
-
-    std::vector<RegExpReplacement> replacements(const std::string& input) const {
-        std::vector<RegExpReplacement> results;
-        const auto units = wide(input);
+    template <typename Visit>
+    void for_each_replacement_match(const std::u16string& input, Visit&& visit) const {
+        const std::wstring units(input.begin(), input.end());
         if (state().global)
             last_index() = 0.0;
         std::size_t start = 0;
@@ -1818,19 +1826,13 @@ private:
             const auto position = search(units, start, match);
             if (!position)
                 break;
-            RegExpReplacement result{{}, static_cast<double>(*position), input};
-            result.groups.reserve(match.size());
-            for (const auto& group : match)
-                result.groups.push_back(group.matched ? Nullable<std::string>(narrow(group.str()))
-                                                      : std::nullopt);
-            results.push_back(std::move(result));
+            visit(*position, match);
             if (!state().global)
                 break;
             start = *position + static_cast<std::size_t>(match.length());
             if (match.length() == 0)
                 start = advance(units, start);
         }
-        return results;
     }
 };
 
@@ -4736,27 +4738,7 @@ template <typename Replacement>
     return string_replace_matches(
         value, search,
         [&](const auto& input, const auto& pattern, std::size_t position) {
-            std::u16string result;
-            for (std::size_t index = 0; index < substitute.size(); ++index) {
-                if (substitute[index] == u'$' && index + 1 < substitute.size()) {
-                    const auto token = substitute[index + 1];
-                    if (token == u'$')
-                        result += u'$';
-                    else if (token == u'&')
-                        result += pattern;
-                    else if (token == u'`')
-                        result.append(input, 0, position);
-                    else if (token == u'\'')
-                        result.append(input, position + pattern.size());
-                    else {
-                        result += substitute[index];
-                        continue;
-                    }
-                    ++index;
-                } else
-                    result += substitute[index];
-            }
-            return result;
+            return match_substitution(input, position, pattern.size(), substitute);
         },
         all);
 }

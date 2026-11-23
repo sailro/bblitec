@@ -8,7 +8,6 @@ import {
     GAUSSIAN_SPLAT_DOCUMENT_KEY,
     GLTF_MESH_PLAN,
     asIndex,
-    primitiveRecords,
     parseGlbJson,
     selectedVariantIndex,
     variantMaterialIndex,
@@ -44,7 +43,6 @@ interface GltfSpecialization {
         animationPointerMaterials: boolean;
         /** Null until asynchronous material construction has packaged its selection. */
         transmissiveMaterial: boolean | null;
-        eightInfluenceSkinning: boolean;
         /** The packaged document carries converted Gaussian-splat clouds. */
         gaussianSplats: boolean;
         /** Packaging transcoded this asset's KHR_texture_basisu images. */
@@ -60,6 +58,7 @@ interface GltfSpecialization {
  * mesh's topology) rather than from its triggers restated here.
  */
 interface GltfLoaderSpecialization {
+    eightInfluenceSkinning: boolean;
     animations: boolean;
     morphTargets: boolean;
     skins: boolean;
@@ -91,6 +90,7 @@ function gltfLoaderSpecialization(
     const ran = (module: string): boolean =>
         facts.features.has(pinnedGltfFeatureId(context, module));
     return {
+        eightInfluenceSkinning: facts.eightInfluenceSkinning,
         animations: ran(gltfFeatureModules.animations),
         morphTargets: ran(gltfFeatureModules.morph),
         skins: ran(gltfFeatureModules.skeleton),
@@ -337,9 +337,7 @@ function refuseUnsupportedGltf(
     // both sides identically, so rendering agrees. Scene 176's asset carries
     // a TEXCOORD_2 nothing samples on either side. The one attribute pair
     // the pin reads and this port does not — JOINTS_1/WEIGHTS_1 — is
-    // detected as `eightInfluenceSkinning` below and recorded as a fidelity
-    // adaptation rather than refused: the truncation is bounded (the second
-    // pair carries the small weight tail) and Scene 7 gates it.
+    // recorded by the packaged skeleton when the pin creates both extra buffers.
 
     // Packaging runs the pin's own `gltf-feature-sparse` preParse over every
     // asset (compressed-geometry.ts), which materializes each sparse accessor
@@ -543,7 +541,6 @@ export function specializeGltf(
     const extensionsUsed = asStrings(document.extensionsUsed);
     const extensionModules = extensionModuleMap(store);
 
-    const primitives = primitiveRecords(document);
     const accessors = asRecords(document.accessors);
     refuseUnsupportedGltf(
         assetName,
@@ -565,16 +562,6 @@ export function specializeGltf(
                 Array.isArray(skin.joints) ? skin.joints.length : 0,
             ),
         0,
-    );
-    // The pinned loader reads a second influence pair when a primitive
-    // carries one (`gltf-feature-skeleton.ts`, MSH_HAS_SKELETON_8, eight
-    // influences per vertex); the generated loader reads four. Recorded per
-    // scene as the `four-influence-skinning` fidelity adaptation.
-    const eightInfluenceSkinning = primitives.some((primitive) =>
-        Object.keys(asObject(primitive.attributes) ?? {}).some(
-            (name) =>
-                /^(?:JOINTS|WEIGHTS)_\d+$/.test(name) && !name.endsWith("_0"),
-        ),
     );
     // Babylon Lite splits KHR_animation_pointer across modules: the base one
     // resolves node targets, and material targets pull their own. A scene
@@ -603,7 +590,6 @@ export function specializeGltf(
             maxSkinJoints,
             animationPointerMaterials,
             transmissiveMaterial,
-            eightInfluenceSkinning,
             gaussianSplats: gltfHasGaussianSplats(document),
             compressedImages: gltfHasCompressedImages(document),
         },
@@ -813,7 +799,7 @@ export function emitAssetSpecializations(
         textureTransform: anyAsset(({ loader }) => loader.textureTransform),
         gpuInstancing: anyAsset(({ loader }) => loader.gpuInstancing),
         eightInfluenceSkinning: anyAsset(
-            ({ features }) => features.eightInfluenceSkinning,
+            ({ loader }) => loader.eightInfluenceSkinning,
         ),
         compressedImages: anyAsset(({ features }) => features.compressedImages),
         gaussianSplats: anyAsset(({ features }) => features.gaussianSplats),

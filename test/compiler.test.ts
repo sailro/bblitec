@@ -17067,7 +17067,7 @@ test("a realm's module texture URLs take a union suffix and its address modes at
 
     assert.match(
         result.cpp,
-        /bbl::js::concat\("\/antigravity-racer\/track\/", bblscene::\w+_to_string\(/,
+        /bbl::js::concat\("\.\/antigravity-racer\/track\/", bblscene::\w+_to_string\(/,
     );
     assert.match(
         result.cpp,
@@ -17777,6 +17777,43 @@ test("folds module-relative demo asset URLs to the pinned public root", () => {
         result.manifest.assets.map(({ source }) => source),
         [pinnedAssetUrl("packages/babylon-lite/assets/brdf-lut.png")],
     );
+});
+
+test("module URL helpers resolve and rewrite the whole input once", (t) => {
+    const result = compileSource(`
+        function asset(path: string, moduleUrl: string): string {
+            const url = new URL(path, moduleUrl);
+            url.pathname = url.pathname.replace("old", "new");
+            url.pathname = url.pathname.replace("new", "pre-$&");
+            return url.href;
+        }
+        const tail = "ld dir";
+        const folded = asset(\`./assets/o\${tail}\`, import.meta.url);
+        if (folded !== "/assets/pre-new%20dir") throw new Error(folded);
+        const gate = new Uint8Array([1]);
+        const paths = [gate[0] ? "old dir" : "unused", gate[0] ? "../old?q=old#old" : "unused"];
+        let calls = 0;
+        for (const tail of paths) {
+            const actual = asset(\`./dir/\${(++calls, tail)}\`, import.meta.url);
+            const expected = calls === 1 ? "/dir/pre-new%20dir" : "/pre-new?q=old#old";
+            if (actual !== expected) throw new Error(actual);
+        }
+        if (calls !== 2) throw new Error("substitution count");
+        const host = gate[0] ? "example.org" : "elsewhere.org";
+        if (asset(\`https://\${host}/old dir?key=old#old\`, import.meta.url) !== "https://example.org/pre-new%20dir?key=old#old")
+            throw new Error("external URL");
+        let caught = false;
+        try { asset("https://", import.meta.url); } catch { caught = true; }
+        if (!caught) throw new Error("invalid URL did not throw");
+    `);
+    assert.match(result.cpp, /"\/assets\/pre-new%20dir"/);
+    assert.match(result.cpp, /\.set_pathname\(bbl::js::string_replace/);
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native compiler unavailable");
+        return;
+    }
+    runGeneratedProgram(tools, "compiler-module-url-full-input", result.cpp);
 });
 
 test("applies every recognized module URL pathname transformation", () => {

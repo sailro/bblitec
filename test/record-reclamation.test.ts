@@ -103,6 +103,18 @@ int main() {
     try { static_cast<void>(bbl::handle_at(engine.transform_nodes, bbl::TransformNodeHandle{reused.value, reused.generation - 1})); }
     catch (const std::out_of_range&) { refused = true; }
     assert(refused);
+    // Queue the penultimate generation, then let a real last-generation lease expire.
+    auto& near_limit = engine.transform_nodes.emplace_back();
+    near_limit.generation = UINT32_MAX - 1;
+    const auto slot = static_cast<std::uint32_t>(engine.transform_nodes.size() - 1);
+    engine.released_transform_nodes->emplace_back(slot, near_limit.generation);
+    {
+        const auto last = create("last");
+        assert(last.value == slot && last.generation == UINT32_MAX);
+    }
+    const auto after = create("after");
+    assert(after.value != slot && engine.transform_nodes[slot].retired);
+    assert(!bbl::handle_find(engine.transform_nodes, bbl::TransformNodeHandle{slot, 0}));
     std::puts("transform-node-reclamation: ok");
 }
 `,
@@ -239,6 +251,13 @@ int main() {
     const bbl::MeshName source_name = bbl::name_mesh(engine, first);
     const auto clone = bbl::store_mesh_record(engine, bbl::handle_at(engine.meshes, first));
     assert(bbl::handle_at(engine.meshes, clone).names.expired() && source_name);
+    bbl::handle_at(engine.meshes, clone).generation = UINT32_MAX - 1;
+    bbl::retire_mesh_record(engine, {clone.value, UINT32_MAX - 1});
+    const auto last = stored(6.0f);
+    assert(last.value == clone.value && last.generation == UINT32_MAX);
+    bbl::retire_mesh_record(engine, last);
+    const auto after = stored(7.0f);
+    assert(after.value != last.value && !bbl::handle_find(engine.meshes, clone));
     std::puts("mesh-name-reclamation: ok");
 }
 `,

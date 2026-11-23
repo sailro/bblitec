@@ -31,19 +31,11 @@ struct SdlComputeShaderModule final : ComputeShaderModule {
         : artifact(std::move(value)) {}
     std::string artifact;
 };
-/**
- * The read-only storage binding a stage reads `@builtin(num_workgroups)` from
- * on SDL_GPU: generation moves the builtin there (shader-bindings.ts
- * `sdlWorkgroupCountsSource`), since D3D12 places it outside SDL_GPU's
- * compute bindings, and each dispatch binds its own counts.
- */
-inline constexpr std::string_view sdl_workgroup_counts_binding = "bbl_num_workgroups";
-
 struct SdlComputeSlot {
     char kind = 0;
     std::uint32_t index = 0, group = 0, binding = 0;
     int sampler_group = -1, sampler_binding = -1;
-    /** The dispatch's own workgroup counts (`sdl_workgroup_counts_binding`), bound by no group. */
+    /** The dispatch's own workgroup counts, bound by no group. */
     bool workgroup_counts = false;
 };
 struct SdlComputePipeline final : ComputePipeline {
@@ -149,6 +141,60 @@ inline void read_sdl_metal_workgroup_memory(std::istringstream& row,
     allocations = std::move(sizes);
 }
 
+/** Reads only the versioned deployment sidecar, not Tint's raw reflection rows. */
+inline std::optional<std::vector<Uint32>>
+read_sdl_compute_metadata(std::istream& input, SDL_GPUComputePipelineCreateInfo& info,
+                          SdlComputePipeline& pipeline) {
+    std::string line;
+    if (!std::getline(input, line) || (line != "@compute-slots 2" && line != "@compute-slots 2\r"))
+        throw std::runtime_error("Unsupported compute slot metadata; regenerate the shaders.");
+    bool threads = false;
+    bool has_workgroup_counts = false;
+    std::optional<std::vector<Uint32>> metal_allocations;
+    while (std::getline(input, line)) {
+        std::istringstream row(line);
+        std::string key, name;
+        if (!(row >> key))
+            continue;
+        if (key == "@workgroup") {
+            if (threads || !(row >> info.threadcount_x >> info.threadcount_y >> info.threadcount_z))
+                throw std::runtime_error("Invalid compute workgroup metadata.");
+            threads = true;
+            continue;
+        }
+        if (key == "@msl-workgroup-memory") {
+            read_sdl_metal_workgroup_memory(row, metal_allocations);
+            continue;
+        }
+        SdlComputeSlot slot;
+        slot.kind = key.at(0);
+        slot.index = static_cast<std::uint32_t>(std::stoul(key.substr(1)));
+        std::string role, extra;
+        if (!(row >> name >> slot.group >> slot.binding >> slot.sampler_group >>
+              slot.sampler_binding >> role) ||
+            row >> extra)
+            throw std::runtime_error("Compute binding metadata is incomplete.");
+        slot.workgroup_counts = role == "dispatch-counts";
+        if (slot.workgroup_counts) {
+            if (slot.kind != 'r' || has_workgroup_counts)
+                throw std::runtime_error(
+                    "Dispatch counts require a single read-only storage slot.");
+            has_workgroup_counts = true;
+        } else if (role != "resource")
+            throw std::runtime_error("Unknown compute binding role: " + role);
+        const std::string kinds = "tirjwb";
+        const auto category = kinds.find(slot.kind);
+        if (category != std::string::npos)
+            pipeline.counts[category] = std::max(pipeline.counts[category], slot.index + 1);
+        else if (slot.kind != 's')
+            throw std::runtime_error("Invalid compute binding metadata kind.");
+        pipeline.slots.push_back(slot);
+    }
+    if (!threads)
+        throw std::runtime_error("Compute artifact has no workgroup metadata.");
+    return metal_allocations;
+}
+
 /** A compute stage compiled at generation: `<artifact>` and its `.slots` sidecar. */
 inline std::shared_ptr<SdlComputePipeline>
 load_sdl_gpu_compute_pipeline(SDL_GPUDevice* device, const std::string& artifact,
@@ -173,43 +219,7 @@ load_sdl_gpu_compute_pipeline(SDL_GPUDevice* device, const std::string& artifact
     const auto metadata = read_binary_file(gpu_shader_path(artifact + ".slots"));
     std::istringstream input(std::string(metadata.begin(), metadata.end()));
     SDL_GPUComputePipelineCreateInfo info{};
-    std::string line;
-    bool threads = false;
-    std::optional<std::vector<Uint32>> metal_allocations;
-    while (std::getline(input, line)) {
-        std::istringstream row(line);
-        std::string key, name;
-        if (!(row >> key))
-            continue;
-        if (key == "@workgroup") {
-            if (threads || !(row >> info.threadcount_x >> info.threadcount_y >> info.threadcount_z))
-                throw std::runtime_error("Invalid compute workgroup metadata.");
-            threads = true;
-            continue;
-        }
-        if (key == "@msl-workgroup-memory") {
-            read_sdl_metal_workgroup_memory(row, metal_allocations);
-            continue;
-        }
-        SdlComputeSlot slot;
-        slot.kind = key.at(0);
-        slot.index = static_cast<std::uint32_t>(std::stoul(key.substr(1)));
-        if (!(row >> name >> slot.group >> slot.binding >> slot.sampler_group >>
-              slot.sampler_binding))
-            throw std::runtime_error("Compute binding metadata is incomplete.");
-        slot.workgroup_counts = name == sdl_workgroup_counts_binding;
-        if (slot.workgroup_counts && slot.kind != 'r')
-            throw std::runtime_error("Workgroup counts bind as a read-only storage buffer.");
-        const std::string kinds = "tirjwb";
-        const auto category = kinds.find(slot.kind);
-        if (category != std::string::npos)
-            result->counts[category] = std::max(result->counts[category], slot.index + 1);
-        else if (slot.kind != 's')
-            throw std::runtime_error("Invalid compute binding metadata kind.");
-        result->slots.push_back(slot);
-    }
-    if (!threads)
-        throw std::runtime_error("Compute artifact has no workgroup metadata.");
+    auto metal_allocations = read_sdl_compute_metadata(input, info, *result);
     if (result->format == SDL_GPU_SHADERFORMAT_MSL && !metal_allocations)
         throw std::runtime_error("Metal compute artifact has no workgroup-memory metadata.");
     info.code = code.data();
@@ -331,16 +341,16 @@ inline void encode_sdl_gpu_compute(SDL_GPUCommandBuffer* command, const ComputeD
     readonly_buffers.assign(pipeline.counts[2], nullptr);
     writable_textures.assign(pipeline.counts[3], {});
     writable_buffers.assign(pipeline.counts[4], {});
-    std::vector<OwnedSdlBuffer> workgroup_counts;
+    OwnedSdlBuffer workgroup_counts;
     for (const auto& slot : pipeline.slots) {
         if (slot.workgroup_counts) {
-            workgroup_counts.push_back(encode_sdl_workgroup_counts(
+            workgroup_counts = encode_sdl_workgroup_counts(
                 pipeline.device, command, source.workgroups,
                 source.indirect
                     ? sdl_compute_resource<SdlStorageBuffer>(source.indirect->allocation).buffer
                     : nullptr,
-                source.indirect ? static_cast<std::uint32_t>(source.indirect->offset) : 0));
-            readonly_buffers.at(slot.index) = workgroup_counts.back().get();
+                source.indirect ? static_cast<std::uint32_t>(source.indirect->offset) : 0);
+            readonly_buffers.at(slot.index) = workgroup_counts.get();
             continue;
         }
         const auto value = resource(slot.group, slot.binding);

@@ -6,6 +6,7 @@ import {
     valueKinds,
 } from "./type-facts.js";
 import { requiredParameterCount } from "./syntax.js";
+import { calledDeclaration } from "./symbols.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 
@@ -117,8 +118,18 @@ export function determinedTypeArguments(
         });
         unify.unify(declared.getReturnType(), resolved.getReturnType());
     }
+    let instantiated: readonly ts.Type[] | undefined;
     parameters.forEach((parameter, index) => {
         const symbol = parameterSymbols[index]!;
+        if (parameter.default && !bindings.has(symbol) && resolved) {
+            instantiated ??=
+                calledDeclaration(checker, call) === declaration
+                    ? (checker.getTypeArgumentsForResolvedSignature(resolved) ??
+                      [])
+                    : [];
+            const defaulted = instantiated[index];
+            if (defaulted) bindings.set(symbol, defaulted);
+        }
         const bound = bindings.get(symbol);
         if (bound !== undefined && (bound.flags & ts.TypeFlags.Never) === 0)
             return;

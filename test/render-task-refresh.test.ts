@@ -7,9 +7,14 @@ import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { GeometryOutputLowerer } from "../src/lowering/geometry-output-lowerer.js";
 import { pinnedDepthStateHeader } from "../src/lowering/pinned-depth-state.js";
+import { lowerBloomTargetSize } from "../src/lowering/render-target-size.js";
+import { PostProcessLowerer } from "../src/lowering/post-process-lowerer.js";
+import { importPinnedModuleWithExports } from "../src/pinned-shader-composer.js";
+import { doctoredContext } from "./doctored-store.js";
 import { composeComposite } from "../src/pinned-post-process.js";
 import {
     optionalNativeFixtureTools,
+    runGeneratedProgram,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
 import { pinnedError } from "./pinned-errors.js";
@@ -78,6 +83,107 @@ int main(){
         `/Fe${exe}`,
     ]);
     assert.equal(execFileSync(exe, { encoding: "utf8", timeout: 10000 }), "");
+});
+
+test("all bloom targets keep their exact scale at allocation and resize", async (t) => {
+    type Target = {
+        _descriptor: {
+            size: { width: number; height: number };
+            format: string;
+        };
+        _width: number;
+        _height: number;
+    };
+    const pin = await importPinnedModuleWithExports<{
+        createScaledBloomTarget(
+            label: string,
+            source: Target,
+            scale: number,
+        ): Target;
+        resizeScaledBloomTarget(
+            target: Target,
+            source: Target,
+            scale: number,
+        ): void;
+    }>("post-process/bloom.js", [
+        "createScaledBloomTarget",
+        "resizeScaledBloomTarget",
+    ]);
+    const context = new LoweringContext();
+    const checks: string[] = [];
+    for (const scale of [0.3, undefined]) {
+        const composite = await composeComposite({
+            intrinsic: "createBloomPostProcessTask",
+            hasTarget: false,
+            options: scale === undefined ? {} : { bloomScale: scale },
+        });
+        assert.equal(composite.intermediates.length, 3);
+        const generated = new PostProcessLowerer(
+            context,
+            [],
+            [composite],
+        ).lowerTaskRecords().source;
+        assert.equal(
+            generated.split(
+                ".resolve_surface_size = resolve_bloom_target_size;",
+            ).length - 1,
+            3,
+        );
+        for (const intermediate of composite.intermediates) {
+            const factor = scale ?? 0.5;
+            assert.deepEqual(intermediate.size, { bloomScale: factor });
+            const source = {
+                _descriptor: {
+                    format: "rgba16float",
+                    size: { width: 100, height: 100 },
+                },
+                _width: 100,
+                _height: 100,
+            };
+            const target = pin.createScaledBloomTarget(
+                intermediate.label,
+                source,
+                factor,
+            );
+            for (const [width, height] of [
+                [100, 100],
+                [101, 99],
+                [1, 2],
+            ] as const) {
+                if (width !== 100) {
+                    source._width = width;
+                    source._height = height;
+                    pin.resizeScaledBloomTarget(target, source, factor);
+                }
+                const size = target._descriptor.size;
+                checks.push(
+                    `assert((resolve_bloom_target_size(${width},${height},${factor}) == std::array<double,2>{${size.width},${size.height}}));`,
+                );
+            }
+        }
+    }
+    assert.throws(
+        () =>
+            lowerBloomTargetSize(
+                doctoredContext(
+                    "src/post-process/bloom.ts",
+                    "Math.floor(sourceSize.width * scale)",
+                    "Math.ceil(sourceSize.width * scale)",
+                ),
+            ),
+        /same extent expression/,
+    );
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) return t.skip("Native fixture compiler unavailable");
+    runGeneratedProgram(
+        tools,
+        "bloom-target-extents",
+        `#include <bblite/js_data.hpp>
+#include <array>
+#include <cassert>
+${lowerBloomTargetSize(context)}
+int main(){${checks.join("\n")}}`,
+    );
 });
 
 test("Ocean render options and explicit null bloom output use pinned composition", async () => {

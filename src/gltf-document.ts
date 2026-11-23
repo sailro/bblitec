@@ -22,9 +22,6 @@ import {
  *   writer may have added, because it alone reports parse failures instead of
  *   swallowing them.
  *
- * The module also owns `animatedMaterialPointerPatterns` — the pointer list generation
- * and the compose gate must agree on.
- *
  * What deliberately does NOT live here: `compressed-geometry.ts`'s chunk walk
  * (it rewrites GLBs and needs the binary chunk; it shares only the constants)
  * and `gltf-packager.ts`'s writer.
@@ -53,10 +50,6 @@ export const GLTF_MESH_WALKS = "__bblitecMeshWalks";
 export const GLTF_VARIANT_PLAN = "__bblitecVariantMaterials";
 export const GLTF_MESH_PLAN = "__bblitecMeshPlan";
 export const GLTF_TRANSMISSION_PLAN = "__bblitecTransmissionPlan";
-
-/** Every primitive in the document, flattened out of its meshes. */
-export const primitiveRecords = (document: JsonRecord): JsonRecord[] =>
-    asRecords(document.meshes).flatMap((mesh) => asRecords(mesh.primitives));
 
 /** Mesh instances follow the loader's node order, not the mesh-definition count. */
 export function instantiatedPrimitiveRecords(
@@ -206,32 +199,6 @@ export function parseGlbJson(path: string): JsonRecord {
     if (!record) throw new Error(`${path} GLB JSON root is not an object.`);
     return record;
 }
-
-/**
- * The material pointers whose animation changes the composed fragment, as
- * `gltfAnimatedMaterialPointers` suffix patterns.
- *
- * THE single authority: generation's `materialSubjects` builds every
- * composer input from this list, and the compose gate compares captures
- * against subjects built by that same function — so a pointer added here
- * reaches both at once, and a pointer added anywhere else is the exact bug
- * this constant exists to make impossible (the gate silently unsyncing from
- * generation).
- *
- * `emissive` carries two patterns because the pin funnels both the factor
- * and `KHR_materials_emissive_strength` into the same `_emissiveColor`
- * field, so either one animating needs the uniform lane.
- */
-export const animatedMaterialPointerPatterns = {
-    /** The factor becomes a UBO lane instead of a folded constant. */
-    baseColorFactor: "pbrMetallicRoughness/baseColorFactor",
-    /** Any texture slot's `KHR_texture_transform` offset, scale or rotation. */
-    uvTransform: ".*/KHR_texture_transform/(?:offset|scale|rotation)",
-    emissive: [
-        "emissiveFactor",
-        "extensions/KHR_materials_emissive_strength/emissiveStrength",
-    ],
-} as const;
 
 /**
  * The `KHR_materials_variants` names a document declares, in the index order

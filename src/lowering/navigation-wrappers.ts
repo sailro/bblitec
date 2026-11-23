@@ -10,6 +10,7 @@ import {
     sameSource,
     propertyPath,
     soleBindingName,
+    unwrappedIdentifier,
 } from "../compiler/syntax.js";
 
 export const WRAPPER_CORE = "@recast-navigation/core/dist/index.mjs";
@@ -121,6 +122,19 @@ export type RawAccess =
     | { kind: "view"; className: string; source: RawSource }
     | { kind: "nullableView"; className: string; field: string };
 
+function forwardsParameters(
+    args: readonly ts.Expression[],
+    parameters: readonly string[],
+): boolean {
+    return (
+        args.length === parameters.length &&
+        args.every(
+            (arg, index) =>
+                unwrappedIdentifier(arg)?.text === parameters[index],
+        )
+    );
+}
+
 /** `this.raw.f`, `this.raw.get_f(p)` or `this.raw.m(params)`, over `params`. */
 function rawSource(
     expression: ts.Expression,
@@ -133,17 +147,16 @@ function rawSource(
     }
     if (!ts.isCallExpression(node)) return undefined;
     const callee = propertyPath(node.expression);
-    const args = node.arguments.map((argument) => argument.getText());
     if (
         callee?.length !== 3 ||
         callee[0] !== "this" ||
         callee[1] !== "raw" ||
-        args.join(",") !== parameters.join(",")
+        !forwardsParameters(node.arguments, parameters)
     ) {
         return undefined;
     }
     const method = callee[2]!;
-    return method.startsWith("get_") && args.length === 1
+    return method.startsWith("get_") && parameters.length === 1
         ? { kind: "element", field: method.slice("get_".length) }
         : { kind: "call", method };
 }
@@ -230,9 +243,7 @@ export function methodAccess(
             callee[0] === "this" &&
             callee[1] === "raw" &&
             callee[2]!.startsWith("set_") &&
-            statement.arguments
-                .map((argument) => argument.getText())
-                .join(",") === parameters.join(",")
+            forwardsParameters(statement.arguments, parameters)
         ) {
             return {
                 kind: "store",

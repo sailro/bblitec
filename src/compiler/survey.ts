@@ -336,7 +336,7 @@ const roundYield = 0.001;
  * statements it holds, and declarations that lower to nothing (interfaces,
  * type aliases, imports, exports, ambient declarations).
  */
-export function surveyedStatement(node: ts.Node): node is ts.Statement {
+function surveyedStatement(node: ts.Node): node is ts.Statement {
     return (
         ts.isStatement(node) &&
         !hasDeclareModifier(node) &&

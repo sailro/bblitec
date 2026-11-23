@@ -7,6 +7,8 @@ export interface RecordedMeshDeformation {
     skeleton?: {
         jointsBuffer: RecordedBuffer;
         weightsBuffer: RecordedBuffer;
+        joints1Buffer: RecordedBuffer | null;
+        weights1Buffer: RecordedBuffer | null;
         boneCount: number;
         boneMatrices: Float32Array;
         boneTexture: RecordedTexture;

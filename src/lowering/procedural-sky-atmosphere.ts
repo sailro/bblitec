@@ -123,10 +123,6 @@ export function lowerProceduralSkyAtmosphere(
         );
         const calls = new Map<string, PinnedCallSpelling>();
 
-        calls.set(
-            "Number.isFinite",
-            (args) => `std::isfinite(${args.join(", ")})`,
-        );
         calls.set("yieldTask", () => "yieldTask()");
         calls.set("isCurrent", () => "isCurrent()");
         for (const [source, cpp] of Object.entries(functionNames))

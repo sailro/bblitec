@@ -57,7 +57,7 @@ test("the setter lowers the pin's guard, clamp, validation, flag and crossing", 
     // `typeof opacity !== "number"` cannot hold for a native double.
     assert.match(
         source,
-        /if \(\(\(false\) \|\| \(!\(std::isfinite\(static_cast<double>\(opacity\)\)\)\)\)\) \{\n\s+throw bbl::js::NamedError\("RangeError", \(std::string\("setMeshOpacity: opacity must be a finite number, got "\) \+ bbl::js::number_to_string\(static_cast<double>\(opacity\)\)\)\);/,
+        /if \(\(\(false\) \|\| \(!\(std::isfinite\(opacity\)\)\)\)\) \{\n\s+throw bbl::js::NamedError\("RangeError", \(std::string\("setMeshOpacity: opacity must be a finite number, got "\) \+ bbl::js::number_to_string\(static_cast<double>\(opacity\)\)\)\);/,
     );
     assert.match(source, /if \(record\.retired\) \{/);
     assert.match(

@@ -142,7 +142,6 @@ export function lowerShadowCasterBounds(context: LoweringContext): string {
         {
             bindings,
             calls: new Map([
-                ["Number.isFinite", ([v]) => `std::isfinite(${v})`],
                 ["bounds.min.fill", ([v]) => `cache.min.fill(${v})`],
                 ["bounds.max.fill", ([v]) => `cache.max.fill(${v})`],
             ]),

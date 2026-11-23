@@ -243,17 +243,27 @@ test("replays the BRDF-LUT bake instead of relaunching Chromium", async (t) => {
     try {
         await withCacheEnabledAsync(async () => {
             let bakes = 0;
-            const fake = async (shader: string): Promise<Uint8Array> => {
+            const fake = async (): Promise<Uint8Array> => {
                 bakes += 1;
-                return Buffer.from(`lut:${shader}:${bakes}`, "utf8");
+                return Buffer.from(`lut:${bakes}`, "utf8");
             };
-            const first = await cachedIblBrdfLut("fake shader", fake);
-            const second = await cachedIblBrdfLut("fake shader", fake);
+            const first = await cachedIblBrdfLut(
+                "producer",
+                "fake shader",
+                fake,
+            );
+            const second = await cachedIblBrdfLut(
+                "producer",
+                "fake shader",
+                fake,
+            );
             assert.equal(bakes, 1);
             assert.deepEqual([...second], [...first]);
             // The shader text is a key axis: a changed pin misses.
-            await cachedIblBrdfLut("fake shader v2", fake);
+            await cachedIblBrdfLut("producer", "fake shader v2", fake);
             assert.equal(bakes, 2);
+            await cachedIblBrdfLut("changed producer", "fake shader v2", fake);
+            assert.equal(bakes, 3);
         });
     } finally {
         removeEntries(kind);

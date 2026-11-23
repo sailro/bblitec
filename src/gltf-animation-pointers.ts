@@ -22,6 +22,9 @@ const pointerBridgeSource = `
 const writers = new WeakMap();
 const parsed = new WeakMap();
 const terminals = new WeakMap();
+// The recorder reuses a module graph. An earlier document's parser installation
+// must not act on a load for which the pinned registry did not select it.
+export function enableDocumentPointers(document) { parsed.set(document, []); }
 let lookups = null;
 export function recordWriter(site, fn, readCaptures, kind) {
     writers.set(fn, {site, readCaptures, kind});
@@ -44,10 +47,10 @@ export function recordLightLookup(get, document, index) {
 }
 export function recordParser(fn) {
     return (...args) => {
-        const result = fn(...args);
         const document = args[3];
-        let events = parsed.get(document);
-        if (!events) parsed.set(document, events = []);
+        const events = parsed.get(document);
+        if (!events) return null;
+        const result = fn(...args);
         events.push({pointer: args[0], channel: args[1], result});
         return result;
     };
@@ -345,6 +348,7 @@ export interface SourceParse {
     ): { nodeNames: readonly (string | undefined)[] } | null;
 }
 export interface PointerBridge extends WriterCaptureReader {
+    enableDocumentPointers(document: object): void;
     consumeRecording(document: object): {
         events: Array<{
             pointer: string;
