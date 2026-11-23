@@ -184,6 +184,11 @@ export interface CompileOptions extends DeploymentOptions {
     readAssetBytes?: (source: string, entryFileName: string) => Uint8Array;
     /** Told one line per lowering attempt a replay ends: a long compile says how it goes. */
     compileProgress?: (line: string) => void;
+    /**
+     * Before strict lowering, converge storage in at most `passes` survey
+     * passes of the entry's own lowering (`lowerSourceApplication`).
+     */
+    convergeStorage?: { readonly passes: number };
     /** Emit explicit typed runtime failures for registered missing capabilities. */
     deferredCapabilities?: "runtime-throw";
     fileName?: string;

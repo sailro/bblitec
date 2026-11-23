@@ -16,6 +16,7 @@ import {
 import {
     describeRecordDemand,
     mergeNativeRecordStorage,
+    recordDemandAsks,
     type NativeRecordStorageDemand,
 } from "./native-record-storage.js";
 import type {
@@ -403,6 +404,20 @@ export class ReplayStorage {
             this.keyOrderSpellings.get(record)?.has(spellKeyOrders(orders)) ===
             true
         );
+    }
+
+    /**
+     * Withdraws the record demands that ask only to share their records
+     * (`recordDemandAsks`): a strict lowering meets again each one its
+     * records need, and one another demand already serves (a dynamic
+     * binding's) lays its record out where that demand does.
+     */
+    public withdrawSharedRecords(): void {
+        for (const [key, demand] of this.records)
+            if (recordDemandAsks(demand).length === 0) {
+                this.records.delete(key);
+                this.plannedComponents = undefined;
+            }
     }
 
     /**

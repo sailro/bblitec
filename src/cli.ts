@@ -817,6 +817,9 @@ async function main(): Promise<void> {
         ...(options.sourceProfile
             ? { sourceProfile: options.sourceProfile }
             : {}),
+        ...(options.convergeStorage
+            ? { convergeStorage: options.convergeStorage }
+            : {}),
     };
     if (options.target.kind === "survey") {
         const census = resolve(options.target.census);

@@ -883,33 +883,84 @@ function lowerSourceApplication(
         // with what this one met, until a pass meets and takes nothing new.
         // A replay raised in an attempt's setup restarts it; one raised once
         // every statement lowered ends the pass with the others.
-        if (survey)
+        const surveyPasses = (
+            collector: SurveyCollector,
+            accept: (error: unknown) => boolean,
+        ): CompileResult => {
             for (;;) {
                 const realm = input.sourceFile.fileName;
                 let result: CompileResult | undefined;
                 let added = 0;
                 try {
-                    result = survey.attempt(realm, lower, acceptReplay);
+                    result = collector.attempt(realm, lower, accept);
                 } catch (error) {
-                    const accepted = acceptReplay(error);
-                    if (!survey.settling(realm)) {
+                    const accepted = accept(error);
+                    if (!collector.settling(realm)) {
                         if (!accepted) throw error;
-                        survey.restarted(error);
+                        collector.restarted(error);
                         continue;
                     }
                     // One the storage already holds is the next pass's when
                     // this one took a demand (its stale storage may raise
                     // it), and the compile's refusal otherwise.
                     if (accepted) added++;
-                    else if (survey.taken(realm) === 0 || !isReplay(error))
+                    else if (collector.taken(realm) === 0 || !isReplay(error))
                         throw error;
                 }
-                added += survey.replaysOf(realm).filter(acceptReplay).length;
-                added += survey.taken(realm);
-                if (survey.passEnded(added)) continue;
+                added += collector.replaysOf(realm).filter(accept).length;
+                added += collector.taken(realm);
+                if (collector.passEnded(added)) continue;
                 if (result) return result;
                 throw new SurveyPassLimit();
             }
+        };
+        if (survey) return surveyPasses(survey, acceptReplay);
+        // Storage converged as a survey's passes do, on the entry's own
+        // lowering (no roots): each demand a statement meets is taken at
+        // once and the statement lowers again, instead of one restart of
+        // the whole realm per demand. Only storage demands converge: any
+        // other replay (a lazy module's activation) a rolled-back statement
+        // meets is the strict lowering's to meet or not. What the passes
+        // lower is discarded; the compile is the strict lowering below,
+        // with the storage they took.
+        if (options.convergeStorage) {
+            const converging = new SurveyCollector(
+                {
+                    roots: false,
+                    passLimit: options.convergeStorage.passes,
+                    ...(options.compileProgress
+                        ? {
+                              progress: {
+                                  report: options.compileProgress,
+                                  intervalMs: 60 * 1000,
+                              },
+                          }
+                        : {}),
+                },
+                isReplay,
+            );
+            try {
+                withSurvey(converging, () =>
+                    surveyPasses(
+                        converging,
+                        (error) =>
+                            error instanceof StorageDemand &&
+                            acceptReplay(error),
+                    ),
+                );
+            } catch (error) {
+                // The strict lowering meets and reports any refusal itself.
+                if (!(error instanceof Error)) throw error;
+                options.compileProgress?.(
+                    `Storage converged short of a pass meeting nothing new: ${describeStop(error)}`,
+                );
+            }
+            // A statement a pass lowered before another demand reached its
+            // records demands their sharing; the strict lowering demands
+            // again the sharing it needs, so its records keep the layout
+            // and order a strict compile gives them.
+            storage.withdrawSharedRecords();
+        }
         // Once a storage demand restarted the realm, every attempt is a
         // plan: it goes on past the demands later statements do not read, so
         // one attempt meets a run of them, and a plan that lowered every

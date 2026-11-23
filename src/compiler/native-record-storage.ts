@@ -118,6 +118,15 @@ function recordTypeName(type: ts.Type): string {
 export function describeRecordDemand(
     demand: NativeRecordStorageDemand,
 ): string {
+    const asked = recordDemandAsks(demand);
+    return `${recordTypeName(demand.type)}: ${asked.join(", ") || "shared"}`;
+}
+
+/**
+ * What a record demand asks beyond sharing its records as one native
+ * object each: none when the demand asks only that.
+ */
+export function recordDemandAsks(demand: NativeRecordStorageDemand): string[] {
     const asked: string[] = RECORD_STORAGE_FLAGS.filter((flag) => demand[flag]);
     if (demand.dictionary) asked.push(`dictionary of ${demand.dictionary}`);
     if (demand.native) asked.push("native");
@@ -130,7 +139,7 @@ export function describeRecordDemand(
         asked.push(`${demand.accessors.length} accessor(s)`);
     if (demand.documentFields?.length)
         asked.push(`document field(s) ${demand.documentFields.join(", ")}`);
-    return `${recordTypeName(demand.type)}: ${asked.join(", ") || "shared"}`;
+    return asked;
 }
 
 /**
