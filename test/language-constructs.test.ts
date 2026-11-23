@@ -7639,6 +7639,28 @@ checkInRealm(
 `,
 );
 
+checkInRealm(
+    "a-call-that-completes-undefined-passes-undefined-to-a-parameter",
+    `
+    interface Selection {
+        set(id: string): void | boolean;
+    }
+    let log = "";
+    const finish = (result: void | boolean, then: (accepted: void | boolean) => void): void => {
+        then(result);
+    };
+    const preview = (selection: Selection, id: string): void => {
+        finish(selection.set(id), (accepted) => {
+            log += accepted === undefined ? "u" : accepted ? "y" : "n";
+        });
+    };
+    preview({ set: (id) => { log += id; } }, "a");
+    preview({ set: (id) => id.length > 3 }, "b");
+    if (log !== "aun") throw new Error("log " + log);
+    globalThis.close();
+`,
+);
+
 check(
     "a-conditional-of-two-boolean-literals-knows-neither",
     `

@@ -114,6 +114,7 @@ import { recordFieldIsWritten } from "./record-observations.js";
 import {
     hasProvenUndefinedCompletion,
     hasNonThenableCompletion,
+    provenVoidAsUndefined,
     readsErasedVoid,
 } from "./undefined-values.js";
 import {
@@ -3119,8 +3120,11 @@ export class UserFunctionLowerer {
                 ...(browserValue ? { browserValue } : {}),
             };
         }
+        // A call whose completion is proven undefined runs here, where its
+        // operands resolve, and passes that `undefined`.
+        const compiled = context.compileValue(argument);
         const value = context.dataLowerer.narrowOptional(
-            context.compileValue(argument),
+            provenVoidAsUndefined(context, compiled, argument) ?? compiled,
             argument,
         );
         if (
