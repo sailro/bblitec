@@ -207,8 +207,9 @@ the write; host-page sheets still need admission.
 ## Limits
 
 - General mask-image and unsupported blend modes refuse.
-- will-change, touch-action, user-select and image-rendering are hints; only `-webkit-user-drag: none` and
-  `-webkit-touch-callout: none` are admitted.
+- will-change, touch-action, user-select, image-rendering and proximity scroll snapping (`scroll-snap-type` with
+  `proximity`, `scroll-snap-align`; native scrolling ends where it lands) are hints; only `-webkit-user-drag: none`
+  and `-webkit-touch-callout: none` are admitted. Mandatory snapping refuses.
 - `element.animate` is a no-op.
 - Retained UI is unavailable under standalone effect/frame-graph drivers.
 - Only backdrop-filter, filter, mask and opacity elements are backdrop roots (none for clip-path, mix-blend-mode).

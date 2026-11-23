@@ -2361,9 +2361,9 @@ export class UiProjection {
 
     /**
      * Reached hints with no rendering semantics in the retained projection:
-     * `will-change`/`touch-action`/`user-select` describe browser scrolling,
-     * selection, and compositor behaviour the native input path does not
-     * have, and `image-rendering` is superseded by the sampling intent the
+     * `will-change`/`touch-action`/`user-select` and proximity
+     * `scroll-snap-*` describe browser scrolling, selection, and compositor
+     * behaviour the native input path does not have, and `image-rendering` is superseded by the sampling intent the
      * retained canvas commands already carry per blit.
      */
     private static readonly PRESENTATION_KEYWORDS: ReadonlyMap<
@@ -2406,6 +2406,20 @@ export class UiProjection {
         // Sparse auto-placement; `dense` packing is not represented.
         ["grid-auto-flow", ["row", "column"]],
         ["justify-self", ["auto", "start", "end", "center", "stretch"]],
+        // Proximity snapping is optional in CSS: native scrolling ends where
+        // it lands. A mandatory snap position is a layout contract.
+        [
+            "scroll-snap-type",
+            [
+                "none",
+                "x proximity",
+                "y proximity",
+                "block proximity",
+                "inline proximity",
+                "both proximity",
+            ],
+        ],
+        ["scroll-snap-align", ["none", "start", "end", "center"]],
     ]);
 
     private static readonly INERT_UI_STYLE_PROPERTIES = new EmissionSet<string>(
@@ -2417,6 +2431,8 @@ export class UiProjection {
             "image-rendering",
             "list-style",
             "list-style-type",
+            "scroll-snap-align",
+            "scroll-snap-type",
             "touch-action",
             "user-select",
             "will-change",
