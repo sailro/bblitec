@@ -617,6 +617,12 @@ function newAttempt(carries: Partial<Attempt> = {}): Attempt {
 export interface SurveySettings {
     readonly progress?: SurveyProgress;
     readonly passLimit?: number;
+    /**
+     * Whether a pass lowers the functions and statements no lowering
+     * reached as roots after the entry (default); without them a pass is
+     * the entry's own lowering, the refusals it meets the entry's.
+     */
+    readonly roots?: boolean;
 }
 
 /** How a survey reports while it runs: a line at most every `intervalMs`. */
@@ -658,6 +664,8 @@ export class SurveyCollector {
 
     private readonly progress: SurveyProgress | undefined;
     private readonly passLimit: number | undefined;
+    /** Whether a pass lowers roots after the entry (`SurveySettings.roots`). */
+    public readonly lowersRoots: boolean;
     /** @unjournaled Takes a storage demand into the storage the running attempt lowers with. */
     private apply: ((demand: StorageDemand) => boolean) | undefined;
 
@@ -675,6 +683,7 @@ export class SurveyCollector {
     ) {
         this.progress = settings.progress;
         this.passLimit = settings.passLimit;
+        this.lowersRoots = settings.roots ?? true;
     }
 
     /**

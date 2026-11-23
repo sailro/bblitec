@@ -1499,7 +1499,7 @@ class Compiler implements LoweringServices {
         this.emitEntryBody(entry);
         const survey = activeSurvey();
         survey?.phaseEnded("entry");
-        if (survey && !this.options.workers?.namespace) {
+        if (survey?.lowersRoots && !this.options.workers?.namespace) {
             const lowerRoots = (): void =>
                 survey.rollingBack(() => emitSurveyRoots(this, survey));
             lowerRoots();

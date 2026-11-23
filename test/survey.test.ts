@@ -105,6 +105,28 @@ test("a survey records every refusal it reaches and continues past each", () => 
     for (const refusal of report.refusals) assert.equal(refusal.occurrences, 1);
 });
 
+test("an entry-only survey reports the entry's own refusals, without roots", () => {
+    // `unused` is never called: only a root reaches its refusal.
+    const source = `${refusing}
+    function unused(): void { const q = new FinalizationRegistry(() => {}); if (q) total += 5; }
+    console.log(typeof unused);`;
+    const fileName = resolve("survey-entry-only.ts");
+    const unusedLine =
+        source
+            .split("\n")
+            .findIndex((line) => line.includes("function unused")) + 1;
+    const sites = (report: SurveyReport): number[] =>
+        report.refusals.map((refusal) => refusal.site.line).sort();
+    const rooted = surveySource(source, { fileName }).report;
+    const entry = surveySource(source, { fileName }, { roots: false }).report;
+    assert.ok(sites(rooted).includes(unusedLine), listed(rooted));
+    assert.deepEqual(
+        sites(entry),
+        sites(rooted).filter((line) => line !== unusedLine),
+        listed(entry),
+    );
+});
+
 test("a survey reports its progress and the statement it lowers", () => {
     const lines: string[] = [];
     const { report } = surveySource(
