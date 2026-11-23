@@ -271,3 +271,36 @@ check(
     if (effects !== '') throw new Error('short circuit');
     `,
 );
+
+check(
+    "a short circuit through a struct's void function field stores its proven completion",
+    `
+    type Score='calm'|'bright';
+    const isScore=(value:string):value is Score=>value==='calm'||value==='bright';
+    interface Setting{get():Score;set(score:Score):void}
+    function createSetting():Setting {
+        let current:Score='calm';
+        return {get:()=>current,set(score){current=score;}};
+    }
+    interface Config{inGameMusic?:Pick<Setting,'get'|'set'>;label?:string}
+    const rows:Array<(value:string)=>boolean|void>=[];
+    function makeRow(onChange:(value:string,revert:()=>void)=>void|boolean):void {
+        rows.push((value)=>onChange(value,()=>{}));
+    }
+    function create(config:Config):void {
+        if(config.inGameMusic){
+            const inGameMusic=config.inGameMusic;
+            makeRow((value)=>isScore(value)&&inGameMusic.set(value));
+        }
+        makeRow((value)=>value.length>2);
+    }
+    let cached:{inGameScore:Setting}|undefined;
+    function settings():{inGameScore:Setting}{return (cached??={inGameScore:createSetting()});}
+    create({inGameMusic:settings().inGameScore,label:'x'});
+    const results=rows.map((row)=>row('bright'));
+    if(results[0]!==undefined||results[1]!==true||settings().inGameScore.get()!=='bright')
+        throw new Error('short circuit completion '+String(results[0])+' '+String(results[1]));
+    if(rows[0]!('nope')!==false||settings().inGameScore.get()!=='bright')
+        throw new Error('short circuit false arm');
+`,
+);

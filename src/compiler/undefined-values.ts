@@ -438,12 +438,13 @@ export function readsErasedVoid(
     context: UndefinedContext,
     value: Value,
     node: ts.Node | undefined,
+    options: ProvenUndefinedOptions = {},
 ): boolean {
     return (
         value.erasedVoidCompletion === true ||
         (node !== undefined &&
             value.kind === "void" &&
-            !provenUndefinedValue(context, node))
+            !provenUndefinedValue(context, node, options))
     );
 }
 
