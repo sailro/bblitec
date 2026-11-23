@@ -8635,6 +8635,36 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             : this.leafValue(narrowed.cpp, value.dataType.inner);
     }
 
+    /**
+     * A record of a key union's own entries, in the union's order: each
+     * member's key and its slot of the record, read once.
+     */
+    public enumMapEntries(
+        record: Value,
+        node: ts.Expression,
+    ): (readonly [string, Value])[] {
+        const type = record.dataType;
+        if (type?.kind !== "enummap")
+            return this.context.fail(
+                node,
+                "Entries are read off a record of a key union.",
+            );
+        const slots = this.context.bindings.pinValueToTemporary(
+            record,
+            "record_entries",
+            node,
+        );
+        return this.context.dataTypes
+            .enumMembers(type.enumName)
+            .map(
+                (name, slot) =>
+                    [
+                        name,
+                        this.leafValue(`${slots.cpp}[${slot}]`, type.element),
+                    ] as const,
+            );
+    }
+
     public leafValue(cpp: string, dataType: DataType): Value {
         if (dataType.kind === "module-namespace")
             return this.context.moduleNamespaces.value(dataType, cpp);
@@ -15683,6 +15713,23 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         copiedFields.add(name);
                     this.context.emit("}");
                     for (const name of copiedFields) assigned.add(name);
+                    continue;
+                }
+                // A record of a key union owns each member's key, in the
+                // union's order: its slots.
+                if (
+                    spread.kind === "data" &&
+                    spread.dataType?.kind === "enummap"
+                ) {
+                    knownProperties = undefined;
+                    declareDefault();
+                    for (const [name, slot] of this.enumMapEntries(
+                        spread,
+                        property.expression,
+                    )) {
+                        created.push({ key: name });
+                        if (!replaced.has(name)) assign(name, slot, property);
+                    }
                     continue;
                 }
                 // A parsed document copies keys its type does not declare.

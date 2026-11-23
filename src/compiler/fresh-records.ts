@@ -308,6 +308,16 @@ function fresh(
     if (ts.isArrowFunction(expression) || ts.isFunctionExpression(expression))
         return returnsOnlyFresh(checker, expression, active);
     if (ts.isCallExpression(expression)) {
+        // `Object.fromEntries` builds a new object of the entries.
+        const callee = namedMember(
+            checker,
+            unwrapExpression(expression.expression),
+        );
+        if (
+            callee?.name === "fromEntries" &&
+            libraryGlobal(checker, callee.expression) === "Object"
+        )
+            return true;
         const declaration = calledFunction(checker, expression);
         return (
             declaration !== undefined &&

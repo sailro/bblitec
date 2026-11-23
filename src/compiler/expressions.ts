@@ -7410,6 +7410,30 @@ export class ExpressionLowerer {
                     }
                     continue;
                 }
+                // A record of a key union spreads each member's key; a
+                // typed literal lowers it as its struct does.
+                if (
+                    spread.kind === "data" &&
+                    spread.dataType?.kind === "enummap"
+                ) {
+                    if (declines) return undefined;
+                    for (const [
+                        key,
+                        value,
+                    ] of this.context.dataLowerer.enumMapEntries(
+                        spread,
+                        property.expression,
+                    )) {
+                        if (ownKeys.has(key))
+                            replaceWhileOwn(key, value, property);
+                        else
+                            storeProperty(
+                                key,
+                                member(value, index, property.expression),
+                            );
+                    }
+                    continue;
+                }
                 if (
                     spread.kind !== "record" &&
                     spread.recordProperties === undefined

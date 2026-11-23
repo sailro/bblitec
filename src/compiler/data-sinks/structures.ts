@@ -1276,6 +1276,15 @@ function accessorSlot(
     )}, ${set})`;
 }
 
+/** Whether the expression a sink converts creates the object it yields, so no other reference holds it. */
+function freshConverted(lowerer: DataSinkHost, node: ts.Node): boolean {
+    const converted = lowerer.convertedExpression(node);
+    return (
+        converted !== undefined &&
+        yieldsFreshObject(lowerer.context.checker, converted)
+    );
+}
+
 function valueEnummap(
     dataType: DataType<"enummap">,
     lowerer: DataSinkHost,
@@ -1344,6 +1353,42 @@ function valueEnummap(
     }
     if (value.dataType && dataTypesEqual(value.dataType, dataType)) {
         return value.cpp;
+    }
+    // A fresh string-keyed dictionary no other reference holds
+    // (`Object.fromEntries`) read as the record of a key union: each member's
+    // entry, which must be present.
+    const source = value.dataType;
+    if (
+        source?.kind === "map" &&
+        source.dictionary &&
+        source.key.kind === "string" &&
+        freshConverted(lowerer, node)
+    ) {
+        const entries = lowerer.context.allocateTemporaryCppName("entries");
+        lowerer.context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: entries,
+            initializer: value.cpp,
+        });
+        const entry =
+            source.value.kind === "optional"
+                ? source.value.inner
+                : source.value;
+        const slots = lowerer.context.dataTypes
+            .enumMembers(dataType.enumName)
+            .map((member) =>
+                lowerer.compileKnownValueForSink(
+                    lowerer.leafValue(
+                        `bbl::js::present(${entries}.get(${lowerer.context.cppString(member)}))`,
+                        entry,
+                    ),
+                    dataType.element,
+                    node,
+                ),
+            );
+        lowerer.context.reachJsData();
+        return `${lowerer.context.dataTypes.cppType(dataType)}{${slots.join(", ")}}`;
     }
     return undefined;
 }
