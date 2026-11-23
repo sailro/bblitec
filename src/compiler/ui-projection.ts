@@ -2440,6 +2440,23 @@ export class UiProjection {
     );
 
     /**
+     * Whether strict admission passes `property: value` as an inert hint:
+     * deferred mode then has nothing to defer for it.
+     */
+    public static admitsInertHint(
+        property: string,
+        value: string | undefined,
+    ): boolean {
+        if (!UiProjection.INERT_UI_STYLE_PROPERTIES.has(property)) return false;
+        const keywords = UiProjection.PRESENTATION_KEYWORDS.get(property);
+        return (
+            !keywords ||
+            (value !== undefined &&
+                keywords.includes(value.trim().toLowerCase()))
+        );
+    }
+
+    /**
      * Reached properties the projection accepts WITHOUT a native rendering:
      * box shadows need saved layer textures and inverse masks, unsupported
      * backdrop functions have no projection, and RmlUi has no numeral
@@ -4755,9 +4772,11 @@ export class UiProjection {
                     const property = UiProjection.cssPropertyName(
                         declaration.slice(0, colon).trim(),
                     );
+                    const value = declaration.slice(colon + 1).trim();
+                    if (UiProjection.admitsInertHint(property, value)) return;
                     const capability = deferredUiStyleCapability(
                         property,
-                        declaration.slice(colon + 1).trim(),
+                        value,
                     );
                     if (capability) capabilities.add(capability);
                 },
@@ -6905,6 +6924,7 @@ export class UiProjection {
         const capability =
             !important &&
             this.context.options.deferredCapabilities &&
+            !UiProjection.admitsInertHint(nativeProperty, knownString) &&
             deferredUiStyleCapability(nativeProperty, knownString);
         if (
             capability &&

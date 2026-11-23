@@ -63,6 +63,27 @@ test("CSS deferral inventories independent features without hiding language gaps
     );
 });
 
+test("CSS deferral leaves hints strict admission passes and defers the rest", () => {
+    const source =
+        prefix +
+        `
+        const sheet=document.createElement("style");
+        sheet.textContent='.list{scroll-snap-type:y proximity}.row{scroll-snap-align:start}.strict{scroll-snap-type:x mandatory}';
+        panel.style.scrollSnapType="y proximity";
+    `;
+    const result = compileSource(source, { deferredCapabilities });
+    assert.deepEqual(
+        result.manifest.deferredCapabilities?.map((s) => s.id),
+        ["css:property:scroll-snap-type"],
+    );
+    const hints = compileSource(
+        prefix +
+            `const sheet=document.createElement("style");sheet.textContent='.list{scroll-snap-type:y proximity}';`,
+        { deferredCapabilities },
+    );
+    assert.equal(hints.manifest.deferredCapabilities?.length ?? 0, 0);
+});
+
 test("CSS feature scans ignore custom values, strings and comments", () => {
     const result = compileSource(
         prefix +
