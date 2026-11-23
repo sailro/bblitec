@@ -765,15 +765,25 @@ function observe(program: ts.Program): ProgramObservations {
                 const reaching = untyped(from)
                     ? heldTypes(program, checker, operand)
                     : [from];
+                // A message event's data is decoded as the type its read
+                // names (a structured clone): it has that shape.
+                const message =
+                    ts.isPropertyAccessExpression(operand) &&
+                    operand.name.text === "data" &&
+                    libraryName(
+                        checker.getNonNullableType(typeOf(operand.expression)),
+                    ) === "MessageEvent";
                 assertions.push({
                     asserted,
                     from: reaching,
                     open: reaching.some(untyped),
-                    shapeless: reaching.some(
-                        (type) =>
-                            untyped(type) ||
-                            (type.flags & ts.TypeFlags.NonPrimitive) !== 0,
-                    ),
+                    shapeless:
+                        !message &&
+                        reaching.some(
+                            (type) =>
+                                untyped(type) ||
+                                (type.flags & ts.TypeFlags.NonPrimitive) !== 0,
+                        ),
                 });
             }
         }

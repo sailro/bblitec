@@ -11899,9 +11899,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 (sourceType?.kind === "arraybuffer"
                     ? this.context.compileValue(unwrapped)
                     : undefined);
-            // A buffer-source union the checker narrowed to its ArrayBuffer.
+            // A buffer-source union or an optional buffer the checker
+            // narrowed to its ArrayBuffer.
             const value =
-                read?.dataType?.kind === "union"
+                read?.dataType?.kind === "union" ||
+                read?.dataType?.kind === "optional"
                     ? this.narrowOptional(read, unwrapped)
                     : read;
             return value?.dataType?.kind === "arraybuffer" ? value : undefined;

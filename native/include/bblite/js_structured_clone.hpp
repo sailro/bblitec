@@ -253,6 +253,16 @@ template <typename K, typename V> struct CloneCodec<Map<K, V>> {
     static Map<K, V> read(pal::CloneReader& reader, pal::CloneId id) {
         if (const auto* value = reader.recalled<Map<K, V>>(id))
             return *value;
+        // A string-keyed dictionary receives an object as its own entries.
+        if constexpr (std::is_same_v<K, std::string>)
+            if (const auto* object = std::get_if<pal::CloneObject>(&reader.node(id))) {
+                const auto properties = object->properties;
+                Map<K, V> value;
+                reader.remember(id, value);
+                for (const auto& [key, item] : properties)
+                    value.set(key, clone_read<V>(reader, item));
+                return value;
+            }
         const auto& map = reader.get<pal::CloneMap>(id);
         Map<K, V> value;
         reader.remember(id, value);

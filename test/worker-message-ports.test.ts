@@ -295,3 +295,51 @@ test("dynamic documents cross realms with the typed arrays they hold", (t) => {
         },
     );
 });
+
+const shapedWorkerSource = `
+interface Digest { composed: number; parts: Readonly<Record<string, number>> }
+function digest(table: Readonly<Record<string, unknown>>): number { return Object.keys(table).length; }
+interface Init { type: "init"; digest: Digest; buffer: ArrayBuffer; sab?: SharedArrayBuffer; capacity: number }
+interface Add { type: "add"; index: number }
+type In = Init | Add;
+let header: Int32Array | null = null;
+function init(msg: Init): void {
+    const { sab, capacity } = msg;
+    if (sab) header = new Int32Array(sab, 0, capacity);
+    const view = new Int32Array(msg.buffer, 4, capacity);
+    self.postMessage(view[0]! + view[1]! + digest(msg.digest.parts) + (header ? 100 : 0));
+}
+function handle(data: In | null | undefined): void {
+    if (!data) return;
+    if (data.type === "init") init(data);
+}
+addEventListener("message", (ev: MessageEvent) => handle(ev.data as In | null | undefined));
+`;
+
+const shapedEntrySource = `
+const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
+worker.addEventListener("message", (event: MessageEvent<number>) => {
+    if (event.data !== 7) throw new Error("view sum " + event.data);
+    worker.terminate();
+    globalThis.close();
+});
+const buffer = new ArrayBuffer(16);
+new Int32Array(buffer).set([1, 2, 3, 4]);
+worker.postMessage({ type: "init", digest: { composed: 1, parts: { a: 1, b: 2 } }, buffer, capacity: 2 });
+`;
+
+test("a message keeps its shape beside a document member and views its buffers", (t) => {
+    const directory = resolve("artifacts/worker-message-ports/shaped");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(resolve(directory, "worker.ts"), shapedWorkerSource);
+    const result = compileSource(shapedEntrySource, {
+        fileName: resolve(directory, "entry.ts"),
+    });
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) return t.skip("Native fixture compiler unavailable.");
+    runGeneratedProgram(tools, "worker-message-ports/shaped/run", result.cpp, {
+        flags: ["/DBBLITE_WORKERS=1"],
+        timeoutMs: 20000,
+        expectedOutput: "",
+    });
+});
