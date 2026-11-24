@@ -333,9 +333,12 @@ export class WindowProperties {
     remove(expression: ts.DeleteExpression): boolean {
         const target = this.target(expression.expression);
         if (!target) return false;
+        // A property declared `unknown` and never written is deleted as the
+        // document a read of it is (`unknownField`).
         const field =
             this.fields.get(target.node.name.text) ??
-            this.declaredField(target.node);
+            this.declaredField(target.node) ??
+            this.unknownField(target.node);
         if (!field)
             return this.context.fail(
                 expression,

@@ -237,6 +237,11 @@ test("a Window extension declared unknown holds a function or a record of functi
         if (debug.ccAudit === undefined || debug.ccFish === undefined) throw new Error("held");
         debug.ccAudit = "off";
         if (debug.ccAudit === undefined) throw new Error("replaced");
+        // A property never written deletes as nothing; a written one is gone.
+        delete debug.ccNever;
+        if (debug.ccNever !== undefined) throw new Error("never written");
+        delete debug.ccFish;
+        if (debug.ccFish !== undefined) throw new Error("deleted");
         globalThis.close();
     `,
         { fileName: resolve(directory, "entry.ts") },
