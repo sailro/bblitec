@@ -9062,6 +9062,11 @@ class Compiler implements LoweringServices {
         return binding;
     }
 
+    /** Whether `cpp` names a native binding the compile tracks. */
+    public hasNativeBinding(cpp: string): boolean {
+        return this.nativeBindings.has(cpp);
+    }
+
     public nativeLocalSince(cpp: string, boundary: number): boolean {
         const binding = this.nativeBindings.get(cpp);
         return binding !== undefined && binding.sequence > boundary;

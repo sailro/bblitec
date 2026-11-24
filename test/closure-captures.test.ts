@@ -15,6 +15,10 @@ import {
     emissionArray,
     writable,
 } from "../src/compiler/emission-transaction.js";
+import {
+    optionalNativeFixtureTools,
+    runGeneratedProgram,
+} from "./native-fixture.js";
 
 test("cached captures follow nested writes, native aliases and speculative rollback", () => {
     const first = {
@@ -231,3 +235,33 @@ test("a shared body captures the record a spread literal built for its call", ()
         ),
     );
 });
+
+test(
+    "a shared body captures a record argument's member a caller temporary holds",
+    { skip: !optionalNativeFixtureTools(false) },
+    () => {
+        // `walls.filter(...)` is a temporary of the caller; the record literal
+        // holding it is the shared body's compile-time argument.
+        const { cpp } = compileSource(
+            `
+            interface Needs { wallSurface?: readonly string[]; houses?: readonly string[] }
+            const ids = (requested: readonly string[] | undefined): string[] =>
+                [...new Set((requested ?? []).map((id) => id + "!"))];
+            function resolve(needs: Needs): string[] {
+                return ids([...(needs.wallSurface ?? []), ...(needs.houses ?? [])]);
+            }
+            const walls: string[] = ["x", "y"];
+            const first = resolve({ wallSurface: walls.filter((w) => w !== "y"), houses: ["a"] }).join(",");
+            if (first !== "x!,a!") throw new Error("filtered member " + first);
+            const second = resolve({ wallSurface: ["w", "z"], houses: ["a"] }).join(",");
+            if (second !== "w!,z!,a!") throw new Error("literal member " + second);
+            `,
+            { fileName: "shared-record-member.ts" },
+        );
+        runGeneratedProgram(
+            optionalNativeFixtureTools(false)!,
+            "closure-captures-shared-record-member",
+            cpp,
+        );
+    },
+);

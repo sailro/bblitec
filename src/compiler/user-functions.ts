@@ -1671,6 +1671,7 @@ export interface UserFunctionContext
             | "dataTypes"
             | "dataLowerer"
             | "useNativeValue"
+            | "hasNativeBinding"
             | "compileValue"
             | "unwrap"
             | "emitExpressionAsStatement"
@@ -4223,6 +4224,41 @@ export class UserFunctionLowerer {
         return found;
     }
 
+    /**
+     * `record` with each member, nested records' included, that names a
+     * native temporary no binding tracks (`walls.filter(...)` in a record
+     * literal argument) pinned to a tracked caller binding; the record
+     * itself when none does.
+     */
+    private pinUntrackedMembers(
+        context: UserFunctionContext,
+        record: Value,
+        seen = new Set<Value>(),
+    ): Value {
+        const properties = record.recordProperties;
+        // A record graph may hold itself: each record is pinned once.
+        if (!properties || seen.has(record)) return record;
+        seen.add(record);
+        let changed = false;
+        const pinned: Record<string, Value> = {};
+        for (const [key, member] of Object.entries(properties)) {
+            const next =
+                member.kind === "record"
+                    ? this.pinUntrackedMembers(context, member, seen)
+                    : member.kind === "data" &&
+                        cppIdentifierPattern.test(member.cpp) &&
+                        !context.hasNativeBinding(member.cpp)
+                      ? context.bindings.pinValueToTemporary(
+                            member,
+                            "shared_member",
+                        )
+                      : member;
+            changed ||= next !== member;
+            pinned[key] = next;
+        }
+        return changed ? { ...record, recordProperties: pinned } : record;
+    }
+
     private lowerRecursiveGroup(
         context: UserFunctionContext,
         root: UserFunctionIr,
@@ -4812,6 +4848,9 @@ export class UserFunctionLowerer {
         // Resource containers and JSON arguments are specialized through their
         // values. Give expressions caller-side storage so the emitted body's
         // closure captures their value, including any temporary dependencies.
+        // A shared body is emitted apart from its caller: a captured record's
+        // member that names a caller temporary no binding tracks gets
+        // caller-side storage too.
         rootEntry.captured.forEach((value, index) => {
             if (
                 value?.kind === "data" &&
@@ -4825,6 +4864,11 @@ export class UserFunctionLowerer {
                         "shared_argument",
                         argumentExpressions[index],
                     );
+            else if (value?.kind === "record" && !recursive)
+                rootEntry.captured[index] = this.pinUntrackedMembers(
+                    context,
+                    value,
+                );
         });
 
         // A borrowed platform event lives on the dispatch stack of the

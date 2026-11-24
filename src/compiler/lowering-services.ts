@@ -380,6 +380,7 @@ export interface LoweringServices {
     ): NativeCaptureBinding;
     takeNativeTemporary(cpp: string, boundary: number): string;
     /** Whether `cpp` names a native local registered since `boundary`. */
+    hasNativeBinding(cpp: string): boolean;
     nativeLocalSince(cpp: string, boundary: number): boolean;
     /** Whether a value names a native binding nothing reassigns. */
     hasStableNativeBinding(value: Value): boolean;
