@@ -265,7 +265,7 @@ test("records joined through one interface join the records their common fields 
 
 test("record demands replay in the dynamic JSON mode they were made in", () => {
     const frontend = createCompilerProgram(
-        `interface Report { kind: string; error: unknown }`,
+        `interface Report { kind: string; errors: unknown[] }`,
         resolve("record-demand-mode.ts"),
     );
     const registry = new DataTypeRegistry(
@@ -278,7 +278,8 @@ test("record demands replay in the dynamic JSON mode they were made in", () => {
     const [declaration] = frontend.sourceFile.statements;
     assert.ok(declaration && ts.isInterfaceDeclaration(declaration));
     const type = frontend.checker.getTypeAtLocation(declaration.name);
-    // An unknown field maps only where unknown values are stored as JSON.
+    // An array of unknown values maps only where unknown values are stored
+    // as JSON (a field typed only `unknown` is a dynamic value in any layout).
     assert.equal(registry.fromTsType(type, declaration), undefined);
     const demand = { identity: type, type, node: declaration, frames: [] };
     assert.throws(
