@@ -33,6 +33,7 @@ import {
 import {
     isAbsentValue,
     knownAbsent,
+    holdsMaterial,
     knownCondition,
     knownPlainData,
     nullValue,
@@ -1072,11 +1073,7 @@ function runtimeSelectors(
         if (group.kind === "variant") {
             if (
                 !value ||
-                !(
-                    value.kind === "material" ||
-                    (value.dataType?.kind === "handle" &&
-                        value.dataType.handle === "material")
-                ) ||
+                !holdsMaterial(value) ||
                 value.sceneShaderVariant !== undefined
             )
                 continue;

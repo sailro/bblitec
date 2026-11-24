@@ -562,6 +562,18 @@ export function nativeDataMetadata(value: Value | undefined): ValueFields {
     return metadata;
 }
 
+/** Whether a value holds a material: a material itself, or a material handle stored as data. */
+export function holdsMaterial(value: {
+    readonly kind: string;
+    readonly dataType?: DataType | undefined;
+}): boolean {
+    return (
+        value.kind === "material" ||
+        (value.dataType?.kind === "handle" &&
+            value.dataType.handle === "material")
+    );
+}
+
 /** Whether a material value is a PBR material's: a scene creation or a loaded asset's. */
 export function isPbrMaterialValue(value: {
     readonly scenePbrMaterialIndex?: number | undefined;

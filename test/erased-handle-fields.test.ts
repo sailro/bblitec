@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
+import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
+import {
+    optionalNativeFixtureTools,
+    runGeneratedProgram,
+} from "./native-fixture.js";
 
 // A pre-built view an `unknown` field holds: an entry's own, a shared shader
 // material, or none, chosen by functions typed to return `unknown`. A frame
@@ -180,4 +186,124 @@ test("an object parameter holding a mesh refuses other values", () => {
                 ),
             refusal,
         );
+});
+
+// Materials held as `unknown` and read back through a view the pin does not
+// declare, collected by identity into a Set and a Map with erased keys.
+const identityProgram = `
+import { createEngine, createStandardMaterial } from "@babylonjs/lite";
+type Held = { material?: unknown };
+function collect(held: readonly Held[], other: object): string {
+    const seen = new Set<object>();
+    const uses = new Map<unknown, number>();
+    let added = 0;
+    for (const entry of held) {
+        const material = entry.material as { tint?: number } | undefined;
+        if (material && typeof material === "object") {
+            uses.set(material, (uses.get(material) ?? 0) + 1);
+            if (!seen.has(material)) {
+                seen.add(material);
+                added++;
+            }
+        }
+    }
+    const first = held[1]?.material as { tint?: number } | undefined;
+    const dropped = first ? seen.delete(first) : false;
+    const again = first ? seen.delete(first) : false;
+    return [added, seen.size, seen.has(other), dropped, again, uses.size, uses.get(other) ?? 0].join();
+}
+async function main(): Promise<void> {
+    await createEngine({});
+    const a = createStandardMaterial();
+    const b = createStandardMaterial();
+    const c = createStandardMaterial();
+    const result = collect([{ material: a }, { material: b }, { material: a }, {}], a) + ";" + collect([{ material: c }, { material: b }], a);
+    if (result !== "2,1,true,true,false,2,2;2,1,false,true,false,2,0") throw new Error("identity " + result);
+}
+void main();
+`;
+
+test("a Set and a Map whose erased keys a view of a material writes keep each material once by identity, as JavaScript does", async (t) => {
+    // JavaScript's results, each factory making a fresh object.
+    const realm: { finished?: Promise<void> } = {};
+    runInNewContext(
+        ts.transpileModule(
+            identityProgram.replace("void main();", "realm.finished = main();"),
+            {
+                compilerOptions: {
+                    target: ts.ScriptTarget.ESNext,
+                    module: ts.ModuleKind.CommonJS,
+                },
+            },
+        ).outputText,
+        {
+            exports: {},
+            realm,
+            require: () => ({
+                createEngine: async () => ({}),
+                createStandardMaterial: () => ({}),
+            }),
+        },
+    );
+    await realm.finished;
+    const { cpp } = compileSource(identityProgram);
+    // The keys are the materials themselves, compared as handles.
+    assert.match(cpp, /bbl::js::Set<[^>\n]*bbl::MaterialHandle/);
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(
+        tools,
+        "erased-handle-fields/identity-keys",
+        `#define main generated_main
+${cpp}
+#undef main
+namespace bbl {
+Engine create_engine(EngineOptions) { return {}; }
+// Each material is a record of its own; the run reads none of its fields.
+MaterialHandle create_standard_material(Engine& engine) {
+    engine.materials.emplace_back();
+    return MaterialHandle{static_cast<std::uint32_t>(engine.materials.size() - 1)};
+}
+} // namespace bbl
+int main() { return generated_main(); }
+`,
+        { expectedOutput: "", timeoutMs: 20000 },
+    );
+});
+
+test("a view read of a material refuses: a property the program adds to a ShaderMaterial is not represented", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+import { createEngine, createSceneContext, createShaderMaterial, createMeshFromData, wgsl, type Mesh } from "@babylonjs/lite";
+const engine = await createEngine({});
+createSceneContext(engine);
+const material = createShaderMaterial({ name: "plain", vertexSource: wgsl\`@vertex fn main(@location(0) position: vec3<f32>) -> @builtin(position) vec4<f32> { return vec4<f32>(position, 1.0); }\`, fragmentSource: wgsl\`@fragment fn main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`, attributes: ["position"], uniforms: ["worldViewProjection"] });
+const meshes: Mesh[] = [];
+for (let i = 0; i < 2; i++) {
+    const mesh = createMeshFromData(engine, "m" + i, new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]), new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]), new Uint32Array([0, 1, 2]));
+    mesh.material = material;
+    meshes.push(mesh);
+}
+const tracked: { mat: { level?: number }; base: number }[] = [];
+const seen = new Set<object>();
+const collect = (list: readonly { material?: unknown }[]): void => {
+    for (const m of list) {
+        const mat = m.material as { level?: number } | undefined;
+        if (mat && typeof mat === "object" && !seen.has(mat)) {
+            seen.add(mat);
+            const base = mat.level ?? 1;
+            mat.level = base;
+            tracked.push({ mat, base });
+        }
+    }
+};
+collect(meshes);
+localStorage.setItem("count", String(tracked.length));
+`),
+        /'mat\.level' reads a material through a view the pin does not declare: a property the program adds to a ShaderMaterial is not represented/,
+    );
 });

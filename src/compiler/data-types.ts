@@ -707,6 +707,16 @@ export interface ConvertedMember {
     readonly of: ts.Expression;
 }
 
+/** Whether `type`, or a member of the intersection it is, is a pinned `kind` handle type. */
+export function includesPinnedHandleType(
+    type: ts.Type,
+    kind: HandleKind,
+): boolean {
+    return type.isIntersection()
+        ? type.types.some((member) => includesPinnedHandleType(member, kind))
+        : pinnedHandleKind(type) === kind;
+}
+
 /** Whether `type` is one of the pin's engine object types (`pinnedHandleKind`). */
 export function isPinnedHandleType(type: ts.Type): boolean {
     return pinnedHandleKind(type) !== undefined;
@@ -1491,9 +1501,33 @@ function erasedFieldHolds(known: DataType, storage: DataType): boolean {
 
 /**
  * @unjournaled Pure functions of the checked source: the keys a `const`
- * Map's lookups take, or none when it is used any other way.
+ * Map's or Set's lookups take, or none when it is used any other way.
  */
-const erasedMapKeys = new WeakMap<ts.Symbol, readonly ts.Expression[]>();
+const erasedCollectionKeys = new WeakMap<ts.Symbol, readonly ts.Expression[]>();
+
+type ErasedCollectionKind = "Map" | "Set";
+
+/** The methods whose first argument is a key the collection looks up. */
+const ERASED_COLLECTION_LOOKUPS: Readonly<
+    Record<ErasedCollectionKind, readonly string[]>
+> = {
+    Map: ["get", "set", "has", "delete"],
+    Set: ["add", "has", "delete"],
+};
+
+/** A `Map` or `Set` whose keys are typed `unknown` or `object`. */
+function erasedCollectionKind(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): ErasedCollectionKind | undefined {
+    const name = libraryName(type);
+    if (name !== "Map" && name !== "Set") return undefined;
+    const [key] = checker.getTypeArguments(type as ts.TypeReference);
+    return key &&
+        ((key.flags & ts.TypeFlags.Unknown) !== 0 || holdsObjectKeyword(key))
+        ? name
+        : undefined;
+}
 
 /**
  * The optionality a mapped type gives every property it maps: `+` adds it
@@ -4035,11 +4069,77 @@ export class DataTypeRegistry {
     }
 
     /**
-     * The key storage of a `const m = new Map<unknown, V>()` whose only uses
-     * look keys up (`get`, `set`, `has`, `delete`) with one native handle
-     * type, present or optional: those handles are every key it can hold.
+     * The key storage of an erased collection (`erasedCollection`): the
+     * handle a written key settled it with (`requireWrittenHandleFieldStorage`
+     * on its declaration), or else the one native handle type, present or
+     * optional, its lookups' keys are typed with. Those handles are every key
+     * it can hold, compared by identity as JavaScript compares objects.
      */
-    private erasedMapKeyStorage(node: ts.Node): DataType | undefined {
+    private erasedCollectionKeyStorage(
+        node: ts.Node,
+        collection: ErasedCollectionKind,
+    ): DataType | undefined {
+        const erased = this.erasedCollection(node, collection);
+        if (!erased) return undefined;
+        const written = this.storage.assertedHandleFields.get(
+            erased.declaration,
+        );
+        if (written) return written;
+        const { keys } = erased;
+        const types = keys.map((key) =>
+            this.fromStoredTsType(this.checker.getTypeAtLocation(key), key),
+        );
+        const handle = presentDataType(types[0]);
+        if (
+            handle?.kind !== "handle" ||
+            !types.every((type) => {
+                const inner = presentDataType(type);
+                return inner !== undefined && dataTypesEqual(inner, handle);
+            })
+        )
+            return undefined;
+        return types.some((type) => type?.kind === "optional")
+            ? { kind: "optional", inner: handle }
+            : handle;
+    }
+
+    /**
+     * The declaration of the erased collection whose key the argument
+     * `index` of `call` looks up (`receiver.has(key)`), if any.
+     */
+    public erasedCollectionKeyDeclaration(
+        call: ts.CallLikeExpression,
+        index: number,
+    ): ts.VariableDeclaration | undefined {
+        if (index !== 0 || !ts.isCallExpression(call)) return undefined;
+        const access = call.expression;
+        if (!ts.isPropertyAccessExpression(access)) return undefined;
+        const collection = erasedCollectionKind(
+            this.checker,
+            this.checker.getTypeAtLocation(access.expression),
+        );
+        return collection &&
+            ERASED_COLLECTION_LOOKUPS[collection].includes(access.name.text)
+            ? this.erasedCollection(access.expression, collection)?.declaration
+            : undefined;
+    }
+
+    /**
+     * A `const c = new Map<K, V>()` or `new Set<K>()` with `unknown` or
+     * `object` keys that `node` names (its name, its declaration or its
+     * initializer), whose only uses look keys up
+     * (`ERASED_COLLECTION_LOOKUPS`), besides `size` and `clear`: the keys
+     * those lookups take are every key it can hold.
+     */
+    private erasedCollection(
+        node: ts.Node,
+        collection: ErasedCollectionKind,
+    ):
+        | {
+              readonly declaration: ts.VariableDeclaration;
+              readonly keys: readonly ts.Expression[];
+          }
+        | undefined {
         const symbol = ts.isIdentifier(node)
             ? resolvedSymbol(this.checker, node)
             : ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)
@@ -4056,10 +4156,14 @@ export class DataTypeRegistry {
             !ts.isIdentifier(declaration.name) ||
             variableKind(declaration.parent) !== "const" ||
             !declaration.initializer ||
-            !ts.isNewExpression(unwrapExpression(declaration.initializer))
+            !ts.isNewExpression(unwrapExpression(declaration.initializer)) ||
+            erasedCollectionKind(
+                this.checker,
+                this.checker.getTypeAtLocation(declaration.name),
+            ) !== collection
         )
             return undefined;
-        let keys = erasedMapKeys.get(symbol);
+        let keys = erasedCollectionKeys.get(symbol);
         if (keys === undefined) {
             const found: ts.Expression[] = [];
             let closed = true;
@@ -4075,7 +4179,7 @@ export class DataTypeRegistry {
                     if (
                         ts.isPropertyAccessExpression(access) &&
                         access.expression === child &&
-                        ["get", "set", "has", "delete"].includes(
+                        ERASED_COLLECTION_LOOKUPS[collection].includes(
                             access.name.text,
                         ) &&
                         ts.isCallExpression(call) &&
@@ -4095,26 +4199,9 @@ export class DataTypeRegistry {
             };
             visit(declaration.parent.parent.parent);
             keys = closed ? found : [];
-            erasedMapKeys.set(symbol, keys);
+            erasedCollectionKeys.set(symbol, keys);
         }
-        if (keys.length === 0) return undefined;
-        const present = (type: DataType | undefined): DataType | undefined =>
-            type?.kind === "optional" ? type.inner : type;
-        const types = keys.map((key) =>
-            this.fromStoredTsType(this.checker.getTypeAtLocation(key), key),
-        );
-        const handle = present(types[0]);
-        if (
-            handle?.kind !== "handle" ||
-            !types.every((type) => {
-                const inner = present(type);
-                return inner !== undefined && dataTypesEqual(inner, handle);
-            })
-        )
-            return undefined;
-        return types.some((type) => type?.kind === "optional")
-            ? { kind: "optional", inner: handle }
-            : handle;
+        return keys.length > 0 ? { declaration, keys } : undefined;
     }
 
     /**
@@ -4145,9 +4232,10 @@ export class DataTypeRegistry {
     }
 
     /**
-     * A native handle written to an erased record field (`unknown`) or
-     * parameter (`unknown` or `object`) settles that storage's layout as an
-     * assertion would: it keeps the handle. A parameter's `null` and
+     * A native handle written to an erased record field (`unknown`),
+     * parameter (`unknown` or `object`) or collection key
+     * (`erasedCollection`) settles that storage's layout as an assertion
+     * would: it keeps the handle. A parameter's `null` and
      * `undefined` members make it optional.
      */
     public requireWrittenHandleFieldStorage(
@@ -4184,13 +4272,21 @@ export class DataTypeRegistry {
 
     /**
      * Whether a declaration is storage a native handle can settle: a record
-     * field typed `unknown`, or a program parameter, not a rest one, typed
-     * `unknown` or `object` besides `null` and `undefined`.
+     * field typed `unknown`, a program parameter, not a rest one, typed
+     * `unknown` or `object` besides `null` and `undefined`, or an erased
+     * collection's keys (`erasedCollection`).
      */
     private isErasedHandleStorage(
         declaration: ts.Declaration,
     ): declaration is ErasedHandleStorage {
         const type = this.checker.getTypeAtLocation(declaration);
+        if (ts.isVariableDeclaration(declaration)) {
+            const collection = erasedCollectionKind(this.checker, type);
+            return (
+                collection !== undefined &&
+                this.erasedCollection(declaration, collection) !== undefined
+            );
+        }
         if (
             ts.isPropertySignature(declaration) ||
             ts.isPropertyDeclaration(declaration)
@@ -6235,11 +6331,9 @@ export class DataTypeRegistry {
                     this.checker.getTypeArguments(reference);
                 if (!keyType || !valueType) return undefined;
                 const key =
-                    (keyType.flags & ts.TypeFlags.Unknown) !== 0 &&
-                    symbolName === "Map"
-                        ? (this.erasedMapKeyStorage(node) ??
-                          this.fromStoredTsType(keyType, node))
-                        : this.fromStoredTsType(keyType, node);
+                    (symbolName === "Map" &&
+                        this.erasedCollectionKeyStorage(node, "Map")) ||
+                    this.fromStoredTsType(keyType, node);
                 const value: DataType | undefined =
                     symbolName === "WeakMap" &&
                     (valueType.flags & ts.TypeFlags.NonPrimitive) !== 0
@@ -6288,9 +6382,11 @@ export class DataTypeRegistry {
                 const [elementType] = this.checker.getTypeArguments(reference);
                 if (!elementType) return undefined;
                 const element =
-                    symbolName !== "WeakSet"
-                        ? this.storedElementType(elementType, node)
-                        : this.fromStoredTsType(elementType, node);
+                    symbolName === "WeakSet"
+                        ? this.fromStoredTsType(elementType, node)
+                        : (symbolName === "Set" &&
+                              this.erasedCollectionKeyStorage(node, "Set")) ||
+                          this.storedElementType(elementType, node);
                 if (
                     symbolName === "WeakSet" &&
                     element?.kind === "borrowed-platform-event"

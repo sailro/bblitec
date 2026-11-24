@@ -32,6 +32,7 @@ import ts from "typescript";
 import {
     absenceOfNull,
     handleFoundCpp,
+    holdsMaterial,
     knownCondition,
     undefinedValue,
 } from "./values/model.js";
@@ -80,6 +81,7 @@ import { readWorkerEventProperty } from "./workers.js";
 import {
     borrowedPlatformEventKind,
     handleCppType,
+    includesPinnedHandleType,
     isPinnedEngineObjectKind,
     touchListDataType,
     typedArrayBytesPerElement,
@@ -4347,6 +4349,24 @@ export class PropertyAccessLowerer {
             expression,
         );
         if (workerEvent) return workerEvent;
+        // A material read through a view the pin does not declare
+        // (`mesh.material as { x?: number }`): a native material holds the
+        // pin's own members only, so nothing stores what the program adds.
+        if (
+            holdsMaterial(owner) &&
+            !includesPinnedHandleType(
+                this.context.checker.getNonNullableType(
+                    this.context.checker.getTypeAtLocation(
+                        expression.expression,
+                    ),
+                ),
+                "material",
+            )
+        )
+            return this.context.fail(
+                expression,
+                `'${this.propertyPathForDiagnostic(expression)}' reads a material through a view the pin does not declare: a property the program adds to a ShaderMaterial is not represented, and a PBR or Standard material's own member is read through its pinned type.`,
+            );
         return this.context.fail(
             expression,
             `Unsupported property value '${this.propertyPathForDiagnostic(expression)}' (owner ${owner.kind} ${owner.dataType ? JSON.stringify(owner.dataType) : "without data type"}).`,

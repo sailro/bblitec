@@ -364,6 +364,16 @@ const platformObjectInterfaces: Partial<Record<Value["kind"], string>> = {
     "offscreen-canvas": "OffscreenCanvas",
 };
 
+/** The native handle a value holds: its present handle storage, or its handle kind. */
+function heldNativeHandle(value: Value): DataType<"handle"> | undefined {
+    const stored = presentDataType(value.dataType);
+    return stored?.kind === "handle"
+        ? stored
+        : isHandleKind(value.kind)
+          ? { kind: "handle", handle: value.kind }
+          : undefined;
+}
+
 function outsideStructStorage(value: Value | undefined): boolean {
     return (
         isJsonValue(value) ||
@@ -13288,7 +13298,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 dataType,
                 node,
             );
-        if (dataType.kind === "json") this.requireErasedHandleField(node);
+        if (dataType.kind === "json")
+            this.requireErasedHandleField(node, undefined, value);
         if (dataType.kind === "function" && value.dataType?.kind === "function")
             this.context.dataTypes.requireErasedHandleParameters(
                 value.dataType,
@@ -13307,20 +13318,30 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * A native handle written to erased storage: an object literal's
      * `unknown` field, the `unknown` or `object` parameter an argument is
      * passed to, or the parameter an identity comparison reads on its other
-     * side. That declaration takes handle storage (a storage demand). The
-     * handle is what its type maps to, or what `stored` says the written
-     * value holds.
+     * side, or the erased collection a lookup's key is written to. That
+     * declaration takes handle storage (a storage demand). The handle is
+     * what `stored` says the written value holds, or what its type maps to,
+     * or, for a type that maps to no handle (a view over the handle), the
+     * handle the written `value` holds.
      */
-    public requireErasedHandleField(node: ts.Node, stored?: DataType): void {
+    public requireErasedHandleField(
+        node: ts.Node,
+        stored?: DataType,
+        value?: Value,
+    ): void {
         if (!ts.isExpression(node)) return;
         const declaration = this.erasedStorageDeclaration(node);
         if (!declaration) return;
-        const written =
+        const typed =
             stored ??
             this.context.dataTypes.fromTsType(
                 this.context.checker.getTypeAtLocation(node),
                 node,
             );
+        const written =
+            presentDataType(typed)?.kind === "handle"
+                ? typed
+                : ((value && heldNativeHandle(value)) ?? typed);
         if (written)
             this.context.dataTypes.requireWrittenHandleFieldStorage(
                 declaration,
@@ -13345,9 +13366,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             case "property":
                 return this.literalFieldDeclaration(consumer);
             case "argument":
-                return calledDeclaration(checker, consumer.call)?.parameters[
-                    consumer.index
-                ];
+                return (
+                    this.context.dataTypes.erasedCollectionKeyDeclaration(
+                        consumer.call,
+                        consumer.index,
+                    ) ??
+                    calledDeclaration(checker, consumer.call)?.parameters[
+                        consumer.index
+                    ]
+                );
             case "compared": {
                 const { comparison } = consumer;
                 const other = unwrapExpression(
@@ -13812,16 +13839,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
 
     /** An erased local retains a represented native owner in its existing handle storage. */
     private requireNativeHandleBinding(value: Value, node: ts.Node): void {
-        const stored =
-            value.dataType?.kind === "optional"
-                ? value.dataType.inner
-                : value.dataType;
-        const nativeHandle =
-            stored?.kind === "handle"
-                ? stored
-                : isHandleKind(value.kind)
-                  ? { kind: "handle" as const, handle: value.kind }
-                  : undefined;
+        const nativeHandle = heldNativeHandle(value);
         if (!nativeHandle) return;
         const declaration = this.assignedBinding(node);
         if (
