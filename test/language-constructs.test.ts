@@ -3610,7 +3610,7 @@ check(
 test("a broad key that can hold a record keeps it keyed by identity", () => {
     for (const keyed of [
         "function mark(): number { return note(world.tallies[0]!.gauge(), 'kept'); }",
-        "function mark(): void { const key: object = world; notes.set(key, []); }",
+        "function mark(): void { let key: object = world; notes.set(key, []); }",
         "const handed: unknown = notes;",
     ])
         assert.throws(
@@ -3620,6 +3620,10 @@ test("a broad key that can hold a record keeps it keyed by identity", () => {
                 ),
             /'Gauge' is stored as the 'Tally' instances it holds; a record that is not one stored as it would be a copy of the one object JavaScript keeps/,
         );
+    // A const of a broad type holds the object its initializer gives.
+    compileSource(
+        `${objectKeyedNotes} const gauges: Gauge[] = world.tallies.map((tally) => tally.gauge()); function mark(): void { const key: object = world; notes.set(key, []); } export {};`,
+    );
 });
 
 check(
@@ -7691,6 +7695,42 @@ checkInRealm(
         if (thrown !== "type") throw new Error("thrown " + thrown);
         globalThis.close();
     })();
+`,
+);
+
+checkInRealm(
+    "a-narrower-record-stored-as-its-base-is-copied-where-only-other-objects-are-compared",
+    `
+    class Failure {
+        constructor(readonly code: number) {}
+    }
+    interface Report {
+        kind: string;
+        error: unknown;
+        context?: string;
+    }
+    let log = "";
+    let gate: ((input: Report) => boolean) | null = null;
+    function funnel(input: Report): void {
+        if (gate?.(input) === true) return;
+        const error = input.error instanceof Failure ? input.error.code : typeof input.error === "string" ? input.error : "?";
+        log += input.kind + ":" + error + (input.context ?? "") + ";";
+    }
+    function reportFailure(input: Report & { error: Failure }): void {
+        if (!(input.error instanceof Failure)) return;
+        funnel(input);
+    }
+    gate = (input) => input.kind === "quiet";
+    const failure = new Failure(7);
+    const other = new Failure(9);
+    // A const holds its initializer's object: this compares Failures only.
+    const target = failure as unknown;
+    if (!!target && target !== other) log += "target;";
+    reportFailure({ kind: "boot", error: failure, context: "@1" });
+    reportFailure({ kind: "quiet", error: new Failure(8) });
+    funnel({ kind: "plain", error: "text" });
+    if (log !== "target;boot:7@1;plain:text;") throw new Error("log " + log);
+    globalThis.close();
 `,
 );
 

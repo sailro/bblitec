@@ -122,14 +122,14 @@ export interface NamedRead {
  *   fields;
  * - array writes: changes of an array's elements or length (element and
  *   `length` writes, deletions, the mutating methods);
- * - identities: operands of `===`/`!==` and `Object.is` when both can be
- *   objects; operands of `==`/`!=` other than nullish literals, `switch`
- *   subjects, `includes`/`indexOf`/`lastIndexOf` arguments; the keys given
+ * - identities: the objects reaching operands of `===`/`!==` and
+ *   `Object.is` when both can be objects, of `==`/`!=` other than nullish
+ *   literals, `switch` subjects and `includes`/`indexOf`/`lastIndexOf`
+ *   arguments, read as `heldTypes` reads them; the keys given
  *   to keyed collections (`add`/`delete`/`get`/`has`/`set` arguments,
  *   WeakRef and FinalizationRegistry targets): the record type a closed
- *   key type stores them as, and the objects that reach them, a parameter
- *   of a function the program only calls directly as what its calls pass
- *   (`heldTypes`); and the whole key type of a collection constructed with
+ *   key type stores them as, and the objects that reach them (`heldTypes`);
+ *   and the whole key type of a collection constructed with
  *   entries, or whose keys the program does not see given: one handed
  *   where no keyed collection type is declared or to code the program does
  *   not hold, or whose key method is read other than as a direct callee;
@@ -517,11 +517,18 @@ function observe(program: ts.Program): ProgramObservations {
             addConsumer(type, consumer);
         }
     };
-    const identity = (node: ts.Node): void => {
+    // An operand compares the objects that reach it, read through
+    // parameters and `const` bindings as written objects are (`heldTypes`).
+    const compared = (node: ts.Expression): void => {
+        for (const type of heldTypes(program, checker, node))
+            if (objectLike(type)) identities.add(type);
+    };
+    const identity = (node: ts.Expression): void => {
         const type = typeOf(node);
         if (objectLike(type)) {
-            addIdentity(type, node);
-            addIdentity(type, node.parent);
+            addConsumer(type, node);
+            addConsumer(type, node.parent);
+            compared(node);
         }
     };
     // A key is compared by identity with the objects that reach it, read
@@ -558,7 +565,10 @@ function observe(program: ts.Program): ProgramObservations {
             );
         }
     };
-    const identityComparison = (left: ts.Node, right: ts.Node): void => {
+    const identityComparison = (
+        left: ts.Expression,
+        right: ts.Expression,
+    ): void => {
         const leftType = typeOf(left),
             rightType = typeOf(right);
         if (!objectLike(leftType) || !objectLike(rightType)) {
@@ -572,10 +582,12 @@ function observe(program: ts.Program): ProgramObservations {
             }
             return;
         }
-        addIdentity(leftType, left.parent);
-        addIdentity(rightType, right.parent);
-        addIdentity(leftType, left);
-        addIdentity(rightType, right);
+        addConsumer(leftType, left.parent);
+        addConsumer(rightType, right.parent);
+        addConsumer(leftType, left);
+        addConsumer(rightType, right);
+        compared(left);
+        compared(right);
     };
     const enumerated = (node: ts.Node): void => {
         const type = typeOf(node);

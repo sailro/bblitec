@@ -14,7 +14,7 @@ import {
     variableKind,
 } from "./syntax.js";
 import { determinedTypeArguments } from "./type-arguments.js";
-import { unionMembers } from "./type-facts.js";
+import { holdsAnyPresentValue, unionMembers } from "./type-facts.js";
 
 /** A static type a written object has, and the property a keyed write names. */
 export interface WrittenHolder {
@@ -217,9 +217,29 @@ function throughParameter<T>(
     }
 }
 
+/** The initializer of the `const` binding an expression reads. */
+function constInitializer(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): ts.Expression | undefined {
+    const root = unwrapExpression(expression);
+    const declaration = ts.isIdentifier(root)
+        ? resolvedSymbol(checker, root)?.valueDeclaration
+        : undefined;
+    return declaration &&
+        ts.isVariableDeclaration(declaration) &&
+        ts.isIdentifier(declaration.name) &&
+        ts.isVariableDeclarationList(declaration.parent) &&
+        variableKind(declaration.parent) === "const"
+        ? declaration.initializer
+        : undefined;
+}
+
 /**
- * The static types of the objects an expression evaluates to: a parameter
- * of a function the program only calls directly holds what its calls pass,
+ * The static types of the objects an expression of an open type (or of the
+ * `{}` a test leaves of one) evaluates to: a parameter of a function the
+ * program only calls directly holds what its calls pass, a `const` binding
+ * the object its initializer gives (through the wrappers that keep it),
  * and a type parameter of such a function is what its calls instantiate.
  */
 export function heldTypes(
@@ -229,7 +249,8 @@ export function heldTypes(
     active: Set<ts.Node> = new Set(),
 ): readonly ts.Type[] {
     const type = checker.getTypeAtLocation(object);
-    if (!openHolder(type)) return [type];
+    if (!openHolder(type) && !holdsAnyPresentValue(checker, type))
+        return [type];
     const through = throughParameter(
         program,
         checker,
@@ -241,9 +262,22 @@ export function heldTypes(
                 heldTypes(program, checker, argument, active),
             ),
     );
-    return through
-        ? through.answer
-        : instantiatedTypes(program, checker, type, active);
+    if (through) return through.answer;
+    const initializer = constInitializer(checker, object);
+    if (initializer && !active.has(initializer)) {
+        active.add(initializer);
+        try {
+            return heldTypes(
+                program,
+                checker,
+                unwrapExpression(initializer),
+                active,
+            );
+        } finally {
+            active.delete(initializer);
+        }
+    }
+    return instantiatedTypes(program, checker, type, active);
 }
 
 /**
