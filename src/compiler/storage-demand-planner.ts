@@ -32,6 +32,7 @@ import {
 import type { LoweringServices } from "./lowering-services.js";
 import { callSignatures } from "./type-facts.js";
 import { holderTest, holdsRecord } from "./record-observations.js";
+import { activeSurvey } from "./survey.js";
 
 type StatementContext = Pick<
     LoweringServices,
@@ -86,13 +87,15 @@ class PlanningWrite extends Error {}
 /**
  * Raises `demand` at a site lowering can go on past (a record join stored
  * as a copy, a resource stored without its engine owner, a parameter's
- * record copied): a planning attempt records it there and goes on. Past
- * such a site lowering stores what it stored before the demand, so a later
- * demand that follows from this one is met by the next attempt.
+ * record copied): a planning attempt records it there and goes on, as a
+ * survey's statement does (`SurveyCollector.planDemand`), which lowers
+ * again once with every demand it went on past. Past such a site lowering
+ * stores what it stored before the demand, so a later demand that follows
+ * from this one is met by the next attempt.
  */
 export function demandOrPlan(demand: StorageDemand): void {
-    if (!active) throw demand;
-    active.planDemand(demand.request);
+    if (active) active.planDemand(demand.request);
+    else if (!activeSurvey()?.planDemand(demand)) throw demand;
 }
 
 /** A native generic call asks for its signature before lowering arguments or invoking it. */
