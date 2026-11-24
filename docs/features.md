@@ -36,7 +36,7 @@ Rules:
   A conditional of an `undefined` arm and a `null` arm that no typed storage holds is a dynamic value.
 - A binding TypeScript types `any` (`var observer = null`) is stored as the type assigned to it, nullable as its
   initializer; member calls through it, and through its properties (`c.signal`), dispatch on that stored type and
-  throw when it is absent.
+  throw when it is absent. An optional number read through one orders as ToNumber reads it.
 - A hoisted `var` a function may read before its assignment is stored undefined until assigned: absence tests,
   `typeof` and timer cancellation read the undefined, any other read throws while unassigned. A function its own
   initializer hands to a scheduler, an observer or a promise reaction (`var poll = setInterval(f)`) reads it assigned.

@@ -480,7 +480,7 @@ export class StaticEvaluator {
      * Where its one empty state holds both absent values, which read 0 and
      * NaN, its storage is demanded tagged; only an untaggable one refuses.
      */
-    private numberFromOptional(value: Value, node: ts.Node): string {
+    public numberFromOptional(value: Value, node: ts.Node): string {
         return (
             numberFromOptionalCpp(this.checker, value, node) ??
             refuseEitherAbsence(

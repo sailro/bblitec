@@ -65,3 +65,37 @@ test(
         runGeneratedProgram(tools!, "condition-comparisons", cpp);
     },
 );
+
+// `Array.isArray` widens a readonly array to `any[]`: its elements, and the
+// optional members read through them, reach the comparison unnarrowed.
+const optionalOrdering = `
+    interface Row {
+        readonly weight: number;
+        readonly phase?: number;
+    }
+    function invalid(rows: readonly (Row | null)[]): number {
+        if (!Array.isArray(rows)) throw new Error("rows");
+        let count = 0;
+        for (let i = 0; i < rows.length; i++) {
+            const row = rows[i];
+            if (row == null) continue;
+            if (row.weight < 0 || (row.phase !== undefined && (row.phase < 0 || row.phase > 1))) count++;
+            if (row.phase < 1 || row.phase >= 1) count += 10;
+        }
+        return count;
+    }
+    const count = invalid([{ weight: 1 }, { weight: 1, phase: 2 }, null, { weight: -1, phase: 0.5 }]);
+    if (count !== 22) throw new Error("ordering " + count);
+`;
+
+test(
+    "an optional number the checker leaves unnarrowed orders as ToNumber reads it",
+    { skip: !tools },
+    () => {
+        const { cpp } = compileSource(optionalOrdering, {
+            fileName: "optional-ordering.ts",
+        });
+        assert.match(cpp, /bbl::js::number_from_optional\(/);
+        runGeneratedProgram(tools!, "condition-comparisons-optional", cpp);
+    },
+);
