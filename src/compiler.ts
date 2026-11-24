@@ -11116,6 +11116,25 @@ class Compiler implements LoweringServices {
         );
     }
 
+    public compileCallbackValueWithValues(
+        callback: Value,
+        arguments_: readonly Value[],
+        callNode: ts.Node,
+        options?: {
+            discardReturn?: boolean;
+            predicate?: boolean;
+            body?: CallbackInvocationOptions;
+        },
+    ): Value {
+        return this.userFunctions.compileCallbackValueWithValues(
+            this,
+            callback,
+            arguments_,
+            callNode,
+            options,
+        );
+    }
+
     public compileStoredDataFunction(
         expression:
             | ts.Identifier

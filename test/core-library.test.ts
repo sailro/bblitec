@@ -535,3 +535,32 @@ check(
     if (rebuilds.join("/") !== "a|az1;b|az1/undefinedx;cy") throw new Error(rebuilds.join("/"));
 `,
 );
+
+check(
+    "array-walks-call-a-record-member-callback",
+    `
+    interface Villager { id: number; job: string }
+    interface Deps<V> { humans(): readonly V[]; isFlorist(villager: V): boolean; idOf: (villager: V) => number; log(villager: V): void }
+    function createPublication<V>(deps: Deps<V>) {
+        return {
+            sync: (): string => {
+                const florists = deps.humans().filter(deps.isFlorist);
+                const first = deps.humans().find(deps.isFlorist);
+                const any = deps.humans().some(deps.isFlorist);
+                deps.humans().forEach(deps.log);
+                return florists.map(deps.idOf).join(",") + "|" + (first ? deps.idOf(first) : -1) + "|" + any;
+            },
+        };
+    }
+    const people: Villager[] = [{ id: 1, job: "florist" }, { id: 2, job: "miller" }, { id: 3, job: "florist" }];
+    let logged = "";
+    const publication = createPublication<Villager>({
+        humans: () => people,
+        isFlorist(v) { return v.job === "florist"; },
+        idOf: (v) => v.id * 10,
+        log: (v) => { logged += v.id; },
+    });
+    const seen = publication.sync();
+    if (seen !== "10,30|10|true" || logged !== "123") throw new Error(seen + " " + logged);
+`,
+);

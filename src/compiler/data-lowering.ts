@@ -735,6 +735,7 @@ interface DataLoweringContext extends Pick<
     | "decreaseIndent"
     | "allocateBlockPrefix"
     | "compileCallbackWithValues"
+    | "compileCallbackValueWithValues"
     | "dataLowerer"
     | "thrownValueKinds"
     | "captureManagedClosureLines"
@@ -10424,14 +10425,24 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 `${!held && narrowed.readOnly ? "const " : ""}${sourceType}`,
         );
         // The callback receives each element, its index and the receiver.
+        const read =
+            identity || local ? undefined : this.context.compileValue(callback);
         const storedCallback = identity
             ? undefined
-            : this.prepareCallbackValue(callback, label, undefined, [
+            : this.prepareCallbackValue(callback, label, read, [
                   dataType.element,
                   { kind: "number" },
                   dataType,
               ]);
-        if (!local && !storedCallback && !identity)
+        // A compile-time callback a member read gives (`deps.isFlorist`) is
+        // called as its declaration is, in the scopes it was read with.
+        const valueCallback =
+            !storedCallback &&
+            read?.kind === "callback" &&
+            read.callbackDeclaration !== undefined
+                ? read
+                : undefined;
+        if (!local && !storedCallback && !valueCallback && !identity)
             this.context.fail(
                 callback,
                 `Array.${method} requires a represented callback.`,
@@ -10555,19 +10566,32 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                             callbackArguments,
                             call,
                         )
-                      : predicate
-                        ? this.context.compilePredicateWithValues(
-                              local!,
+                      : valueCallback
+                        ? this.context.compileCallbackValueWithValues(
+                              valueCallback,
                               callbackArguments,
                               call,
+                              {
+                                  discardReturn: method === "forEach",
+                                  predicate,
+                                  ...(resultType
+                                      ? { body: { resultType } }
+                                      : {}),
+                              },
                           )
-                        : this.context.compileCallbackWithValues(
-                              local!,
-                              callbackArguments,
-                              call,
-                              method === "forEach",
-                              resultType ? { resultType } : undefined,
-                          );
+                        : predicate
+                          ? this.context.compilePredicateWithValues(
+                                local!,
+                                callbackArguments,
+                                call,
+                            )
+                          : this.context.compileCallbackWithValues(
+                                local!,
+                                callbackArguments,
+                                call,
+                                method === "forEach",
+                                resultType ? { resultType } : undefined,
+                            );
                 // A callback that never completes normally ends the walk at
                 // its first visit, so no increment is reachable: the walk
                 // tests the first index once, unless a skipped removed

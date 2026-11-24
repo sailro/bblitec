@@ -5932,6 +5932,57 @@ export class UserFunctionLowerer {
     }
 
     /** Invokes a callback over values supplied by a lowering operation. */
+    /**
+     * `callback`, a compile-time callback value (one a binding or a member
+     * read holds, `deps.isFlorist`), called with `arguments_` as its own
+     * declaration is, in the record scopes it was read with; as a predicate
+     * (`predicate`), its result is the truth the declaration's result has.
+     */
+    public compileCallbackValueWithValues(
+        context: UserFunctionContext,
+        callback: Value,
+        arguments_: readonly Value[],
+        callNode: ts.Node,
+        options: {
+            discardReturn?: boolean;
+            predicate?: boolean;
+            body?: CallbackInvocationOptions;
+        } = {},
+    ): Value {
+        const declaration = callback.callbackDeclaration;
+        if (!declaration)
+            return context.fail(
+                callNode,
+                "A compile-time callback value requires its declaration.",
+            );
+        const target = ts.isFunctionDeclaration(declaration)
+            ? (declaration.name ??
+              context.fail(
+                  declaration,
+                  "Callback function declarations require a name.",
+              ))
+            : declaration;
+        const invoke = (): Value =>
+            options.predicate
+                ? this.compilePredicateWithValues(
+                      context,
+                      target,
+                      arguments_,
+                      callNode,
+                  )
+                : this.compileCallbackWithValues(
+                      context,
+                      target,
+                      arguments_,
+                      callNode,
+                      options.discardReturn,
+                      options.body,
+                  );
+        return callback.callbackRecordOwner
+            ? context.withRecordScopes(callback.callbackRecordOwner, invoke)
+            : invoke();
+    }
+
     public compileCallbackWithValues(
         context: UserFunctionContext,
         declaration:
@@ -5996,23 +6047,14 @@ export class UserFunctionLowerer {
                 context.emitDiscardedValue(result);
                 return { kind: "void", cpp: "" };
             }
-            if (target !== declaration) {
-                const invoke = () =>
-                    this.compileCallbackWithValues(
-                        context,
-                        target,
-                        arguments_,
-                        callNode,
-                        discardReturn,
-                        body,
-                    );
-                return bound.callbackRecordOwner
-                    ? context.withRecordScopes(
-                          bound.callbackRecordOwner,
-                          invoke,
-                      )
-                    : invoke();
-            }
+            if (target !== declaration)
+                return this.compileCallbackValueWithValues(
+                    context,
+                    bound,
+                    arguments_,
+                    callNode,
+                    { discardReturn, ...(body ? { body } : {}) },
+                );
         }
         const ir = ts.isIdentifier(declaration)
             ? this.resolve(declaration, (node, message) =>

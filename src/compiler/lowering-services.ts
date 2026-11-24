@@ -792,6 +792,16 @@ export interface LoweringServices {
         discardReturn?: boolean,
         body?: CallbackInvocationOptions,
     ): Value;
+    compileCallbackValueWithValues(
+        callback: Value,
+        arguments_: readonly Value[],
+        callNode: ts.Node,
+        options?: {
+            discardReturn?: boolean;
+            predicate?: boolean;
+            body?: CallbackInvocationOptions;
+        },
+    ): Value;
     compileStoredDataFunction(
         expression:
             | ts.Identifier
