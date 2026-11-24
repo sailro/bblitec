@@ -3251,11 +3251,16 @@ export class UserFunctionLowerer {
         }
         // A call whose completion is proven undefined runs here, where its
         // operands resolve, and passes that `undefined`.
-        const compiled = context.compileValue(argument);
-        const value = context.dataLowerer.narrowOptional(
-            provenVoidAsUndefined(context, compiled, argument) ?? compiled,
-            argument,
-        );
+        const raw = context.compileValue(argument);
+        const compiled = provenVoidAsUndefined(context, raw, argument) ?? raw;
+        // An unchecked lookup may miss whatever the checker says of the
+        // read: a parameter that admits `undefined` receives the miss.
+        const value =
+            compiled.preserveUncheckedLookup &&
+            (parameter?.questionToken !== undefined ||
+                (expected !== undefined && nullability(expected).undefined))
+                ? compiled
+                : context.dataLowerer.narrowOptional(compiled, argument);
         if (
             value.kind === "record" &&
             expected &&
