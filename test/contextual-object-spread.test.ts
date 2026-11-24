@@ -258,3 +258,24 @@ check(
     if (run() !== 31) throw new Error('binding method spread');
 `,
 );
+
+// A literal whose spread makes it a union of record arms, stored as a record
+// type lacking some of its keys, keeps them on the one object a wider type
+// reads through a later spread.
+check(
+    "a record union literal stored as a narrower record keeps its extra keys",
+    `
+    interface Stats { a: number; witch?: number }
+    interface View { a: number; extra?: string; witch?: number }
+    const statusOf = (id: number): { n: number } | null => (id > 0 ? { n: 2 } : null);
+    const sources: { read: () => Stats }[] = [3, 0].map((id) => ({
+        read: () => {
+            return { a: id, extra: "x" + id, ...((s) => (s ? { witch: s.n } : {}))(statusOf(id)) };
+        },
+    }));
+    const views: View[] = sources.map((source) => ({ ...source.read() }));
+    if (views[0]!.extra !== "x3" || views[0]!.witch !== 2 || views[1]!.extra !== "x0" || views[1]!.witch !== undefined ||
+        Object.keys(views[0]!).join() !== "a,extra,witch" || Object.keys(views[1]!).join() !== "a,extra")
+        throw new Error("views " + JSON.stringify(views));
+`,
+);

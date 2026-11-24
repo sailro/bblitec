@@ -3389,7 +3389,7 @@ export class DataTypeRegistry {
                 this.checker
                     .getPropertiesOfType(checked)
                     .some((property) => property.name === field) &&
-                isPlainRecord(this.checker, checked) &&
+                isRecordLike(this.checker, checked) &&
                 isPlainRecord(this.checker, source.type) &&
                 !this.joined(source.type, checked) &&
                 layoutsCompatible(this.checker, source.type, checked)
