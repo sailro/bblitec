@@ -205,6 +205,7 @@ import {
     holdsAnyPresentValue,
     isEmptyObjectType,
     holdsObjectKeyword,
+    sourceOrderedProperties,
     valueKindOf,
 } from "./type-facts.js";
 import { nativeReturnTsType } from "./native-return-type.js";
@@ -9566,7 +9567,7 @@ export class DataTypeRegistry {
     private structProperties(type: ts.Type): readonly StructProperty[] {
         const keyed = this.keyedProperties(type);
         if (keyed) return keyed;
-        const declared = this.checker.getPropertiesOfType(type);
+        const declared = sourceOrderedProperties(this.checker, type);
         // A literal's fields follow the order its own keys are created in.
         const order = this.objectLiteralKeyOrder(type);
         const properties = (

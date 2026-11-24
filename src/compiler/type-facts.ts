@@ -183,6 +183,72 @@ export function unionMembers(type: ts.Type): readonly ts.Type[] {
 }
 
 /**
+ * A type's properties in an order its source fixes. The checker lists
+ * declared properties as they are declared, but the properties a mapped
+ * type makes of a union of literal keys (`Record<"a" | "b", T>`, and a
+ * `Partial` of one) carry no declaration and follow the union's members,
+ * whose order is the order the checker happened to create the key literals
+ * in. Those take the order an alias the type is spelled with declares the
+ * key union in (`type Key = "b" | "a"`), else the keys' names.
+ */
+export function sourceOrderedProperties(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): readonly ts.Symbol[] {
+    const properties = checker.getPropertiesOfType(type);
+    if (
+        properties.length < 2 ||
+        properties.some((property) => property.declarations?.length)
+    )
+        return properties;
+    const names = new Set(properties.map((property) => property.name));
+    const declared = declaredKeyOrder(type, names);
+    const at = (name: string): number => declared?.indexOf(name) ?? -1;
+    return [...properties].sort((left, right) =>
+        declared
+            ? at(left.name) - at(right.name)
+            : left.name < right.name
+              ? -1
+              : left.name > right.name
+                ? 1
+                : 0,
+    );
+}
+
+/**
+ * The keys of `names` in the order an alias of the union of exactly their
+ * literals declares them, found among `type`'s alias arguments (`ToolId`
+ * in `Partial<Record<ToolId, Tool>>`); undefined where none spells them.
+ */
+function declaredKeyOrder(
+    type: ts.Type,
+    names: ReadonlySet<string>,
+    depth = 0,
+): readonly string[] | undefined {
+    const declaration = type.aliasSymbol?.declarations?.find(
+        ts.isTypeAliasDeclaration,
+    );
+    if (declaration && ts.isUnionTypeNode(declaration.type)) {
+        const keys = declaration.type.types.map((member) =>
+            ts.isLiteralTypeNode(member) && ts.isStringLiteral(member.literal)
+                ? member.literal.text
+                : undefined,
+        );
+        if (
+            keys.length === names.size &&
+            keys.every((key) => key !== undefined && names.has(key))
+        )
+            return keys as string[];
+    }
+    if (depth >= 2) return undefined;
+    for (const argument of type.aliasTypeArguments ?? []) {
+        const order = declaredKeyOrder(argument, names, depth + 1);
+        if (order) return order;
+    }
+    return undefined;
+}
+
+/**
  * The members of a type that stand for a present value: a union's members
  * less `null`, `undefined`, `void` and the intersections that distribute one
  * of them; any other type is its own single member unless it is itself

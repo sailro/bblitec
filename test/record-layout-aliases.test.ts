@@ -179,3 +179,55 @@ for (const [name, source] of [
         );
     });
 }
+
+test("a mapped record's fields follow its key union as declared, whichever key the checker met first", () => {
+    // The checker orders a union by the order it created its literal types
+    // in; an array naming two keys first would put them first.
+    const fields = (source: string, keysFirst: boolean): string[] => {
+        const frontend = createCompilerProgram(
+            source,
+            resolve("record-key-union-order.ts"),
+        );
+        const registry = new DataTypeRegistry(
+            frontend.checker,
+            (_node, message) => {
+                throw new Error(message);
+            },
+            new ClassHierarchy(frontend.checker, frontend.program),
+        );
+        const statements = frontend.sourceFile.statements;
+        const early = statements.find(ts.isVariableStatement)!;
+        if (keysFirst)
+            frontend.checker.getTypeAtLocation(
+                early.declarationList.declarations[0]!.initializer!,
+            );
+        const tools = statements
+            .filter(ts.isTypeAliasDeclaration)
+            .find((node) => node.name.text === "Tools")!;
+        const mapped = registry.fromTsType(
+            frontend.checker.getTypeAtLocation(tools.name),
+            tools,
+        );
+        assert.ok(mapped?.kind === "struct");
+        return registry
+            .structFields(mapped.name, tools)
+            .map((field) => field.sourceName);
+    };
+    const aliased = `
+        type ToolId = "move" | "clone" | "delete" | "resize" | "paint";
+        interface Tool { name: string }
+        type Tools = Partial<Record<ToolId, Tool>>;
+        const early = ["resize", "paint"];
+    `;
+    const declared = ["move", "clone", "delete", "resize", "paint"];
+    assert.deepEqual(fields(aliased, true), declared);
+    assert.deepEqual(fields(aliased, false), declared);
+    // A union no alias declares takes its keys' names in order.
+    const inline = `
+        interface Tool { name: string }
+        type Tools = Record<"move" | "clone" | "resize", Tool>;
+        const early = ["resize"];
+    `;
+    assert.deepEqual(fields(inline, true), ["clone", "move", "resize"]);
+    assert.deepEqual(fields(inline, false), ["clone", "move", "resize"]);
+});
