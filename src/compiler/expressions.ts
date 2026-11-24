@@ -6550,6 +6550,19 @@ export class ExpressionLowerer {
             const guard = this.context.unwrap(unwrapped.condition);
             const selected = this.context.unwrap(expression);
             const comparison = nullishComparison(this.context.checker, guard);
+            // An arm the program asserts present (`latest!`) reads its
+            // object as present, as the same read outside a selection does;
+            // a number keeps its absence until numeric coercion reads it.
+            if (
+                value.dataType?.kind === "optional" &&
+                value.dataType.inner.kind !== "number" &&
+                hasNonNullAssertion(expression)
+            )
+                return this.context.dataLowerer.narrowOptional(
+                    value,
+                    expression,
+                    true,
+                );
             // The arm where the test failed holds a present value, unless a
             // strict test leaves the other nullish value possible.
             if (
