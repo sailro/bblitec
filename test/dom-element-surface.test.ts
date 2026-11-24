@@ -661,6 +661,71 @@ test("static innerHTML form controls own state, listeners and queries as created
     });
 });
 
+test("a listener recursing into the function that installed it repaints its own record of elements", (t) => {
+    const output = resolve("artifacts/dom-recursive-listener");
+    mkdirSync(output, { recursive: true });
+    writeFileSync(join(output, "worker.ts"), "self.close();");
+    const result = compileSource(
+        `${realm}
+        interface Live {
+            root: HTMLDivElement;
+            rows: HTMLDivElement;
+            selected?: string;
+            byId: Map<string, HTMLDivElement>;
+            copy: readonly string[];
+        }
+        const panels = new Map<number, Live>();
+        const applyRow = (panel: Live, row: string): void => {
+            let el = panel.byId.get(row);
+            if (!el) {
+                el = document.createElement("div");
+                el.addEventListener("click", () => {
+                    panel.selected = row;
+                    paint(panel);
+                });
+                panel.rows.appendChild(el);
+                panel.byId.set(row, el);
+            }
+            el.textContent = row + (panel.selected === row ? "*" : "");
+        };
+        const paint = (panel: Live): void => {
+            for (const row of panel.copy) applyRow(panel, row);
+        };
+        function open(id: number): void {
+            const root = document.createElement("div");
+            const rows = document.createElement("div");
+            root.append(rows);
+            document.body.append(root);
+            const panel: Live = { root, rows, byId: new Map(), copy: ["a", "b"] };
+            panels.set(id, panel);
+            paint(panel);
+        }
+        open(1);
+        open(2);
+        const second = panels.get(1)!.byId.get("b")!;
+        second.click();
+        const first = panels.get(2)!.byId.get("a")!;
+        first.click();
+        const status = document.createElement("div");
+        status.id = "status";
+        status.textContent = [...panels.values()]
+            .map((panel) => panel.copy.map((row) => panel.byId.get(row)!.textContent).join(","))
+            .join("|");
+        document.body.append(status);
+        globalThis.close();
+    `,
+        { fileName: join(output, "entry.ts") },
+    );
+    writeFileSync(join(output, "program.hpp"), result.cpp);
+    runRmlUiFixture(t, "dom-recursive-listener", {
+        macros: {
+            BBLITE_WORKERS: 1,
+            BBLITE_OFFSCREEN_SURFACES: 1,
+            BBLITE_HAS_DOM_INPUT: 1,
+        },
+    });
+});
+
 test("innerHTML form controls refuse markup retained elements cannot hold", () => {
     const refusal = (markup: string, pattern: RegExp): void =>
         assert.throws(

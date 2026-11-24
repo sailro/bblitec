@@ -114,6 +114,8 @@ Rules:
   evaluated at each read in its function: a render target size keeps each arm's sizing, and a local call handed it,
   directly or as a record member, compiles once per outcome of its condition. Read again or in a loop, it refuses where
   a read writes, compares, calls into or keeps its object.
+- Recursive groups take a record holding document elements, or handles storing their engine, as a runtime parameter;
+  one holding a handle of the entry engine is specialized at its call site.
 - Recursive groups evaluate a caller-independent default once at the root; other defaults refuse. A function a call
   passes counts as a call the callee may make: directly, as a literal in a record or array, or as a named async
   function there.

@@ -84,10 +84,7 @@ import {
     type DataTypeRegistry,
 } from "./data-types.js";
 import type { Value } from "./types.js";
-import {
-    isEngineScopedHandleKind,
-    isRuntimeIdentityHandleKind,
-} from "./data-types/handles.js";
+import { isEngineScopedHandleKind } from "./data-types/handles.js";
 import { dataTypeKey } from "./data-types/operations.js";
 import { nativeStructuralViewType } from "./native-owner-carrier.js";
 import {
@@ -4491,8 +4488,6 @@ export class UserFunctionLowerer {
                             mapped,
                             type,
                         );
-                    const inner =
-                        mapped?.kind === "optional" ? mapped.inner : mapped;
                     // A node parameter its recursion hands other nodes (a
                     // hierarchy walk over `children`) holds runtime handles:
                     // the SceneNode slot every node kind converts to.
@@ -4519,13 +4514,11 @@ export class UserFunctionLowerer {
                             kind: "handle",
                             handle: "scene-node",
                         } as const;
-                    const identityHandle =
-                        inner?.kind === "handle" &&
-                        isRuntimeIdentityHandleKind(inner.handle);
+                    // A handle storing its engine, or naming a run-time
+                    // identity, is one runtime value of every frame.
                     return mapped &&
                         mapped.kind !== "function" &&
-                        (!context.dataTypes.carriesHandle(mapped) ||
-                            identityHandle)
+                        !context.dataTypes.carriesEngineBoundHandle(mapped)
                         ? mapped
                         : undefined;
                 },

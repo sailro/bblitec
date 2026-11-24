@@ -1,7 +1,9 @@
 import type { DataType, HandleKind } from "./data-types/model.js";
 import { programObservations } from "./program-observations.js";
 import {
+    belongsToEntryEngine,
     isEngineScopedHandleKind,
+    isRuntimeIdentityHandleKind,
     isWindowHandleKind,
 } from "./data-types/handles.js";
 import {
@@ -11350,6 +11352,27 @@ export class DataTypeRegistry {
             (name) => this.structFieldTypes(name),
             true,
             seen,
+        );
+    }
+
+    /**
+     * Whether a value of `type` holds a handle only the entry point's
+     * engine binding makes usable (`belongsToEntryEngine`): one storing no
+     * engine of its own (`ownedEngine`) that names no run-time identity
+     * (`isRuntimeIdentityHandleKind`).
+     */
+    public carriesEngineBoundHandle(type: DataType): boolean {
+        return containsDataKind(
+            type,
+            "handle",
+            (name) => this.structFieldTypes(name),
+            true,
+            new EmissionSet<string>(),
+            (handle) =>
+                handle.kind === "handle" &&
+                !handle.ownedEngine &&
+                !isRuntimeIdentityHandleKind(handle.handle) &&
+                belongsToEntryEngine(handle.handle),
         );
     }
 
