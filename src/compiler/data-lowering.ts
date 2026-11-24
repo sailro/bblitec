@@ -15225,11 +15225,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 !compiled.has(field.sourceName) &&
                 absentFieldCpp(field) === undefined,
         );
-        if (!this.lackedFieldsDefinedOnDeclaration(literal, lacked))
+        if (!this.lackedFieldsDefinedOnDeclaration(literal, lacked)) {
+            this.context.dataTypes.requireViewConstruction(literal);
             this.context.fail(
                 literal,
                 `Struct literal is missing field '${lacked[0]!.sourceName}'.`,
             );
+        }
         // A lacked field the next statements define holds a placeholder.
         const parts = fields.map(
             (field) =>
@@ -16117,6 +16119,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 !assigned.has(field.name),
         );
         if (!this.lackedFieldsDefinedOnDeclaration(literal, lacked)) {
+            this.context.dataTypes.requireViewConstruction(literal);
             this.context.fail(
                 literal,
                 `Struct literal is missing field '${lacked[0]!.name}'.`,

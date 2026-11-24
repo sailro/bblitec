@@ -6774,10 +6774,10 @@ export class DeclarationLowerer {
                 element,
                 "A rest binding takes an identifier and represented object storage.",
             );
-        const type = this.context.dataTypes.fromTsType(
-            this.context.checker.getTypeAtLocation(element.name),
-            element.name,
-        );
+        const restType = this.context.checker.getTypeAtLocation(element.name);
+        // The rest object is a record built fresh as its type.
+        this.context.dataTypes.requireViewConstruction(element.name, restType);
+        const type = this.context.dataTypes.fromTsType(restType, element.name);
         if (type?.kind !== "struct") {
             const demand = this.context.dataTypes.documentRecordDemand(
                 source.dataType.name,

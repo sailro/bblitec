@@ -721,6 +721,13 @@ function valueStruct(
                         field,
                         node,
                     );
+                const missing = (): never => {
+                    lowerer.context.dataTypes.requireViewConstruction(node);
+                    return lowerer.context.fail(
+                        node,
+                        `Compile-time record is missing required field '${field.sourceName}'.${lowerer.context.dataTypes.sharedLayoutNote(node)}`,
+                    );
+                };
                 const stored = property
                     ? field.defaultWhenMissing &&
                       property.dataType?.kind === "optional" &&
@@ -730,10 +737,7 @@ function valueStruct(
                     : (absentFieldCpp(field) ??
                       (definedLater && lacked.includes(field)
                           ? "{}"
-                          : lowerer.context.fail(
-                                node,
-                                `Compile-time record is missing required field '${field.sourceName}'.${lowerer.context.dataTypes.sharedLayoutNote(node)}`,
-                            )));
+                          : missing()));
                 return lowerer.context.dataTypes.structFieldInitializerCpp(
                     field,
                     stored,

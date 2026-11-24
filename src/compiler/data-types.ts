@@ -5668,6 +5668,39 @@ export class DataTypeRegistry {
         });
     }
 
+    /**
+     * A record built fresh as a record type its component takes for a view
+     * of the others' records (`RecordComponent.views`) -- a literal checked
+     * as it, or the object an object rest makes (`built`) -- is a record of
+     * that type: its construction lends the layout the fields the type lacks
+     * as absences. Returns where the type is no such view.
+     */
+    public requireViewConstruction(node: ts.Node, built?: ts.Type): void {
+        if (!this.recordComponents.size) return;
+        const contextual =
+            built ??
+            (ts.isExpression(node)
+                ? this.checker.getContextualType(node)
+                : undefined);
+        const target =
+            contextual && this.checker.getNonNullableType(contextual);
+        const identity = target && recordIdentity(this.checker, target);
+        const component = target && this.recordComponentOf(target);
+        if (
+            !target ||
+            !component ||
+            ![...component.views].some(
+                (view) => recordIdentity(this.checker, view) === identity,
+            )
+        )
+            return;
+        const source = built ?? this.checker.getTypeAtLocation(node);
+        this.requireJoin({
+            ...this.recordDemand(source, node),
+            joins: [{ source, target, kind: "construction" }],
+        });
+    }
+
     /** Why records of the type a literal is checked against take another type's layout. */
     public sharedLayoutNote(node: ts.Node): string {
         if (!this.recordComponents.size || !ts.isExpression(node)) return "";
@@ -9915,12 +9948,13 @@ export class DataTypeRegistry {
      * declaration of it the struct stores: the type's own, or, for a member
      * of a record component, the union of its shapes' properties (its
      * members', a record union's arms') in the widest shape's order, a
-     * property some shape lacks held absent in that shape's records. The
+     * property some shape holding records of its own (`holders`, not a
+     * view of the others') lacks held absent in that shape's records. The
      * instantiations a component joined beside its shapes add theirs, each
      * declared under its instantiation (`instantiationLayout`).
      */
     private layoutProperties(type: ts.Type): {
-        readonly shapes: number;
+        readonly holders: readonly ts.Type[];
         readonly properties: ReadonlyMap<
             string,
             readonly OwnedStructProperty[]
@@ -9950,7 +9984,10 @@ export class DataTypeRegistry {
                     substitution: layout.substitution,
                 });
         }
-        return { shapes: shapes.length, properties };
+        return {
+            holders: shapes.filter((shape) => !component?.views.has(shape)),
+            properties,
+        };
     }
 
     /**
@@ -10203,9 +10240,13 @@ export class DataTypeRegistry {
                 break;
             }
             // Records of a shape not declaring it hold it absent.
-            const absent =
-                declared.filter(({ substitution }) => !substitution).length <
-                layout.shapes;
+            const absent = layout.holders.some(
+                (holder) =>
+                    !declared.some(
+                        ({ owner, substitution }) =>
+                            !substitution && owner === holder,
+                    ),
+            );
             const unchecked =
                 partial ||
                 absent ||

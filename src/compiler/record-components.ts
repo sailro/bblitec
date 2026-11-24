@@ -34,6 +34,12 @@ export interface RecordComponent {
      * and every arm of the members that are, each type once.
      */
     readonly shapes: readonly ts.Type[];
+    /**
+     * The shapes that only view the records of the others (a plain record
+     * type only received from plain records declaring all of its
+     * properties): a property one does not declare is not absent.
+     */
+    readonly views: ReadonlySet<ts.Type>;
     /** The shape whose name the layout takes: the widest. */
     readonly named: ts.Type;
     /** The members that are record unions. */
@@ -466,7 +472,13 @@ export function recordComponents(
         identity: RecordComponentKey,
     ): identity is InstantiatedRecord => "generic" in identity;
     // A record type only constructed as another lends the layout no shape.
+    // A plain record type only received from other plain records -- never a
+    // join's source, never constructed, retyped or spread as itself, every
+    // record stored as it one of a type declaring all of its properties --
+    // views those records: it lends its declarations, not an absence.
     const shaping = new Set<RecordComponentKey>();
+    const sourced = new Set<RecordComponentKey>();
+    const holding = new Set<RecordComponentKey>();
     for (const {
         source,
         target,
@@ -474,10 +486,25 @@ export function recordComponents(
         targetInstantiation,
         kind,
     } of joins) {
-        shaping.add(targetInstantiation ?? recordIdentity(checker, target));
-        if (kind !== "construction")
-            shaping.add(sourceInstantiation ?? recordIdentity(checker, source));
+        const to = targetInstantiation ?? recordIdentity(checker, target);
+        shaping.add(to);
+        if (kind !== "construction") {
+            const from = sourceInstantiation ?? recordIdentity(checker, source);
+            shaping.add(from);
+            sourced.add(from);
+        }
+        if (
+            (kind !== "value" && kind !== "element") ||
+            !isPlainRecord(checker, source) ||
+            !isPlainRecord(checker, target) ||
+            lacks(source, target)
+        )
+            holding.add(to);
     }
+    const viewOnly = (identity: RecordComponentKey): boolean =>
+        shaping.has(identity) &&
+        !sourced.has(identity) &&
+        !holding.has(identity);
     const constructedOnly = (identity: RecordComponentKey): boolean =>
         !shaping.has(identity) &&
         joins.some(
@@ -536,6 +563,11 @@ export function recordComponents(
             key: `${COMPONENT_KEY}${next++}`,
             members,
             shapes: [named, ...shapes.filter((shape) => shape !== named)],
+            views: new Set(
+                group
+                    .filter(({ identity }) => viewOnly(identity))
+                    .map(({ type }) => type),
+            ),
             named,
             unions,
             instantiated: beside,

@@ -451,3 +451,131 @@ test("a view over engine objects reads their pinned members, and a member the pi
         /bbl::engine_object_property_value\(bblscene::v_\w+object_property_\d+\(v_engine\), bbl::engine_object_identity\(\w+\)\)/,
     );
 });
+
+// Records a shared body receives through a narrower view of their type,
+// one that does not declare their engine handle: no record lacks it.
+const viewedRecordsProgram = `
+import { createEngine, createStandardMaterial, type Material } from "@babylonjs/lite";
+// Records a shared body seats through a narrower view that does not declare their material.
+interface Proto {
+    material: Material;
+    bound: { min: number };
+}
+interface Sub {
+    material: Material;
+    bound: { min: number };
+}
+function seat(subs: readonly Pick<Proto, "bound">[], depth = 0): number {
+    let moved = depth > 0 ? 0 : seat(subs.slice(0, 0), depth + 1);
+    for (const sub of subs) {
+        sub.bound.min -= 1;
+        moved++;
+    }
+    return moved;
+}
+function buildGroup(materials: readonly Material[]): { subs: Proto[]; count: number } {
+    const subs: Proto[] = materials.map((material) => ({ material, bound: { min: 0 } }));
+    seat(subs);
+    return { subs, count: 0 };
+}
+async function main(): Promise<void> {
+    await createEngine({});
+    const a = createStandardMaterial();
+    const b = createStandardMaterial();
+    const groups = new Map<string, { subs: Sub[]; count: number }>();
+    groups.set("built", buildGroup([a, b]));
+    const own: Sub[] = [{ material: b, bound: { min: 0 } }];
+    const single: Sub = { material: a, bound: { min: 0 } };
+    seat([single]);
+    own.push(single);
+    groups.set("own", { subs: own, count: 0 });
+    const held: Material[] = [];
+    let mins = 0;
+    for (const group of groups.values()) {
+        seat(group.subs);
+        for (let s = 0; s < group.subs.length; s++) {
+            held.push(group.subs[s]!.material);
+            mins += group.subs[s]!.bound.min;
+        }
+        group.count++;
+    }
+    const result = [held.length, held[0] === a, held[1] === b, held[2] === b, held[3] === a, mins].join();
+    if (result !== "4,true,true,true,true,-7") throw new Error("seated " + result);
+}
+void main();
+`;
+
+test("records received through a view that omits their material keep it present, as JavaScript does", async (t) => {
+    const cpp = await checkMaterialIdentity(
+        t,
+        "viewed-records",
+        viewedRecordsProgram,
+    );
+    // The view lends the layout no absence: the slot is the material itself.
+    assert.match(
+        cpp,
+        /std::pair<bbl::StoredEngine, bbl::MaterialHandle> material;/,
+    );
+    assert.doesNotMatch(
+        cpp,
+        /Nullable<std::pair<bbl::StoredEngine, bbl::MaterialHandle>> material;/,
+    );
+});
+
+test("a mesh a record keeps through a view that omits it is passed to the engine as present", () => {
+    const { cpp } = compileSource(`
+import { createEngine, createSceneContext, createBox, addToScene, addThinInstance, type Mesh } from "@babylonjs/lite";
+interface Proto {
+    mesh: Mesh;
+    base: Float32Array;
+    bound: { min: number };
+}
+interface Group {
+    subs: Proto[];
+    count: number;
+}
+interface Sub {
+    mesh: Mesh;
+    base: Float32Array;
+    bound: { min: number };
+}
+interface Placed {
+    subs: Sub[];
+    count: number;
+}
+function seat(subs: readonly Pick<Proto, "base" | "bound">[], depth = 0): number {
+    let moved = depth > 0 ? 0 : seat(subs.slice(0, 0), depth + 1);
+    for (const sub of subs) {
+        sub.base[12] = sub.base[12]! - 1;
+        sub.bound.min -= 1;
+        moved++;
+    }
+    return moved;
+}
+function buildGroup(meshes: readonly Mesh[]): Group {
+    const subs: Proto[] = meshes.map((mesh) => ({ mesh, base: new Float32Array(16), bound: { min: 0 } }));
+    seat(subs);
+    return { subs, count: 0 };
+}
+const engine = await createEngine({});
+const scene = createSceneContext(engine);
+const boxes = [createBox(engine, { size: 1 }), createBox(engine, { size: 2 })];
+for (const box of boxes) addToScene(scene, box);
+const groups = new Map<string, Placed>();
+groups.set("a", buildGroup(boxes));
+const own: Sub[] = [];
+for (const mesh of boxes) own.push({ mesh, base: new Float32Array(16), bound: { min: 0 } });
+seat(own);
+const single: Sub = { mesh: boxes[0]!, base: new Float32Array(16), bound: { min: 0 } };
+seat([single]);
+own.push(single);
+groups.set("b", { subs: own, count: 0 });
+const g = groups.get("a")!;
+seat(g.subs);
+for (let s = 0; s < g.subs.length; s++) addThinInstance(g.subs[s]!.mesh, g.subs[s]!.base);
+g.count++;
+localStorage.setItem("probe", String(g.count) + "," + String(g.subs[0]!.base[12]));
+`);
+    assert.match(cpp, /std::pair<bbl::StoredEngine, bbl::MeshHandle> mesh;/);
+    assert.match(cpp, /bbl::add_thin_instance\(/);
+});
