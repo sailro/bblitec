@@ -7492,7 +7492,20 @@ export class ExpressionLowerer {
                                     node.kind === ts.SyntaxKind.ThisKeyword &&
                                     thisMember(node) === method,
                             );
-                        if (!readsThis) {
+                        // A later property of this literal naming the key
+                        // replaces the copy, which no call ever reaches; the
+                        // key keeps the spread's place.
+                        const replacedLater = unwrapped.properties
+                            .slice(unwrapped.properties.indexOf(property) + 1)
+                            .some(
+                                (later) =>
+                                    !ts.isSpreadAssignment(later) &&
+                                    later.name !== undefined &&
+                                    this.context.compilePropertyKey(
+                                        later.name,
+                                    ) === key,
+                            );
+                        if (!readsThis || replacedLater) {
                             storeProperty(
                                 key,
                                 recordMethodValue(spread, method),

@@ -317,6 +317,33 @@ test(
             "closure-captures-spread-method-scope",
             cpp,
         );
+        // A copied method the literal replaces later is never called: the
+        // key keeps the spread's place and the later value.
+        const replaced = compileSource(
+            `
+            function createMover(step: number) {
+                let moved = 0;
+                return {
+                    begin(id: number): boolean { return this.prepare(id) > 0; },
+                    prepare(id: number): number { moved += step; return id + moved; },
+                };
+            }
+            const base = createMover(2);
+            const mover = {
+                ...base,
+                extra: 1,
+                begin: (id: number): boolean => base.begin(id) && id > 0,
+            };
+            const seen = [mover.begin(3), mover.begin(-9), Object.keys(mover).join()].join("|");
+            if (seen !== "true|false|begin,prepare,extra") throw new Error(seen);
+            `,
+            { fileName: "spread-method-replaced.ts" },
+        );
+        runGeneratedProgram(
+            optionalNativeFixtureTools(false)!,
+            "closure-captures-spread-method-replaced",
+            replaced.cpp,
+        );
         // A copied method reading its own `this` runs on the copy, away from
         // the scope that declared it.
         assert.throws(
