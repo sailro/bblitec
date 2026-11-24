@@ -9973,10 +9973,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         const folded = this.foldedArraySearch(call, owner, method);
         if (folded) return folded;
+        const present = presentDataType(element);
         if (
-            element.kind === "handle" &&
-            !element.ownedEngine &&
-            isEngineScopedHandleKind(element.handle)
+            present?.kind === "handle" &&
+            !present.ownedEngine &&
+            isEngineScopedHandleKind(present.handle)
         )
             return this.compileEngineHandleSearch(call, owner, element, method);
         const unownedHandle = (type: DataType): boolean =>
@@ -10155,12 +10156,24 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /** A raw homogeneous resource array can compare only within its proved engine. */
+    /**
+     * A search of an array of engine-less handles, present or optional: the
+     * needle is found only among handles of the engine the array's are
+     * proved to come from; an absent needle is found among absent elements.
+     */
     private compileEngineHandleSearch(
         call: ts.CallExpression,
         owner: Value,
-        element: DataType<"handle">,
+        element: DataType,
         method: "indexOf" | "includes" | "lastIndexOf",
     ): Value {
+        const handle = presentDataType(element);
+        if (handle?.kind !== "handle")
+            return this.context.fail(
+                call,
+                "Array resource identity requires represented engine owners.",
+            );
+        const optional = element.kind === "optional";
         const facts = owner.staticElementsOwner ?? owner;
         const receiver = this.context.bindings.pinValueToTemporary(
             owner,
@@ -10168,15 +10181,31 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
         const argument = argumentAt(call, 0);
         const rawNeedle = this.context.compileValue(argument);
-        const storedType = { ...element, ownedEngine: true } as const;
-        const needle = this.context.bindings.pinValueToTemporary(
-            this.leafValue(
-                this.compileKnownValueForSink(rawNeedle, storedType, argument),
-                storedType,
-            ),
-            "search_needle",
-            argument,
-        );
+        const storedType = { ...handle, ownedEngine: true } as const;
+        // In an array of optional handles, the needle may be absent too:
+        // always (`undefined`), or where its own storage says so.
+        const absentNeedle = optional && isAbsentValue(rawNeedle);
+        const maybeAbsent =
+            optional &&
+            !absentNeedle &&
+            rawNeedle.dataType?.kind === "optional";
+        const needleType = maybeAbsent
+            ? this.context.dataTypes.nullableType(storedType, true)
+            : storedType;
+        const needle = absentNeedle
+            ? rawNeedle
+            : this.context.bindings.pinValueToTemporary(
+                  this.leafValue(
+                      this.compileKnownValueForSink(
+                          rawNeedle,
+                          needleType,
+                          argument,
+                      ),
+                      needleType,
+                  ),
+                  "search_needle",
+                  argument,
+              );
         const from = this.compileNumberArgument(
             call.arguments[1],
             method === "lastIndexOf"
@@ -10184,14 +10213,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 : "0.0",
         );
         // Argument effects may have invalidated this exact array's contents.
-        const members =
+        // An absent element names no engine.
+        const members = (
             facts.staticElements ??
             (facts.runtimeElementTemplate
                 ? [facts.runtimeElementTemplate]
-                : undefined);
+                : undefined)
+        )?.filter((member) => !isAbsentValue(member));
         const defaultOwner =
-            element.handle === "ui-element" || !members
-                ? this.unownedHandleOwner(element)
+            handle.handle === "ui-element" || !members
+                ? this.unownedHandleOwner(handle)
                 : undefined;
         if (
             !defaultOwner &&
@@ -10210,21 +10241,36 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             kind: method === "includes" ? "boolean" : "number",
         } as const;
         const absent = method === "includes" ? "false" : "-1.0";
-        if (!defaultOwner && !members?.length)
-            return this.leafValue(absent, type);
-        const engine = this.context.storedResourceEngine(
-            defaultOwner ?? members![0]!,
-            call,
-        );
-        const same = `std::addressof(*(${engine})) == std::addressof(${this.context.requireEngine(needle, call)})`;
         const operation =
             method === "includes"
                 ? "array_includes"
                 : method === "indexOf"
                   ? "array_index_of"
                   : "array_last_index_of";
+        // An absent needle is an absent element, which names no engine.
+        const searchAbsent = `bbl::js::${operation}(${receiver.cpp}, ${this.context.dataTypes.cppType(element)}{}, ${from})`;
+        if (absentNeedle) return this.leafValue(searchAbsent, type);
+        const tested = (present: string): string =>
+            maybeAbsent
+                ? `(${optionalPresentCpp(needle.cpp)} ? ${present} : ${searchAbsent})`
+                : present;
+        if (!defaultOwner && !members?.length)
+            return this.leafValue(tested(absent), type);
+        const engine = this.context.storedResourceEngine(
+            defaultOwner ?? members![0]!,
+            call,
+        );
+        // A present needle is its engine and its handle, read once tested.
+        const pair = optionalValueCpp(needle.cpp);
+        const needleEngine = maybeAbsent
+            ? `*(${pair}.first)`
+            : this.context.requireEngine(needle, call);
+        const needleHandle = maybeAbsent ? `${pair}.second` : needle.cpp;
+        const same = `std::addressof(*(${engine})) == std::addressof(${needleEngine})`;
         return this.leafValue(
-            `(${same} ? bbl::js::${operation}(${receiver.cpp}, ${needle.cpp}, ${from}) : ${absent})`,
+            tested(
+                `(${same} ? bbl::js::${operation}(${receiver.cpp}, ${needleHandle}, ${from}) : ${absent})`,
+            ),
             type,
         );
     }

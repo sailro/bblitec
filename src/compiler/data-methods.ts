@@ -3893,6 +3893,10 @@ function compileArrayUnshift(state: ArrayMethodState): Value {
         !expressionMayRunCode(call.arguments[lastEffect]!)
     )
         --lastEffect;
+    // Each argument is held as the element it becomes, so the inserted list
+    // has one element type whatever storage each argument converts from (a
+    // present handle into an array of optional ones).
+    const element = lowerer.context.dataTypes.cppType(dataType.element);
     const values = call.arguments.map((argument, index) => {
         const cpp = lowerer.compileForRetainedSink(
             argument,
@@ -3903,7 +3907,7 @@ function compileArrayUnshift(state: ArrayMethodState): Value {
             lowerer.context.allocateTemporaryCppName("unshift_argument");
         lowerer.context.emit({
             kind: "declaration",
-            type: index < lastEffect ? "const auto" : "const auto&",
+            type: index < lastEffect ? `const ${element}` : `const ${element}&`,
             name,
             initializer:
                 index < lastEffect ? `bbl::js::snapshot_value(${cpp})` : cpp,

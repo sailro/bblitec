@@ -579,3 +579,56 @@ localStorage.setItem("probe", String(g.count) + "," + String(g.subs[0]!.base[12]
     assert.match(cpp, /std::pair<bbl::StoredEngine, bbl::MeshHandle> mesh;/);
     assert.match(cpp, /bbl::add_thin_instance\(/);
 });
+
+// Arrays of optional materials grown by several values at once and searched
+// for a present, an optional and an absent needle.
+const optionalHandleArrayProgram = `
+import { createEngine, createStandardMaterial, type StandardMaterialProps } from "@babylonjs/lite";
+async function main(): Promise<void> {
+    await createEngine({});
+    const a = createStandardMaterial();
+    const b = createStandardMaterial();
+    const kept: (StandardMaterialProps | undefined)[] = [];
+    kept.push(a, undefined, b);
+    const removed = kept.splice(1, 1, b, undefined, a);
+    kept.unshift(undefined);
+    const shape = kept.map((entry) => (entry === a ? "a" : entry === b ? "b" : "-")).join("");
+    const result = [shape, removed.length, removed[0] === undefined, kept.indexOf(b), kept.lastIndexOf(a), kept.indexOf(undefined), kept.lastIndexOf(undefined), kept.includes(kept[2]), kept.indexOf(kept[3]), kept.indexOf(kept[0])].join();
+    if (result !== "-ab-ab,1,true,2,4,0,3,true,0,0") throw new Error("variadic " + result);
+}
+void main();
+`;
+
+test("an array of optional materials grows by several values at once and is searched by identity, as JavaScript does", async (t) => {
+    const cpp = await checkMaterialIdentity(
+        t,
+        "optional-handle-arrays",
+        optionalHandleArrayProgram,
+    );
+    // `unshift` holds each argument as the array's optional element.
+    assert.match(
+        cpp,
+        /const bbl::js::Nullable<bbl::MaterialHandle>&? v_bblite_unshift_argument_\d+ =/,
+    );
+});
+
+test("an array of optional meshes is searched by identity", () => {
+    const { cpp } = compileSource(`
+import { createEngine, createSceneContext, createBox, type Mesh } from "@babylonjs/lite";
+async function main(): Promise<void> {
+    const engine = await createEngine({}); createSceneContext(engine);
+    const a = createBox(engine, { size: 1 });
+    const b = createBox(engine, { size: 2 });
+    const kept: (Mesh | undefined)[] = [];
+    kept.push(a, undefined, b);
+    const removed = kept.splice(1, 1, b, undefined, a);
+    kept.unshift(undefined);
+    const shape = kept.map((entry) => (entry === a ? "a" : entry === b ? "b" : "-")).join("");
+    const result = [shape, removed.length, removed[0] === undefined, kept.indexOf(b), kept.lastIndexOf(a), kept.indexOf(undefined), kept.lastIndexOf(undefined), kept.includes(kept[2]), kept.indexOf(kept[3]), kept.indexOf(kept[0])].join();
+    if (result !== "-ab-ab,1,true,2,4,0,3,true,0,0") throw new Error("variadic " + result);
+}
+void main();
+`);
+    assert.match(cpp, /bbl::js::array_index_of\(/);
+    assert.match(cpp, /bbl::js::array_last_index_of\(/);
+});
