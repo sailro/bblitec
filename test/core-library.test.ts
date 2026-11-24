@@ -518,3 +518,20 @@ check(
     if (counts.join('-') !== '1--3') throw new Error('null lanes');
 `,
 );
+
+check(
+    "string-compound-on-optional-lanes",
+    `
+    const rebuilds: string[] = [];
+    function rebuild(sigs: readonly (string | undefined)[]): void { rebuilds.push(sigs.map((s) => s ?? "-").join(";")); }
+    const sigs: string[] = ["a", "b"];
+    const zone = "|az1";
+    for (let i = 0; i < sigs.length; i++) { sigs[i] += zone; }
+    rebuild(sigs);
+    const lanes: (string | undefined)[] = [undefined, "c"];
+    lanes[0] += "x";
+    lanes[1] += "y";
+    rebuild(lanes);
+    if (rebuilds.join("/") !== "a|az1;b|az1/undefinedx;cy") throw new Error(rebuilds.join("/"));
+`,
+);

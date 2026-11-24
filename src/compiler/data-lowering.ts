@@ -1305,25 +1305,38 @@ export class DataLowerer {
      * concatenation joins a surrogate pair split across the two strings,
      * which a native `+=` would not.
      */
+    /**
+     * `left += right` on a string place, or on an optional string lane
+     * (`optional`), whose old value reads as JavaScript's ToString reads it:
+     * an absent one as "undefined" or "null".
+     */
     public emitStringCompound(
         expression: ts.BinaryExpression,
         place: string,
+        optional?: DataType<"optional">,
     ): Value {
         const target = this.compoundPlace(
             expression.left,
             expression.right,
             place,
-            false,
+            optional !== undefined,
             "string",
         );
         const appended = this.context.compileValue(expression.right);
         const part = stringConcatPart(this.context, appended, expression.right);
+        const previous = optional
+            ? stringConcatPart(
+                  this.context,
+                  this.leafValue(target.previous, optional),
+                  expression.left,
+              )
+            : target.previous;
         this.context.reachJsData();
         this.emitCompoundStore(
             expression.left,
-            `bbl::js::concat(${target.previous}, ${part})`,
+            `bbl::js::concat(${previous}, ${part})`,
             (value) => `${target.place} = ${value};`,
-            target.previous === target.place
+            !optional && target.previous === target.place
                 ? `bbl::js::concat_append(${target.place}, ${part});`
                 : undefined,
             "string",
@@ -18734,8 +18747,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             (target.kind === "data" || isHandleKind(target.kind)) &&
             target.dataType
         ) {
-            if (operator === "+=" && target.dataType.kind === "string") {
-                this.emitStringCompound(expression, target.cpp);
+            if (
+                operator === "+=" &&
+                (target.dataType.kind === "string" ||
+                    (target.dataType.kind === "optional" &&
+                        target.dataType.inner.kind === "string"))
+            ) {
+                this.emitStringCompound(
+                    expression,
+                    target.cpp,
+                    target.dataType.kind === "optional"
+                        ? target.dataType
+                        : undefined,
+                );
                 invalidateRootRecordSnapshot();
                 return true;
             }
