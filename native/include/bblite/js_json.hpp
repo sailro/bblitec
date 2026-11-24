@@ -227,47 +227,6 @@ inline void json_write(JsonWriter& writer, const JsonValue& value);
 template <typename... T>
 inline void json_write(JsonWriter& writer, const std::variant<T...>& value);
 
-/** A record key: a string is itself, a numeric key is its own spelling. */
-[[nodiscard]] inline const std::string& json_object_key(const std::string& key) { return key; }
-/** A temporary key would leave the returned reference dangling. */
-const std::string& json_object_key(std::string&&) = delete;
-
-[[nodiscard]] inline std::string json_object_key(double key) { return number_to_string(key); }
-
-[[nodiscard]] inline std::optional<std::uint32_t> json_property_index(std::string_view name) {
-    if (name.empty() || (name.size() > 1 && name.front() == '0'))
-        return std::nullopt;
-    std::uint32_t index = 0;
-    const auto parsed = std::from_chars(name.data(), name.data() + name.size(), index);
-    if (parsed.ec != std::errc{} || parsed.ptr != name.data() + name.size() ||
-        index == std::numeric_limits<std::uint32_t>::max())
-        return std::nullopt;
-    return index;
-}
-
-[[nodiscard]] inline bool json_property_key_less(std::string_view left, std::string_view right) {
-    const auto a = json_property_index(left), b = json_property_index(right);
-    return a && (!b || *a < *b);
-}
-
-/**
- * A dictionary's own entries in property order: array-index names ascending,
- * then the other names as they were inserted.
- */
-template <typename Map, typename Visitor>
-inline void for_each_property_entry(const Map& map, Visitor&& visitor) {
-    using Entry = std::remove_cvref_t<decltype(*map.begin())>;
-    std::vector<std::pair<std::string, const Entry*>> ordered;
-    ordered.reserve(map.size());
-    for (const auto& entry : map)
-        ordered.emplace_back(json_object_key(entry.first), &entry);
-    std::stable_sort(ordered.begin(), ordered.end(), [](const auto& left, const auto& right) {
-        return json_property_key_less(left.first, right.first);
-    });
-    for (const auto& [name, entry] : ordered)
-        visitor(name, entry->second);
-}
-
 /** A dictionary's own property names, in property order. */
 template <typename Map>
 [[nodiscard]] inline bbl::js::Array<std::string> property_names(const Map& map) {
@@ -275,18 +234,6 @@ template <typename Map>
     for_each_property_entry(map,
                             [&](const std::string& name, const auto&) { names.push_back(name); });
     return names;
-}
-
-/**
- * The number a number-keyed dictionary stores property `name` under: the
- * number whose string `name` is, or none when no number spells it (its
- * `get` then misses).
- */
-[[nodiscard]] inline Nullable<double> number_property_key(const std::string& name) {
-    const double key = number_from_string(name);
-    if (number_to_string(key) != name)
-        return Nullable<double>{std::nullopt};
-    return Nullable<double>{key};
 }
 
 /** Whether a number-keyed dictionary owns property `name`. */
@@ -1352,6 +1299,7 @@ template <typename T>
 /** Whether `T` is a string-keyed dictionary. */
 template <typename T> inline constexpr bool is_dictionary_v = false;
 template <typename T> inline constexpr bool is_dictionary_v<Map<std::string, T>> = true;
+template <typename T> inline constexpr bool is_dictionary_v<Dictionary<std::string, T>> = true;
 
 template <typename T> struct JsonNativeBox final : JsonNativeObject {
     T value;

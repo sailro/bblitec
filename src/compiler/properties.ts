@@ -4208,7 +4208,7 @@ export class PropertyAccessLowerer {
                 if (
                     !type ||
                     this.context.dataTypes.cppType(type) !==
-                        "bbl::js::Nullable<bbl::js::Map<double, bbl::js::F32Array>>"
+                        "bbl::js::Nullable<bbl::js::Dictionary<double, bbl::js::F32Array>>"
                 )
                     this.context.fail(
                         expression,

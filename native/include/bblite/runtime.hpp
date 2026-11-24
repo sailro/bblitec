@@ -669,7 +669,7 @@ struct VatBakeRecord {
     GpuTextureIdentity texture;
     std::vector<VatClipRow> clips;
     /** `boneOrigins` / `boneMatrices`: bone index -> its per-frame capture, when prepared with one. */
-    js::Nullable<js::Map<double, js::F32Array>> bone_origins, bone_matrices;
+    js::Nullable<js::Dictionary<double, js::F32Array>> bone_origins, bone_matrices;
 };
 
 /**
@@ -682,7 +682,7 @@ struct PreparedVatPayload {
     double frame_count = std::numeric_limits<double>::quiet_NaN();
     js::F32Array data;
     std::vector<VatClipRow> clips;
-    js::Nullable<js::Map<double, js::F32Array>> bone_origins, bone_matrices;
+    js::Nullable<js::Dictionary<double, js::F32Array>> bone_origins, bone_matrices;
 };
 
 /**

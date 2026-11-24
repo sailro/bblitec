@@ -124,7 +124,9 @@ export const containerKinds: DataKindOperations<
         cpp: (type, context) =>
             type.weak
                 ? `bbl::js::WeakMap<${context.cppType(type.value)}>`
-                : `bbl::js::Map<${context.cppType(type.key)}, ${context.cppType(type.value)}>`,
+                : // An index-signature object is a dictionary: a Map that
+                  // structured clone treats as the plain object it is.
+                  `bbl::js::${type.dictionary ? "Dictionary" : "Map"}<${context.cppType(type.key)}, ${context.cppType(type.value)}>`,
         key: (type, key) =>
             `${type.weak ? "weak-map" : type.dictionary ? "dictionary" : "map"}(${key(type.key)},${key(type.value)})`,
         equal: (left, right, equal) =>

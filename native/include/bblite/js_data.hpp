@@ -2700,6 +2700,23 @@ template <typename K, typename V>
 struct Traceable<Map<K, V>> : std::disjunction<Traceable<K>, Traceable<V>> {};
 } // namespace gc
 
+/**
+ * An object the source types by an index signature (`Record<string, V>`),
+ * stored as the Map of its own properties: every Map operation applies, and
+ * a Map converts to one. Where JavaScript tells the two apart it is a plain
+ * object (a structured clone writes and reads one).
+ */
+template <typename K, typename V> class Dictionary : public Map<K, V> {
+public:
+    using Map<K, V>::Map;
+    Dictionary() = default;
+    // NOLINTNEXTLINE(google-explicit-constructor): a Map operation's result stays the dictionary.
+    Dictionary(Map<K, V> entries) : Map<K, V>(std::move(entries)) {}
+};
+namespace gc {
+template <typename K, typename V> struct Traceable<Dictionary<K, V>> : Traceable<Map<K, V>> {};
+} // namespace gc
+
 using WeakIdentity = std::weak_ptr<const void>;
 
 /** Weak object keys do not retain their payloads. Expired entries are reclaimed on access. */

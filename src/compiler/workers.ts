@@ -299,11 +299,13 @@ function cloneShape(type: DataType): string | undefined {
         case "boolean":
         case "undefined":
         case "null":
-        case "map":
         case "set":
         case "date":
         case "struct":
             return type.kind;
+        case "map":
+            // A dictionary is a plain object, as a record is.
+            return type.dictionary ? "struct" : "map";
         case "string":
         case "enum":
             return "string";

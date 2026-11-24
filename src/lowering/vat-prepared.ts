@@ -336,11 +336,11 @@ double vat_positive_integer(double value, [[maybe_unused]] const std::string& fi
 ${positiveBody}
 }
 
-js::Nullable<js::Map<double, js::F32Array>> vat_prepared_capture(
-    const js::Nullable<js::Map<double, js::F32Array>>& capture,
+js::Nullable<js::Dictionary<double, js::F32Array>> vat_prepared_capture(
+    const js::Nullable<js::Dictionary<double, js::F32Array>>& capture,
     double bone_count, double values_per_frame, double frame_count,
     [[maybe_unused]] const std::string& field) {
-    js::Map<double, js::F32Array> validated;
+    js::Dictionary<double, js::F32Array> validated;
 ${captureBody}
 }
 

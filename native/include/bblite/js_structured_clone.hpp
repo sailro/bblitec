@@ -3,10 +3,17 @@
 #include <bblite/js_data.hpp>
 #include <bblite/pal_structured_clone.hpp>
 
+#include <algorithm>
+#include <charconv>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <optional>
+#include <string>
+#include <string_view>
+#include <utility>
 #include <variant>
+#include <vector>
 
 namespace bbl::js {
 
@@ -236,6 +243,94 @@ template <std::size_t N> struct CloneCodec<Tuple<N>> {
     }
 };
 
+/** A record key: a string is itself, a numeric key is its own spelling. */
+[[nodiscard]] inline const std::string& json_object_key(const std::string& key) { return key; }
+/** A temporary key would leave the returned reference dangling. */
+const std::string& json_object_key(std::string&&) = delete;
+
+[[nodiscard]] inline std::string json_object_key(double key) { return number_to_string(key); }
+
+[[nodiscard]] inline std::optional<std::uint32_t> json_property_index(std::string_view name) {
+    if (name.empty() || (name.size() > 1 && name.front() == '0'))
+        return std::nullopt;
+    std::uint32_t index = 0;
+    const auto parsed = std::from_chars(name.data(), name.data() + name.size(), index);
+    if (parsed.ec != std::errc{} || parsed.ptr != name.data() + name.size() ||
+        index == std::numeric_limits<std::uint32_t>::max())
+        return std::nullopt;
+    return index;
+}
+
+[[nodiscard]] inline bool json_property_key_less(std::string_view left, std::string_view right) {
+    const auto a = json_property_index(left), b = json_property_index(right);
+    return a && (!b || *a < *b);
+}
+
+/**
+ * A dictionary's own entries in property order: array-index names ascending,
+ * then the other names as they were inserted.
+ */
+template <typename Map, typename Visitor>
+inline void for_each_property_entry(const Map& map, Visitor&& visitor) {
+    using Entry = std::remove_cvref_t<decltype(*map.begin())>;
+    std::vector<std::pair<std::string, const Entry*>> ordered;
+    ordered.reserve(map.size());
+    for (const auto& entry : map)
+        ordered.emplace_back(json_object_key(entry.first), &entry);
+    std::stable_sort(ordered.begin(), ordered.end(), [](const auto& left, const auto& right) {
+        return json_property_key_less(left.first, right.first);
+    });
+    for (const auto& [name, entry] : ordered)
+        visitor(name, entry->second);
+}
+
+/**
+ * The number a number-keyed dictionary stores property `name` under: the
+ * number whose string `name` is, or none when no number spells it (its
+ * `get` then misses).
+ */
+[[nodiscard]] inline Nullable<double> number_property_key(const std::string& name) {
+    const double key = number_from_string(name);
+    if (number_to_string(key) != name)
+        return Nullable<double>{std::nullopt};
+    return Nullable<double>{key};
+}
+
+/** A dictionary is a plain object: its own properties, in property order. */
+template <typename K, typename V> struct CloneCodec<Dictionary<K, V>> {
+    static pal::CloneId write(pal::CloneWriter& writer, const Dictionary<K, V>& value) {
+        const auto [id, fresh] = writer.remember(value.identity());
+        if (!fresh)
+            return id;
+        pal::CloneObject object;
+        object.properties.reserve(value.size());
+        for_each_property_entry(value, [&](const std::string& name, const V& item) {
+            object.properties.emplace_back(name, clone_write(writer, item));
+        });
+        writer.replace(id, std::move(object));
+        return id;
+    }
+    static Dictionary<K, V> read(pal::CloneReader& reader, pal::CloneId id) {
+        if (const auto* value = reader.recalled<Dictionary<K, V>>(id))
+            return *value;
+        const auto properties = reader.get<pal::CloneObject>(id).properties;
+        Dictionary<K, V> value;
+        reader.remember(id, value);
+        for (const auto& [name, item] : properties) {
+            if constexpr (std::is_same_v<K, std::string>)
+                value.set(name, clone_read<V>(reader, item));
+            else {
+                const auto key = number_property_key(name);
+                if (!key)
+                    throw pal::DataCloneError("A number-keyed dictionary receives property '" +
+                                              name + "', which no number spells.");
+                value.set(*key, clone_read<V>(reader, item));
+            }
+        }
+        return value;
+    }
+};
+
 template <typename K, typename V> struct CloneCodec<Map<K, V>> {
     static pal::CloneId write(pal::CloneWriter& writer, const Map<K, V>& value) {
         const auto [id, fresh] = writer.remember(value.identity());
@@ -253,16 +348,6 @@ template <typename K, typename V> struct CloneCodec<Map<K, V>> {
     static Map<K, V> read(pal::CloneReader& reader, pal::CloneId id) {
         if (const auto* value = reader.recalled<Map<K, V>>(id))
             return *value;
-        // A string-keyed dictionary receives an object as its own entries.
-        if constexpr (std::is_same_v<K, std::string>)
-            if (const auto* object = std::get_if<pal::CloneObject>(&reader.node(id))) {
-                const auto properties = object->properties;
-                Map<K, V> value;
-                reader.remember(id, value);
-                for (const auto& [key, item] : properties)
-                    value.set(key, clone_read<V>(reader, item));
-                return value;
-            }
         const auto& map = reader.get<pal::CloneMap>(id);
         Map<K, V> value;
         reader.remember(id, value);
@@ -536,6 +621,11 @@ template <std::size_t N> struct CloneShape<Tuple<N>> : CloneShape<Array<double>>
 template <typename K, typename V> struct CloneShape<Map<K, V>> {
     static bool holds(const pal::CloneNode& node) {
         return std::holds_alternative<pal::CloneMap>(node);
+    }
+};
+template <typename K, typename V> struct CloneShape<Dictionary<K, V>> {
+    static bool holds(const pal::CloneNode& node) {
+        return std::holds_alternative<pal::CloneObject>(node);
     }
 };
 template <typename T> struct CloneShape<Set<T>> {
