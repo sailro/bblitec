@@ -3385,7 +3385,16 @@ export class BindingScopes {
      * A value read once and used again, in a const home: a stable binding
      * already is one; any other value is copied into a const local.
      */
-    public retainedValue<T extends Value>(value: T, label: string): T {
+    /**
+     * @param writable Whether the holder writes through the retained value
+     * (a callee's parameter it changes): its copy then names the same
+     * object writably.
+     */
+    public retainedValue<T extends Value>(
+        value: T,
+        label: string,
+        writable = false,
+    ): T {
         if (this.context.hasStableNativeBinding(value)) {
             this.context.useNativeValue(value);
             return value;
@@ -3394,12 +3403,14 @@ export class BindingScopes {
         if (readsNativeStorage(value)) this.context.reachJsData();
         this.context.emit({
             kind: "declaration",
-            type: "const auto",
+            type: writable ? "auto" : "const auto",
             name: cpp,
             initializer: snapshotReadCpp(value),
             attributes: "[[maybe_unused]] ",
         });
-        const binding = this.context.registerNativeConstBinding(cpp);
+        const binding = writable
+            ? this.context.registerNativeBinding(cpp)
+            : this.context.registerNativeConstBinding(cpp);
         this.context.useNativeBinding(binding);
         const retained: T = { ...value, cpp, nativeCaptures: [binding] };
         this.context.describeNativeValue(retained);

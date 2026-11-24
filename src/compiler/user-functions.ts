@@ -8680,10 +8680,12 @@ export class UserFunctionLowerer {
                         ir.declaration,
                     ),
             );
+            const readOnly = () =>
+                callArgumentIsReadOnly(this.checker, call, index);
             if (
                 value.dataType?.kind === "struct" &&
                 !context.dataTypes.isClassStruct(value.dataType.name) &&
-                !callArgumentIsReadOnly(this.checker, call, index)
+                !readOnly()
             )
                 context.dataTypes.markStoredObjectReferences(value.dataType);
             if (
@@ -8695,6 +8697,7 @@ export class UserFunctionLowerer {
                 const name = context.bindings.retainedValue(
                     value,
                     "call_argument",
+                    !readOnly(),
                 ).cpp;
                 sink.push(
                     withNativeMetadata(

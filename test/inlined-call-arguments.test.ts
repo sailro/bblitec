@@ -1,6 +1,7 @@
 /**
- * An inlined call binds its arguments where it runs: a closure capturing a
- * parameter read from a tagged slot holds the value read, not the slot.
+ * An inlined call binds its arguments where it runs: a pinned argument the
+ * callee writes through stays writable, and a closure capturing a parameter
+ * read from a tagged slot holds the value read, not the slot.
  */
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -11,6 +12,42 @@ import {
 } from "./native-fixture.js";
 
 const tools = optionalNativeFixtureTools(false);
+
+test(
+    "a pinned argument the inlined callee writes through stays writable",
+    { skip: !tools },
+    () => {
+        const { cpp } = compileSource(
+            `
+            interface World {
+                readonly marks: Float32Array;
+                readonly count: number;
+            }
+            const NONE = new Float32Array(0);
+            function mark(marks: Float32Array, at: number, depth: number): void {
+                marks[at] = depth;
+                if (depth > 0) mark(marks, at + 1, depth - 1);
+            }
+            function visit(marks: Float32Array, start: number, extra: Float32Array = NONE): number {
+                if (start >= 0) mark(marks, start, 2);
+                return marks.length + extra.length;
+            }
+            function step(world: World): number {
+                return visit(world.marks, world.count - 3) + visit(world.marks, 0);
+            }
+            const world: World = { marks: new Float32Array(4), count: 4 };
+            const length = step(world);
+            if (length !== 8 || world.marks[1] !== 1 || world.marks[3] !== 0) throw new Error("marks " + world.marks.join(","));
+            `,
+            { fileName: "written-argument.ts" },
+        );
+        assert.doesNotMatch(
+            cpp,
+            /const auto v_bblite_call_argument_\w+ = bbl::js::snapshot_value\(v_\w+->marks\)/,
+        );
+        runGeneratedProgram(tools!, "inlined-call-arguments-written", cpp);
+    },
+);
 
 test(
     "a closure captures a parameter read from a tagged slot as its value",
