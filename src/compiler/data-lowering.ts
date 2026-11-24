@@ -27,7 +27,10 @@ import {
     compileDataExpressionSink,
     compileDataValueSink,
 } from "./data-sinks/operations.js";
-import { structSinkLowersWhole } from "./data-sinks/structures.js";
+import {
+    absentFieldCpp,
+    structSinkLowersWhole,
+} from "./data-sinks/structures.js";
 import { plainLane } from "./data-sinks/containers.js";
 import { someAnalysisNode, forEachAnalysisNode } from "./analysis-walk.js";
 import {
@@ -15127,16 +15130,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             }
             compiled.set(name, cpp);
         }
-        const absent = (field: DataStructField): string | undefined =>
-            field.defaultWhenMissing ||
-            (field.accessorReceiver && field.type.kind === "optional")
-                ? "{}"
-                : field.type.kind === "optional"
-                  ? "std::nullopt"
-                  : undefined;
         const lacked = fields.filter(
             (field) =>
-                !compiled.has(field.sourceName) && absent(field) === undefined,
+                !compiled.has(field.sourceName) &&
+                absentFieldCpp(field) === undefined,
         );
         if (
             !this.lackedFieldsDefinedOnDeclaration(
@@ -15156,7 +15153,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 compiled.get(field.sourceName) ??
                 this.context.dataTypes.structFieldInitializerCpp(
                     field,
-                    absent(field) ?? "{}",
+                    absentFieldCpp(field) ?? "{}",
                 ),
         );
         if (self)
@@ -15470,7 +15467,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * (`keysDefinedOnDeclaration`): a definition keeps a key's place, and
      * appends one the record lacks.
      */
-    private noteLiteralCreation(
+    public noteLiteralCreation(
         literal: ts.ObjectLiteralExpression,
         dataType: DataType<"struct">,
         keys: readonly CreatedKeys[],
@@ -15490,7 +15487,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * each follows every field the literal holds, in definition order, as
      * those definitions append it.
      */
-    private lackedFieldsDefinedOnDeclaration(
+    public lackedFieldsDefinedOnDeclaration(
         literal: ts.ObjectLiteralExpression,
         fields: readonly DataStructField[],
         holds: (field: DataStructField) => boolean,

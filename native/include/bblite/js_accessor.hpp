@@ -41,6 +41,8 @@ public:
         : getter_(std::move(closures.getter)), setter_(std::move(closures.setter)) {}
 
     [[nodiscard]] T get() const { return getter_ ? getter_() : value_; }
+    [[nodiscard]] bool configurable() const { return configurable_; }
+    [[nodiscard]] bool writable() const { return writable_; }
     void set(T value) {
         if (setter_)
             setter_(std::move(value));

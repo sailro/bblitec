@@ -472,28 +472,40 @@ public:
     /**
      * Defines an enumerable accessor property on an owned object: a new key
      * is appended, an existing one keeps its place. A non-configurable
-     * accessor cannot be redefined.
+     * property refuses a definition that changes it (`Accessor::define`).
      */
     void define_accessor(std::string_view key, Callback<JsonValue()> getter,
                          Callback<void(JsonValue)> setter, bool configurable) const;
 
     /**
-     * Defines a writable, enumerable, configurable data property on an owned
-     * object, replacing an accessor of the key in its place.
+     * Defines an enumerable data property on an owned object, as
+     * `define_accessor` does an accessor. A read-only one throws on
+     * assignment; a non-configurable one on deletion.
      */
-    void define_value(std::string_view key, JsonValue value) const;
+    void define_value(std::string_view key, JsonValue value, bool writable = true,
+                      bool configurable = true) const;
 
-    /** A property's value: an accessor slot's getter result, else the stored value. */
+    /** A property's value: a slot's getter result or data, else the stored value. */
     [[nodiscard]] JsonValue property_value() const;
-    /** An accessor slot's setter for a write, true when this value is a slot. */
-    bool set_accessor(std::string_view key, const JsonValue& value) const;
-    /** Throws for a non-configurable accessor slot. */
-    void check_accessor_removal(std::string_view key) const;
-    /** Throws when this value is a non-configurable accessor slot. */
-    void check_redefinition(std::string_view key) const;
-    [[nodiscard]] bool nonconfigurable_accessor() const;
-    /** Whether this value is an accessor slot, read through `property_value`. */
-    [[nodiscard]] bool is_accessor_slot() const;
+    /** A write through a property slot, true when this value is one. */
+    bool set_slot(const JsonValue& value) const;
+    /** Throws for a non-configurable property slot. */
+    void check_slot_removal(std::string_view key) const;
+    /**
+     * Applies a definition (`replacement`, a value or a property slot) to
+     * this non-configurable property slot, true when it did: false leaves a
+     * plain value or a configurable slot for the caller to replace.
+     */
+    bool redefine_slot(const JsonValue& replacement) const;
+    [[nodiscard]] bool nonconfigurable_slot() const;
+    /** Whether this value is a property slot, read through `property_value`. */
+    [[nodiscard]] bool is_property_slot() const;
+
+    /** An own object's definition of `key`, in the place of one it replaces. */
+    void define_entry(std::string_view key, JsonValue value) const;
+    /** A property slot holding `replacement` with these attributes. */
+    [[nodiscard]] static JsonValue property_slot(Accessor<JsonValue> replacement, bool configurable,
+                                                 bool writable);
 
     [[nodiscard]] static JsonValue from_proxy_view(JsonValue target,
                                                    Callback<JsonValue(std::string)> read,
@@ -760,7 +772,7 @@ public:
                 visitor(key, native_->get(key));
         } else if (kind_ == Kind::object) {
             json_for_each_object_entry(*object_, [&](const auto& key, const JsonValue& value) {
-                if (value.is_accessor_slot())
+                if (value.is_property_slot())
                     visitor(key, value.property_value());
                 else
                     visitor(key, value);
@@ -789,7 +801,7 @@ public:
         for (Entry& entry : *object_) {
             if (entry.first != key)
                 continue;
-            if (!entry.second.set_accessor(key, value))
+            if (!entry.second.set_slot(value))
                 entry.second = std::move(value);
             return;
         }
@@ -808,7 +820,7 @@ public:
                                         [&](const Entry& entry) { return entry.first == key; });
         if (found == object_->end())
             return;
-        found->second.check_accessor_removal(key);
+        found->second.check_slot_removal(key);
         object_->erase(found);
     }
 
@@ -827,7 +839,7 @@ public:
             if (source.kind_ == Kind::object && !source.native_)
                 json_for_each_object_entry(*source.object_,
                                            [&](const auto& key, const JsonValue& value) {
-                                               if (value.is_accessor_slot())
+                                               if (value.is_property_slot())
                                                    copy_entry(key, value.property_value());
                                                else
                                                    copy_entry(key, value);
@@ -1322,7 +1334,7 @@ template <typename T> struct JsonNativeBox final : JsonNativeObject {
     void set(std::string_view key, const JsonValue& member) override {
         if constexpr (std::is_same_v<T, Map<std::string, JsonValue>>) {
             const std::string name(key);
-            if (!value.has(name) || !value.at(name).set_accessor(key, member))
+            if (!value.has(name) || !value.at(name).set_slot(member))
                 value.set(name, member);
         } else
             JsonNativeObject::set(key, member);
@@ -1331,7 +1343,7 @@ template <typename T> struct JsonNativeBox final : JsonNativeObject {
         if constexpr (std::is_same_v<T, Map<std::string, JsonValue>>) {
             const std::string name(key);
             if (value.has(name))
-                value.at(name).check_accessor_removal(key);
+                value.at(name).check_slot_removal(key);
             static_cast<void>(value.erase(name));
         } else
             JsonNativeObject::remove(key);
@@ -1339,9 +1351,8 @@ template <typename T> struct JsonNativeBox final : JsonNativeObject {
     void define(std::string_view key, const JsonValue& member) override {
         if constexpr (std::is_same_v<T, Map<std::string, JsonValue>>) {
             const std::string name(key);
-            if (value.has(name))
-                value.at(name).check_redefinition(key);
-            value.set(name, member);
+            if (!value.has(name) || !value.at(name).redefine_slot(member))
+                value.set(name, member);
         } else
             JsonNativeObject::define(key, member);
     }
@@ -1597,67 +1608,85 @@ inline JsonValue JsonValue::from_proxy_view(JsonValue target, Callback<JsonValue
     return value;
 }
 
-/** An own accessor property of a dynamic object, held as the entry's value. */
-struct JsonAccessorSlot final : JsonNativeObject {
-    mutable Callback<JsonValue()> getter;
-    mutable Callback<void(JsonValue)> setter;
-    bool configurable;
-    JsonAccessorSlot(Callback<JsonValue()> get, Callback<void(JsonValue)> set, bool keep)
-        : getter(std::move(get)), setter(std::move(set)), configurable(keep) {}
+/**
+ * An own property of a dynamic object, held as the entry's value, whose
+ * attributes a plain entry does not keep: an accessor, or a data property
+ * that is read-only or non-configurable. Its `Accessor` applies the
+ * descriptor rules a native record's property slot does.
+ */
+struct JsonPropertySlot final : JsonNativeObject {
+    mutable Accessor<JsonValue> property;
+    explicit JsonPropertySlot(Accessor<JsonValue> defined) : property(std::move(defined)) {}
     JsonValue get(std::string_view) const override { return {}; }
     bbl::js::Array<std::string> own_keys() const override { return {}; }
-    const std::type_info& type() const override { return typeid(JsonAccessorSlot); }
+    const std::type_info& type() const override { return typeid(JsonPropertySlot); }
     const void* identity() const override { return this; }
-    void gc_trace(const TraceVisitor& visitor) const override {
-        visitor(getter);
-        visitor(setter);
-    }
+    void gc_trace(const TraceVisitor& visitor) const override { property.gc_trace(visitor); }
 };
 
-inline bool JsonValue::is_accessor_slot() const { return instance_of<JsonAccessorSlot>(); }
+inline bool JsonValue::is_property_slot() const { return instance_of<JsonPropertySlot>(); }
 
 inline JsonValue JsonValue::property_value() const {
-    if (!is_accessor_slot())
+    if (!is_property_slot())
         return *this;
-    return static_cast<const JsonAccessorSlot&>(*native_).getter();
+    return static_cast<const JsonPropertySlot&>(*native_).property.get();
 }
 
-inline bool JsonValue::set_accessor(std::string_view key, const JsonValue& value) const {
-    if (!is_accessor_slot())
+inline bool JsonValue::set_slot(const JsonValue& value) const {
+    if (!is_property_slot())
         return false;
-    const auto& slot = static_cast<const JsonAccessorSlot&>(*native_);
-    if (!slot.setter)
-        throw NamedError("TypeError", "Cannot set property " + std::string(key) +
-                                          " of #<Object> which has only a getter");
-    slot.setter(value);
+    static_cast<const JsonPropertySlot&>(*native_).property.set(value);
     return true;
 }
 
-inline bool JsonValue::nonconfigurable_accessor() const {
-    return is_accessor_slot() && !static_cast<const JsonAccessorSlot&>(*native_).configurable;
+inline bool JsonValue::nonconfigurable_slot() const {
+    return is_property_slot() &&
+           !static_cast<const JsonPropertySlot&>(*native_).property.configurable();
 }
 
-inline void JsonValue::check_accessor_removal(std::string_view key) const {
-    if (nonconfigurable_accessor())
+inline void JsonValue::check_slot_removal(std::string_view key) const {
+    if (nonconfigurable_slot())
         throw NamedError("TypeError",
                          "Cannot delete property '" + std::string(key) + "' of #<Object>");
 }
 
-inline void JsonValue::define_accessor(std::string_view key, Callback<JsonValue()> getter,
-                                       Callback<void(JsonValue)> setter, bool configurable) const {
+inline JsonValue JsonValue::property_slot(Accessor<JsonValue> replacement, bool configurable,
+                                          bool writable) {
+    Accessor<JsonValue> defined;
+    defined.define(std::move(replacement), configurable, false, writable);
     JsonValue slot;
     slot.kind_ = Kind::object;
-    slot.native_ =
-        make_gc_shared<JsonAccessorSlot>(std::move(getter), std::move(setter), configurable);
-    define_value(key, std::move(slot));
+    slot.native_ = make_gc_shared<JsonPropertySlot>(std::move(defined));
+    return slot;
 }
 
-inline void JsonValue::check_redefinition(std::string_view key) const {
-    if (nonconfigurable_accessor())
-        throw NamedError("TypeError", "Cannot redefine property: " + std::string(key));
+inline void JsonValue::define_accessor(std::string_view key, Callback<JsonValue()> getter,
+                                       Callback<void(JsonValue)> setter, bool configurable) const {
+    define_entry(key, property_slot(Accessor<JsonValue>(std::move(getter), std::move(setter)),
+                                    configurable, true));
 }
 
-inline void JsonValue::define_value(std::string_view key, JsonValue value) const {
+inline bool JsonValue::redefine_slot(const JsonValue& replacement) const {
+    if (!nonconfigurable_slot())
+        return false;
+    const Accessor<JsonValue> defined =
+        replacement.is_property_slot()
+            ? static_cast<const JsonPropertySlot&>(*replacement.native_).property
+            : Accessor<JsonValue>(replacement);
+    static_cast<const JsonPropertySlot&>(*native_).property.define(defined, defined.configurable(),
+                                                                   false, defined.writable());
+    return true;
+}
+
+inline void JsonValue::define_value(std::string_view key, JsonValue value, bool writable,
+                                    bool configurable) const {
+    define_entry(
+        key, writable && configurable
+                 ? std::move(value)
+                 : property_slot(Accessor<JsonValue>(std::move(value)), configurable, writable));
+}
+
+inline void JsonValue::define_entry(std::string_view key, JsonValue value) const {
     if (kind_ != Kind::object)
         throw std::runtime_error("Dynamic property definition requires an object.");
     if (native_) {
@@ -1667,8 +1696,8 @@ inline void JsonValue::define_value(std::string_view key, JsonValue value) const
     for (Entry& entry : *object_) {
         if (entry.first != key)
             continue;
-        entry.second.check_redefinition(key);
-        entry.second = std::move(value);
+        if (!entry.second.redefine_slot(value))
+            entry.second = std::move(value);
         return;
     }
     object_->emplace_back(std::string(key), std::move(value));

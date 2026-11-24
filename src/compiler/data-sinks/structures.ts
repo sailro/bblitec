@@ -405,6 +405,20 @@ function requireCopiedOwnUndefinedFields(
     }
 }
 
+/**
+ * The value a struct field holds where a record lacks it: `{}` for one a
+ * default fills or an optional accessor slot, `std::nullopt` for an optional
+ * one; undefined for a field the record must hold.
+ */
+export function absentFieldCpp(field: DataStructField): string | undefined {
+    return field.defaultWhenMissing ||
+        (field.accessorReceiver && field.type.kind === "optional")
+        ? "{}"
+        : field.type.kind === "optional"
+          ? "std::nullopt"
+          : undefined;
+}
+
 function valueStruct(
     dataType: DataType<"struct">,
     lowerer: DataSinkHost,
@@ -582,12 +596,44 @@ function valueStruct(
                 (property) => !stored.has(property),
             ),
         );
-        // A class instance seen as a record lists the record type's members.
-        if (value.classDeclaration === undefined)
-            lowerer.context.dataTypes.keyOrders.noteCreation(
-                dataType.name,
-                recordCreatedKeys(value),
+        // A record a declaration's literal creates also takes the keys the
+        // statements right after it define; a lacked one holds a placeholder
+        // until they do (`lackedFieldsDefinedOnDeclaration`).
+        const unwrapped = ts.isExpression(node)
+            ? lowerer.context.unwrap(node)
+            : undefined;
+        const literal =
+            unwrapped && ts.isObjectLiteralExpression(unwrapped)
+                ? unwrapped
+                : undefined;
+        const held = new Set(recordPropertyKeys(value));
+        const lacked = fields.filter(
+            (field) =>
+                !held.has(field.sourceName) &&
+                absentFieldCpp(field) === undefined,
+        );
+        const definedLater =
+            literal !== undefined &&
+            lowerer.lackedFieldsDefinedOnDeclaration(
+                literal,
+                fields,
+                (field) => held.has(field.sourceName),
+                lacked,
             );
+        // A class instance seen as a record lists the record type's members.
+        if (value.classDeclaration === undefined) {
+            if (literal)
+                lowerer.noteLiteralCreation(
+                    literal,
+                    dataType,
+                    recordCreatedKeys(value),
+                );
+            else
+                lowerer.context.dataTypes.keyOrders.noteCreation(
+                    dataType.name,
+                    recordCreatedKeys(value),
+                );
+        }
         // The members lowered into function slots, and the accessors of
         // slots without a receiver, may read `this` as the object the
         // literal creates.
@@ -684,16 +730,13 @@ function valueStruct(
                       field.type.kind !== "optional"
                         ? armFieldOrDefault(lowerer, property, field, node)
                         : storeFieldMember(lowerer, property, field, node)
-                    : field.defaultWhenMissing ||
-                        (field.accessorReceiver &&
-                            field.type.kind === "optional")
-                      ? "{}"
-                      : field.type.kind === "optional"
-                        ? "std::nullopt"
-                        : lowerer.context.fail(
-                              node,
-                              `Compile-time record is missing required field '${field.sourceName}'.${lowerer.context.dataTypes.sharedLayoutNote(node)}`,
-                          );
+                    : (absentFieldCpp(field) ??
+                      (definedLater && lacked.includes(field)
+                          ? "{}"
+                          : lowerer.context.fail(
+                                node,
+                                `Compile-time record is missing required field '${field.sourceName}'.${lowerer.context.dataTypes.sharedLayoutNote(node)}`,
+                            )));
                 return lowerer.context.dataTypes.structFieldInitializerCpp(
                     field,
                     stored,

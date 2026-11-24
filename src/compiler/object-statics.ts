@@ -1803,8 +1803,8 @@ function applyGlobalDefinitions(
 /**
  * Property definitions on a dynamic object: each accessor becomes an own
  * enumerable accessor slot (its getter and setter stored functions), each
- * value a data property. A non-configurable data property has no dynamic
- * storage.
+ * value a data property, kept in a property slot when it is read-only or
+ * non-configurable.
  */
 function applyDocumentDefinitions(
     context: ObjectStaticContext,
@@ -1822,15 +1822,11 @@ function applyDocumentDefinitions(
             const value = definition.members.find(
                 (member) => member.name === "value",
             );
-            if (
-                !definition.configurable ||
-                !definition.writable ||
-                value?.name !== "value"
-            )
+            if (value?.name !== "value")
                 return refuse(
-                    "defines a dynamic object's data property only as writable and configurable.",
+                    "defines a dynamic object's data property only with a value.",
                 );
-            return `${target.cpp}.define_value(${key}, ${context.dataLowerer.compileForSink(value.expression, json)});`;
+            return `${target.cpp}.define_value(${key}, ${context.dataLowerer.compileForSink(value.expression, json)}, ${definition.writable}, ${definition.configurable});`;
         }
         const stored = (name: "get" | "set"): string | undefined => {
             const member = definition.members.find(

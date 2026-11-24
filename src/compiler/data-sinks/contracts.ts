@@ -21,6 +21,8 @@ export type DataSinkHost = Pick<
     | "compileOptionalSink"
     | "compileNullishCoalesce"
     | "emitSpreadStructDeclaration"
+    | "noteLiteralCreation"
+    | "lackedFieldsDefinedOnDeclaration"
     | "registerLocal"
     | "structLiteral"
     | "structAggregate"
