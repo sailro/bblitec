@@ -572,6 +572,52 @@ check(
     `,
 );
 
+// A record mapped through Partial, Required or Readonly over a substituted
+// parameter is its instantiation's mapped record, one per instantiation.
+check(
+    "mapped-modifier-records-under-instantiation",
+    `
+    interface Channel<U extends object> {
+        name: string;
+        capture?: () => Partial<U>;
+        sample?: Partial<U>;
+        fixed?: Readonly<U>;
+        complete?: () => Required<U>;
+    }
+    interface Undo { elevation: number[]; tick: number; note?: string }
+    interface Mark { label: string }
+    function create<U extends object>() {
+        const channels: Channel<U>[] = [];
+        return {
+            register(channel: Channel<U>): void { channels.push(channel); },
+            captured: () => channels.map((channel) => channel.capture?.()),
+            completed: () => channels.map((channel) => channel.complete?.()),
+            first: () => channels[0],
+        };
+    }
+    const undo = create<Undo>();
+    const tick: Channel<Undo> = {
+        name: "tick",
+        capture: () => ({ tick: 3 }),
+        sample: { elevation: [1, 2] },
+        fixed: { elevation: [], tick: 4 },
+        complete: () => ({ elevation: [5], tick: 6, note: "n" }),
+    };
+    undo.register(tick);
+    undo.register({ name: "empty" });
+    const marks = create<Mark>();
+    marks.register({ name: "mark", capture: () => ({ label: "m" }), complete: () => ({ label: "c" }) });
+    const captured = undo.captured();
+    if (undo.first() !== tick || captured[0]?.tick !== 3 || captured[0]?.elevation !== undefined || captured[1] !== undefined)
+        throw new Error("captured");
+    if (undo.first()?.sample?.elevation?.length !== 2 || undo.first()?.sample?.tick !== undefined || undo.first()?.fixed?.tick !== 4)
+        throw new Error("stored");
+    const completed = undo.completed()[0];
+    if (completed?.note.length !== 1 || completed.tick !== 6 || completed.elevation[0] !== 5) throw new Error("completed");
+    if (marks.captured()[0]?.label !== "m" || marks.completed()[0]?.label !== "c") throw new Error("second instantiation");
+    `,
+);
+
 check(
     "nested-instantiation-intersection-fields",
     `

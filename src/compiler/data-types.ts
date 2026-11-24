@@ -1490,36 +1490,81 @@ function erasedFieldHolds(known: DataType, storage: DataType): boolean {
 const erasedMapKeys = new WeakMap<ts.Symbol, readonly ts.Expression[]>();
 
 /**
- * The record and the keys a mapped type selects properties of the record
- * by, as its alias's arguments: an alias of the shape of `Pick` (`{ [P in
- * K]: T[P] }`, adding no modifier and renaming no key), whose constraint
- * and template name its own parameters, keeps the keys; `Omit<T, K>`,
- * `Pick` over the keys `K` leaves, keeps the others.
+ * The optionality a mapped type gives every property it maps: `+` adds it
+ * (`?`, `+?`), `-` removes it (`-?`); none keeps each property's own.
  */
-function keyedSelection(
-    type: ts.Type,
-): { record: ts.Type; keys: ts.Type; kept: boolean } | undefined {
+type MappedOptionality = "+" | "-" | undefined;
+
+/**
+ * A property a struct stores, with the optionality its record type gives
+ * it: its declaration's, or the one a mapped type over a substituted record
+ * applies (`keyedSelection`), as the checker gives a concrete one's
+ * properties. Mutability is the declaration's (`propertyIsReadOnly`), as it
+ * is for a concrete mapped type's properties, which share it.
+ */
+interface StructProperty {
+    readonly symbol: ts.Symbol;
+    /** The last mapped type's over it, none for the declaration's own. */
+    readonly optionality: MappedOptionality;
+}
+
+/** A struct property of one of the shapes a struct's layout holds. */
+interface OwnedStructProperty extends StructProperty {
+    readonly owner: ts.Type;
+}
+
+function declaredStructProperty(symbol: ts.Symbol): StructProperty {
+    return { symbol, optionality: undefined };
+}
+
+function structPropertyOptional({
+    symbol,
+    optionality,
+}: StructProperty): boolean {
+    return optionality === undefined
+        ? (symbol.flags & ts.SymbolFlags.Optional) !== 0
+        : optionality === "+";
+}
+
+/**
+ * The record a mapped type selects properties of, the keys it selects them
+ * by, and the optionality it gives them, as its alias's arguments: an
+ * alias of the shape of `Pick` (`{ [P in K]: T[P] }`, renaming no key),
+ * whose constraint and template name its own parameters, keeps the keys --
+ * every key of the record for the constraint `keyof T` (`Partial<T>`,
+ * `Required<T>`, `Readonly<T>`); `Omit<T, K>`, `Pick` over the keys `K`
+ * leaves, keeps the others.
+ */
+interface KeyedSelection {
+    readonly record: ts.Type;
+    /** Undefined for every key of the record. */
+    readonly keys: ts.Type | undefined;
+    readonly kept: boolean;
+    readonly optionality: MappedOptionality;
+}
+
+function keyedSelection(type: ts.Type): KeyedSelection | undefined {
     const parameters = type.aliasTypeArguments ?? [];
     if (libraryName(type.aliasSymbol) === "Omit") {
         const [record, keys] = parameters;
-        return record && keys ? { record, keys, kept: false } : undefined;
+        return record && keys
+            ? {
+                  record,
+                  keys,
+                  kept: false,
+                  optionality: undefined,
+              }
+            : undefined;
     }
     const alias = type.aliasSymbol?.declarations?.find(
         ts.isTypeAliasDeclaration,
     );
     const mapped = alias?.type;
-    if (
-        !alias ||
-        !mapped ||
-        !ts.isMappedTypeNode(mapped) ||
-        mapped.readonlyToken ||
-        mapped.questionToken ||
-        mapped.nameType
-    )
+    if (!alias || !mapped || !ts.isMappedTypeNode(mapped) || mapped.nameType)
         return undefined;
-    // The alias argument a type node names: a bare reference to one of the
-    // alias's parameters.
-    const argument = (node: ts.TypeNode | undefined): ts.Type | undefined => {
+    // The index of the alias parameter a type node names: a bare reference
+    // to one of the alias's parameters.
+    const parameterIndex = (node: ts.TypeNode | undefined): number => {
         const name =
             node &&
             ts.isTypeReferenceNode(node) &&
@@ -1527,23 +1572,44 @@ function keyedSelection(
             ts.isIdentifier(node.typeName)
                 ? node.typeName.text
                 : undefined;
-        const index =
+        return (
             alias.typeParameters?.findIndex(
                 (parameter) => parameter.name.text === name,
-            ) ?? -1;
-        return index < 0 ? undefined : parameters[index];
+            ) ?? -1
+        );
     };
+    const argument = (index: number): ts.Type | undefined =>
+        index < 0 ? undefined : parameters[index];
     const template = mapped.type;
-    const keys = argument(mapped.typeParameter.constraint);
-    const record =
+    const recordIndex =
         template &&
         ts.isIndexedAccessTypeNode(template) &&
         ts.isTypeReferenceNode(template.indexType) &&
         ts.isIdentifier(template.indexType.typeName) &&
         template.indexType.typeName.text === mapped.typeParameter.name.text
-            ? argument(template.objectType)
-            : undefined;
-    return record && keys ? { record, keys, kept: true } : undefined;
+            ? parameterIndex(template.objectType)
+            : -1;
+    const record = argument(recordIndex);
+    const constraint = mapped.typeParameter.constraint;
+    const everyKey =
+        constraint !== undefined &&
+        ts.isTypeOperatorNode(constraint) &&
+        constraint.operator === ts.SyntaxKind.KeyOfKeyword &&
+        parameterIndex(constraint.type) === recordIndex;
+    const keys = everyKey ? undefined : argument(parameterIndex(constraint));
+    return record && (everyKey || keys)
+        ? {
+              record,
+              keys,
+              kept: true,
+              optionality:
+                  mapped.questionToken === undefined
+                      ? undefined
+                      : mapped.questionToken.kind === ts.SyntaxKind.MinusToken
+                        ? "-"
+                        : "+",
+          }
+        : undefined;
 }
 
 /**
@@ -4849,19 +4915,27 @@ export class DataTypeRegistry {
 
     /**
      * Whether a record type is a plain record, or a union of them, under
-     * the instantiations in force: itself, or an intersection whose parts
-     * are once each parameter is resolved (`H & { id: number }`).
+     * the instantiations in force: itself, an intersection whose parts are
+     * once each parameter is resolved (`H & { id: number }`), or a mapped
+     * type over a substituted record (`substitutedSelection`) that is.
      */
     private plainUnderSubstitution(record: ts.Type): boolean {
+        const selection = this.substitutedSelection(record);
         return (
             isRecordLike(this.checker, record) ||
+            (selection !== undefined &&
+                this.plainUnderSubstitution(
+                    this.resolveTypeParameter(selection.record),
+                )) ||
             (record.isIntersection() &&
-                record.types.every((part) =>
-                    isPlainRecord(
-                        this.checker,
-                        this.resolveTypeParameter(part),
-                    ),
-                ))
+                record.types.every((part) => {
+                    const resolved = this.resolveTypeParameter(part);
+                    return (
+                        isPlainRecord(this.checker, resolved) ||
+                        (this.substitutedSelection(resolved) !== undefined &&
+                            this.plainUnderSubstitution(resolved))
+                    );
+                }))
         );
     }
 
@@ -5002,15 +5076,16 @@ export class DataTypeRegistry {
         beforeJoin = false,
     ): void {
         const fields = this.structFields(union.name, node, "accessors");
-        for (const property of this.structProperties(member)) {
+        for (const memberProperty of this.structProperties(member)) {
+            const property = memberProperty.symbol;
             const field = fields.find(
                 (candidate) => candidate.sourceName === property.name,
             );
             if (!field && beforeJoin) continue;
             const declaration =
                 property.valueDeclaration ?? property.declarations?.[0];
-            const propertyType = this.checker.getTypeOfSymbolAtLocation(
-                property,
+            const propertyType = this.structPropertyType(
+                memberProperty,
                 declaration ?? node,
             );
             // A stored function maps as a layout stores it; the joined
@@ -9113,28 +9188,30 @@ export class DataTypeRegistry {
     }
 
     /** Intersection constraints keep their refinements without hiding concrete generic fields. */
-    private structProperties(type: ts.Type): readonly ts.Symbol[] {
+    private structProperties(type: ts.Type): readonly StructProperty[] {
         const keyed = this.keyedProperties(type);
         if (keyed) return keyed;
         const declared = this.checker.getPropertiesOfType(type);
         // A literal's fields follow the order its own keys are created in.
         const order = this.objectLiteralKeyOrder(type);
-        const properties = order
-            ? inKeyOrder(declared, (symbol) => symbol.name, order)
-            : declared;
+        const properties = (
+            order
+                ? inKeyOrder(declared, (symbol) => symbol.name, order)
+                : declared
+        ).map(declaredStructProperty);
         if (!type.isIntersection()) return properties;
         // In its members' order, as the checker orders a concrete
         // intersection's: a member a type parameter names contributes the
         // properties of the instantiation in force where it stands.
         const declaredByName = new Map(
-            properties.map((property) => [property.name, property]),
+            properties.map((property) => [property.symbol.name, property]),
         );
-        const byName = new Map<string, ts.Symbol>();
+        const byName = new Map<string, StructProperty>();
         // Each name's properties as the members declare it under the
         // instantiation, and whether a substituted member is among them.
         const resolved = new Map<
             string,
-            { symbols: ts.Symbol[]; substituted: boolean }
+            { declared: StructProperty[]; substituted: boolean }
         >();
         for (const member of type.types) {
             const concrete = this.resolveTypeParameter(member);
@@ -9143,31 +9220,32 @@ export class DataTypeRegistry {
             for (const property of keyed ??
                 (concrete.isIntersection()
                     ? this.structProperties(concrete)
-                    : this.checker.getPropertiesOfType(concrete))) {
-                const entry = resolved.get(property.name);
+                    : this.checker
+                          .getPropertiesOfType(concrete)
+                          .map(declaredStructProperty))) {
+                const name = property.symbol.name;
+                const entry = resolved.get(name);
                 if (entry) {
-                    entry.symbols.push(property);
+                    entry.declared.push(property);
                     entry.substituted ||= substituted;
                 } else
-                    resolved.set(property.name, {
-                        symbols: [property],
+                    resolved.set(name, {
+                        declared: [property],
                         substituted,
                     });
-                if (!byName.has(property.name))
-                    byName.set(
-                        property.name,
-                        declaredByName.get(property.name) ?? property,
-                    );
+                if (!byName.has(name))
+                    byName.set(name, declaredByName.get(name) ?? property);
             }
         }
         // The checker types a property a substituted member declares against
         // the parameter (`T["tower"]`); where every member declaring it
         // agrees under the instantiation, the property is that one.
-        for (const [name, { symbols, substituted }] of resolved)
-            if (substituted && this.agreeingProperties(symbols))
-                byName.set(name, symbols[0]!);
+        for (const [name, { declared, substituted }] of resolved)
+            if (substituted && this.agreeingProperties(declared))
+                byName.set(name, declared[0]!);
         for (const property of properties)
-            if (!byName.has(property.name)) byName.set(property.name, property);
+            if (!byName.has(property.symbol.name))
+                byName.set(property.symbol.name, property);
         return [...byName.values()];
     }
 
@@ -9176,18 +9254,19 @@ export class DataTypeRegistry {
      * optionality and mutability, and data declarations only (an accessor's
      * declaration decides its slot).
      */
-    private agreeingProperties(symbols: readonly ts.Symbol[]): boolean {
-        const [first] = symbols;
+    private agreeingProperties(declared: readonly StructProperty[]): boolean {
+        const [first] = declared;
         if (!first) return false;
-        const type = this.checker.getTypeOfSymbol(first);
-        const optional = (first.flags & ts.SymbolFlags.Optional) !== 0;
-        const readOnly = propertyIsReadOnly(first);
-        return symbols.every(
-            (symbol) =>
-                this.checker.getTypeOfSymbol(symbol) === type &&
-                ((symbol.flags & ts.SymbolFlags.Optional) !== 0) === optional &&
-                propertyIsReadOnly(symbol) === readOnly &&
-                (symbol.declarations ?? []).every(
+        const type = this.checker.getTypeOfSymbol(first.symbol);
+        const readOnly = propertyIsReadOnly(first.symbol);
+        const optional = structPropertyOptional(first);
+        return declared.every(
+            (property) =>
+                this.checker.getTypeOfSymbol(property.symbol) === type &&
+                property.optionality === first.optionality &&
+                structPropertyOptional(property) === optional &&
+                propertyIsReadOnly(property.symbol) === readOnly &&
+                (property.symbol.declarations ?? []).every(
                     (declaration) =>
                         !this.getterProperties.has(declaration) &&
                         !this.setterProperties.has(declaration),
@@ -9196,26 +9275,53 @@ export class DataTypeRegistry {
     }
 
     /**
-     * The properties of a mapped type selecting a record's properties by
-     * key (`keyedSelection`) whose arguments the instantiation in force
-     * substitutes: those of the record that the keys' literals select, or
-     * leave, each keeping its modifiers, as a homomorphic mapped type does.
-     * Undefined for any other type and for keys that are not string
-     * literals.
+     * The selection of a mapped type selecting a record's properties by key
+     * (`keyedSelection`) whose arguments the instantiation in force
+     * substitutes: the checker gives its properties against the parameters'
+     * constraints, the instantiation's record holds them.
      */
-    private keyedProperties(type: ts.Type): readonly ts.Symbol[] | undefined {
+    private substitutedSelection(type: ts.Type): KeyedSelection | undefined {
         const selection = keyedSelection(type);
-        if (!selection || !this.mentionsSubstitution(type)) return undefined;
-        const names = new Set<string>();
-        for (const key of unionMembers(
-            this.resolveTypeParameter(selection.keys),
-        )) {
-            if (!key.isStringLiteral()) return undefined;
-            names.add(key.value);
+        return selection && this.mentionsSubstitution(type)
+            ? selection
+            : undefined;
+    }
+
+    /**
+     * The properties of a mapped type over a substituted record
+     * (`substitutedSelection`): those of the record that the keys' literals
+     * select, or leave, or all of them (`keyof T`), each keeping its
+     * modifiers but the optionality the mapped type gives it, as a
+     * homomorphic mapped type does. Undefined for any other type and for
+     * keys that are not string literals.
+     */
+    private keyedProperties(
+        type: ts.Type,
+    ): readonly StructProperty[] | undefined {
+        const selection = this.substitutedSelection(type);
+        if (!selection) return undefined;
+        let names: Set<string> | undefined;
+        if (selection.keys) {
+            names = new Set();
+            for (const key of unionMembers(
+                this.resolveTypeParameter(selection.keys),
+            )) {
+                if (!key.isStringLiteral()) return undefined;
+                names.add(key.value);
+            }
         }
         return this.structProperties(
             this.resolveTypeParameter(selection.record),
-        ).filter((property) => names.has(property.name) === selection.kept);
+        )
+            .filter(
+                (property) =>
+                    !names ||
+                    names.has(property.symbol.name) === selection.kept,
+            )
+            .map(({ symbol, optionality }) => ({
+                symbol,
+                optionality: selection.optionality ?? optionality,
+            }));
     }
 
     /**
@@ -9229,21 +9335,43 @@ export class DataTypeRegistry {
         readonly shapes: number;
         readonly properties: ReadonlyMap<
             string,
-            readonly { readonly owner: ts.Type; readonly symbol: ts.Symbol }[]
+            readonly OwnedStructProperty[]
         >;
     } {
         const shapes = this.recordComponentOf(type)?.shapes ?? [type];
-        const properties = new Map<
-            string,
-            { owner: ts.Type; symbol: ts.Symbol }[]
-        >();
+        const properties = new Map<string, OwnedStructProperty[]>();
         for (const owner of shapes)
-            for (const symbol of this.structProperties(owner)) {
-                const declared = properties.get(symbol.name);
-                if (declared) declared.push({ owner, symbol });
-                else properties.set(symbol.name, [{ owner, symbol }]);
+            for (const property of this.structProperties(owner)) {
+                const declared = properties.get(property.symbol.name);
+                if (declared) declared.push({ owner, ...property });
+                else
+                    properties.set(property.symbol.name, [
+                        { owner, ...property },
+                    ]);
             }
         return { shapes: shapes.length, properties };
+    }
+
+    /**
+     * The type a struct property holds, as the checker types a concrete
+     * mapped type's: its symbol's, with `undefined` where the mapped type
+     * makes it optional (`Partial<T>`) and without it where it makes it
+     * required (`Required<T>`).
+     */
+    private structPropertyType(
+        { symbol, optionality }: StructProperty,
+        location: ts.Node,
+    ): ts.Type {
+        const type = this.checker.getTypeOfSymbolAtLocation(symbol, location);
+        if (optionality === "+")
+            return this.checker.getNullableType(type, ts.TypeFlags.Undefined);
+        if (optionality === undefined) return type;
+        const present = this.checker.getNonNullableType(type);
+        return unionMembers(type).some(
+            (member) => (member.flags & ts.TypeFlags.Null) !== 0,
+        )
+            ? this.checker.getNullableType(present, ts.TypeFlags.Null)
+            : present;
     }
 
     /**
@@ -9305,21 +9433,18 @@ export class DataTypeRegistry {
         const partial = this.assertedEmpty(type);
         const view = this.recordViews.has(this.structIdentity(type));
         const proxy = this.proxyRecords.has(this.structIdentity(type));
-        const valueOf = ({
-            owner,
-            symbol: property,
-        }: {
-            owner: ts.Type;
-            symbol: ts.Symbol;
-        }): {
+        const valueOf = (
+            owned: OwnedStructProperty,
+        ): {
             type: ts.Type;
             mapped: DataType | undefined;
             callable: boolean;
         } => {
+            const { owner, symbol: property } = owned;
             const declaration =
                 property.valueDeclaration ?? property.declarations?.[0];
-            const propertyType = this.checker.getTypeOfSymbolAtLocation(
-                property,
+            const propertyType = this.structPropertyType(
+                owned,
                 declaration ?? node,
             );
             const callableType = this.checker.getNonNullableType(propertyType);
@@ -9475,12 +9600,7 @@ export class DataTypeRegistry {
                 partial ||
                 absent ||
                 declared.some(({ owner }) => this.mayLackProperty(owner, name));
-            const optional =
-                unchecked ||
-                declared.some(
-                    ({ symbol }) =>
-                        (symbol.flags & ts.SymbolFlags.Optional) !== 0,
-                );
+            const optional = unchecked || declared.some(structPropertyOptional);
             // Members storing it with and without an empty state store it
             // with one.
             const nullable = values.find(
