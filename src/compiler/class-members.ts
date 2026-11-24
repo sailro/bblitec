@@ -399,26 +399,32 @@ export function classMethod(
     return declared;
 }
 
+/** Whether a member's name is the library's well-known `[Symbol.iterator]`. */
+export function namesSymbolIterator(
+    checker: ts.TypeChecker,
+    name: ts.DeclarationName | undefined,
+): boolean {
+    return (
+        name !== undefined &&
+        ts.isComputedPropertyName(name) &&
+        ts.isPropertyAccessExpression(name.expression) &&
+        name.expression.name.text === "iterator" &&
+        ts.isIdentifier(name.expression.expression) &&
+        name.expression.expression.text === "Symbol" &&
+        declaredInDefaultLibrary(
+            resolvedSymbol(checker, name.expression.expression),
+        )
+    );
+}
+
 /** The `[Symbol.iterator]` method an instance of `table`'s class sees. */
 export function classIteratorMethod(
     checker: ts.TypeChecker,
     table: ClassMemberTable,
 ): ts.MethodDeclaration | undefined {
     for (const link of classChain(table))
-        for (const method of link.methods.values()) {
-            const name = method.name;
-            if (
-                ts.isComputedPropertyName(name) &&
-                ts.isPropertyAccessExpression(name.expression) &&
-                name.expression.name.text === "iterator" &&
-                ts.isIdentifier(name.expression.expression) &&
-                name.expression.expression.text === "Symbol" &&
-                declaredInDefaultLibrary(
-                    resolvedSymbol(checker, name.expression.expression),
-                )
-            )
-                return method;
-        }
+        for (const method of link.methods.values())
+            if (namesSymbolIterator(checker, method.name)) return method;
     return undefined;
 }
 

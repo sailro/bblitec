@@ -759,11 +759,8 @@ function observe(program: ts.Program): ProgramObservations {
             const untyped = (type: ts.Type): boolean =>
                 (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0;
             const asserted = typeOf(node);
-            // `x as unknown as T` retypes the value `x` holds: it is open
-            // only where that operand itself is untyped.
-            let operand = unwrapTypePreserving(node.expression);
-            while (isTypeAssertion(operand) && untyped(typeOf(operand)))
-                operand = unwrapTypePreserving(operand.expression);
+            // It is open only where the operand it retypes is untyped.
+            const operand = assertedOperand(checker, node);
             // No value has type `never` (an exhaustiveness check's
             // `x satisfies never`): such an assertion retypes nothing.
             if (
@@ -1087,4 +1084,101 @@ function observe(program: ts.Program): ProgramObservations {
         foreignPrototype,
         prototypeSetters,
     };
+}
+
+/**
+ * The operand an assertion retypes: `x as unknown as T` retypes the value
+ * `x` holds, past the assertions to an untyped type between them.
+ */
+function assertedOperand(
+    checker: ts.TypeChecker,
+    assertion: ts.AsExpression | ts.TypeAssertion,
+): ts.Expression {
+    let operand = unwrapTypePreserving(assertion.expression);
+    while (
+        isTypeAssertion(operand) &&
+        (checker.getTypeAtLocation(operand).flags &
+            (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !==
+            0
+    )
+        operand = unwrapTypePreserving(operand.expression);
+    return operand;
+}
+
+/** The program's own object a keyed collection type names, and the site naming it. */
+export interface CollectionView {
+    readonly own: ts.Type;
+    readonly site: ts.Node;
+}
+
+/** @unjournaled A pure function of the checked program, kept across replays. */
+const views = new WeakMap<
+    ts.Program,
+    ReadonlyMap<ts.Type, readonly CollectionView[]>
+>();
+
+/**
+ * The program's own objects a keyed collection type (`Map`, `ReadonlyMap`,
+ * `Set`, ...) names, by a cast (`view as ReadonlyMap<K, V>`) or an
+ * annotated declaration's initializer: each such instantiation, and the
+ * type of each object that implements it with the site naming it. Only a
+ * type node naming a keyed collection is typed: creating other types
+ * earlier would reorder the checker's unions, and the properties mapped
+ * over them.
+ */
+export function collectionViews(
+    program: ts.Program,
+): ReadonlyMap<ts.Type, readonly CollectionView[]> {
+    const known = views.get(program);
+    if (known) return known;
+    const checker = program.getTypeChecker();
+    const found = new Map<ts.Type, CollectionView[]>();
+    const namesCollection = (type: ts.TypeNode | undefined): boolean =>
+        type !== undefined &&
+        ts.isTypeReferenceNode(type) &&
+        KEYED_COLLECTIONS.has(
+            (ts.isIdentifier(type.typeName)
+                ? type.typeName
+                : type.typeName.right
+            ).text,
+        );
+    const view = (
+        site: ts.Node,
+        typeNode: ts.TypeNode,
+        value: ts.Expression,
+    ): void => {
+        const named = checker.getTypeAtLocation(typeNode);
+        const own = checker.getTypeAtLocation(value);
+        if (
+            !KEYED_COLLECTIONS.has(libraryName(named) ?? "") ||
+            (own.flags & ts.TypeFlags.Object) === 0 ||
+            KEYED_COLLECTIONS.has(libraryName(own) ?? "")
+        )
+            return;
+        const list = found.get(named);
+        if (!list) found.set(named, [{ own, site }]);
+        else if (!list.some((implementation) => implementation.own === own))
+            list.push({ own, site });
+    };
+    for (const source of program.getSourceFiles())
+        if (!source.isDeclarationFile)
+            forEachAnalysisNode(
+                source,
+                (node) => {
+                    if (isTypeAssertion(node) && namesCollection(node.type))
+                        view(node, node.type, assertedOperand(checker, node));
+                    else if (
+                        (ts.isVariableDeclaration(node) ||
+                            ts.isParameter(node) ||
+                            ts.isPropertyDeclaration(node)) &&
+                        node.initializer &&
+                        node.type &&
+                        namesCollection(node.type)
+                    )
+                        view(node, node.type, node.initializer);
+                },
+                { types: "skip" },
+            );
+    views.set(program, found);
+    return found;
 }

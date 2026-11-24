@@ -44,6 +44,7 @@ import {
     namedMember,
     accessedPropertySymbol,
 } from "./symbols.js";
+import { collectionViews } from "./program-observations.js";
 import { doubleCpp } from "../cpp-literals.js";
 import { foldNumericBinary } from "../lowering/pinned-operators.js";
 import { numberFormatOf } from "./number-intrinsics.js";
@@ -2267,7 +2268,8 @@ export class EvaluationOrder {
         }
         const declaration = calledDeclaration(this.checker, call);
         if (!declaration) return undefined;
-        if (declaration.getSourceFile().isDeclarationFile) return "library";
+        if (declaration.getSourceFile().isDeclarationFile)
+            return this.callsOwnCollectionView(call) ? undefined : "library";
         const callee = unwrapExpression(call.expression);
         if (ts.isMethodDeclaration(declaration))
             return this.declarationUnits(declaration);
@@ -2280,6 +2282,28 @@ export class EvaluationOrder {
         return ts.isArrowFunction(callee) || ts.isFunctionExpression(callee)
             ? [callee]
             : undefined;
+    }
+
+    /**
+     * Whether a library collection method is called on a view the program's
+     * own object implements (`collectionViews`): the object's own member
+     * runs, a function value the analysis cannot name.
+     */
+    private callsOwnCollectionView(call: ts.CallExpression): boolean {
+        const views = collectionViews(this.hierarchy.program);
+        if (!views.size) return false;
+        const member = namedMember(
+            this.checker,
+            unwrapExpression(call.expression),
+        );
+        return (
+            member !== undefined &&
+            views.has(
+                this.checker.getNonNullableType(
+                    this.checker.getTypeAtLocation(member.expression),
+                ),
+            )
+        );
     }
 
     /** Whether an expression is the language's `Math.random`. */

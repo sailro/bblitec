@@ -3588,6 +3588,45 @@ export class DeclarationLowerer {
         });
     }
 
+    /**
+     * The object literal a record binding's initializer is, when the
+     * literal creates the object the binding holds (`withLiteralSelfBinding`):
+     * no spread copies another object into it, and nothing rebinds the name.
+     */
+    private selfNamingLiteral(
+        name: ts.Identifier,
+        type: DataType,
+        initializer: ts.Expression,
+    ): ts.ObjectLiteralExpression | undefined {
+        return type.kind === "struct" &&
+            ts.isObjectLiteralExpression(initializer) &&
+            !initializer.properties.some(ts.isSpreadAssignment) &&
+            !this.context.sharedClosures.identifierIsRebound(name)
+            ? initializer
+            : undefined;
+    }
+
+    /**
+     * Lowers a declaration's initializer; with `literal`, one whose members
+     * name the binding, that literal binds the name to the object it creates
+     * and declares the binding itself, so its result is the binding's name.
+     */
+    private lowerSelfNamingLiteral(
+        name: ts.Identifier,
+        cppName: string,
+        literal: ts.ObjectLiteralExpression | undefined,
+        lower: () => string,
+    ): string {
+        if (!literal) return lower();
+        const cpp = withLiteralSelfBinding(literal, { name, cppName }, lower);
+        if (cpp !== cppName)
+            this.context.fail(
+                name.parent,
+                `Record '${name.text}' names itself in its methods, but its literal did not create the object the binding holds.`,
+            );
+        return cpp;
+    }
+
     private emitAnnotatedDataDeclaration(
         declaration: ts.VariableDeclaration,
         cppName: string,
@@ -3709,23 +3748,43 @@ export class DeclarationLowerer {
                         type,
                         declaration.initializer,
                     );
-                const initializer = snapshot
-                    ? this.context.dataLowerer.compileKnownValueForSink(
-                          snapshot,
-                          type,
-                          declaration.initializer,
-                      )
-                    : this.context.dataLowerer.compileForSink(
-                          declaration.initializer,
-                          type,
-                      );
+                const source = declaration.initializer;
+                const declared = this.context.symbols.valueSymbol(name);
+                const selfLiteral =
+                    !snapshot &&
+                    !sharedClosureStorage &&
+                    declared !== undefined &&
+                    initializerNamesBinding(
+                        this.context.checker,
+                        this.context.symbols,
+                        declared,
+                        source,
+                    )
+                        ? this.selfNamingLiteral(name, type, literal)
+                        : undefined;
+                const initializer = this.lowerSelfNamingLiteral(
+                    name,
+                    cppName,
+                    selfLiteral,
+                    () =>
+                        snapshot
+                            ? this.context.dataLowerer.compileKnownValueForSink(
+                                  snapshot,
+                                  type,
+                                  source,
+                              )
+                            : this.context.dataLowerer.compileForSink(
+                                  source,
+                                  type,
+                              ),
+                );
                 const cell = sharedClosureStorage
                     ? emitSharedCell(this.context, cppName, {
                           type: this.context.dataTypes.cppType(type),
                           initializer,
                       })
                     : undefined;
-                if (!cell)
+                if (!cell && !selfLiteral)
                     this.context.emit({
                         kind: "declaration",
                         type: this.context.dataTypes.cppType(type),
@@ -3845,7 +3904,10 @@ export class DeclarationLowerer {
                     if (!this.context.varBindings.hoists(declaration))
                         this.context.declaredCollection(bound);
                 }
-                this.context.bindings.defineVariable(name, bound);
+                // A self-naming literal bound the name to the object it creates.
+                if (selfLiteral)
+                    this.context.bindings.rebindVariable(name, bound);
+                else this.context.bindings.defineVariable(name, bound);
                 if (arraySnapshot)
                     this.context.dataLowerer.retainArrayLiteralFacts(
                         bound,
@@ -4300,14 +4362,9 @@ export class DeclarationLowerer {
         // a shared cell when they run, after it is filled.
         if (initializerReferencesBinding && annotated.kind === "struct")
             this.context.dataTypes.markStoredObjectReferences(annotated);
-        const selfLiteral =
-            initializerReferencesBinding &&
-            annotated.kind === "struct" &&
-            ts.isObjectLiteralExpression(initializer) &&
-            !initializer.properties.some(ts.isSpreadAssignment) &&
-            !this.context.sharedClosures.identifierIsRebound(name)
-                ? initializer
-                : undefined;
+        const selfLiteral = initializerReferencesBinding
+            ? this.selfNamingLiteral(name, annotated, initializer)
+            : undefined;
         const selfReferentialBinding =
             initializerReferencesBinding &&
             !selfLiteral &&
@@ -4511,18 +4568,12 @@ export class DeclarationLowerer {
                     initializerBoundary,
                 );
             };
-            const initializerCpp = selfLiteral
-                ? withLiteralSelfBinding(
-                      selfLiteral,
-                      { name, cppName },
-                      lowerInitializer,
-                  )
-                : lowerInitializer();
-            if (selfLiteral && initializerCpp !== cppName)
-                this.context.fail(
-                    declaration,
-                    `Record '${name.text}' names itself in its methods, but its literal did not create the object the binding holds.`,
-                );
+            const initializerCpp = this.lowerSelfNamingLiteral(
+                name,
+                cppName,
+                selfLiteral,
+                lowerInitializer,
+            );
             const sourceValue = ts.isIdentifier(initializer)
                 ? this.context.bindings.lookupOptional(initializer)
                 : undefined;

@@ -299,6 +299,7 @@ import { renderClosure, type NativeExpression } from "./closure-captures.js";
 import { compileWithRuntimeCaseSplit } from "./runtime-case-split.js";
 import { numberToStringCpp } from "../cpp-expressions.js";
 import { activeSurvey } from "./survey.js";
+import { KEYED_COLLECTIONS } from "./receiver-methods.js";
 
 /** The global URI and base64 codecs, each a runtime function of its argument's ToString. */
 const URI_FUNCTIONS: ReadonlyMap<string, string> = new EmissionMap([
@@ -4557,6 +4558,25 @@ export class ExpressionLowerer {
                     : field?.expression.kind === ts.SyntaxKind.ThisKeyword
                       ? this.context.resolveThisField(field.name)
                       : undefined;
+            // A collection view the program's own object implements is
+            // that object's record (`collectionViews`): its calls are the
+            // members the object has.
+            const view =
+                member &&
+                this.context.checker.getNonNullableType(
+                    this.context.checker.getTypeAtLocation(member.expression),
+                );
+            if (
+                member &&
+                view &&
+                KEYED_COLLECTIONS.has(libraryName(view) ?? "") &&
+                this.context.dataLowerer.dataTypeAt(member.expression)?.kind ===
+                    "struct"
+            )
+                this.context.fail(
+                    callee,
+                    `The program's own object stored as '${this.context.checker.typeToString(view)}' does not implement '${member.name}', which this call reads.`,
+                );
             this.context.fail(
                 callee,
                 `Unsupported call target '${callee.getText()}'` +

@@ -1,5 +1,9 @@
 import type { DataType, HandleKind } from "./data-types/model.js";
-import { programObservations } from "./program-observations.js";
+import {
+    collectionViews,
+    programObservations,
+} from "./program-observations.js";
+import { KEYED_COLLECTIONS } from "./receiver-methods.js";
 import {
     belongsToEntryEngine,
     isEngineScopedHandleKind,
@@ -6383,6 +6387,11 @@ export class DataTypeRegistry {
                     ? { kind: "vector", element: storedElement }
                     : { kind: "span", element: storedElement };
             }
+            // A view the program's own object implements is that object.
+            if (symbolName && KEYED_COLLECTIONS.has(symbolName)) {
+                const own = this.ownCollectionView(type, symbolName, node);
+                if (own) return own;
+            }
             // Erased object and DOM keys carry native weak identity tokens.
             // Other concrete weak collections retain the Map/Set adaptation.
             if (
@@ -7386,6 +7395,15 @@ export class DataTypeRegistry {
                     return undefined;
                 const argument = call.arguments[index];
                 if (!argument) {
+                    // An omitted optional parameter holds `undefined`.
+                    const declaration = parameter.valueDeclaration;
+                    if (
+                        (declared.flags & ts.TypeFlags.Unknown) !== 0 &&
+                        declaration &&
+                        ts.isParameter(declaration) &&
+                        this.checker.isOptionalParameter(declaration)
+                    )
+                        return this.checker.getUndefinedType();
                     if ((declared.flags & ts.TypeFlags.Unknown) !== 0)
                         this.fail(
                             call,
@@ -9286,6 +9304,44 @@ export class DataTypeRegistry {
                     seen,
                 ),
             );
+    }
+
+    /**
+     * The record a keyed collection instantiation stores when the program's
+     * own object implements it (`collectionViews`): a `ReadonlyMap` or
+     * `ReadonlySet` view's member reads and calls are that object's own,
+     * and one layout holds one such object type. A `Map`, `Set` or weak
+     * collection is native storage no such object is.
+     */
+    private ownCollectionView(
+        view: ts.Type,
+        name: string,
+        node: ts.Node,
+    ): DataType | undefined {
+        const implementations = collectionViews(
+            this.classHierarchy.program,
+        ).get(view);
+        const implemented = implementations?.[0];
+        if (!implementations || !implemented) return undefined;
+        const { own, site } = implemented;
+        if (name !== "ReadonlyMap" && name !== "ReadonlySet")
+            return this.fail(
+                site,
+                `A '${this.checker.typeToString(own)}' object stored as '${this.checker.typeToString(view)}' is not a native ${name}: only a ReadonlyMap or ReadonlySet view keeps the program's own object and its members.`,
+            );
+        const stored = implementations.map((implementation) =>
+            this.fromStoredTsType(implementation.own, node),
+        );
+        const [first] = stored;
+        if (
+            first?.kind !== "struct" ||
+            stored.some((other) => !other || !dataTypesEqual(other, first))
+        )
+            return this.fail(
+                site,
+                `A '${this.checker.typeToString(view)}' the program's own object implements is stored as that object's record; ${implementations.map((implementation) => `'${this.checker.typeToString(implementation.own)}'`).join(" and ")} share no one record layout.`,
+            );
+        return first;
     }
 
     private structIdentity(type: ts.Type): ts.Symbol | ts.Type | string {

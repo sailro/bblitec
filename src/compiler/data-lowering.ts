@@ -352,7 +352,11 @@ import {
 } from "./home-object-methods.js";
 import { integerCounterOf } from "./integer-loops.js";
 import { provenVoidAsUndefined, readsErasedVoid } from "./undefined-values.js";
-import { classPrototypeKeys, classMemberTable } from "./class-members.js";
+import {
+    classPrototypeKeys,
+    classMemberTable,
+    namesSymbolIterator,
+} from "./class-members.js";
 import { isPlainJsonRecord } from "./json-record-views.js";
 
 /** A source a struct local cannot hold in place: JSON, or a native object. */
@@ -2127,8 +2131,13 @@ export class DataLowerer {
                 } else argumentsCpp.push(value);
                 continue;
             }
+            // An omitted argument is `undefined`: an optional parameter's
+            // absent state, an undefined document, or the one value an
+            // undefined-only parameter holds.
             if (
                 parameter.kind !== "optional" &&
+                parameter.kind !== "json" &&
+                parameter.kind !== "undefined" &&
                 !functionType.optionalParameters?.includes(runtimeIndex - 1)
             ) {
                 this.context.fail(
@@ -22267,10 +22276,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (iteratorRange) {
             return iteratorRange;
         }
-        // An instance whose class implements `[Symbol.iterator]`.
+        // An object implementing `[Symbol.iterator]`.
         const iterable = knownTuple
             ? undefined
-            : this.context.classLowerer.compileIterableIterator(expression);
+            : this.iterableIterator(expression);
         if (iterable?.dataType?.kind === "iterator")
             return { container: iterable, element: iterable.dataType.element };
         const rawValue =
@@ -22406,6 +22415,58 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * reaches the array, as the source's does. Map and Set iterator
      * methods return their container from the method call itself.
      */
+    /**
+     * The iterator `for...of` and spreads take from an object implementing
+     * the iterable protocol: a class instance's generator method
+     * (`compileIterableIterator`), or the iterator a record's own
+     * `[Symbol.iterator]` member returns, a stored function called with no
+     * arguments. Undefined for any other value.
+     */
+    private iterableIterator(expression: ts.Expression): Value | undefined {
+        const instance =
+            this.context.classLowerer.compileIterableIterator(expression);
+        if (instance) return instance;
+        const record = this.dataTypeAt(expression);
+        if (
+            record?.kind !== "struct" ||
+            this.context.dataTypes.isClassStruct(record.name)
+        )
+            return undefined;
+        const { checker } = this.context;
+        const protocol = checker
+            .getPropertiesOfType(checker.getTypeAtLocation(expression))
+            .find((property) =>
+                property.declarations?.some((declaration) =>
+                    namesSymbolIterator(
+                        checker,
+                        ts.getNameOfDeclaration(declaration),
+                    ),
+                ),
+            );
+        if (!protocol) return undefined;
+        const field = this.context.dataTypes.findStructField(
+            record.name,
+            protocol.name,
+            expression,
+        );
+        const iterator =
+            field?.type.kind === "function" &&
+            field.type.parameters.length === 0 &&
+            field.type.result?.kind === "iterator"
+                ? field.type.result
+                : undefined;
+        if (!field || !iterator)
+            return this.context.fail(
+                expression,
+                `An object of type '${checker.typeToString(checker.getTypeAtLocation(expression))}' is iterated through its own [Symbol.iterator] member, ${field ? "which must be a function returning an iterator" : "which its record does not implement"}.`,
+            );
+        const owner = this.context.compileValue(expression);
+        return this.storedCallResult(
+            `bbl::js::snapshot_callback(${this.fieldSlot(owner.cpp, record.name, field.name)})()`,
+            iterator,
+        );
+    }
+
     private iteratorMethodTarget(
         expression: ts.Expression,
     ):
@@ -23182,9 +23243,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         const rawIterable =
             projected ??
-            this.context.classLowerer.compileIterableIterator(
-                spread.expression,
-            ) ??
+            this.iterableIterator(spread.expression) ??
             (ts.isIdentifier(expression)
                 ? this.materializeConstantArray(expression)
                 : undefined) ??
