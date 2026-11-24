@@ -5796,6 +5796,26 @@ export class DataTypeRegistry {
               };
     }
 
+    /**
+     * The storage of an array read that may fall past the array's end
+     * (`bbl::js::array_relative_at`), whose JavaScript value is then
+     * `undefined`: the element's own where its absent state holds that (an
+     * optional, a shared object's null reference), else an optional of it.
+     */
+    public absentableElement(
+        element: DataType,
+        undefinedOnly = false,
+    ): DataType {
+        return element.kind === "optional" ||
+            (element.kind === "struct" && this.isReferenceStruct(element.name))
+            ? element
+            : {
+                  kind: "optional",
+                  inner: element,
+                  ...(undefinedOnly ? { undefinedOnly: true } : {}),
+              };
+    }
+
     /** The absent spelling of a nullable type: an empty optional, or the null reference of a shared object. */
     public absentValue(type: DataType): string {
         const cpp = this.cppType(type);

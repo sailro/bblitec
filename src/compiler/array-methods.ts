@@ -56,10 +56,9 @@ export function compileArrayValueMethod(
         // A resource the array stores with its engine keeps that storage,
         // as an index read takes it; any other element is what its type
         // says.
-        const stored: DataType =
-            type.element.kind === "optional"
-                ? type.element
-                : { kind: "optional", inner: type.element };
+        const stored = lowerer.context.dataTypes.absentableElement(
+            type.element,
+        );
         const element =
             stored.kind === "optional" ? stored.inner : type.element;
         const resultType: DataType =

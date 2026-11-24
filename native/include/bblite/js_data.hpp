@@ -538,6 +538,19 @@ template <typename Values> [[nodiscard]] Values retain_typed_array_owner(const V
     }
 }
 
+/** A read through null or undefined: JavaScript's TypeError. */
+[[noreturn]] inline void
+throw_nullish_access(const char* message = "Cannot read properties of null or undefined") {
+    throw NamedError("TypeError", message);
+}
+
+/** The object a pointer selects; a null one is a read through null or undefined. */
+template <typename T> [[nodiscard]] T& present_pointee(T* pointer) {
+    if (!pointer)
+        throw_nullish_access();
+    return *pointer;
+}
+
 /**
  * A JavaScript object reference: the plain-data records a scene declares
  * are shared by identity, and this is the handle that shares them.
@@ -665,8 +678,10 @@ public:
 
 private:
     T& require_value() const {
-        if (!block_ || !block_->payload_alive)
-            throw std::runtime_error("Cannot access a nullish object.");
+        if (!block_)
+            throw_nullish_access();
+        if (!block_->payload_alive)
+            throw std::runtime_error("Cannot access a released object.");
         return block_->value;
     }
 
@@ -1310,12 +1325,6 @@ template <typename T>
  * object, array and primitive has its kind's in a program that gives no object another one.
  */
 enum class Prototype : std::uint8_t { object, array, string, number, boolean };
-
-/** A read through null or undefined: JavaScript's TypeError. */
-[[noreturn]] inline void
-throw_nullish_access(const char* message = "Cannot read properties of null or undefined") {
-    throw NamedError("TypeError", message);
-}
 
 /** A value asserted to a class it is no instance of: TypeError, as a private member read throws. */
 template <typename T = void> [[noreturn]] T throw_not_an_instance() {

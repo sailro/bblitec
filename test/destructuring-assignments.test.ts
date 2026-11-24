@@ -62,6 +62,49 @@ test("destructuring snapshots preserve nullable generic lanes through erased ass
     });
 });
 
+test("array destructuring binds a shared record or its absence, as an Array.at read does", (t) => {
+    const source = `
+        interface Undo { elevation: number[]; tick: number }
+        interface Channel { name: string; capture?: () => Partial<Undo> }
+        const channels: Channel[] = [{ name: "a", capture: () => ({ tick: 3 }) }, { name: "b" }];
+        const captures = channels.map((channel) => channel.capture?.());
+        const [captured, absent, beyond] = captures;
+        if (captured?.tick !== 3 || captured.elevation !== undefined || absent !== undefined || beyond !== undefined)
+            throw new Error("bindings");
+        const [first, second] = channels;
+        if (first?.name !== "a" || second?.name !== "b") throw new Error("records");
+        if (channels.at(-1)?.name !== "b" || channels.at(5) !== undefined || captures.at(0)?.tick !== 3)
+            throw new Error("at");
+        let thrown = "";
+        try {
+            const [{ tick }] = [absent] as Partial<Undo>[];
+            thrown = "no throw " + tick;
+        } catch (error) {
+            thrown = error instanceof TypeError ? "TypeError" : "other";
+        }
+        if (thrown !== "TypeError") throw new Error("destructuring undefined: " + thrown);
+    `;
+    runInNewContext(
+        ts.transpileModule(source, {
+            compilerOptions: { target: ts.ScriptTarget.ES2022 },
+        }).outputText,
+    );
+    const result = compileSource(source);
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(
+        tools,
+        "destructuring-shared-record-lanes",
+        result.cpp,
+        {
+            timeoutMs: 10000,
+        },
+    );
+});
+
 test("retaining a setter-only record keeps its explicit storage refusal", () => {
     assert.throws(
         () =>

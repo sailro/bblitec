@@ -201,8 +201,8 @@ int main() {
                 (void)absent.operator->();
             else
                 (void)*absent;
-        } catch (const std::runtime_error& error) {
-            refused = std::string(error.what()) == "Cannot access a nullish object.";
+        } catch (const bbl::js::NamedError& error) {
+            refused = error.name == "TypeError";
         }
         assert(refused);
     }

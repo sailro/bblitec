@@ -8425,10 +8425,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             nullability(this.context.checker.getTypeAtLocation(binding.name))
                 .undefined
         ) {
-            const lane: DataType = {
-                kind: "optional",
-                inner: vector.dataType.element,
-            };
+            const lane = this.context.dataTypes.absentableElement(
+                vector.dataType.element,
+            );
             return {
                 ...this.leafValue(
                     `bbl::js::array_relative_at<${this.context.dataTypes.cppType(lane)}>(${vector.cpp}, ${index}.0)`,
@@ -19663,10 +19662,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const hasNull = sourceAbsence?.null === true;
         const hasUndefined = sourceAbsence?.undefined === true;
         if (vector) {
-            const resultType: DataType =
-                vector.element.kind === "optional"
-                    ? vector.element
-                    : { kind: "optional", inner: vector.element };
+            const resultType = this.context.dataTypes.absentableElement(
+                vector.element,
+            );
             item = this.leafValue(
                 `bbl::js::array_relative_at<${this.context.dataTypes.cppType(resultType)}>(${source.cpp}, ${index}.0)`,
                 resultType,
