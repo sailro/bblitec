@@ -9195,7 +9195,10 @@ class Compiler implements LoweringServices {
                       ? "bbl::FileTexture"
                       : producerTexture && value.textureStorage === "pixels"
                         ? "bbl::PixelsTexture"
-                        : value.absenceTagType
+                        : // The tagged slot's type is the slot's own: a local
+                          // holding the value read through it holds that value.
+                          value.absenceTagType &&
+                            storage === value.absenceTagStorageCpp
                           ? this.dataTypes.cppType(value.absenceTagType)
                           : value.dataType
                             ? this.dataTypes.cppType(value.dataType)
