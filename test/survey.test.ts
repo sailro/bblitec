@@ -2406,3 +2406,28 @@ test("a survey records an invalid reached shader material's WGSL at the statemen
         listed(report),
     );
 });
+
+test("a survey records a deferred admission's refusal at the statement that noted it", () => {
+    // TAA's tracked-camera admission is decided once the program lowered: a
+    // compile refuses there, and a survey's census lists it and goes on.
+    const { report } = surveySource(
+        `import {createEngine,createSceneContext,createArcRotateCamera,createRenderTarget,createRenderTask,
+            createTaaPostProcessTask} from "babylon-lite";
+        const engine=await createEngine({}); const scene=createSceneContext(engine,{defaultRenderTask:false});
+        const camera=createArcRotateCamera(0,1,5,{x:0,y:0,z:0}); scene.camera=camera;
+        const rt=createRenderTarget({format:engine.format,dFormat:"depth24plus-stencil8",size:engine,samples:1});
+        const source=createRenderTask({rt},engine,scene);
+        const target=camera.target;Object.assign(target,{x:2});
+        const taa=createTaaPostProcessTask({sourceTexture:rt,sourceRenderTask:source,targetTexture:engine.scRT},engine,scene);
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-taa-admission.ts") },
+        { roots: false },
+    );
+    assert.equal(report.complete, true, report.terminal);
+    assert.match(
+        listed(report),
+        /^\d+: TAA requires tracked camera mutations:/m,
+        listed(report),
+    );
+});

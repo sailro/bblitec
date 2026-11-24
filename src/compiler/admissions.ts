@@ -15,6 +15,7 @@ interface AdmissionContext
             | "fail"
             | "isRuntimeResourceConstruction"
             | "isRuntimeCallback"
+            | "refuseLoweredSite"
             | "sceneManifest"
             | "sourceFile"
         > {
@@ -71,7 +72,7 @@ export class AdmissionRecorder {
             const boundary = this.deferredAdmissionFailures.find(
                 (failure) => failure.capability === "node-geometry",
             );
-            if (boundary) this.context.fail(boundary.node, boundary.message);
+            if (boundary) this.refuseAt(boundary.node, boundary.message);
             if (this.context.features.has("animation:property"))
                 this.context.fail(
                     this.context.sourceFile,
@@ -82,7 +83,7 @@ export class AdmissionRecorder {
             const admission = this.deferredAdmissionFailures.find(
                 (failure) => failure.capability === "node-input",
             );
-            if (admission) this.context.fail(admission.node, admission.message);
+            if (admission) this.refuseAt(admission.node, admission.message);
             if (
                 this.context.features.has("material:node-inputs") &&
                 this.temporalRegisteredScenes.length > 1
@@ -100,14 +101,14 @@ export class AdmissionRecorder {
               )
             : undefined;
         if (colorAdmission)
-            this.context.fail(colorAdmission.node, colorAdmission.message);
+            this.refuseAt(colorAdmission.node, colorAdmission.message);
         // A read that cannot write the array leaves every later group's
         // snapshot equal to the record's color.
         if (this.materialColorReads.some((read) => !read.aliasFree)) {
             const boundary = this.deferredAdmissionFailures.find(
                 (failure) => failure.capability === "material-colors",
             );
-            if (boundary) this.context.fail(boundary.node, boundary.message);
+            if (boundary) this.refuseAt(boundary.node, boundary.message);
             if (this.temporalRegisteredScenes.length > 1)
                 this.context.fail(
                     this.context.sourceFile,
@@ -120,7 +121,7 @@ export class AdmissionRecorder {
                 this.textCameraMutation ??
                 this.untrackedTaaCameraWrites[0]?.node;
             if (camera)
-                this.context.fail(
+                this.refuseAt(
                     camera,
                     "Text currently requires a static camera; live camera writers and controls are not represented.",
                 );
@@ -132,14 +133,14 @@ export class AdmissionRecorder {
             const admission = this.deferredAdmissionFailures.find(
                 (failure) => failure.capability === "text",
             );
-            if (admission) this.context.fail(admission.node, admission.message);
+            if (admission) this.refuseAt(admission.node, admission.message);
         }
         if (this.context.features.has("camera:world-matrix-version")) {
             const unsupported = this.untrackedTaaCameraWrites.find(
                 (write) => !write.cameraVersionSafe,
             );
             if (unsupported)
-                this.context.fail(
+                this.refuseAt(
                     unsupported.node,
                     `Camera worldMatrixVersion requires tracked mutations: ${unsupported.reason}.`,
                 );
@@ -152,15 +153,24 @@ export class AdmissionRecorder {
         ) {
             const unsupported = this.untrackedTaaCameraWrites[0];
             if (unsupported)
-                this.context.fail(
+                this.refuseAt(
                     unsupported.node,
                     `TAA requires tracked camera mutations: ${unsupported.reason}.`,
                 );
             const admission = this.deferredAdmissionFailures.find(
                 (failure) => failure.capability === "taa",
             );
-            if (admission) this.context.fail(admission.node, admission.message);
+            if (admission) this.refuseAt(admission.node, admission.message);
         }
+    }
+
+    /**
+     * A deferred admission's refusal at the site that noted it, decided
+     * once the program is lowered: a survey records it against that site's
+     * statement and goes on; a compile refuses.
+     */
+    private refuseAt(node: ts.Node, message: string): void {
+        this.context.refuseLoweredSite(node, message, node);
     }
 
     public noteNodeGeometryMutation(node: ts.Node, message?: string): void {
