@@ -581,6 +581,10 @@ export interface LoweringServices {
     ): void;
     classOf(instance: Value): ts.ClassLikeDeclaration | undefined;
     callbackIdentity(declaration: ts.Node, owner: Value | undefined): number;
+    hasCallbackIdentity(
+        declaration: ts.Node,
+        owner: Value | undefined,
+    ): boolean;
     defaultEngine(): string | undefined;
     reachJsRandom(): void;
     emitNativeCallbackStorage(

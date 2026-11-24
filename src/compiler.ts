@@ -8437,14 +8437,37 @@ class Compiler implements LoweringServices {
         declaration: ts.Node,
         owner: Value | undefined,
     ): object {
+        const found = this.callbackClosureKeyOf(declaration, owner);
+        return "key" in found
+            ? found.key
+            : this.fail(declaration, found.refusal);
+    }
+
+    /**
+     * Whether a materialization of `declaration` with `owner` names the
+     * function object it is (`callbackIdentity` gives it an identity
+     * without refusing).
+     */
+    public hasCallbackIdentity(
+        declaration: ts.Node,
+        owner: Value | undefined,
+    ): boolean {
+        return "key" in this.callbackClosureKeyOf(declaration, owner);
+    }
+
+    /** `callbackClosureKey`'s key, or why a materialization names none. */
+    private callbackClosureKeyOf(
+        declaration: ts.Node,
+        owner: Value | undefined,
+    ): { key: object } | { refusal: string } {
         const container = callbackClosureContainer(declaration);
         if (!container) {
             if (owner?.callbackEvaluationIdentity) {
-                return owner.callbackEvaluationIdentity;
+                return { key: owner.callbackEvaluationIdentity };
             }
             // Module scope: the program evaluates the declaration once, so
             // every materialization names the same function object.
-            return unownedCallbackScope;
+            return { key: unownedCallbackScope };
         }
         if (ts.isClassLike(container)) {
             const receiver = this.thisInstance;
@@ -8462,23 +8485,23 @@ class Compiler implements LoweringServices {
                 instance?.dataType?.kind === "struct" &&
                 this.dataTypes.isClassStruct(instance.dataType.name)
             ) {
-                this.fail(
-                    declaration,
-                    "A callback declared per instance of a shared class has " +
+                return {
+                    refusal:
+                        "A callback declared per instance of a shared class has " +
                         "no identity a container could compare: every " +
                         "instance would register the same handler.",
-                );
+                };
             }
             const properties = instance?.recordProperties;
             if (!properties) {
-                this.fail(
-                    declaration,
-                    "A callback declared in a class body is one function " +
+                return {
+                    refusal:
+                        "A callback declared in a class body is one function " +
                         "object per instance, and this materialization names " +
                         "no instance to compare it by.",
-                );
+                };
             }
-            return properties;
+            return { key: properties };
         }
         if (
             ts.isConstructorDeclaration(container) &&
@@ -8489,39 +8512,39 @@ class Compiler implements LoweringServices {
                 owner.dataType?.kind === "struct" &&
                 this.dataTypes.isClassStruct(owner.dataType.name)
             ) {
-                this.fail(
-                    declaration,
-                    "A callback declared by a shared class constructor has " +
+                return {
+                    refusal:
+                        "A callback declared by a shared class constructor has " +
                         "no per-instance identity a container could compare.",
-                );
+                };
             }
             // A constructor evaluates once for this exact instance, so its
             // field record is also the identity of every function literal
             // created by that evaluation.
-            return owner.recordProperties;
+            return { key: owner.recordProperties };
         }
         // Declared inside a function: one function object per evaluation of
         // that body, and the innermost scope the evaluation pushed is what
         // the declaration closed over.
         const scope = owner?.recordScopes?.at(-1);
-        if (scope) return scope;
+        if (scope) return { key: scope };
         // A body emitted once as a native function runs many times behind one
         // emission, so its evaluations have no compile-time scope to tell
         // them apart and are refused rather than conflated.
         if (this.returnFrames.some((frame) => frame.kind === "native")) {
-            this.fail(
-                declaration,
-                "A callback declared inside a function emitted as a native " +
+            return {
+                refusal:
+                    "A callback declared inside a function emitted as a native " +
                     "function is a new function object at every call, and " +
                     "one identity would make them all the same handler.",
-            );
+            };
         }
-        this.fail(
-            declaration,
-            "A callback declared inside a function is a new function " +
+        return {
+            refusal:
+                "A callback declared inside a function is a new function " +
                 "object at every evaluation, and this materialization " +
                 "carries no closure to tell those evaluations apart.",
-        );
+        };
     }
 
     public defaultEngine(): string | undefined {

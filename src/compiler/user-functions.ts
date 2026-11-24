@@ -1723,6 +1723,7 @@ export interface UserFunctionContext
             | "capturedEngineOwnerIdentity"
             | "sourceProfileScopeDeclarations"
             | "callbackIdentity"
+            | "hasCallbackIdentity"
             | "emit"
             | "increaseIndent"
             | "decreaseIndent"
@@ -6457,15 +6458,23 @@ export class UserFunctionLowerer {
             }
         }
         // A callback a container compares, and every read of a named function
-        // (one JavaScript object, which an inlined callee can return to a
-        // comparison its type does not mark), carry the identity of their
-        // declaration and closure, brace-initialized beside the closure. A
-        // literal evaluated here keeps the plain assignment's fresh identity.
+        // whose closure names the function object it is (one JavaScript
+        // object, which an inlined callee can return to a comparison its type
+        // does not mark), carry the identity of their declaration and closure,
+        // brace-initialized beside the closure. A literal evaluated here, a
+        // bound function (a receiver: every bind makes a new function object),
+        // and a read whose evaluations nothing tells apart (a function
+        // declared in another one, materialized with no closure scope) keep
+        // the plain assignment's fresh identity.
         const keepsIdentity =
             dataType.identity ||
             (site !== undefined &&
+                receiver === undefined &&
                 ts.isExpression(site) &&
-                ts.isIdentifier(unwrapExpression(site)));
+                ts.isIdentifier(unwrapExpression(site)) &&
+                (identityCpp !== undefined ||
+                    owner?.repeatedCallbackEvaluation === true ||
+                    context.hasCallbackIdentity(declaration, owner)));
         const identity = keepsIdentity
             ? identityCpp
                 ? `{${identityCpp}, `
