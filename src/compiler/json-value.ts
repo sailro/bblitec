@@ -11,7 +11,6 @@ import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 
 import type { Value } from "./types.js";
-import { undefinedValue } from "./values/model.js";
 
 /** The two members every converter owner already exposes. */
 interface JsonValueContext extends Pick<
@@ -98,18 +97,14 @@ function convertJson(
         };
     }
     if (typeof json === "object" && json !== null) {
-        // A generation run's record may hold undefined members, which
-        // read as undefined (`executeApplicationFunction`); JSON has none.
         const properties = Object.entries(json).map(
             ([name, value]) =>
                 [
                     name,
-                    value === undefined
-                        ? { value: undefinedValue(), read: false }
-                        : convertJson(context, policy, value, node, leaf, [
-                              ...path,
-                              name,
-                          ]),
+                    convertJson(context, policy, value, node, leaf, [
+                        ...path,
+                        name,
+                    ]),
                 ] as const,
         );
         const held = !properties.some(([, { read }]) => read);

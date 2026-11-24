@@ -206,7 +206,6 @@ interface DeclarationContext
             | "emitNativeCallbackStorage"
             | "engineLifecycle"
             | "evaluator"
-            | "settledAwaitData"
             | "handleCollections"
             | "isNativeHostUiLookup"
             | "nativeBindingCheckpoint"
@@ -1292,16 +1291,6 @@ export class DeclarationLowerer {
                     forward.cppName,
                     forward.type,
                 );
-            return;
-        }
-        // `const x = await f()` whose generation run settles to plain data
-        // reading only packaged files holds that data; the call still runs.
-        const settled = forward
-            ? undefined
-            : this.context.settledAwaitData(declaration);
-        if (settled) {
-            this.context.emitExpressionAsStatement(declaration.initializer!);
-            this.context.bindings.defineVariable(declaration.name, settled);
             return;
         }
         // A closure its initializer creates (a record's accessor, a stored

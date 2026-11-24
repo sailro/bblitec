@@ -178,7 +178,6 @@ import {
 import {
     compileStaticFetch,
     compileStaticFetchMethod,
-    packagedFetchText,
 } from "./compiler/static-fetch.js";
 import {
     BrowserErasure,
@@ -6394,38 +6393,6 @@ class Compiler implements LoweringServices {
     private executedConstantText(
         expression: ts.Expression,
     ): string | undefined {
-        const path = this.executedPath(expression);
-        if (!path) return undefined;
-        const { call, held, keys } = path;
-        const returned =
-            call &&
-            (held ||
-                !(
-                    this.evaluationOrder.writesStorage(call) ||
-                    this.evaluationOrder.hasModuleEffects(call)
-                ))
-                ? this.returnedLiteralText(call, keys)
-                : undefined;
-        if (returned !== undefined) return returned;
-        const value = this.executedPathValue(path);
-        return typeof value === "string" || typeof value === "number"
-            ? String(value)
-            : undefined;
-    }
-
-    /**
-     * The plain data generation runs for a read (`executedConstantText`):
-     * the module constant or helper call at its root, and the keys it reads
-     * through.
-     */
-    private executedPath(expression: ts.Expression):
-        | {
-              constant?: ts.VariableDeclaration;
-              call?: ts.CallExpression;
-              held: boolean;
-              keys: readonly string[];
-          }
-        | undefined {
         const keys: string[] = [];
         let root = this.unwrap(expression);
         while (
@@ -6460,26 +6427,26 @@ class Compiler implements LoweringServices {
                 ? root
                 : undefined);
         if (!constant && !call) return undefined;
-        return {
-            ...(constant ? { constant: constant.declaration } : {}),
-            ...(call ? { call } : {}),
-            held: held !== undefined,
-            keys,
-        };
-    }
-
-    /** What the run of an `executedPath` holds at its keys, if it runs. */
-    private executedPathValue(
-        path: NonNullable<ReturnType<Compiler["executedPath"]>>,
-    ): unknown {
-        let value: unknown = path.constant
-            ? this.runModuleConstant(path.constant)
-            : this.executedCall(path.call!);
-        for (const key of path.keys) {
+        const returned =
+            call &&
+            (held ||
+                !(
+                    this.evaluationOrder.writesStorage(call) ||
+                    this.evaluationOrder.hasModuleEffects(call)
+                ))
+                ? this.returnedLiteralText(call, keys)
+                : undefined;
+        if (returned !== undefined) return returned;
+        let value: unknown = constant
+            ? this.runModuleConstant(constant.declaration)
+            : this.executedCall(call!);
+        for (const key of keys) {
             if (value === null || typeof value !== "object") return undefined;
             value = Object.getOwnPropertyDescriptor(value, key)?.value;
         }
-        return value;
+        return typeof value === "string" || typeof value === "number"
+            ? String(value)
+            : undefined;
     }
 
     /**
@@ -6945,7 +6912,6 @@ class Compiler implements LoweringServices {
             foldEnclosing,
             deploymentValue: (expression) =>
                 browserDeploymentValue(this, expression),
-            packagedText: (url) => packagedFetchText(this, url),
             ...more,
         };
     }
@@ -7038,20 +7004,6 @@ class Compiler implements LoweringServices {
             return { value: undefined };
         const value = this.generationScalar(node, carried);
         if (value !== undefined) return { value };
-        // A field of plain data generation runs (`executedPath`), such as
-        // the record an awaited helper's call settles to.
-        const path =
-            ts.isPropertyAccessExpression(node) ||
-            ts.isElementAccessExpression(node)
-                ? this.executedPath(node)
-                : undefined;
-        const executed = path && this.executedPathValue(path);
-        if (
-            typeof executed === "number" ||
-            typeof executed === "string" ||
-            typeof executed === "boolean"
-        )
-            return { value: executed };
         // A complete static snapshot of retained data (a record or array
         // whose current contents generation knows) crosses as its copy.
         const snapshot = this.currentStaticLiteral(carried, node);
@@ -7157,38 +7109,6 @@ class Compiler implements LoweringServices {
         return initializer && this.unwrittenConst(initializer.declaration)
             ? initializer.call
             : undefined;
-    }
-
-    /**
-     * The plain data `const x = await f()` holds when generation runs the
-     * call (`settledCallInitializer`): it folds, every fetch it makes reads a
-     * packaged file (a build input the native fetch reads alike), and
-     * nothing writes through `x`. Undefined otherwise: `x` stays a run-time
-     * value.
-     */
-    public settledAwaitData(
-        declaration: ts.VariableDeclaration,
-    ): Value | undefined {
-        if (
-            !ts.isIdentifier(declaration.name) ||
-            !declaration.initializer ||
-            !ts.isAwaitExpression(
-                this.evaluator.unwrap(declaration.initializer, {
-                    await: false,
-                }),
-            )
-        )
-            return undefined;
-        const call = this.settledCallInitializer(declaration.name);
-        const data = call && this.executedCall(call);
-        return data === undefined || data === null
-            ? undefined
-            : jsonToValue(
-                  this,
-                  executedConstantJsonPolicy,
-                  data,
-                  declaration.name,
-              );
     }
 
     public resolveStaticExpression(
