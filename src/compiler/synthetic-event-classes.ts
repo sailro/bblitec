@@ -24,6 +24,7 @@ export const SYNTHETIC_EVENT_OPTIONS = {
         "relatedTarget",
     ],
     PointerEvent: ["pointerId", "pointerType", "isPrimary", "pressure"],
+    WheelEvent: ["deltaX", "deltaY", "deltaMode"],
     InputEvent: ["data", "inputType", "isComposing"],
     KeyboardEvent: [
         "key",

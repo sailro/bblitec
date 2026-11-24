@@ -77,6 +77,13 @@ inline void read_modifier_keys(PlatformModifierKeys& keys, const js::JsonValue& 
         event.screen_y = number("screenY");
         event.movement_x = js::to_int32(number("movementX"));
         event.movement_y = js::to_int32(number("movementY"));
+        // A WheelEvent's deltas, in CSS pixels as the platform's wheel events carry them.
+        event.delta_x = number("deltaX");
+        event.delta_y = number("deltaY");
+        if (number("deltaMode") != 0)
+            throw js::NamedError(
+                "NotSupportedError",
+                "A WheelEvent deltaMode other than DOM_DELTA_PIXEL is not represented.");
         read_modifier_keys(event, options);
     }
     if (kind == OwnedDomEvent::Kind::Pointer) {
