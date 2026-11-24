@@ -617,6 +617,19 @@ struct GpuTextureIdentity {
     friend bool operator==(const GpuTextureIdentity&, const GpuTextureIdentity&) = default;
 };
 
+/**
+ * The GPU texture an attachment holds, as a `.texture` read sees it: one
+ * identity per allocation the backend makes (`allocation`, the ordinal it
+ * writes as it allocates), the first one the attachment's own from its
+ * creation, so only a reallocation (a resize, a lost device) gives a new
+ * object, as the pin's replaced `GPUTexture` is one
+ * (`published_attachment`).
+ */
+struct PublishedAttachment {
+    GpuTextureIdentity texture{};
+    std::uint64_t allocation = 0;
+};
+
 /** The texels behind a program-made texture; any other texture's are the backend's alone. */
 inline const GpuTextureTexels& gpu_texture_texels(const GpuTextureIdentity& texture) {
     if (!texture.texels)
@@ -2005,6 +2018,14 @@ struct RenderTargetRecord {
      * allocation `buildRenderTarget` makes; read while `_colorView` is set.
      */
     GpuTextureIdentity color_texture{};
+    /**
+     * The ordinal of the backend's allocation of this target's attachments,
+     * written as it allocates them (`create_frame_graph_textures`); 0 until
+     * the first. An eager target's `.texture` publishes one identity per
+     * allocation (`eager_color`).
+     */
+    mutable std::uint64_t attachment_allocation = 0;
+    PublishedAttachment eager_color{};
     TargetAllocation allocation = TargetAllocation::record;
     /**
      * A shader reads the depth attachment without a sampled facade (a
@@ -2064,6 +2085,13 @@ struct FrameTaskRecord {
     std::optional<RenderTaskTransmission> transmission;
     /** The borrowed geometry wrapper has published its depth at record or a later grab. */
     mutable bool transmission_geometry_depth_ready = false;
+    /**
+     * The ordinal of the backend's allocation of the transmission grab's
+     * depth snapshot, written as it (re)allocates it at the target's extent;
+     * its `.texture` publishes one identity per allocation.
+     */
+    mutable std::uint64_t transmission_depth_allocation = 0;
+    PublishedAttachment transmission_depth{};
     bool render_meshes_dirty = false;
     /** A backend built this task's draw lists once: the recorded generation is drawn. */
     bool render_generation_built = false;
@@ -6186,6 +6214,62 @@ render_target_color_texture(const Engine& engine, RenderTargetHandle target) {
     if (!render_target_color_view_set(engine, target))
         return std::nullopt;
     return record.color_texture;
+}
+/**
+ * `published`'s identity for the backend's allocation `allocation`: the one
+ * the attachment had from its first read, kept through its first allocation
+ * and every frame that keeps that allocation, and a fresh one where the
+ * backend replaced it or the device was lost.
+ */
+inline const GpuTextureIdentity&
+published_attachment(Engine& engine, PublishedAttachment& published, std::uint64_t allocation) {
+    if (published.texture.object == 0 || published.texture.generation != engine.device_generation ||
+        (published.allocation != 0 && published.allocation != allocation))
+        published.texture = publish_gpu_texture_identity(engine);
+    published.allocation = allocation;
+    return published.texture;
+}
+/**
+ * `texture.texture` of a render-target or transmission-depth Texture2D: the
+ * `GPUTexture` behind it, a new object per reallocation as the pin's is. A
+ * fixed-size target keeps the one it was created with (the native rebuilds
+ * that reallocate it are not the pin's), a surface-sized one takes one per
+ * resize, a frame-graph target the `_colorTexture` each build publishes, and
+ * the transmission depth snapshot one per extent it is allocated at.
+ */
+inline GpuTextureIdentity render_texture_gpu_texture(Engine& engine,
+                                                     const RenderTextureRef& texture) {
+    if (texture.source == RenderTextureSource::transmission_depth) {
+        auto& task = handle_at(engine.frame_tasks, texture.task);
+        return published_attachment(engine, task.transmission_depth,
+                                    task.transmission_depth_allocation);
+    }
+    if (texture.source != RenderTextureSource::render_target)
+        throw std::runtime_error("Only a render target's or a transmission grab's depth "
+                                 "Texture2D represents the GPUTexture behind it.");
+    auto& record = handle_at(engine.render_targets, texture.target);
+    if (texture.depth_only || !record.has_color)
+        throw std::runtime_error("A render target's depth facade does not represent the "
+                                 "GPUTexture behind it.");
+    if (record.allocation == TargetAllocation::record) {
+        const js::Nullable<GpuTextureIdentity> built =
+            render_target_color_texture(engine, texture.target);
+        if (!built)
+            throw std::runtime_error(
+                "A frame-graph render target has no colour texture before its build.");
+        return *built;
+    }
+    return published_attachment(
+        engine, record.eager_color,
+        record.allocation == TargetAllocation::surface ? record.attachment_allocation : 0);
+}
+/** `texture.texture` of a stored Texture2D: its render source's (`render_texture_gpu_texture`). */
+inline GpuTextureIdentity render_texture_gpu_texture(Engine& engine, const StoredTexture& texture) {
+    const auto* file = std::get_if<FileTexture>(&texture);
+    if (!file || !file->data.render_source)
+        throw std::runtime_error("Only a render target's Texture2D represents the GPUTexture "
+                                 "behind it.");
+    return render_texture_gpu_texture(engine, file->data.render_source->reference);
 }
 /**
  * `rt._colorView`: the one view `buildRenderTarget` creates with each

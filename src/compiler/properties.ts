@@ -3886,6 +3886,21 @@ export class PropertyAccessLowerer {
                 },
             };
         }
+        // A render target's Texture2D names the GPUTexture behind it, a new
+        // object per reallocation (`render_texture_gpu_texture`); a stored
+        // Texture2D names its render source's.
+        if (
+            (owner.kind === "render-texture" || owner.kind === "texture") &&
+            property === "texture"
+        ) {
+            return {
+                kind: "gpu-texture",
+                cpp: `bbl::render_texture_gpu_texture(${this.context.requireEngine(owner, expression)}, ${owner.cpp})`,
+                engineCpp: this.context.requireEngine(owner, expression),
+                dataType: { kind: "handle", handle: "gpu-texture" },
+                impure: true,
+            };
+        }
         if (owner.kind === "shadow-generator" && property === "_depthTexture") {
             this.context.reachFeature("engine:device-recovery", expression);
             return {
