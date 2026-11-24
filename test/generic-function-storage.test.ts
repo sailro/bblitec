@@ -643,6 +643,61 @@ check(
     `,
 );
 
+// A generic callable record stored as its registry's instantiation is the one
+// function object JavaScript keeps, its optional property read through it.
+check(
+    "callable-record-under-instantiation",
+    `
+    interface Context<Req> { x: number; open: (req: Req) => void }
+    type Builder<E, Req, H> = ((ent: E, ctx: Context<Req>) => void) & { halo?: (ent: E) => H };
+    interface Registry<Ent extends { kind: string }, Req, H> {
+        register<K extends Ent["kind"]>(kind: K, builder: Builder<Extract<Ent, { kind: K }>, Req, H>): void;
+        haloOf(ent: Ent): H | null;
+        openFor(ent: Ent, x: number): void;
+        holds(kind: string, builder: unknown): boolean;
+    }
+    function createRegistry<Ent extends { kind: string }, Req, H>(handler: () => ((req: Req) => void) | null): Registry<Ent, Req, H> {
+        const builders = new Map<string, Builder<Ent, Req, H>>();
+        return {
+            register(kind, builder) {
+                if (builders.has(kind)) throw new Error("duplicate " + kind);
+                builders.set(kind, builder as Builder<Ent, Req, H>);
+            },
+            haloOf(ent) {
+                const halo = builders.get(ent.kind)?.halo;
+                return halo ? halo(ent) : null;
+            },
+            openFor(ent, x) {
+                const open = handler();
+                builders.get(ent.kind)?.(ent, { x, open: open ?? (() => {}) });
+            },
+            holds: (kind, builder) => builders.get(kind) === builder,
+        };
+    }
+    interface Person { id: number }
+    interface Tree { seed: number }
+    type Hit = { kind: "person"; person: Person } | { kind: "tree"; tree: Tree };
+    let log = "";
+    const registry = createRegistry<Hit, string, readonly number[]>(() => (req) => { log += "open " + req + ";"; });
+    const personBuilder = (ent: { kind: "person"; person: Person }, ctx: Context<string>): void => {
+        log += "p" + ent.person.id + "@" + ctx.x + ";";
+        ctx.open("person");
+    };
+    registry.register("person", personBuilder);
+    const treeBuilder: Builder<{ kind: "tree"; tree: Tree }, string, readonly number[]> = Object.assign(
+        (ent: { kind: "tree"; tree: Tree }, ctx: Context<string>) => { log += "t" + ent.tree.seed + "@" + ctx.x + ";"; },
+        { halo: (ent: { kind: "tree"; tree: Tree }): readonly number[] => [ent.tree.seed] },
+    );
+    registry.register("tree", treeBuilder);
+    registry.openFor({ kind: "person", person: { id: 4 } }, 1);
+    registry.openFor({ kind: "tree", tree: { seed: 3 } }, 2);
+    const halo = registry.haloOf({ kind: "tree", tree: { seed: 7 } });
+    if (log !== "p4@1;open person;t3@2;" || halo?.[0] !== 7 || registry.haloOf({ kind: "person", person: { id: 1 } }) !== null ||
+        !registry.holds("tree", treeBuilder) || !registry.holds("person", personBuilder))
+        throw new Error("registry " + log);
+    `,
+);
+
 check(
     "nested-instantiation-intersection-fields",
     `

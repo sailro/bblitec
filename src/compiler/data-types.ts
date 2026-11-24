@@ -135,6 +135,7 @@ import {
 import {
     instantiatedRecord,
     isPlainRecord,
+    isComponentRecord,
     isRecordLike,
     layoutsCompatible,
     recordIdentity,
@@ -5121,12 +5122,13 @@ export class DataTypeRegistry {
      * Whether a record type is a plain record, or a union of them, under
      * the instantiations in force: itself, an intersection whose parts are
      * once each parameter is resolved (`H & { id: number }`), or a mapped
-     * type over a substituted record (`substitutedSelection`) that is.
+     * type over a substituted record (`substitutedSelection`) that is. A
+     * callable record's shape is its own under every instantiation.
      */
     private plainUnderSubstitution(record: ts.Type): boolean {
         const selection = this.substitutedSelection(record);
         return (
-            isRecordLike(this.checker, record) ||
+            isComponentRecord(this.checker, record) ||
             (selection !== undefined &&
                 this.plainUnderSubstitution(
                     this.resolveTypeParameter(selection.record),
@@ -5144,9 +5146,10 @@ export class DataTypeRegistry {
     }
 
     /**
-     * Whether a record type can join a record component: a plain record or
-     * a union of them that no generic instantiation in force reaches, so it
-     * is one type under every instantiation.
+     * Whether a record type can join a record component: a plain record, a
+     * union of them or a callable record (`isComponentRecord`) that no
+     * generic instantiation in force reaches, so it is one type under every
+     * instantiation.
      */
     private joinableRecord(
         demand: NativeRecordStorageDemand,
@@ -5157,7 +5160,7 @@ export class DataTypeRegistry {
                 !this.withRecordDemand(demand, () =>
                     this.mentionsSubstitution(record),
                 )) &&
-            isRecordLike(this.checker, record)
+            isComponentRecord(this.checker, record)
         );
     }
 

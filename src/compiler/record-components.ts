@@ -166,6 +166,23 @@ const FIXED_LAYOUT_ORIGINS: ReadonlySet<DeclarationOrigin> = new Set([
  * property declared by the program or the engine.
  */
 export function isPlainRecord(checker: ts.TypeChecker, type: ts.Type): boolean {
+    return recordShape(checker, type, false);
+}
+
+/**
+ * Whether a type is a callable record a component can hold: a plain record
+ * (`isPlainRecord`) but for its call signatures, a function with properties
+ * (`((ent: E) => void) & { halo?: (ent: E) => H }`).
+ */
+function isCallableRecord(checker: ts.TypeChecker, type: ts.Type): boolean {
+    return recordShape(checker, type, true);
+}
+
+function recordShape(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+    callable: boolean,
+): boolean {
     const parts = type.isIntersection() ? type.types : [type];
     if (
         parts.some(
@@ -174,7 +191,7 @@ export function isPlainRecord(checker: ts.TypeChecker, type: ts.Type): boolean {
                 classInstanceDeclaration(part) !== undefined,
         ) ||
         checker.isArrayLikeType(type) ||
-        callSignatures(checker, type, "exact").length > 0 ||
+        callSignatures(checker, type, "exact").length > 0 !== callable ||
         type.getConstructSignatures().length > 0 ||
         checker.getIndexInfosOfType(type).length > 0
     )
@@ -224,6 +241,18 @@ export function isRecordUnion(
 /** Whether a type is a plain record or a union of them. */
 export function isRecordLike(checker: ts.TypeChecker, type: ts.Type): boolean {
     return isPlainRecord(checker, type) || isRecordUnion(checker, type);
+}
+
+/**
+ * Whether a type's records can join a record component when a record of
+ * another type is stored as them: a plain record, a union of them, or a
+ * callable record (`isCallableRecord`).
+ */
+export function isComponentRecord(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): boolean {
+    return isRecordLike(checker, type) || isCallableRecord(checker, type);
 }
 
 /**
