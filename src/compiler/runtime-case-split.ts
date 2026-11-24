@@ -5,7 +5,12 @@ import { writable } from "./emission-transaction.js";
 import type { DataType } from "./data-types/model.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { selectedModuleConstants } from "./held-constants.js";
-import { declaredSymbol, resolvedSymbol, sameExpression } from "./symbols.js";
+import {
+    calledFunction,
+    declaredSymbol,
+    resolvedSymbol,
+    sameExpression,
+} from "./symbols.js";
 import { StorageDemand } from "./storage-demand.js";
 import { activeSurvey } from "./survey.js";
 import {
@@ -27,6 +32,7 @@ import {
     isModuleScopeFunction,
     isSuspensionPoint,
     isValueReference,
+    unwrapExpression,
     valueUse,
     writeSites,
 } from "./syntax.js";
@@ -477,9 +483,14 @@ function withOutcomes<T>(
         const outcome = outcomes[index];
         if (outcome === undefined) return;
         for (const node of selector.nodes) {
-            if (selector.kind === "condition")
+            // A boolean's nodes may be a selection's tests too (`addGroup`).
+            if (
+                selector.kind === "condition" ||
+                (selector.kind === "boolean" && !isMemberSelector(selector))
+            )
                 context.conditionOverrides.set(node, outcome === "truthy");
-            else if (isMemberSelector(selector))
+            if (selector.kind === "condition") continue;
+            if (isMemberSelector(selector))
                 records.set(
                     node,
                     withForcedMember(
@@ -714,7 +725,8 @@ export function moduleLevelCallee(
  * them: no argument assigns, constructs or suspends, its calls go to
  * module-level functions handed none of the bindings the tests read, and
  * no test writes. A deferred selection's condition splits it whatever its
- * arguments do.
+ * arguments do. A boolean a selection tests and a call is handed is one
+ * test, and a pure function's call on tests already counted none of its own.
  */
 function selectorTests(
     context: CaseSplitContext,
@@ -745,6 +757,9 @@ function selectorTests(
     const unchanging = new Set<ts.Expression>();
     // Each distinct test with every place it appears.
     const groups: (Selector & { nodes: ts.Expression[] })[] = [];
+    // A boolean a selection tests and a call is handed is one test.
+    const truthTest = (kind: Selector["kind"]): boolean =>
+        kind === "condition" || kind === "boolean";
     const addGroup = (
         kind: Selector["kind"],
         test: ts.Expression,
@@ -752,11 +767,18 @@ function selectorTests(
     ): void => {
         const group = groups.find(
             (candidate) =>
-                candidate.kind === kind &&
+                (candidate.kind === kind ||
+                    (truthTest(candidate.kind) &&
+                        truthTest(kind) &&
+                        holdsOnly(context.checker.getTypeAtLocation(test), [
+                            "boolean",
+                        ]))) &&
                 sameExpression(context.checker, candidate.test, test),
         );
-        if (group) group.nodes.push(test);
-        else
+        if (group) {
+            group.nodes.push(test);
+            if (kind === "boolean") group.kind = kind;
+        } else
             groups.push({
                 kind,
                 test,
@@ -870,6 +892,30 @@ function selectorTests(
         if (!effectful && !onlyHeldText) valuePosition(argument);
         visit(argument);
     });
+    // A pure function's call on tests already counted is decided by them:
+    // an arm forces its arguments, so the call reads as a constant there.
+    for (let index = groups.length - 1; index >= 0; index--) {
+        const group = groups[index]!;
+        const test = unwrapExpression(group.test);
+        const decided =
+            group.kind === "condition" && ts.isCallExpression(test)
+                ? test
+                : undefined;
+        const callee = decided && calledFunction(context.checker, decided);
+        if (
+            decided &&
+            callee &&
+            decided.arguments.length > 0 &&
+            context.evaluationOrder.isPure(callee) &&
+            decided.arguments.every((argument) =>
+                groups.some(
+                    (other) =>
+                        other !== group && other.nodes.includes(argument),
+                ),
+            )
+        )
+            groups.splice(index, 1);
+    }
     if (
         groups.length === 0 &&
         records.length === 0 &&

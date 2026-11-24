@@ -152,6 +152,90 @@ int main() {
     );
 });
 
+test("a split counts a test once and a pure call on counted tests as none, and its arm is JavaScript's", (t) => {
+    const source = `
+import { createEngine, createEffectWrapper, type EngineContext } from "@babylonjs/lite";
+interface Surface { label: string; water?: boolean; glass?: boolean; coat?: boolean }
+function surfaceWgsl(water: boolean, glass: boolean, coat: boolean): string {
+    return \`// \${water} \${glass} \${coat}
+@fragment fn effectFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+}
+function gathersSnow(water: boolean, glass: boolean): boolean { return !water && !glass; }
+function surface(engine: EngineContext, opts: Surface) {
+    return createEffectWrapper(engine, {
+        name: opts.label,
+        fragmentWGSL: surfaceWgsl(opts.water === true, opts.glass === true, opts.coat === true),
+        bindings: [{ binding: 0, kind: "uniform", uniformByteLength: 16 }],
+    });
+}
+async function main() {
+    const engine = await createEngine(document.createElement("canvas"));
+    const flags = JSON.parse("[true,false]") as boolean[];
+    const water = flags[0]!;
+    const glass = flags[1]!;
+    surface(engine, {
+        label: "surface",
+        ...(water ? { water: true } : {}),
+        ...(glass ? { glass: true } : {}),
+        ...(gathersSnow(water, glass) ? { coat: true } : {}),
+    });
+}
+main();`;
+    const compiled = compileSource(source);
+    // Two tests, water and glass: each arm's text is JavaScript's for them.
+    assert.equal(
+        (compiled.cpp.match(/const bool \w*case_test_\d+/g) ?? []).length,
+        2,
+    );
+    const texts = compiled.manifest.effects.map(
+        ({ fragment }) => fragment.split("\n")[0]!,
+    );
+    assert.deepEqual(
+        [...texts].sort(),
+        [
+            [false, false],
+            [false, true],
+            [true, false],
+            [true, true],
+        ]
+            .map(([water, glass]) => `// ${water} ${glass} ${!water && !glass}`)
+            .sort(),
+    );
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native compiler required.");
+        return;
+    }
+    runGeneratedProgram(
+        native,
+        "effect-static-string/deduplicated-tests",
+        `#include <bblite/runtime.hpp>
+#include <bblite/js_data.hpp>
+#include <cassert>
+#include <cstring>
+namespace {
+const char* texts[] = { ${texts.map((text) => JSON.stringify(text)).join(", ")} };
+int creations = 0;
+}
+namespace bbl {
+Engine create_engine(EngineOptions) { return {}; }
+EffectWrapperHandle create_effect_wrapper(Engine&, std::uint32_t variant) {
+    assert(std::strcmp(texts[variant], "// true false false") == 0);
+    ++creations;
+    return {variant};
+}
+}
+#define main generated_main
+${compiled.cpp}
+#undef main
+int main() {
+    assert(generated_main() == 0);
+    assert(creations == 1);
+}`,
+        { expectedOutput: "" },
+    );
+});
+
 test("effect builder replay refuses changed inputs and unbounded shader text", () => {
     const source = program(`
         setup(engine, { label: "refuse", radius: Math.random() });
