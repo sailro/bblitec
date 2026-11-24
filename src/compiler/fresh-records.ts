@@ -199,6 +199,81 @@ function onlyPropertyReads(
     });
 }
 
+/** Array methods whose result is the array they are called on. */
+const SELF_RETURNING_ARRAY_METHODS: ReadonlySet<string> = new Set([
+    "copyWithin",
+    "fill",
+    "reverse",
+    "sort",
+]);
+
+/**
+ * Whether `read` names an unexported `const` local holding a new array
+ * ({@link yieldsNewArray}) that only `read` hands on: every other reference
+ * reads it in place in the activation declaring it -- its elements, a
+ * property, a method called on it whose result is not the array kept
+ * elsewhere -- so nothing else holds the array, and no other code can
+ * change it.
+ */
+export function arrayHeldOnlyByItsLocal(
+    checker: ts.TypeChecker,
+    read: ts.Expression,
+): boolean {
+    const lent = unwrapExpression(read);
+    const declaration = constLocal(checker, lent);
+    if (!declaration || !yieldsNewArray(checker, declaration.initializer))
+        return false;
+    const owner = ts.findAncestor(declaration.parent, ts.isFunctionLike);
+    const symbol = declaredSymbol(checker, declaration.name);
+    const references =
+        identifiersByName(declaration.getSourceFile()).get(
+            declaration.name.text,
+        ) ?? [];
+    return references.every((reference) => {
+        if (
+            reference === declaration.name ||
+            reference === lent ||
+            valueSymbolOf(checker, reference) !== symbol
+        )
+            return true;
+        if (ts.findAncestor(reference.parent, ts.isFunctionLike) !== owner)
+            return false;
+        const use = reference.parent;
+        if (
+            ts.isElementAccessExpression(use) &&
+            use.expression === reference &&
+            writeSiteOf(use) === undefined
+        )
+            return true;
+        if (
+            !ts.isPropertyAccessExpression(use) ||
+            use.expression !== reference ||
+            writeSiteOf(use) !== undefined
+        )
+            return false;
+        const call = use.parent;
+        if (
+            !ts.isCallExpression(call) ||
+            call.expression !== use ||
+            !SELF_RETURNING_ARRAY_METHODS.has(use.name.text)
+        )
+            return true;
+        // A method returning the array: its result is dropped, or read in
+        // place again.
+        const result = call.parent;
+        return (
+            ts.isExpressionStatement(result) ||
+            (ts.isPropertyAccessExpression(result) &&
+                result.expression === call &&
+                !(
+                    ts.isCallExpression(result.parent) &&
+                    result.parent.expression === result &&
+                    SELF_RETURNING_ARRAY_METHODS.has(result.name.text)
+                ))
+        );
+    });
+}
+
 /**
  * Whether every element of an array expression is a fresh record: an array
  * literal of them, or an array `map` whose callback returns only them.

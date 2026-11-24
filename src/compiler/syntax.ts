@@ -2838,6 +2838,40 @@ export function containsSuspension(
     );
 }
 
+/**
+ * Whether `node`, in the activation running `body`, runs before that
+ * activation first suspends: no suspension point comes before it in source
+ * order (the operand an `await` evaluates comes before it), and no loop
+ * around it suspends, which would run it again after resuming.
+ */
+export function runsBeforeFirstSuspension(
+    body: ts.Node,
+    node: ts.Node,
+): boolean {
+    let first: ts.Node | undefined;
+    const visit = (child: ts.Node): void => {
+        if (first !== undefined || ts.isFunctionLike(child)) return;
+        if (isSuspensionPoint(child)) first = child;
+        else ts.forEachChild(child, visit);
+    };
+    ts.forEachChild(body, visit);
+    const suspension: ts.Node | undefined = first;
+    if (suspension !== undefined) {
+        const awaited = ts.isAwaitExpression(suspension)
+            ? suspension.expression
+            : undefined;
+        const operand =
+            awaited !== undefined &&
+            ts.findAncestor(node, (ancestor) => ancestor === awaited) !==
+                undefined;
+        if (!operand && suspension.getStart() <= node.getStart()) return false;
+    }
+    for (let at = node.parent; at && at !== body; at = at.parent)
+        if (ts.isIterationStatement(at, false) && containsSuspension(at))
+            return false;
+    return true;
+}
+
 /** @unjournaled Parsed syntax is immutable: a queried node's fingerprint, kept. */
 const sourceFingerprints = new WeakMap<ts.Node, string>();
 

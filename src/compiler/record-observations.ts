@@ -24,7 +24,11 @@ import {
     type ObservedWrite,
     type ProgramObservations,
 } from "./program-observations.js";
-import { freshConstLocal, yieldsNewArray } from "./fresh-records.js";
+import {
+    arrayHeldOnlyByItsLocal,
+    freshConstLocal,
+    yieldsNewArray,
+} from "./fresh-records.js";
 import { enclosedReference } from "./array-length-growth.js";
 import {
     determinedTypeArguments,
@@ -2141,11 +2145,30 @@ function readOnlyArgumentCall(
     argument: ts.Node,
 ): ts.CallExpression | undefined {
     if (!ts.isExpression(argument)) return undefined;
-    const use = outermostWrapper(argument);
+    let use: ts.Expression = outermostWrapper(argument);
+    // A property of an object literal handed to the call: the callee reads
+    // it through that property of its parameter.
+    let property: string | undefined;
+    const assignment = use.parent;
+    if (
+        (ts.isPropertyAssignment(assignment) &&
+            assignment.initializer === use) ||
+        (ts.isShorthandPropertyAssignment(assignment) &&
+            assignment.name === use)
+    ) {
+        property = propertyKey(assignment.name);
+        if (property === undefined) return undefined;
+        use = outermostWrapper(assignment.parent);
+    }
     const call = use.parent;
     return ts.isCallExpression(call) &&
         call.expression !== use &&
-        callOnlyReadsArgument(checker, call, call.arguments.indexOf(use))
+        callOnlyReadsArgument(
+            checker,
+            call,
+            call.arguments.indexOf(use),
+            property,
+        )
         ? call
         : undefined;
 }
@@ -2201,6 +2224,13 @@ export function arrayLentForCall(
 ): boolean {
     const call = readOnlyArgumentCall(context.checker, argument);
     if (!call) return false;
+    // An array nothing else holds changes only through its local, which
+    // does not run while the call reads the copy.
+    if (
+        ts.isExpression(argument) &&
+        arrayHeldOnlyByItsLocal(context.checker, argument)
+    )
+        return true;
     const reached = context.evaluationOrder.reachedCode(call);
     if (reached.opaque) return false;
     const array = context.checker.getTypeAtLocation(argument);

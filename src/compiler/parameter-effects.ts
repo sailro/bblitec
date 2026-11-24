@@ -57,6 +57,7 @@ import {
     parameterForArgument,
     ownParameters,
     functionKind,
+    runsBeforeFirstSuspension,
     functionOfDeclaration,
     isMemberAccess,
     mutatingCallTarget,
@@ -2038,48 +2039,98 @@ const READING_ARRAY_METHODS: ReadonlySet<string> = new Set([
 ]);
 
 const onlyReadMemo = new PredicateMemo(true);
+/** `onlyRead` of one property of the parameter's record, by property name. */
+const onlyReadPropertyMemos = new Map<string, PredicateMemo<boolean>>();
 
 /**
- * Whether a call only reads the object a parameter binding holds, so a
+ * Whether a call only reads the object a parameter binding holds -- or,
+ * with `property`, the object that property of its record holds -- so a
  * copy lent for the call cannot be told apart while nothing else writes the
- * original. The call's whole run is its own (not an async function or a
- * generator), and in it the object -- for an array, the array and each
+ * original. The object is read only while the call runs: by a plain
+ * function, or by an async one before it first suspends (later its caller
+ * runs on). In that time the object -- for an array, the array and each
  * element, an object of its own -- is never written, resized, rebound,
  * compared, enumerated, called, stored, returned or captured past the
  * call, and is handed only to callees reading it the same way (program and
- * engine bodies, the library's reading functions). A copy shares the
- * objects its fields hold, so what happens to those cannot tell it apart.
+ * engine bodies, the library's reading functions); the record holding the
+ * property is only handed on to callees reading that property so. A copy
+ * shares the objects its fields hold, so what happens to those cannot tell
+ * it apart.
  */
 function onlyRead(
     checker: ts.TypeChecker,
     fn: EffectFunction,
     binding: ts.Identifier,
+    property?: string,
 ): boolean {
-    return onlyReadMemo.answer(checker, binding, () => {
+    let memo = onlyReadMemo;
+    if (property !== undefined) {
+        const known = onlyReadPropertyMemos.get(property);
+        if (known) memo = known;
+        else
+            onlyReadPropertyMemos.set(
+                property,
+                (memo = new PredicateMemo(true)),
+            );
+    }
+    return memo.answer(checker, binding, () => {
         const effects = parameterEffects(checker, fn, binding);
-        if (!effects.analyzable || effects.deferred || isRestBinding(binding))
+        const kind = functionKind(fn);
+        if (
+            !effects.analyzable ||
+            (kind !== "plain" && kind !== "async") ||
+            !fn.body ||
+            isRestBinding(binding)
+        )
             return false;
-        const array = checker.isArrayLikeType(
-            checker.getNonNullableType(checker.getTypeAtLocation(binding)),
+        const holder = checker.getNonNullableType(
+            checker.getTypeAtLocation(binding),
         );
+        const lent =
+            property === undefined
+                ? holder
+                : checker.getPropertyOfType(holder, property) &&
+                  checker.getNonNullableType(
+                      checker.getTypeOfSymbolAtLocation(
+                          checker.getPropertyOfType(holder, property)!,
+                          binding,
+                      ),
+                  );
+        if (!lent) return false;
+        const array = checker.isArrayLikeType(lent);
+        const prefix: KeyPath = property === undefined ? [] : [property];
         // Whether the object at `path` is one a copy duplicates; a derived
         // use reaches the objects below it too, which a copy shares.
-        const copied = (path: KeyPath): boolean =>
-            path.length === 0 ||
-            (array &&
-                path.length === 1 &&
-                (path[0] === ANY_KEY || keyIndex(path[0]) !== undefined));
+        const copied = (path: KeyPath): boolean => {
+            if (!prefix.every((key, index) => path[index] === key))
+                return false;
+            const below = path.slice(prefix.length);
+            return (
+                below.length === 0 ||
+                (array &&
+                    below.length === 1 &&
+                    (below[0] === ANY_KEY || keyIndex(below[0]) !== undefined))
+            );
+        };
         return effects.uses.every((use) => {
             const object =
                 use.kind === "write" ? use.path.slice(0, -1) : use.path;
-            if (!copied(object)) return true;
+            // What happens to the record holding the property happens to it.
+            const record = property !== undefined && object.length === 0;
+            if (!copied(object) && !record) return true;
             if (use.nested && !use.inPlace) return false;
+            if (
+                kind === "async" &&
+                !runsBeforeFirstSuspension(fn.body!, use.node)
+            )
+                return false;
             switch (use.kind) {
                 case "method":
                     return (
+                        !record &&
                         !use.derived &&
                         array &&
-                        object.length === 0 &&
+                        object.length === prefix.length &&
                         READING_ARRAY_METHODS.has(use.method)
                     );
                 case "argument":
@@ -2087,7 +2138,11 @@ function onlyRead(
                         !use.spread &&
                         use.at.length === 0 &&
                         !use.derived &&
-                        argumentUseOnlyRead(checker, use)
+                        argumentUseOnlyRead(
+                            checker,
+                            use,
+                            record ? property : undefined,
+                        )
                     );
                 default:
                     return false;
@@ -2099,14 +2154,20 @@ function onlyRead(
 function argumentUseOnlyRead(
     checker: ts.TypeChecker,
     use: Extract<ParameterUse, { kind: "argument" }>,
+    property?: string,
 ): boolean {
     if (ts.isNewExpression(use.call)) return false;
     const target = callTarget(checker, use.call);
     if (target.kind === "library")
-        return libraryOnlyReads(checker, use.call, use.index);
+        return (
+            property === undefined &&
+            libraryOnlyReads(checker, use.call, use.index)
+        );
     return (
         target.kind === "bodies" &&
-        everyArgumentBody(use.call, target, use.index, onlyRead)
+        everyArgumentBody(use.call, target, use.index, (c, body, b) =>
+            onlyRead(c, body, b, property),
+        )
     );
 }
 
@@ -2169,11 +2230,14 @@ export function callOnlyReadsArgument(
     checker: ts.TypeChecker,
     call: ts.CallExpression,
     index: number,
+    property?: string,
 ): boolean {
     const target = callTarget(checker, call);
     return (
         target.kind === "bodies" &&
-        everyArgumentBody(call, target, index, onlyRead)
+        everyArgumentBody(call, target, index, (c, body, binding) =>
+            onlyRead(c, body, binding, property),
+        )
     );
 }
 

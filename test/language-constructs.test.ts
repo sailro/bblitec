@@ -7734,6 +7734,71 @@ checkInRealm(
 `,
 );
 
+// A record literal lends its arrays to an async callee that reads them
+// before it first awaits, while nothing else can change them.
+const lentRecordProgram = `
+    type Ids = readonly (string | null | undefined)[];
+    interface Needs { roof?: Ids; walls?: Ids; dome?: Ids }
+    interface Catalog { resolve(id: string | null | undefined): string }
+    interface Resolved { roof: readonly string[]; walls: readonly string[] }
+    function resolveNeeds(catalog: Catalog, needs: Needs): Resolved {
+        const ids = (requested: Ids | undefined) => [...new Set((requested ?? []).map((id) => catalog.resolve(id)))];
+        return { roof: ids([...(needs.roof ?? []), ...(needs.dome ?? [])]), walls: ids(needs.walls) };
+    }
+    function createPreparer(catalog: Catalog) {
+        const hooks: ((needs: Resolved) => Promise<boolean>)[] = [];
+        return {
+            add(hook: (needs: Resolved) => Promise<boolean>): void { hooks.push(hook); },
+            async prepare(needs: Needs): Promise<void> {
+                const resolved = resolveNeeds(catalog, needs);
+                const ready = await Promise.all(hooks.map((hook) => hook(resolved)));
+                if (!ready.every(Boolean)) throw new Error("failed");
+            },
+        };
+    }
+    const preparer = createPreparer({ resolve: (id) => id ?? "default" });
+    let log = "";
+    preparer.add(async (needs) => { log += needs.roof.join() + "/" + needs.walls.join() + ";"; return true; });
+    const ensure = preparer.prepare;
+    const wanted = ["tile", "slate", "tile", "oak"];
+    const missing = [...new Set(wanted.filter((id) => id !== "oak"))];
+    const sig = missing.sort().join(",");
+    void ensure({ roof: missing, walls: ["oak"] }).then(() => {
+        if (log !== "slate,tile/oak;" || sig !== "slate,tile") throw new Error("needs " + log);
+        const domes = ["cap"].filter((id) => id.length > 0);
+        void ensure({ dome: domes }).then(() => { if (!log.endsWith("cap/;")) throw new Error("dome " + log); globalThis.close(); });
+    });
+`;
+
+checkInRealm(
+    "a-local-array-lent-in-a-record-to-a-callee-that-only-reads-it-is-converted",
+    lentRecordProgram,
+);
+
+// The copy is refused where the callee keeps the property, reads it only
+// after it first awaits, or where code the call runs may change the local.
+test("an array lent in a record refuses where the copy could be told apart", () => {
+    const prepare = "const resolved = resolveNeeds(catalog, needs);";
+    const sorted = 'const sig = missing.sort().join(",");';
+    for (const source of [
+        lentRecordProgram
+            .replace("type Ids", "let kept: Ids = [];\n    type Ids")
+            .replace(prepare, `kept = needs.roof ?? []; ${prepare}`),
+        lentRecordProgram.replace(
+            prepare,
+            `await Promise.resolve(); ${prepare}`,
+        ),
+        lentRecordProgram.replace(
+            sorted,
+            `${sorted} preparer.add(async () => { missing.length = 0; return true; });`,
+        ),
+    ])
+        assert.throws(
+            () => compileSource(source),
+            /An array stored as an array of another element type is a copy/,
+        );
+});
+
 checkInRealm(
     "a-local-array-handed-where-its-lanes-may-be-absent-stays-one-array",
     `
