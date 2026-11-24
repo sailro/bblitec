@@ -1549,9 +1549,31 @@ inline JsonValue json_value(const U8Array& value) { return JsonValue::from_nativ
  * where JavaScript throws only once a private member of the class is read.
  */
 template <typename T> const T& JsonValue::asserted_instance() const {
-    if (!instance_of<T>())
-        throw_not_an_instance();
-    return static_cast<const JsonNativeBox<T>&>(*native_).value;
+    if (instance_of<T>())
+        return static_cast<const JsonNativeBox<T>&>(*native_).value;
+    // An authored Error record is held as the Error it is (`json_authored_error`).
+    if constexpr (is_ref_v<T> && requires(const T& record) {
+                      record->message;
+                      record->name;
+                  })
+        if (instance_of<Error>())
+            if (const auto object = std::dynamic_pointer_cast<TypedErrorObject<T>>(
+                    static_cast<const JsonNativeBox<Error>&>(*native_).value.object()))
+                return object->value;
+    throw_not_an_instance();
+}
+
+/**
+ * An authored Error record a document holds: the Error it is, whose own
+ * properties other than its name and message read through the record's
+ * view (`json_value_property`).
+ */
+template <typename T>
+[[nodiscard]] JsonValue json_authored_error(const Ref<T>& record, std::string base) {
+    if (!record)
+        return JsonValue::null_value();
+    return JsonValue::from_native(
+        make_object_error(record, std::move(base), make_gc_shared<JsonNativeBox<Ref<T>>>(record)));
 }
 
 template <typename Getter> struct JsonRecordView final : JsonNativeObject {

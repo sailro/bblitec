@@ -89,6 +89,26 @@ const cases = {
         function read(): Error { reads++; return unrelated; }
         if (read() instanceof Other || reads !== 1) throw new Error('instanceof effects');
     `,
+    documents: `
+        class Failure extends Error { label = 'tag'; }
+        class Root extends Error { label = 'tag'; }
+        class Detailed extends Root { detail = 'extra'; }
+        const document = JSON.parse('{}') as Record<string, unknown>;
+        document.direct = new Failure('bad');
+        const rows: Array<{error: Failure}> = [];
+        rows.push({error: new Failure('nested')});
+        document.nested = rows[0]!;
+        const detailed: Detailed[] = [];
+        detailed.push(new Detailed('sub'));
+        document.sub = detailed[0]!;
+        const text = JSON.stringify(document);
+        if (text !== '{"direct":{"label":"tag"},"nested":{"error":{"label":"tag"}},"sub":{"label":"tag","detail":"extra"}}')
+            throw new Error('documents ' + text);
+        const direct = document.direct;
+        if (!(direct instanceof Failure) || direct.message !== 'bad' || direct.label !== 'tag' ||
+            Object.keys(direct).join() !== 'label' || document.sub !== detailed[0])
+            throw new Error('dynamic views');
+    `,
 };
 for (const [name, source] of Object.entries(cases)) {
     test(`authored Error subclasses preserve ${name}`, async (t) => {
@@ -126,28 +146,6 @@ test("authored Error reflection refuses unrepresented descriptors", () => {
                     `class Failure extends Error {} const value = new Failure('bad'); const result = ${operation};`,
                 ),
             /Error reflection requires represented property descriptors/,
-        );
-});
-
-test("authored Error erasure refuses direct and nested dynamic views", () => {
-    for (const body of [
-        "document.value = new Failure('bad');",
-        `const rows: Array<{error: Failure}> = [];
-        rows.push({error: new Failure('bad')});
-        document.value = rows[0]!;`,
-        `class Detailed extends Failure { detail = 'extra'; }
-        const rows: Detailed[] = [];
-        rows.push(new Detailed('bad'));
-        document.value = rows[0]!;`,
-    ])
-        assert.throws(
-            () =>
-                compileSource(`
-                    class Failure extends Error { label = 'tag'; }
-                    const document = JSON.parse('{}') as Record<string, unknown>;
-                    ${body}
-                `),
-            /Authored Error reflection requires represented property descriptors/,
         );
 });
 

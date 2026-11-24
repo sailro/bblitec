@@ -134,6 +134,8 @@ Rules:
 - `for...in` over a number-keyed dictionary yields names in property order; reading it by such a name finds the
   number the name spells. A parsed document's binding takes `++`/`--` as its number.
 - A write to a represented Error's property that no reached source reads back evaluates its value and stores nothing.
+- An Error subclass instance in a dynamic value is that Error: its own keys are its fields, then `name` where its
+  class's constructor assigns it as a statement after every field below; any other write of `name` refuses.
 - A tuple parameter the function writes through (`out[0] = x`, or a callee that does) is its argument's storage.
 
 ## Standard library

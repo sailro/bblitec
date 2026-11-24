@@ -119,6 +119,7 @@ import {
     type NumericSlotKind,
 } from "./numeric-slot-storage.js";
 import {
+    holdsRecord,
     observedUnderOwnType,
     recordCopyObservation,
     type RecordObservationContext,
@@ -1411,6 +1412,22 @@ function unionPresence(
     );
 }
 
+/** Whether a constructor statement is `this.name = value`. */
+function assignsThisName(statement: ts.Statement): boolean {
+    if (
+        !ts.isExpressionStatement(statement) ||
+        !ts.isBinaryExpression(statement.expression) ||
+        statement.expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken
+    )
+        return false;
+    const assigned = statement.expression.left;
+    return (
+        ts.isPropertyAccessExpression(assigned) &&
+        assigned.expression.kind === ts.SyntaxKind.ThisKeyword &&
+        assigned.name.text === "name"
+    );
+}
+
 /**
  * Whether a struct field is a property of the object, which a document
  * view of it lists and reads: a private name's slot (`#x`) is none.
@@ -1664,6 +1681,8 @@ export class DataTypeRegistry {
      */
     private readonly jsonSerializedStructs = new EmissionMap<string, ts.Node>();
     private readonly jsonBoxedStructs = new EmissionMap<string, ts.Node>();
+    /** Boxed authored Error structs whose instances own `name` (`ownsErrorName`). */
+    private readonly ownErrorNames = new EmissionSet<string>();
     /** Each field's own-key facts by `<struct>.<property>`, merged over every type shape the struct stands for. */
     private readonly fieldPresences = new EmissionMap<string, FieldPresence>();
     /** Lowered reads of a field's presence, checked again once every shape is known. */
@@ -11986,8 +12005,11 @@ export class DataTypeRegistry {
             isTypedArrayType(type)
         )
             return `bbl::js::JsonValue::from_native(${cpp})`;
-        if (type.kind === "struct") this.markJsonBoxed(type, node);
-        else if (type.kind === "vector") {
+        if (type.kind === "struct") {
+            const errorBase = this.markJsonBoxed(type, node);
+            if (errorBase)
+                return `bbl::js::json_authored_error(${cpp}, ${stringLiteral(errorBase)})`;
+        } else if (type.kind === "vector") {
             if (this.jsonValueCpp(type.element, "value", node) === undefined)
                 return undefined;
         } else if (type.kind === "optional") {
@@ -12132,9 +12154,14 @@ export class DataTypeRegistry {
      * Native object views retain the original reference and read its live
      * fields; a field holding a native handle reads undefined or null while
      * it holds none, and refuses a held one (`native_handle_field_json`), as
-     * no document holds the handle.
+     * no document holds the handle. An authored Error's record is boxed as
+     * the Error it is (`json_authored_error`), the view reading its own
+     * properties: the Error base it answers names that case.
      */
-    public markJsonBoxed(type: DataType<"struct">, node: ts.Node): void {
+    public markJsonBoxed(
+        type: DataType<"struct">,
+        node: ts.Node,
+    ): string | undefined {
         if (!this.isReferenceStruct(type.name)) {
             const demand = this.nativeRecordSources.get(type.name);
             if (demand) throw new NativeRecordStorageRequired(demand);
@@ -12144,15 +12171,8 @@ export class DataTypeRegistry {
             );
         }
         const source = this.classStruct(type.name);
-        if (
-            source &&
-            classErrorBase(this.classHierarchy.table(source.declaration))
-        )
-            this.fail(
-                node,
-                "Authored Error reflection requires represented property descriptors.",
-            );
-        if (this.jsonBoxedStructs.has(type.name)) return;
+        const errorBase = this.authoredErrorBase(type.name);
+        if (this.jsonBoxedStructs.has(type.name)) return errorBase;
         const stored = this.classStructLayout(type.name);
         if (source)
             for (const member of classInstanceProperties(source.declaration)) {
@@ -12170,14 +12190,15 @@ export class DataTypeRegistry {
                         `Dynamic class storage requires a represented field '${name ?? member.name.getText()}'.`,
                     );
             }
+        if (errorBase && this.ownsErrorName(type.name, node))
+            this.ownErrorNames.add(type.name);
         this.jsonBoxedStructs.set(type.name, node);
         this.keyOrders.noteEnumeration(type.name, node);
         this.cppType(type);
-        for (const field of this.structFields(
+        for (const field of this.viewedFields(
             type.name,
-            node,
-            "accessors",
-        ).filter(isPropertyField)) {
+            this.structFields(type.name, node, "accessors"),
+        )) {
             // The view lists a field among its own keys while it is one.
             this.ownPresence(type.name, field, "value", "->", node);
             if (
@@ -12190,6 +12211,81 @@ export class DataTypeRegistry {
                     `Dynamic object field '${field.sourceName}' has no retained value view for ${field.type.kind}.`,
                 );
         }
+        return errorBase;
+    }
+
+    /**
+     * Whether an authored Error's instances own `name`, which a view lists
+     * after their fields: JavaScript creates it there where a constructor
+     * of a class the record holds assigns `this.name` as a statement of
+     * its body, or a base's constructor does and no class below it declares
+     * instance properties. Any other write of `name` to such records
+     * refuses.
+     */
+    private ownsErrorName(name: string, node: ts.Node): boolean {
+        const declaration = this.classStruct(name)!.declaration;
+        const placed = new Set<ts.Node>();
+        const misplaced = new Set<ts.Node>();
+        for (const held of this.classHierarchy.hierarchyClasses(declaration)) {
+            let fieldsBelow = false;
+            for (const table of classChain(this.classHierarchy.table(held))) {
+                for (const statement of table.constructorDeclaration?.body
+                    ?.statements ?? [])
+                    if (assignsThisName(statement))
+                        (fieldsBelow ? misplaced : placed).add(statement);
+                fieldsBelow ||= table.instanceProperties.length > 0;
+            }
+        }
+        for (const statement of misplaced) placed.delete(statement);
+        const instance = this.checker.getTypeAtLocation(
+            declaration.name ?? node,
+        );
+        for (const [holder, writes] of programObservations(
+            this.classHierarchy.program,
+        ).writes)
+            for (const write of writes)
+                if (
+                    write.property === "name" &&
+                    holdsRecord(this.checker, holder, [instance]) &&
+                    !ts.findAncestor(write.node, (ancestor) =>
+                        placed.has(ancestor),
+                    )
+                )
+                    this.fail(
+                        write.node,
+                        "An authored Error a dynamic value holds owns 'name' only where its class's constructor assigns it as a statement, after the fields of every class below it.",
+                    );
+        return placed.size > 0;
+    }
+
+    /** The Error base of a struct holding an authored Error class's instances. */
+    private authoredErrorBase(name: string): string | undefined {
+        const source = this.classStruct(name);
+        return source
+            ? classErrorBase(this.classHierarchy.table(source.declaration))
+            : undefined;
+    }
+
+    /**
+     * The fields a document view of a record lists and reads: its
+     * properties, but an authored Error's own slots (`ERROR_CLASS_FIELDS`),
+     * which the Error it is boxed as reads.
+     */
+    private viewedFields(
+        name: string,
+        fields: readonly DataStructField[],
+    ): DataStructField[] {
+        const error = this.authoredErrorBase(name) !== undefined;
+        return fields.filter(
+            (field) =>
+                isPropertyField(field) &&
+                !(
+                    error &&
+                    ERROR_CLASS_FIELDS.some(
+                        (slot) => slot.sourceName === field.sourceName,
+                    )
+                ),
+        );
     }
 
     private renderJsonObjectViews(used: ReadonlySet<string>): string[] {
@@ -12201,9 +12297,10 @@ export class DataTypeRegistry {
             `inline bbl::js::Array<std::string> json_value_keys(const ${name}& value);`,
         ]);
         for (const name of names) {
-            const fields = this.structsByName
-                .get(name)!
-                .fields.filter(isPropertyField);
+            const fields = this.viewedFields(
+                name,
+                this.structsByName.get(name)!.fields,
+            );
             const node = this.jsonBoxedStructs.get(name)!;
             const presences = fields.map((field) =>
                 this.ownPresence(name, field, "value", "->", node),
@@ -12234,10 +12331,15 @@ export class DataTypeRegistry {
                 );
             });
             lines.push("    return {};", "}");
+            // An authored Error's own `name` is created after its fields.
+            const keys = [
+                ...fields.map((field) => field.sourceName),
+                ...(this.ownErrorNames.has(name) ? ["name"] : []),
+            ];
             if (presences.every((presence) => presence === undefined))
                 lines.push(
                     `inline bbl::js::Array<std::string> json_value_keys([[maybe_unused]] const ${name}& value) {`,
-                    `    return {${fields.map((field) => stringLiteral(field.sourceName)).join(", ")}};`,
+                    `    return {${keys.map(stringLiteral).join(", ")}};`,
                     "}",
                     "",
                 );
@@ -12252,6 +12354,12 @@ export class DataTypeRegistry {
                             ? `    if (${presence.ownCpp}) ${push}`
                             : `    ${push}`;
                     }),
+                    ...keys
+                        .slice(fields.length)
+                        .map(
+                            (key) =>
+                                `    keys.push_back(${stringLiteral(key)});`,
+                        ),
                     "    return keys;",
                     "}",
                     "",

@@ -7734,6 +7734,71 @@ checkInRealm(
 `,
 );
 
+checkInRealm(
+    "an-authored-error-a-dynamic-slot-holds-is-the-error-it-is",
+    `
+    class Failure extends Error {
+        readonly reason: string;
+        visible = 3;
+        constructor(reason: string) {
+            super("failed: " + reason);
+            this.name = "Failure";
+            this.reason = reason;
+        }
+    }
+    interface Report {
+        kind: string;
+        error: unknown;
+    }
+    function readString(obj: unknown, key: string): string {
+        if (!obj || (typeof obj !== "object" && typeof obj !== "function")) return "";
+        const value = (obj as Record<string, unknown>)[key];
+        return typeof value === "string" ? value : typeof value === "number" ? \`\${value}\` : "";
+    }
+    const reports: Report[] = [];
+    function funnel(input: Report): string {
+        reports.push(input);
+        const error = input.error;
+        const parts = [readString(error, "message"), readString(error, "name"), readString(error, "reason"), readString(error, "visible"), readString(error, "stackless")];
+        return parts.join("|") + (error instanceof Error ? ";error" : "") + (error instanceof Failure ? ";failure" : "") + ";" + typeof error;
+    }
+    const failure = new Failure("timeout");
+    let log = funnel({ kind: "boot", error: failure });
+    const held = reports[0]!.error;
+    failure.visible = 4;
+    log += "/" + readString(held, "visible") + (held === failure ? ";same" : ";other");
+    log += "/" + JSON.stringify(held) + "/" + Object.keys(held as object).join(",");
+    log += "/" + (held as Failure).reason;
+    log += "/" + funnel({ kind: "plain", error: "text" });
+    const expected = 'failed: timeout|Failure|timeout|3|;error;failure;object/4;same/{"reason":"timeout","visible":4,"name":"Failure"}/reason,visible,name/timeout/||||;string';
+    if (log !== expected) throw new Error("log " + log);
+    globalThis.close();
+`,
+);
+
+test("an authored error a dynamic slot holds refuses a name its view cannot place", () => {
+    const held = (classes: string, after = ""): string => `
+    ${classes}
+    const slots: { error: unknown }[] = [{ error: "text" }];
+    const failure = new Failure("x");
+    slots.push({ error: failure });
+    ${after}
+    export {};`;
+    for (const source of [
+        // A base class names it before a subclass creates its fields.
+        held(`class Base extends Error { constructor(m: string) { super(m); this.name = "Base"; } }
+              class Failure extends Base { code = 1; }`),
+        held(
+            `class Failure extends Error { constructor(m: string) { super(m); } }`,
+            `failure.name = "Renamed";`,
+        ),
+    ])
+        assert.throws(
+            () => compileSource(source),
+            /owns 'name' only where its class's constructor assigns it as a statement/,
+        );
+});
+
 check(
     "a-conditional-of-two-boolean-literals-knows-neither",
     `
