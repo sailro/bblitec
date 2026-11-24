@@ -97,10 +97,16 @@ import {
     journaled,
 } from "./emission-transaction.js";
 import {
+    classViewSite,
+    dictionaryStorage,
+    documentStorageSite,
+    nativeViewSite,
     NativeRecordStorageRequired,
     refusingRecordDemand,
     type NativeRecordStorageDemand,
+    type RecordStorageSite,
 } from "./native-record-storage.js";
+import { nodeSite } from "../source-location.js";
 import { AbsentRecordProperties } from "./absent-record-properties.js";
 import { ReplayStorage } from "./replay-storage.js";
 import {
@@ -1616,9 +1622,10 @@ function keyedSelection(type: ts.Type): KeyedSelection | undefined {
  * The object a record type's values already are, which stores them: a
  * native owner's carrier, or the shared instance of a class.
  */
-type ObjectView =
+type ObjectView = { readonly site: RecordStorageSite } & (
     | { readonly storage: DataType }
-    | { readonly instance: ts.ClassLikeDeclaration };
+    | { readonly instance: ts.ClassLikeDeclaration }
+);
 
 function sameObjectView(left: ObjectView, right: ObjectView): boolean {
     return "storage" in left
@@ -1626,9 +1633,15 @@ function sameObjectView(left: ObjectView, right: ObjectView): boolean {
         : "instance" in right && left.instance === right.instance;
 }
 
-/** The refusal of a record type demanded as two views, or as a view and a document or dictionary. */
-const CONFLICTING_RECORD_VIEWS =
-    "A structural record has conflicting native object storage demands.";
+/**
+ * The refusal of a record type demanded as two views, or as a view and a
+ * document or dictionary: it names each storage and where it was demanded.
+ */
+function conflictingRecordViews(sites: readonly RecordStorageSite[]): string {
+    return `A structural record has conflicting native object storage demands. ${sites
+        .map((site) => `'${site.storage}' at '${nodeSite(site.node)}'`)
+        .join(" and ")}.`;
+}
 
 /**
  * Maps checker types onto native data types and owns the generated struct,
@@ -2583,9 +2596,13 @@ export class DataTypeRegistry {
                         "A record has conflicting scalar dictionary storage demands.",
                     ),
                 );
-            if (demand.nativeConflict)
+            const nativeConflict = demand.nativeConflict;
+            if (nativeConflict)
                 refusingRecordDemand(demand, () =>
-                    this.fail(demand.node, CONFLICTING_RECORD_VIEWS),
+                    this.fail(
+                        demand.node,
+                        conflictingRecordViews(nativeConflict),
+                    ),
                 );
             if (demand.proxy)
                 this.withRecordDemand(demand, () =>
@@ -2635,7 +2652,10 @@ export class DataTypeRegistry {
                             isPinnedHandleType,
                         ),
                     ])
-                        this.documentRecords.add(this.structIdentity(record));
+                        this.documentRecords.set(
+                            this.structIdentity(record),
+                            demand.node,
+                        );
                 });
             if (demand.documentDictionary)
                 this.withRecordDemand(demand, () =>
@@ -2647,30 +2667,51 @@ export class DataTypeRegistry {
                 this.withRecordDemand(demand, () => {
                     const identity = this.structIdentity(demand.type);
                     const previous = this.recordDictionaries.get(identity);
-                    if (previous && previous !== demand.dictionary)
+                    if (previous && previous.value !== demand.dictionary)
                         this.fail(
                             demand.node,
                             "A record has conflicting scalar dictionary storage demands.",
                         );
-                    this.recordDictionaries.set(identity, demand.dictionary!);
+                    this.recordDictionaries.set(identity, {
+                        value: demand.dictionary!,
+                        node: demand.node,
+                    });
                 });
             const view: ObjectView | undefined = demand.native
-                ? { storage: demand.native.storage }
-                : demand.classView && { instance: demand.classView };
+                ? {
+                      storage: demand.native.storage,
+                      site: nativeViewSite(demand.native),
+                  }
+                : demand.classView && {
+                      instance: demand.classView,
+                      site: classViewSite(demand.classView),
+                  };
             if (view)
                 this.withRecordDemand(demand, () => {
                     const identity = this.structIdentity(demand.type);
                     const previous = this.objectViews.get(identity);
+                    const held =
+                        previous && !sameObjectView(previous, view)
+                            ? previous.site
+                            : undefined;
+                    const asked = documentStorageSite(demand);
                     if (
                         ("storage" in view &&
                             !isNativeStructuralView(view.storage)) ||
-                        demand.document ||
-                        demand.documentDictionary ||
-                        demand.dictionary ||
-                        (previous && !sameObjectView(previous, view))
+                        held ||
+                        asked
                     )
                         refusingRecordDemand(demand, () =>
-                            this.fail(demand.node, CONFLICTING_RECORD_VIEWS),
+                            this.fail(
+                                demand.node,
+                                conflictingRecordViews(
+                                    held
+                                        ? [held, view.site]
+                                        : asked
+                                          ? [view.site, asked]
+                                          : [view.site],
+                                ),
+                            ),
                         );
                     this.objectViews.set(identity, view);
                 });
@@ -2685,18 +2726,25 @@ export class DataTypeRegistry {
 
     /**
      * Record types whose values are parsed documents the program reads as
-     * them (`documentRecordDemand`), by record identity: each maps to
-     * document storage.
+     * them (`documentRecordDemand`), by record identity, with the node
+     * that demanded it: each maps to document storage.
      */
-    private readonly documentRecords = new EmissionSet<
-        ts.Symbol | ts.Type | string
+    private readonly documentRecords = new EmissionMap<
+        ts.Symbol | ts.Type | string,
+        ts.Node
     >();
     private readonly documentDictionaries = new EmissionSet<
         NativeRecordStorageDemand["identity"]
     >();
+    /** Record types stored as scalar dictionaries, with the value kind and the node that demanded it. */
     private readonly recordDictionaries = new EmissionMap<
         NativeRecordStorageDemand["identity"],
-        NonNullable<NativeRecordStorageDemand["dictionary"]>
+        {
+            readonly value: NonNullable<
+                NativeRecordStorageDemand["dictionary"]
+            >;
+            readonly node: ts.Node;
+        }
     >();
     /**
      * Record types demanded as views of an object their values already
@@ -8738,11 +8786,27 @@ export class DataTypeRegistry {
                 this.fromLocalClassType(instance, node),
             );
         if (view && "storage" in view) {
-            if (
-                this.documentRecords.has(identity) ||
-                this.recordDictionaries.has(identity)
-            )
-                this.fail(node, CONFLICTING_RECORD_VIEWS);
+            const document = this.documentRecords.get(identity);
+            const dictionary = this.recordDictionaries.get(identity);
+            if (document)
+                this.fail(
+                    node,
+                    conflictingRecordViews([
+                        view.site,
+                        { storage: "document", node: document },
+                    ]),
+                );
+            if (dictionary)
+                this.fail(
+                    node,
+                    conflictingRecordViews([
+                        view.site,
+                        {
+                            storage: dictionaryStorage(dictionary.value),
+                            node: dictionary.node,
+                        },
+                    ]),
+                );
             return view.storage;
         }
         if (
@@ -8750,7 +8814,7 @@ export class DataTypeRegistry {
             this.intersectsDocumentRecord(type)
         )
             return { kind: "json" };
-        const dictionary = this.recordDictionaries.get(identity);
+        const dictionary = this.recordDictionaries.get(identity)?.value;
         if (dictionary)
             return {
                 kind: "map",

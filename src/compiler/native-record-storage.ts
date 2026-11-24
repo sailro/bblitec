@@ -4,7 +4,7 @@ import type { StorageRequest } from "./replay-storage.js";
 import ts from "typescript";
 import type { InstantiatedRecord, RecordJoin } from "./record-components.js";
 import type { DataType } from "./data-types/model.js";
-import { dataTypesEqual } from "./data-types/operations.js";
+import { dataTypeKey, dataTypesEqual } from "./data-types/operations.js";
 import { declaredRecordName } from "./type-facts.js";
 
 /** The source type and generic environment that produced a native record. */
@@ -52,8 +52,11 @@ export interface NativeRecordStorageDemand {
      * every property it declares: each is stored as the instance.
      */
     classView?: ts.ClassLikeDeclaration;
-    /** Distinct checked native owners cannot overwrite one structural demand. */
-    nativeConflict?: true;
+    /**
+     * Distinct checked native owners cannot overwrite one structural demand:
+     * the storage each demanded, and where.
+     */
+    nativeConflict?: readonly [RecordStorageSite, RecordStorageSite];
     /** A function can enter this callable record before any named property is installed. */
     bareCallable?: true;
     /**
@@ -78,6 +81,82 @@ export interface NativeRecordStorageDemand {
      * it is a view of that record (one object), its slots its entries.
      */
     view?: true;
+}
+
+/** A storage a record type was demanded as, and the node that demanded it, for a conflict's refusal. */
+export interface RecordStorageSite {
+    readonly storage: string;
+    readonly node: ts.Node;
+}
+
+/** The site of the native owner a record type views. */
+export function nativeViewSite(
+    native: NonNullable<NativeRecordStorageDemand["native"]>,
+): RecordStorageSite {
+    return { storage: dataTypeKey(native.storage), node: native.node };
+}
+
+/** The site of the class whose instances a record type views. */
+export function classViewSite(
+    declaration: ts.ClassLikeDeclaration,
+): RecordStorageSite {
+    return {
+        storage: `class ${declaration.name?.text ?? "expression"}`,
+        node: declaration,
+    };
+}
+
+/** A scalar dictionary's storage as a conflict's refusal names it. */
+export function dictionaryStorage(
+    value: NonNullable<NativeRecordStorageDemand["dictionary"]>,
+): string {
+    return `dictionary of ${value}`;
+}
+
+/**
+ * The non-object storage `demand` asks beside a view (a document, a
+ * document dictionary, a scalar dictionary), demanded at its site.
+ */
+export function documentStorageSite(
+    demand: NativeRecordStorageDemand,
+): RecordStorageSite | undefined {
+    const storage = demand.document
+        ? "document"
+        : demand.documentDictionary
+          ? "document dictionary"
+          : demand.dictionary && dictionaryStorage(demand.dictionary);
+    return storage ? { storage, node: demand.node } : undefined;
+}
+
+/**
+ * The two object views `previous` and `next` hold that no one object is:
+ * two native owners of distinct storage, two classes, or a native owner
+ * and a class.
+ */
+function objectViewConflict(
+    previous: NativeRecordStorageDemand | undefined,
+    next: NativeRecordStorageDemand,
+): readonly [RecordStorageSite, RecordStorageSite] | undefined {
+    if (
+        previous?.native &&
+        next.native &&
+        !dataTypesEqual(previous.native.storage, next.native.storage)
+    )
+        return [nativeViewSite(previous.native), nativeViewSite(next.native)];
+    if (
+        previous?.classView &&
+        next.classView &&
+        previous.classView !== next.classView
+    )
+        return [
+            classViewSite(previous.classView),
+            classViewSite(next.classView),
+        ];
+    const native = previous?.native ?? next.native;
+    const classView = previous?.classView ?? next.classView;
+    return native && classView
+        ? [nativeViewSite(native), classViewSite(classView)]
+        : undefined;
 }
 
 /** A property a converted record reads through a getter, and writes through a setter. */
@@ -128,7 +207,7 @@ export function describeRecordDemand(
  */
 export function recordDemandAsks(demand: NativeRecordStorageDemand): string[] {
     const asked: string[] = RECORD_STORAGE_FLAGS.filter((flag) => demand[flag]);
-    if (demand.dictionary) asked.push(`dictionary of ${demand.dictionary}`);
+    if (demand.dictionary) asked.push(dictionaryStorage(demand.dictionary));
     if (demand.native) asked.push("native");
     if (demand.classView) asked.push("class view");
     for (const { source, target, kind } of demand.joins ?? [])
@@ -154,16 +233,9 @@ export function mergeNativeRecordStorage(
     next: NativeRecordStorageDemand,
 ): NativeRecordStorageDemand | undefined {
     const nativeConflict =
-        previous?.nativeConflict ||
-        next.nativeConflict ||
-        (previous?.native !== undefined &&
-            next.native !== undefined &&
-            !dataTypesEqual(previous.native.storage, next.native.storage)) ||
-        (previous?.classView !== undefined &&
-            next.classView !== undefined &&
-            previous.classView !== next.classView) ||
-        ((previous?.native ?? next.native) !== undefined &&
-            (previous?.classView ?? next.classView) !== undefined);
+        previous?.nativeConflict ??
+        next.nativeConflict ??
+        objectViewConflict(previous, next);
     const dictionaryConflict =
         previous?.dictionaryConflict ||
         next.dictionaryConflict ||
@@ -192,7 +264,7 @@ export function mergeNativeRecordStorage(
     let changed =
         previous === undefined ||
         added.length > 0 ||
-        (nativeConflict && !previous?.nativeConflict) ||
+        (nativeConflict !== undefined && !previous?.nativeConflict) ||
         (dictionaryConflict && !previous?.dictionaryConflict) ||
         (next.dictionary !== undefined && previous?.dictionary === undefined) ||
         (next.native !== undefined && previous?.native === undefined) ||
@@ -230,7 +302,7 @@ export function mergeNativeRecordStorage(
         ...(previous?.native ? { native: previous.native } : {}),
         ...(previous?.classView ? { classView: previous.classView } : {}),
         ...(previous?.dictionary ? { dictionary: previous.dictionary } : {}),
-        ...(nativeConflict ? { nativeConflict: true } : {}),
+        ...(nativeConflict ? { nativeConflict } : {}),
         ...(dictionaryConflict ? { dictionaryConflict: true } : {}),
         ...(joins.length ? { joins } : {}),
         ...(documentFields.size ? { documentFields: [...documentFields] } : {}),

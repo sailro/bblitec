@@ -7,6 +7,7 @@ import { createCompilerProgram } from "../src/compiler/program.js";
 import { DataTypeRegistry } from "../src/compiler/data-types.js";
 import { ClassHierarchy } from "../src/compiler/class-members.js";
 import { mergeNativeRecordStorage } from "../src/compiler/native-record-storage.js";
+import { refusalClass } from "../src/compiler/survey.js";
 import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
@@ -85,6 +86,110 @@ test("conflicting scalar dictionary demands refuse without changing the retained
             /conflicting scalar dictionary storage/,
         );
     }
+});
+
+test("conflicting native object views name each storage and where it was demanded", () => {
+    const frontend = createCompilerProgram(
+        [
+            "interface Target { id: number }",
+            "const first = 1;",
+            "const second = 2;",
+        ].join("\n"),
+        "native-view-demand.ts",
+    );
+    const [declaration, ...statements] = frontend.sourceFile.statements;
+    assert.ok(declaration && ts.isInterfaceDeclaration(declaration));
+    const [first, second] = statements.map((statement) => {
+        assert.ok(ts.isVariableStatement(statement));
+        const initializer =
+            statement.declarationList.declarations[0]?.initializer;
+        assert.ok(initializer);
+        return initializer;
+    });
+    assert.ok(first && second);
+    const type = frontend.checker.getTypeAtLocation(declaration.name);
+    const source = { identity: type, type, node: declaration, frames: [] };
+    const eventTarget = {
+        ...source,
+        native: { type, node: first, storage: { kind: "event-target" } },
+    } as const;
+    const mouse = {
+        ...source,
+        native: {
+            type,
+            node: second,
+            storage: { kind: "borrowed-platform-event", event: "mouse" },
+        },
+    } as const;
+    const registry = () =>
+        new DataTypeRegistry(
+            frontend.checker,
+            (_node, message) => {
+                throw new Error(message);
+            },
+            new ClassHierarchy(frontend.checker, frontend.program),
+        );
+    const refusal = (...sites: string[]) =>
+        new RegExp(
+            `A structural record has conflicting native object storage demands\\. ${sites
+                .map((site) => site.replace(/[()]/g, "\\$&"))
+                .join(" and ")}\\.$`,
+        );
+    const views = refusal(
+        "'event-target' at '[^']*native-view-demand.ts:2'",
+        "'borrowed(mouse)' at '[^']*native-view-demand.ts:3'",
+    );
+
+    // Two native owners merged into one demand, in one demand per owner,
+    // and a view beside a document in one demand.
+    const conflict = mergeNativeRecordStorage(eventTarget, mouse);
+    assert.ok(conflict?.nativeConflict);
+    assert.deepEqual(
+        conflict.nativeConflict.map(({ storage, node }) => [storage, node]),
+        [
+            ["event-target", first],
+            ["borrowed(mouse)", second],
+        ],
+    );
+    assert.equal(mergeNativeRecordStorage(conflict, mouse), undefined);
+    for (const demands of [[conflict], [eventTarget, mouse]])
+        assert.throws(
+            () =>
+                registry().prepareRecordComponents(
+                    new Map(),
+                    demands,
+                    frontend.program,
+                ),
+            views,
+        );
+    assert.throws(
+        () =>
+            registry().prepareRecordComponents(
+                new Map(),
+                [{ ...eventTarget, document: true }],
+                frontend.program,
+            ),
+        refusal(
+            "'event-target' at '[^']*native-view-demand.ts:2'",
+            "'document' at '[^']*native-view-demand.ts:1'",
+        ),
+    );
+
+    // The survey groups the refusal by its leading sentence alone.
+    let message = "";
+    try {
+        registry().prepareRecordComponents(
+            new Map(),
+            [conflict],
+            frontend.program,
+        );
+    } catch (error) {
+        message = error instanceof Error ? error.message : "";
+    }
+    assert.equal(
+        refusalClass(message),
+        "A structural record has conflicting native object storage demands. '…' at '…' and '…' at '…'.",
+    );
 });
 
 check(

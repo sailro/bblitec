@@ -24,7 +24,11 @@
 import ts from "typescript";
 import { CompileError } from "./compile-error.js";
 import { declaredSymbol } from "./symbols.js";
-import { sourceLocation, syntaxKindName } from "../source-location.js";
+import {
+    nodeSite,
+    sourceLocation,
+    syntaxKindName,
+} from "../source-location.js";
 import {
     describeStorageRequests,
     storageRequestSite,
@@ -480,12 +484,6 @@ function replayText(replay: Error): string {
     return replay instanceof StorageDemand
         ? describeStorageRequests(replay.requests)
         : `${replay.constructor.name}: ${replay.message}`;
-}
-
-/** `node` as `file:line`. */
-function nodeSite(node: ts.Node): string {
-    const location = sourceLocation(node);
-    return `${location.file.fileName}:${location.line}`;
 }
 
 /** What a census lists of the statements a refusal or demand rolled back. */
