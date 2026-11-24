@@ -188,6 +188,24 @@ function registerAs(
  * Readability is shared by literal, candidate-table and directory discovery.
  * A local file answers from its directory entry, without reading it.
  */
+/**
+ * The text of the packaged file a fetch of `url` serves, read at
+ * generation, or undefined where the package holds none: the file a static
+ * fetch URL resolves to (`compileStaticFetch`).
+ */
+export function packagedFetchText(
+    context: Pick<StaticFetchContext, "options">,
+    url: string,
+): string | undefined {
+    const source = resolveBundledAsset(
+        url,
+        context.options.fileName,
+        context.options,
+    );
+    if (!readablePackagedAsset(context, source)) return undefined;
+    return readAssetTextSync(source, context.options.fileName);
+}
+
 export function readablePackagedAsset(
     context: Pick<StaticFetchContext, "options">,
     source: string,

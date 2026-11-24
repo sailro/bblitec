@@ -1900,7 +1900,14 @@ export class StaticEvaluator {
                                     (argument) =>
                                         scan.namesAlias(
                                             unwrapExpression(argument),
-                                        ) || throughAlias(argument, scan),
+                                        ) ||
+                                        // A scalar member is copied in.
+                                        (throughAlias(argument, scan) &&
+                                            typeCanCarryReference(
+                                                this.checker.getTypeAtLocation(
+                                                    argument,
+                                                ),
+                                            )),
                                 ) &&
                                     this.callReachesABody(node))))),
             },
@@ -2341,9 +2348,14 @@ export class StaticEvaluator {
         // emit, the calls that build it.
         if (!this.isNamedPath(access.expression)) return undefined;
         const value = this.resolveProperty(access);
-        return value?.kind === "number" && !value.parameterBinding
-            ? value.staticNumber
-            : undefined;
+        if (value?.kind === "number" && !value.parameterBinding)
+            if (value.staticNumber !== undefined) return value.staticNumber;
+        // A field of plain data generation runs (the record an awaited
+        // helper's call settles to) reads the number that run holds.
+        if (valueKindOf(this.checker.getTypeAtLocation(access)) !== "number")
+            return undefined;
+        const text = this.generationText(access);
+        return text === undefined ? undefined : Number(text);
     }
 
     private isNamedPath(expression: ts.Expression): boolean {

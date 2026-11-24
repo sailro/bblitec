@@ -1752,13 +1752,22 @@ export class ExpressionLowerer {
             if (selected) return selected;
         }
         if (this.context.evaluator.isNumberExpression(unwrapped)) {
+            // Arithmetic over numbers generation knows (literals, constants,
+            // the fields of a known record) is known too; the probe reads
+            // those fields without keeping what reading them emits.
             const staticNumber = ts.isNumericLiteral(unwrapped)
                 ? Number(unwrapped.text)
-                : ts.isPrefixUnaryExpression(unwrapped) &&
-                    (unwrapped.operator === ts.SyntaxKind.PlusToken ||
-                        unwrapped.operator === ts.SyntaxKind.MinusToken) &&
-                    ts.isNumericLiteral(this.context.unwrap(unwrapped.operand))
-                  ? staticNumberValue(this.context, unwrapped)
+                : ts.isPrefixUnaryExpression(unwrapped) ||
+                    ts.isBinaryExpression(unwrapped)
+                  ? unlessRefused(() =>
+                        this.context.probeEmission(
+                            () =>
+                                this.context.evaluator.staticNumberThroughRecords(
+                                    unwrapped,
+                                ),
+                            () => false,
+                        ),
+                    )
                   : undefined;
             return {
                 kind: "number",

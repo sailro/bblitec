@@ -19586,10 +19586,8 @@ test("compiles Babylon Lite scene 273 runtime material-family addition", () => {
         result.cpp,
         /\.metallic_factor = 0\.1f, \.roughness_factor = 0\.4f, \.direct_intensity = 1\.0f/,
     );
-    assert.match(
-        result.cpp,
-        /if \(\(v_added && v_frame >= \(20\.0 \+ 150\.0\)\)\)/,
-    );
+    // The frame threshold, a sum of two constants, folds.
+    assert.match(result.cpp, /if \(\(v_added && v_frame >= 170\.0\)\)/);
     assert.doesNotMatch(result.cpp, /dataset|drawCallCount/);
     assert.deepEqual(result.manifest.generatedSources, [
         "upstream/src/engine.cpp",
