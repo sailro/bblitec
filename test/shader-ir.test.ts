@@ -175,6 +175,38 @@ test("typed shader IR carries helper functions, loops and full operators", () =>
     assert.match(native, /w -= -0\.5;/);
 });
 
+test("a module-scope private variable is each invocation's own, with no binding", () => {
+    const source = {
+        name: "private-surface",
+        vertexSource,
+        fragmentSource: `
+            struct Surface { tint: vec4<f32>, };
+            var<private> surface: Surface;
+            var<private> scale: f32 = 2.0;
+            fn fillSurface() { surface.tint = shaderUniforms.tint * scale; }
+            @fragment fn mainFragment() -> @location(0) vec4<f32> {
+                fillSurface();
+                return surface.tint;
+            }
+        `,
+        attributes: ["position"],
+        uniforms: ["tint:vec4<f32>"],
+        ...renderState,
+    };
+    const program = lowerWgslShaderProgram(source);
+    assert.deepEqual(
+        program.fragment.privates?.map(({ name, type }) => [name, type]),
+        [
+            ["surface", "Surface"],
+            ["scale", "f32"],
+        ],
+    );
+    const native = emitNativeWgslProgram(program, "fragment");
+    assert.match(native, /^var<private> surface: Surface;$/m);
+    assert.match(native, /^var<private> scale: f32 = 2\.0;$/m);
+    assert.doesNotMatch(native, /@binding\(\d+\) var<private>/);
+});
+
 test("template lists are told apart from comparisons", () => {
     const fn = parseWgslFunction(
         "fn f(a: f32, b: f32) -> array<vec4<u32>, 2> { let c = a<b; let d = select(0.0, 1.0, a > b); return array<vec4<u32>, 2>(); }",
