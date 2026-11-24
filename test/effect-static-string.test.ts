@@ -322,6 +322,241 @@ int main() {
     );
 });
 
+test("a record picked from a constant table splits per distinct row, its booleans read together, and each arm is JavaScript's", (t) => {
+    const source = `
+import { createEngine, createEffectWrapper, type EngineContext } from "@babylonjs/lite";
+type Name = "full" | "lean" | "bare";
+interface Profile { readonly shadow: boolean; readonly gloss: boolean; readonly lights: boolean; readonly vertex: boolean }
+const PROFILES: Readonly<Record<Name, Profile>> = {
+    full: { shadow: true, gloss: true, lights: true, vertex: false },
+    lean: { shadow: true, gloss: false, lights: true, vertex: true },
+    bare: { shadow: false, gloss: false, lights: false, vertex: false },
+};
+function profileOf(name: Name): Profile { return PROFILES[name]; }
+function resolve(query: string, lights: boolean): Profile {
+    if (query === "full" || query === "lean" || query === "bare") return profileOf(query);
+    const shipped = profileOf("lean");
+    return lights === shipped.lights ? shipped : { ...shipped, lights };
+}
+function surfaceWgsl(profile: Profile, cache: boolean): string {
+    return \`// \${profile.shadow} \${profile.gloss} \${profile.lights} \${profile.vertex} \${cache}
+@fragment fn effectFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+}
+function surface(engine: EngineContext, opts: { label: string; profile: Profile; cache: boolean }) {
+    return createEffectWrapper(engine, {
+        name: opts.label,
+        fragmentWGSL: surfaceWgsl(opts.profile, opts.cache),
+        bindings: [{ binding: 0, kind: "uniform", uniformByteLength: 16 }],
+    });
+}
+async function main() {
+    const engine = await createEngine(document.createElement("canvas"));
+    const input = JSON.parse('["bare", false, true]') as [string, boolean, boolean];
+    const query = input[0];
+    const lights = input[1];
+    const cache = input[2];
+    surface(engine, { label: "surface", profile: resolve(query, lights), cache });
+}
+main();`;
+    const compiled = compileSource(source);
+    // The rows the profile can be: each table row, and each with its lights
+    // replaced; per row, the cache flag's two texts.
+    const rows: (readonly boolean[])[] = [
+        [true, true, true, false],
+        [true, false, true, true],
+        [false, false, false, false],
+    ].flatMap((row) => [row, [row[0]!, row[1]!, !row[2], row[3]!]]);
+    const texts = compiled.manifest.effects.map(
+        ({ fragment }) => fragment.split("\n")[0]!,
+    );
+    assert.deepEqual(
+        [...new Set(texts)].sort(),
+        rows
+            .flatMap((row) =>
+                [false, true].map((cache) => `// ${[...row, cache].join(" ")}`),
+            )
+            .sort(),
+    );
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native compiler required.");
+        return;
+    }
+    runGeneratedProgram(
+        native,
+        "effect-static-string/table-rows",
+        `#include <bblite/runtime.hpp>
+#include <bblite/js_data.hpp>
+#include <cassert>
+#include <cstring>
+namespace {
+const char* texts[] = { ${texts.map((text) => JSON.stringify(text)).join(", ")} };
+int creations = 0;
+}
+namespace bbl {
+Engine create_engine(EngineOptions) { return {}; }
+EffectWrapperHandle create_effect_wrapper(Engine&, std::uint32_t variant) {
+    assert(std::strcmp(texts[variant], "// false false false false true") == 0);
+    ++creations;
+    return {variant};
+}
+}
+#define main generated_main
+${compiled.cpp}
+#undef main
+int main() {
+    assert(generated_main() == 0);
+    assert(creations == 1);
+}`,
+        { expectedOutput: "" },
+    );
+});
+
+test("a constant row's arm reads an optional member the row lacks as undefined, as JavaScript does", (t) => {
+    const source = `
+import { createEngine, createEffectWrapper, type EngineContext } from "@babylonjs/lite";
+type Name = "plain" | "tinted";
+interface Look { readonly gloss: boolean; readonly tint?: string }
+const LOOKS: Readonly<Record<Name, Look>> = {
+    plain: { gloss: false },
+    tinted: { gloss: true, tint: "warm" },
+};
+function resolve(query: string): Look {
+    return query === "tinted" ? LOOKS["tinted"] : LOOKS["plain"];
+}
+function surfaceWgsl(look: Look): string {
+    return \`// \${look.gloss} \${look.tint ?? "none"}
+@fragment fn effectFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+}
+function surface(engine: EngineContext, opts: { label: string; look: Look }) {
+    return createEffectWrapper(engine, {
+        name: opts.label,
+        fragmentWGSL: surfaceWgsl(opts.look),
+        bindings: [{ binding: 0, kind: "uniform", uniformByteLength: 16 }],
+    });
+}
+async function main() {
+    const engine = await createEngine(document.createElement("canvas"));
+    const query = (JSON.parse('["plain"]') as string[])[0]!;
+    surface(engine, { label: "surface", look: resolve(query) });
+}
+main();`;
+    const compiled = compileSource(source);
+    const texts = compiled.manifest.effects.map(
+        ({ fragment }) => fragment.split("\n")[0]!,
+    );
+    assert.deepEqual([...new Set(texts)].sort(), [
+        "// false none",
+        "// true warm",
+    ]);
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native compiler required.");
+        return;
+    }
+    runGeneratedProgram(
+        native,
+        "effect-static-string/row-lacks-member",
+        `#include <bblite/runtime.hpp>
+#include <bblite/js_data.hpp>
+#include <cassert>
+#include <cstring>
+namespace {
+const char* texts[] = { ${texts.map((text) => JSON.stringify(text)).join(", ")} };
+int creations = 0;
+}
+namespace bbl {
+Engine create_engine(EngineOptions) { return {}; }
+EffectWrapperHandle create_effect_wrapper(Engine&, std::uint32_t variant) {
+    assert(std::strcmp(texts[variant], "// false none") == 0);
+    ++creations;
+    return {variant};
+}
+}
+#define main generated_main
+${compiled.cpp}
+#undef main
+int main() {
+    assert(generated_main() == 0);
+    assert(creations == 1);
+}`,
+        { expectedOutput: "" },
+    );
+});
+
+test("a run-time record no constant bounds splits per combination of its boolean members, read from the record itself", (t) => {
+    const source = `
+import { createEngine, createEffectWrapper, type EngineContext } from "@babylonjs/lite";
+interface Profile { readonly shadow: boolean; readonly gloss: boolean; readonly lights: boolean; readonly vertex: boolean }
+function surfaceWgsl(profile: Profile, cache: boolean): string {
+    return \`// \${profile.shadow} \${profile.gloss} \${profile.lights} \${profile.vertex} \${cache}
+@fragment fn effectFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+}
+function surface(engine: EngineContext, opts: { label: string; profile: Profile; cache: boolean }) {
+    return createEffectWrapper(engine, {
+        name: opts.label,
+        fragmentWGSL: surfaceWgsl(opts.profile, opts.cache),
+        bindings: [{ binding: 0, kind: "uniform", uniformByteLength: 16 }],
+    });
+}
+async function main() {
+    const engine = await createEngine(document.createElement("canvas"));
+    const input = JSON.parse("[1, true]") as [number, boolean];
+    const index = input[0];
+    const cache = input[1];
+    const profiles: Profile[] = [
+        { shadow: true, gloss: false, lights: true, vertex: false },
+        { shadow: false, gloss: true, lights: false, vertex: true },
+    ];
+    surface(engine, { label: "surface", profile: profiles[index]!, cache });
+}
+main();`;
+    const compiled = compileSource(source);
+    const texts = compiled.manifest.effects.map(
+        ({ fragment }) => fragment.split("\n")[0]!,
+    );
+    // Every combination of the four members, per cache flag.
+    const all = Array.from(
+        { length: 32 },
+        (_, bits) =>
+            `// ${[0, 1, 2, 3, 4].map((bit) => (bits & (1 << bit)) !== 0).join(" ")}`,
+    );
+    assert.deepEqual([...new Set(texts)].sort(), [...all].sort());
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native compiler required.");
+        return;
+    }
+    runGeneratedProgram(
+        native,
+        "effect-static-string/member-rows",
+        `#include <bblite/runtime.hpp>
+#include <bblite/js_data.hpp>
+#include <cassert>
+#include <cstring>
+namespace {
+const char* texts[] = { ${texts.map((text) => JSON.stringify(text)).join(", ")} };
+int creations = 0;
+}
+namespace bbl {
+Engine create_engine(EngineOptions) { return {}; }
+EffectWrapperHandle create_effect_wrapper(Engine&, std::uint32_t variant) {
+    assert(std::strcmp(texts[variant], "// false true false true true") == 0);
+    ++creations;
+    return {variant};
+}
+}
+#define main generated_main
+${compiled.cpp}
+#undef main
+int main() {
+    assert(generated_main() == 0);
+    assert(creations == 1);
+}`,
+        { expectedOutput: "" },
+    );
+});
+
 test("effect builder replay refuses changed inputs and unbounded shader text", () => {
     const source = program(`
         setup(engine, { label: "refuse", radius: Math.random() });

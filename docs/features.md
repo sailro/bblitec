@@ -105,11 +105,14 @@ Rules:
   reads the lists its literal argument gave it until its function first writes, keeps or captures the object.
 - A refusing local call whose arguments select by pure runtime tests, in the call or as boolean or optional members
   (two levels deep) of a record an argument names, compiles once per outcome and merges the results into native
-  storage; a discarded call merges none. At most four tests split, of at most eight read; past either, the refusal
+  storage; a discarded call merges none. At most 81 arms split, of at most eight tests read; past either, the refusal
   names them. A shader material so merged resolves uniform, texture and storage-buffer names against its own variant
-  at run time. An object argument that can only be one of a few module constants (through `??`, `?:` and members
-  every store sets to one) splits per constant, tested on the first string members that differ; a split left with no
-  run-time test compiles the call once.
+  at run time. An object argument that can only be one of a few module constants or constant rows (through `??`, `?:`,
+  members every store sets to one, a module function's returns, a constant table read by a key of a few literals, and
+  a spread of a row whose literal gives members values of a few outcomes) splits per distinct row, tested on the first
+  string or boolean members that differ; with no such rows known, a run-time object whose members are all booleans or
+  literal unions splits per combination of their values, read from the object. A split left with no run-time test
+  compiles the call once.
 - A `const` selecting between plain arms with no common native storage (`c ? { surface: engine, scale } : engine`) is
   evaluated at each read in its function: a render target size keeps each arm's sizing, and a local call handed it,
   directly or as a record member, compiles once per outcome of its condition. Read again or in a loop, it refuses where

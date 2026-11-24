@@ -851,6 +851,18 @@ export function stringLiteralValues(
 }
 
 /**
+ * The values of a type of a few scalars: a boolean's two, or the strings of
+ * a literal union; undefined for any other type.
+ */
+export function finiteScalarValues(
+    type: ts.Type,
+): readonly (boolean | string)[] | undefined {
+    if (holdsOnly(type, ["boolean"])) return [true, false];
+    const strings = stringLiteralValues(type);
+    return strings && strings.size > 0 ? [...strings] : undefined;
+}
+
+/**
  * The literal's named keys whose value types admit neither `null` nor
  * `undefined`: each is present on the object the literal builds.
  */

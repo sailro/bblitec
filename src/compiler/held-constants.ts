@@ -2,8 +2,10 @@ import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
 import { programObservations } from "./program-observations.js";
 import { holdsRecord } from "./record-observations.js";
+import { forEachReturn } from "./loop-control.js";
 import {
     calledDeclaration,
+    calledFunction,
     nullishLiteral,
     resolvedSymbol,
 } from "./symbols.js";
@@ -11,11 +13,14 @@ import {
     isDestructuringPattern,
     isModuleConstDeclaration,
     literalKey,
+    objectLiteralMembers,
+    objectProperty,
     unwrapExpression,
     variableKind,
     yieldedOperands,
 } from "./syntax.js";
 import {
+    finiteScalarValues,
     holdsOnly,
     nullability,
     stringLiteralValues,
@@ -28,37 +33,56 @@ export type HeldConstantsContext = Pick<
 >;
 
 /**
- * The module constants a value can be, where the program picks it at run
- * time: through a selection (`?:`, `??`, `||`, `&&`), or by reading a
- * member no store sets to anything else (`entry.lane ?? DEFAULT_LANE`). One
- * reference names each constant. Undefined when the value can be another
+ * The module constants and constant rows a value can be, where the program
+ * picks it at run time: through a selection (`?:`, `??`, `||`, `&&`), by
+ * reading a member no store sets to anything else (`entry.lane ??
+ * DEFAULT_LANE`), through a module function's `return`s, a module constant
+ * table read by a key of a few literals (`PROFILES[name]`), or a literal
+ * spreading such a row and giving members values of a few outcomes. One row
+ * names each, at most `limit`. Undefined when the value can be another
  * object, or nothing picks it at run time.
  */
 export function selectedModuleConstants(
     context: HeldConstantsContext,
     expression: ts.Expression,
-): readonly ts.Identifier[] | undefined {
-    const held = new HeldConstants(context).held(expression, true);
+    limit: number,
+): readonly HeldRow[] | undefined {
+    const held = new HeldConstants(context, limit).held(expression, true);
     return held?.selected && held.constants.length > 0
         ? held.constants
         : undefined;
 }
 
+/**
+ * One object a value can be: the module constant or constant table row
+ * `base` spells, with `overrides` replacing members a spread's literal
+ * gives one of a few values (`{ ...row, clusterLights }`).
+ */
+export interface HeldRow {
+    readonly base: ts.Expression;
+    readonly overrides: ReadonlyMap<string, boolean | string>;
+}
+
 /** What a value can be: one of `constants`, or absent. */
 interface Held {
-    readonly constants: readonly ts.Identifier[];
+    readonly constants: readonly HeldRow[];
     readonly absent: boolean;
     /** Whether a run-time test or member read picks among them. */
     readonly selected: boolean;
 }
 
 const ABSENT: Held = { constants: [], absent: true, selected: false };
+const NO_OVERRIDES: ReadonlyMap<string, boolean | string> = new Map();
 
 class HeldConstants {
     /** @unjournaled The nodes being read, for one query. */
     private readonly active = new Set<ts.Node>();
 
-    constructor(private readonly context: HeldConstantsContext) {}
+    /** `limit` bounds the rows a value may be. */
+    constructor(
+        private readonly context: HeldConstantsContext,
+        private readonly limit: number,
+    ) {}
 
     /**
      * `local` reads a parameter of the call being inlined as its argument;
@@ -98,7 +122,11 @@ class HeldConstants {
             const declaration =
                 symbol?.valueDeclaration ?? symbol?.declarations?.[0];
             if (isModuleConstDeclaration(declaration))
-                return { constants: [node], absent: false, selected: false };
+                return {
+                    constants: [{ base: node, overrides: NO_OVERRIDES }],
+                    absent: false,
+                    selected: false,
+                };
             if (
                 declaration &&
                 ts.isVariableDeclaration(declaration) &&
@@ -115,7 +143,147 @@ class HeldConstants {
             return argument ? this.held(argument, local) : undefined;
         }
         if (ts.isPropertyAccessExpression(node)) return this.member(node);
+        if (ts.isElementAccessExpression(node)) return this.tableRow(node);
+        if (ts.isCallExpression(node)) return this.returned(node);
+        if (ts.isObjectLiteralExpression(node))
+            return this.literal(node, local);
         return undefined;
+    }
+
+    /**
+     * `TABLE[key]` of a module constant's object literal, by a key of a few
+     * literal values: the row each names.
+     */
+    private tableRow(access: ts.ElementAccessExpression): Held | undefined {
+        const { checker } = this.context;
+        const table = unwrapExpression(access.expression);
+        const declaration = ts.isIdentifier(table)
+            ? resolvedSymbol(checker, table)?.valueDeclaration
+            : undefined;
+        const literal =
+            isModuleConstDeclaration(declaration) &&
+            ts.isVariableDeclaration(declaration) &&
+            declaration.initializer
+                ? unwrapExpression(declaration.initializer)
+                : undefined;
+        if (!literal || !ts.isObjectLiteralExpression(literal))
+            return undefined;
+        const key = literalKey(access.argumentExpression);
+        const keys =
+            key !== undefined
+                ? [key]
+                : [
+                      ...(stringLiteralValues(
+                          checker.getTypeAtLocation(access.argumentExpression),
+                      ) ?? []),
+                  ];
+        if (keys.length === 0) return undefined;
+        const held: Held[] = [];
+        for (const name of keys) {
+            const value = objectProperty(literal, name);
+            const one = value && this.held(value, false);
+            if (!one) return undefined;
+            held.push(one);
+        }
+        return this.picked(held, false, keys.length > 1);
+    }
+
+    /** A module function's call: one of the values its `return`s give. */
+    private returned(call: ts.CallExpression): Held | undefined {
+        const callee = calledFunction(this.context.checker, call);
+        const body = callee?.body;
+        if (!body) return undefined;
+        if (!ts.isBlock(body)) {
+            const one = this.held(body, false);
+            return one && this.picked([one], one.absent, false);
+        }
+        const held: Held[] = [];
+        let absent = false;
+        let known = true;
+        forEachReturn([body], (statement) => {
+            if (!statement.expression) absent = true;
+            else {
+                const one = known
+                    ? this.held(statement.expression, false)
+                    : undefined;
+                if (one) held.push(one);
+                else known = false;
+            }
+        });
+        return known && (held.length > 0 || absent)
+            ? this.picked(held, absent || held.some((one) => one.absent), false)
+            : undefined;
+    }
+
+    /**
+     * An object literal: a row of its own, or a spread row whose members the
+     * literal then gives values of a few outcomes, one row per combination.
+     */
+    private literal(
+        literal: ts.ObjectLiteralExpression,
+        local: boolean,
+    ): Held | undefined {
+        const [first, ...rest] = objectLiteralMembers(literal);
+        if (first?.kind !== "spread")
+            return rest.some((member) => member.kind === "spread")
+                ? undefined
+                : {
+                      constants: [{ base: literal, overrides: NO_OVERRIDES }],
+                      absent: false,
+                      selected: false,
+                  };
+        const spread = this.held(first.node.expression, local);
+        if (!spread || spread.absent) return undefined;
+        let rows = spread.constants;
+        let selected = spread.selected;
+        for (const member of rest) {
+            const name =
+                member.kind === "property" || member.kind === "shorthand"
+                    ? member.key
+                    : undefined;
+            const values =
+                name !== undefined && "value" in member && member.value
+                    ? this.outcomes(member.value)
+                    : undefined;
+            if (name === undefined || !values) return undefined;
+            rows = rows.flatMap((row) =>
+                values.map((value) => ({
+                    base: row.base,
+                    overrides: new Map([...row.overrides, [name, value]]),
+                })),
+            );
+            if (rows.length > this.limit) return undefined;
+            selected ||= values.length > 1;
+        }
+        return { constants: rows, absent: false, selected };
+    }
+
+    /** The values of a few a member's expression can be: its literal, or its type's booleans or strings. */
+    private outcomes(
+        expression: ts.Expression,
+    ): readonly (boolean | string)[] | undefined {
+        const node = unwrapExpression(expression);
+        if (node.kind === ts.SyntaxKind.TrueKeyword) return [true];
+        if (node.kind === ts.SyntaxKind.FalseKeyword) return [false];
+        if (ts.isStringLiteralLike(node)) return [node.text];
+        return finiteScalarValues(this.context.checker.getTypeAtLocation(node));
+    }
+
+    /** {@link union} of `held`, picked at run time only where more than one row or a part picks. */
+    private picked(
+        held: readonly Held[],
+        absent: boolean,
+        picks: boolean,
+    ): Held | undefined {
+        const union = this.union(held, absent);
+        if (union.constants.length > this.limit) return undefined;
+        return {
+            ...union,
+            selected:
+                picks ||
+                union.constants.length > 1 ||
+                held.some((one) => one.selected),
+        };
     }
 
     /** A data member's read: one of the values the program's stores give it. */
@@ -154,16 +322,21 @@ class HeldConstants {
 
     /** The constants any of `held` can be, each named once, picked at run time. */
     private union(held: readonly Held[], absent: boolean): Held {
-        const constants: ts.Identifier[] = [];
-        const seen = new Set<ts.Node>();
+        const constants: HeldRow[] = [];
+        const seen = new Map<ts.Node, Set<string>>();
         for (const one of held)
-            for (const constant of one.constants) {
+            for (const row of one.constants) {
                 const declaration =
-                    resolvedSymbol(this.context.checker, constant)
-                        ?.valueDeclaration ?? constant;
-                if (seen.has(declaration)) continue;
-                seen.add(declaration);
-                constants.push(constant);
+                    (ts.isIdentifier(row.base)
+                        ? resolvedSymbol(this.context.checker, row.base)
+                              ?.valueDeclaration
+                        : undefined) ?? row.base;
+                const overrides = JSON.stringify([...row.overrides]);
+                let rows = seen.get(declaration);
+                if (!rows) seen.set(declaration, (rows = new Set()));
+                if (rows.has(overrides)) continue;
+                rows.add(overrides);
+                constants.push(row);
             }
         return { constants, absent, selected: true };
     }

@@ -4,7 +4,7 @@ import { CompileError, unlessRefused } from "./compile-error.js";
 import { writable } from "./emission-transaction.js";
 import type { DataType } from "./data-types/model.js";
 import type { LoweringServices } from "./lowering-services.js";
-import { selectedModuleConstants } from "./held-constants.js";
+import { selectedModuleConstants, type HeldRow } from "./held-constants.js";
 import {
     calledFunction,
     declaredSymbol,
@@ -21,10 +21,11 @@ import {
     objectLikeType,
     presentMembers,
     recordObjectType,
+    finiteScalarValues,
     stringLiteralValues,
 } from "./type-facts.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
-import { isStringValue, type Value } from "./types.js";
+import { booleanValue, isStringValue, type Value } from "./types.js";
 import { isShaderMaterialType } from "./shader-derivations.js";
 import { runtimeShaderVariants } from "./shader-material-views.js";
 import {
@@ -77,8 +78,6 @@ export type CaseSplitContext = Pick<
     | "userFunctions"
 >;
 
-/** At most this many distinct runtime tests split one call (2^n arms). */
-const MAX_SELECTORS = 4;
 /** More tests than this are not probed for the ones the call depends on. */
 const MAX_CANDIDATE_SELECTORS = 8;
 /** A member this deep below a record an argument names still selects. */
@@ -159,9 +158,8 @@ export function armSpecializesCall(
  * do more. With more than two tests, the call splits only on those whose
  * staying a runtime test, with every other test fixed, still refuses, and
  * an arm that refuses adds those that still refuse so within that arm,
- * the others fixed to it (`armDependedSelectors`); a call
- * that depends on more than `MAX_SELECTORS`, whose tests' outcomes make
- * more than `MAX_ARMS` arms, or that reads more than
+ * the others fixed to it (`armDependedSelectors`); a call whose tests'
+ * outcomes make more than `MAX_ARMS` arms, or that reads more than
  * `MAX_CANDIDATE_SELECTORS`, keeps its refusal, which then says so.
  * Intrinsics use `held-text`: only the finite inputs of replayable string
  * initializers select, not otherwise unsupported run-time options.
@@ -211,12 +209,6 @@ export function compileWithRuntimeCaseSplit(
         if (depended === undefined) throw error;
         let selectors = depended;
         for (;;) {
-            if (selectors.length > MAX_SELECTORS)
-                throw beyondSplit(
-                    error,
-                    selectors,
-                    `at most ${MAX_SELECTORS} run-time tests; it reads ${selectors.length}`,
-                );
             const arms = selectors.reduce(
                 (product, selector) => product * selector.outcomes.length,
                 1,
@@ -367,12 +359,12 @@ interface VariantOutcome {
 }
 
 /**
- * The module constant an object is in one arm: a reference to it, and,
- * once the call refused, its value as the reference reads where the call
- * compiles, whose members the arm reads.
+ * The module constant or constant row an object is in one arm
+ * (`selectedModuleConstants`), and, once the call refused, its value as
+ * the row reads where the call compiles, whose members the arm reads.
  */
 interface ConstantOutcome {
-    readonly constant: ts.Identifier;
+    readonly row: HeldRow;
     readonly record?: Value;
 }
 
@@ -383,12 +375,13 @@ interface ConstantOutcome {
  * (`undefined` or `null`); an `optional-boolean` a boolean or one absence;
  * a `literal` a value typed as a union of string literals (a key of a
  * constant table); a `constant` an argument value that is one of a few
- * module constants (`selectedModuleConstants`). `outcomes` are the ones the
+ * module constants or constant rows (`selectedModuleConstants`), its
+ * distinct rows its joint outcomes. `outcomes` are the ones the
  * value can take. With `member`, the value is
  * the member at that key path of the record `test` names, of that type;
  * `present` is the storage of an object member where an arm found it.
- * A constant test's `discriminants` are the members, strings in every one
- * of its constants, whose values tell them apart.
+ * A constant test's `discriminants` are the members, strings or booleans
+ * in every one of its constants, whose values tell them apart.
  */
 interface Selector {
     kind:
@@ -805,7 +798,8 @@ export function moduleLevelCallee(
  * module-level functions handed none of the bindings the tests read, and
  * no test writes. A deferred selection's condition splits it whatever its
  * arguments do. A boolean a selection tests and a call is handed is one
- * test, and a pure function's call on tests already counted none of its own.
+ * test, and a pure function's call on tests already counted, a selection's
+ * test or an object of a few constants, none of its own.
  */
 function selectorTests(
     context: CaseSplitContext,
@@ -874,15 +868,16 @@ function selectorTests(
     // depends on it.
     const candidates: { node: ts.Expression; index: number }[] = [];
     const heldCalls = new Set<ts.CallExpression>();
-    const known = new Map<
-        ts.Expression,
-        readonly ts.Identifier[] | undefined
-    >();
+    const known = new Map<ts.Expression, readonly HeldRow[] | undefined>();
     const constantsOf = (
         node: ts.Expression,
-    ): readonly ts.Identifier[] | undefined => {
+    ): readonly HeldRow[] | undefined => {
         if (!known.has(node))
-            known.set(node, selectedModuleConstants(context, node));
+            known.set(
+                node,
+                selectedModuleConstants(context, node, MAX_ARMS) ??
+                    typeRows(context, node),
+            );
         return known.get(node);
     };
     // An argument value of a few outcomes, unless it is a literal (already
@@ -973,26 +968,25 @@ function selectorTests(
     });
     // A pure function's call on tests already counted is decided by them:
     // an arm forces its arguments, so the call reads as a constant there.
-    for (let index = groups.length - 1; index >= 0; index--) {
-        const group = groups[index]!;
-        const test = unwrapExpression(group.test);
-        const decided =
-            group.kind === "condition" && ts.isCallExpression(test)
-                ? test
-                : undefined;
-        const callee = decided && calledFunction(context.checker, decided);
-        if (
-            decided &&
-            callee &&
-            decided.arguments.length > 0 &&
+    const decided = (node: ts.Expression, own?: Selector): boolean => {
+        const test = unwrapExpression(node);
+        const callee =
+            ts.isCallExpression(test) && calledFunction(context.checker, test);
+        return (
+            ts.isCallExpression(test) &&
+            !!callee &&
+            test.arguments.length > 0 &&
             context.evaluationOrder.isPure(callee) &&
-            decided.arguments.every((argument) =>
+            test.arguments.every((argument) =>
                 groups.some(
-                    (other) =>
-                        other !== group && other.nodes.includes(argument),
+                    (other) => other !== own && other.nodes.includes(argument),
                 ),
             )
-        )
+        );
+    };
+    for (let index = groups.length - 1; index >= 0; index--) {
+        const group = groups[index]!;
+        if (group.kind === "condition" && decided(group.test, group))
             groups.splice(index, 1);
     }
     if (
@@ -1057,7 +1051,7 @@ function selectorTests(
             let inserted = 0;
             for (const { node, index } of candidates.splice(0)) {
                 const constants = constantsOf(node);
-                if (!constants) continue;
+                if (!constants || decided(node)) continue;
                 const group = groups.find(
                     (candidate) =>
                         candidate.kind === "constant" &&
@@ -1069,13 +1063,45 @@ function selectorTests(
                         kind: "constant",
                         test: node,
                         nodes: [node],
-                        outcomes: constants.map((constant) => ({ constant })),
+                        outcomes: constants.map((row) => ({ row })),
                     });
             }
             return groups;
         },
         records,
     };
+}
+
+/**
+ * The records a run-time object of a type of few-valued members can be where
+ * no constant bounds it (`selectedModuleConstants`): every combination of
+ * its members' values (`finiteScalarValues`), read from the object itself.
+ * Undefined for a member of another type, or past `MAX_ARMS` combinations.
+ */
+function typeRows(
+    context: CaseSplitContext,
+    node: ts.Expression,
+): readonly HeldRow[] | undefined {
+    const { checker } = context;
+    const properties = checker.getPropertiesOfType(
+        checker.getNonNullableType(checker.getTypeAtLocation(node)),
+    );
+    if (properties.length === 0) return undefined;
+    let rows: HeldRow[] = [{ base: node, overrides: new Map() }];
+    for (const property of properties) {
+        const values = finiteScalarValues(
+            checker.getTypeOfSymbolAtLocation(property, node),
+        );
+        if (!values) return undefined;
+        rows = rows.flatMap((row) =>
+            values.map((value) => ({
+                base: node,
+                overrides: new Map([...row.overrides, [property.name, value]]),
+            })),
+        );
+        if (rows.length > MAX_ARMS) return undefined;
+    }
+    return rows;
 }
 
 /** The compile-time record a name holds, while its facts are current. */
@@ -1253,41 +1279,74 @@ function runtimeSelectors(
 }
 
 /**
- * A constant test as its arms read it: each constant's value with the
- * members generation knows, and the string members of the run-time object
- * `value`'s storage that, read in member order while they tell more apart,
- * tell every two constants apart. Undefined when generation knows no
- * constant's members, or two read the same.
+ * A constant test as its arms read it: each row's value with the members
+ * generation knows (its overrides applied), rows that read the same as one,
+ * and the string and boolean members of the run-time object `value`'s
+ * storage that, read in member order while they tell more apart, tell every
+ * two rows apart. Undefined when generation knows no row's members, or two
+ * left read the same.
  */
 function constantSelector(
     context: CaseSplitContext,
     selector: Selector,
     value: Value,
 ): Selector | undefined {
-    if (selector.outcomes.length > MAX_LITERAL_OUTCOMES) return undefined;
     const outcomes: ConstantOutcome[] = [];
     for (const outcome of selector.outcomes) {
-        if (typeof outcome !== "object" || !("constant" in outcome))
+        if (typeof outcome !== "object" || !("row" in outcome))
             return undefined;
         // The discarded probe undoes what reading the reference wrote; a
         // copy keeps what generation knows of the constant there.
-        const record = unlessRefused(() =>
+        const read = unlessRefused(() =>
             context.probeEmission(
-                () => {
-                    const read = context.compileValue(outcome.constant);
-                    return read.recordProperties &&
-                        context.bindings.recordPropertiesAreCurrent(read)
-                        ? { ...read }
-                        : undefined;
-                },
+                () => ({ ...context.compileValue(outcome.row.base) }),
                 () => false,
             ),
         );
-        if (!record) return undefined;
-        outcomes.push({ constant: outcome.constant, record });
+        if (!read) return undefined;
+        // A row of the run-time object itself (`typeRows`) gives every
+        // member; another reads its constant's members as generation knows
+        // them.
+        const known =
+            read.recordProperties &&
+            context.bindings.recordPropertiesAreCurrent(read)
+                ? read.recordProperties
+                : undefined;
+        if (!known && outcome.row.base !== selector.test) return undefined;
+        const properties = { ...known };
+        for (const [key, member] of outcome.row.overrides)
+            properties[key] =
+                typeof member === "boolean"
+                    ? booleanValue(member ? "true" : "false")
+                    : {
+                          kind: "string",
+                          cpp: context.cppString(member),
+                          staticString: member,
+                      };
+        // A member a known row does not own (its data keys are its own,
+        // \`recordPropertyKeys\`) reads undefined, as in JavaScript.
+        if (known)
+            for (const property of context.checker.getPropertiesOfType(
+                context.checker.getNonNullableType(
+                    context.checker.getTypeAtLocation(selector.test),
+                ),
+            ))
+                if (
+                    properties[property.name] === undefined &&
+                    !read.recordMethods?.[property.name] &&
+                    !read.recordGetters?.[property.name]
+                )
+                    properties[property.name] = undefinedValue();
+        const record: Value = { ...read };
+        writable(record).recordProperties = properties;
+        // Rows that read the same are one outcome.
+        if (!outcomes.some((other) => sameScalars(other.record!, record)))
+            outcomes.push({ row: outcome.row, record });
     }
-    const text = (outcome: ConstantOutcome, key: string): string | undefined =>
-        outcome.record!.recordProperties![key]?.staticString;
+    const text = (
+        outcome: ConstantOutcome,
+        key: string,
+    ): string | boolean | undefined => scalar(outcome.record!, key);
     // The pairs no discriminant tells apart yet; each member, in order,
     // joins the discriminants when it tells one of them apart.
     let pairs = outcomes.flatMap((left, index) =>
@@ -1302,7 +1361,7 @@ function constantSelector(
         );
         if (
             !stored ||
-            !literalStorage(stored) ||
+            !(literalStorage(stored) || booleanStorage(stored)) ||
             outcomes.some((outcome) => text(outcome, key) === undefined)
         )
             continue;
@@ -1315,6 +1374,30 @@ function constantSelector(
     }
     const told = pairs.length === 0;
     return told ? { ...selector, outcomes, discriminants } : undefined;
+}
+
+/** A record member generation knows as a string or a boolean. */
+function scalar(record: Value, key: string): string | boolean | undefined {
+    const member = record.recordProperties?.[key];
+    return member?.staticString ?? member?.staticBoolean;
+}
+
+/** Whether two records' members read the same strings and booleans, member for member. */
+function sameScalars(left: Value, right: Value): boolean {
+    const keys = Object.keys(left.recordProperties ?? {});
+    return (
+        keys.length === Object.keys(right.recordProperties ?? {}).length &&
+        keys.every(
+            (key) =>
+                scalar(left, key) !== undefined &&
+                scalar(left, key) === scalar(right, key),
+        )
+    );
+}
+
+/** A boolean member's storage, which a constant test reads as it is. */
+function booleanStorage(value: Value): boolean {
+    return value.kind === "boolean" || value.dataType?.kind === "boolean";
 }
 
 /** A literal test's storage, which its arms compare: a string or a native enum. */
@@ -1445,20 +1528,28 @@ function splitCall(
                         selector.test,
                     ),
                 }));
-                if (reads.some(({ read }) => !read || !literalStorage(read)))
+                if (
+                    reads.some(
+                        ({ read }) =>
+                            !read ||
+                            !(literalStorage(read) || booleanStorage(read)),
+                    )
+                )
                     return undefined;
                 return {
                     constant: (outcome) =>
                         reads
-                            .map(({ key, read }) =>
-                                context.dataLowerer.literalEquality(
-                                    read!.cpp,
-                                    read!.dataType,
-                                    outcome.record!.recordProperties![key]!
-                                        .staticString!,
-                                    selector.test,
-                                ),
-                            )
+                            .map(({ key, read }) => {
+                                const expected = scalar(outcome.record!, key)!;
+                                return typeof expected === "boolean"
+                                    ? `${expected ? "" : "!"}(${read!.cpp})`
+                                    : context.dataLowerer.literalEquality(
+                                          read!.cpp,
+                                          read!.dataType,
+                                          expected,
+                                          selector.test,
+                                      );
+                            })
                             .join(" && "),
                 };
             }
