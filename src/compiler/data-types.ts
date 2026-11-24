@@ -10872,7 +10872,11 @@ export class DataTypeRegistry {
                 ? type.aliasTypeArguments?.[0]
                 : undefined;
         if (readonlyTarget && !this.recordViews.has(this.structIdentity(type)))
-            return this.fromRecordType(readonlyTarget, node);
+            // A record alias's own mapping, its storage demands included.
+            return libraryName(readonlyTarget.aliasSymbol) === "Record" ||
+                this.isNamedRecordAlias(readonlyTarget)
+                ? this.fromTsType(readonlyTarget, node)
+                : this.fromRecordType(readonlyTarget, node);
         const directRecordAlias = libraryName(type.aliasSymbol) === "Record";
         const namedRecordAlias = this.isNamedRecordAlias(type);
         if (!directRecordAlias && !namedRecordAlias) {
