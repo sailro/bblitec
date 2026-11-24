@@ -501,3 +501,20 @@ test("unsupported library overloads refuse explicitly", () => {
     ] as const)
         assert.throws(() => compileSource(source), message);
 });
+
+check(
+    "array-join-optional-scalars",
+    `
+    interface Placement { handle?: number; y?: number; open?: boolean }
+    const placed: Placement = { handle: 20 };
+    const parts = [placed.handle, placed.y];
+    if (parts.join(',') !== '20,') throw new Error('optional numbers ' + parts.join(','));
+    if ([placed.open, placed.open].join('/') !== '/') throw new Error('absent booleans');
+    placed.y = 0.5;
+    placed.open = false;
+    if ([placed.handle, placed.y].join() !== '20,0.5' || [placed.open, placed.open].join('|') !== 'false|false')
+        throw new Error('present optional scalars');
+    const counts: (number | null)[] = [1, null, 3];
+    if (counts.join('-') !== '1--3') throw new Error('null lanes');
+`,
+);
