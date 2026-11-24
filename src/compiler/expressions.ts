@@ -153,6 +153,7 @@ import {
     localCallback,
     propertyKey,
     selectionArms,
+    thisMember,
     unwrapExpression,
 } from "./syntax.js";
 import {
@@ -7478,6 +7479,36 @@ export class ExpressionLowerer {
                     const getter = spread.recordGetters?.[key];
                     const method = spread.recordMethods?.[key];
                     if (method && !getter) {
+                        // A copied method closes over the scope that declared
+                        // it. One that never reads its own `this` is the
+                        // source's method value, as a read of it is; one that
+                        // does runs on the copy, so it needs that scope here.
+                        const readsThis =
+                            !ts.isIdentifier(method) &&
+                            method.body !== undefined &&
+                            someAnalysisNode(
+                                method.body,
+                                (node) =>
+                                    node.kind === ts.SyntaxKind.ThisKeyword &&
+                                    thisMember(node) === method,
+                            );
+                        if (!readsThis) {
+                            storeProperty(
+                                key,
+                                recordMethodValue(spread, method),
+                            );
+                            continue;
+                        }
+                        const here = this.context.captureRecordScopes();
+                        if (
+                            spread.recordScopes?.some(
+                                (scope) => !here.recordScopes?.includes(scope),
+                            )
+                        )
+                            this.context.fail(
+                                property,
+                                `A spread copies method '${key}', which reads \`this\`, out of the scope that declared it.`,
+                            );
                         storeMethod(key, method);
                         continue;
                     }

@@ -265,3 +265,71 @@ test(
         );
     },
 );
+
+test(
+    "a spread copies a method with the scope that declared it",
+    { skip: !optionalNativeFixtureTools(false) },
+    () => {
+        const factory = `
+            interface Channel { sync(force?: boolean): void; facts(): Float32Array; version(): number }
+            interface Deps { pack(): Float32Array; same(a: Float32Array, b: Float32Array): boolean; publish(v: number): void }
+            function createChannel(deps: Deps): Channel {
+                let facts = new Float32Array(0);
+                let version = 0;
+                return {
+                    sync(force = false): void {
+                        const next = deps.pack();
+                        if (!force && deps.same(next, facts)) return;
+                        version++;
+                        facts = next;
+                        deps.publish(version);
+                    },
+                    facts: () => facts,
+                    version: () => version,
+                };
+            }
+            let published = 0;
+            let n = 1;
+            const source = () => createChannel({
+                pack: () => new Float32Array(n),
+                same: (a, b) => a.length === b.length,
+                publish: (v) => { published += v; },
+            });`;
+        const { cpp } = compileSource(
+            `${factory}
+            function createChannels() {
+                const amenity = source();
+                return { amenity: { ...amenity, has: (id: number) => amenity.facts().length > id } };
+            }
+            const channel = createChannels().amenity;
+            channel.sync(true);
+            n = 3;
+            channel.sync();
+            const settled = () => channel.sync(true);
+            settled();
+            const seen = published + " " + channel.version() + " " + channel.has(2);
+            if (seen !== "6 3 true") throw new Error("spread channel " + seen);
+            `,
+            { fileName: "spread-method-scope.ts" },
+        );
+        runGeneratedProgram(
+            optionalNativeFixtureTools(false)!,
+            "closure-captures-spread-method-scope",
+            cpp,
+        );
+        // A copied method reading its own `this` runs on the copy, away from
+        // the scope that declared it.
+        assert.throws(
+            () =>
+                compileSource(`
+                    function create(step: number) {
+                        let total = 0;
+                        return { add() { total += step; return this.read(); }, read: () => total };
+                    }
+                    function wrap() { return { ...create(2), extra: 1 }; }
+                    localStorage.setItem("t", String(wrap().add()));
+                `),
+            /A spread copies method 'add', which reads `this`, out of the scope that declared it\./,
+        );
+    },
+);
