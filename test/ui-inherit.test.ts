@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
+import { runRmlUiFixture } from "./native-fixture.js";
 import { runApplicationRmlUiFixture } from "./rmlui-application-fixture.js";
 
 // Form controls reading their container's font and colour over the user-agent
@@ -167,15 +168,14 @@ test("keyframe declarations lower as rules do and refuse what RmlUi does not key
     );
     const { cpp } = compileSource(
         sheet(
-            "@keyframes shimmer { 0% { background-position: 0% 0; } 100% { background-position: 200% 0; transform: rotate(360deg); } }",
+            "@keyframes shimmer { 0% { background-position: 0% 0; } 100% { background-position: 200% 0; transform: rotate(360deg); } } @keyframes pulse { 0%,100% { box-shadow: inset 0 0 0 3px #9a5116; } 50% { box-shadow: inset 0 0 0 7px rgba(176,117,44,.45); } }",
         ),
     );
     assert.match(
         cpp,
-        /ui_set_style_keyframes\([^;]+"@keyframes shimmer\{0%\{bbl-background-position:0% 0;\}100%\{bbl-background-position:200% 0;bbl-transform:rotate\(360deg\);\}\}\\n"\);/,
+        /ui_set_style_keyframes\([^;]+"@keyframes shimmer\{0%\{bbl-background-position:0% 0;\}100%\{bbl-background-position:200% 0;bbl-transform:rotate\(360deg\);\}\}\\n@keyframes pulse\{0%,100%\{box-shadow:inset 0 0 0 3px #9a5116;\}50%\{box-shadow:inset 0 0 0 7px rgba\(176,117,44,\.45\);\}\}\\n"\);/,
     );
     for (const [declaration, property] of [
-        ["box-shadow: 0 0 2px red", "box-shadow"],
         ["background-size: 10px 20px", "bbl-background-size"],
         ["outline: 1px solid red", "--bbl-outline"],
         ["--tone: red", "--tone"],
@@ -187,6 +187,12 @@ test("keyframe declarations lower as rules do and refuse what RmlUi does not key
             declaration,
         );
 });
+
+test("box shadows interpolate in keyframes and transitions as CSS does", (t) =>
+    runRmlUiFixture(t, "ui-box-shadow-animation"));
+
+test("colours interpolate in premultiplied sRGB as CSS does", (t) =>
+    runRmlUiFixture(t, "ui-colour-interpolation"));
 
 test("the CSS-wide keywords resolve natively in the cascade and in keyframes", (t) => {
     runApplicationRmlUiFixture(t, "ui-inherit", program);

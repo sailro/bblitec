@@ -1,0 +1,71 @@
+Box shadow lists interpolate shadow by shadow in animations and transitions, the shorter list padded with
+transparent zero shadows (CSS Backgrounds 3 §7.2); an inset paired with an outer shadow swaps discretely.
+Two lengths of different units resolve both sides, not the first twice.
+
+diff --git a/Source/Core/ElementAnimation.cpp b/Source/Core/ElementAnimation.cpp
+index d74bd9c36..2013889f7 100644
+--- a/Source/Core/ElementAnimation.cpp
++++ b/Source/Core/ElementAnimation.cpp
+@@ -186,7 +186,7 @@ static NumericValue InterpolateNumericValue(NumericValue v0, NumericValue v1, fl
+ 	if (Any(v0.unit & Unit::LENGTH) && Any(v1.unit & Unit::LENGTH))
+ 	{
+ 		float f0 = element.ResolveLength(v0);
+-		float f1 = element.ResolveLength(v0);
++		float f1 = element.ResolveLength(v1);
+ 		return NumericValue{Mix(f0, f1, alpha), Unit::PX};
+ 	}
+ 
+@@ -414,6 +414,37 @@ static Property InterpolateProperties(const Property& p0, const Property& p1, fl
+ 		return Property{FiltersPtr(std::move(filter)), Unit::FILTER};
+ 	}
+ 
++	// Shadow lists interpolate shadow by shadow, the shorter padded with transparent zero shadows of the longer
++	// one's inset; an inset paired with an outer shadow swaps the whole list discretely (CSS Backgrounds 3 ┬º7.2).
++	if (p0.unit == Unit::BOXSHADOWLIST && p1.unit == Unit::BOXSHADOWLIST)
++	{
++		const auto& s0 = p0.value.GetReference<BoxShadowList>();
++		const auto& s1 = p1.value.GetReference<BoxShadowList>();
++		const size_t N = std::max(s0.size(), s1.size());
++		BoxShadowList result(N);
++		for (size_t i = 0; i < N; i++)
++		{
++			BoxShadow padding;
++			padding.color = ColourbPremultiplied(0, 0);
++			padding.offset_x = padding.offset_y = padding.blur_radius = padding.spread_distance = NumericValue{0.f, Unit::PX};
++			padding.inset = (i < s0.size() ? s0[i] : s1[i]).inset;
++			const BoxShadow& a = (i < s0.size() ? s0[i] : padding);
++			const BoxShadow& b = (i < s1.size() ? s1[i] : padding);
++			if (a.inset != b.inset)
++				return p_discrete;
++			BoxShadow& shadow = result[i];
++			shadow.inset = a.inset;
++			shadow.color = InterpolateColour(a.color.ToNonPremultiplied(), b.color.ToNonPremultiplied(), alpha).ToPremultiplied();
++			shadow.offset_x = InterpolateNumericValue(a.offset_x, b.offset_x, alpha, element, nullptr);
++			shadow.offset_y = InterpolateNumericValue(a.offset_y, b.offset_y, alpha, element, nullptr);
++			shadow.blur_radius = InterpolateNumericValue(a.blur_radius, b.blur_radius, alpha, element, nullptr);
++			shadow.spread_distance = InterpolateNumericValue(a.spread_distance, b.spread_distance, alpha, element, nullptr);
++			// An easing past its ends extrapolates; a blur radius stays nonnegative.
++			shadow.blur_radius.number = std::max(shadow.blur_radius.number, 0.f);
++		}
++		return Property{Variant(std::move(result)), Unit::BOXSHADOWLIST};
++	}
++
+ 	if (p0.unit == Unit::COLORSTOPLIST && p1.unit == Unit::COLORSTOPLIST)
+ 	{
+ 		RMLUI_ASSERT(p0.value.GetType() == Variant::COLORSTOPLIST && p1.value.GetType() == Variant::COLORSTOPLIST);
+@@ -691,13 +722,12 @@ bool ElementAnimation::InternalAddKey(float time, const Property& in_property, E
+ {
+ 	const Units valid_units =
+ 		(Unit::NUMBER_LENGTH_PERCENT | Unit::LENGTH_CALC | Unit::ANGLE | Unit::COLOUR | Unit::TRANSFORM | Unit::KEYWORD | Unit::DECORATOR |
+-			Unit::FILTER);
++			Unit::FILTER | Unit::BOXSHADOWLIST);
+ 
+ 	// clip-path keeps its basic shapes as authored strings.
+ 	if (!Any(in_property.unit & valid_units) && !(property_id == PropertyId::ClipPath && in_property.unit == Unit::STRING))
+ 	{
+-		const char* property_type = (in_property.unit == Unit::BOXSHADOWLIST ? "Box shadows do not" : "Property value does not");
+-		Log::Message(Log::LT_WARNING, "%s support animations or transitions. Value: %s", property_type, in_property.ToString().c_str());
++		Log::Message(Log::LT_WARNING, "Property value does not support animations or transitions. Value: %s", in_property.ToString().c_str());
+ 		return false;
+ 	}
+ 

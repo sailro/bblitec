@@ -4118,7 +4118,7 @@ export class UiProjection {
     /**
      * One keyframe's declarations, lowered as a rule's, each a property RmlUi
      * keys: its animations interpolate numbers, lengths, colours, transforms,
-     * decorators and filters and swap keywords (ElementAnimation), never the
+     * decorators, filters and box shadows and swap keywords (ElementAnimation), never the
      * strings and lists below or the PAL's private declarations.
      */
     private lowerUiKeyframeDeclarations(
@@ -4150,7 +4150,7 @@ export class UiProjection {
         return this.uiStyleRefusal(
             site,
             property,
-            `a keyframe's '${property}' is not keyed: RmlUi animations interpolate numbers, lengths, colours, transforms, decorators and filters and swap keywords`,
+            `a keyframe's '${property}' is not keyed: RmlUi animations interpolate numbers, lengths, colours, transforms, decorators, filters and box shadows and swap keywords`,
         );
     }
 
@@ -4165,7 +4165,6 @@ export class UiProjection {
         "font-family",
         "font-effect",
         "cursor",
-        "box-shadow",
         "aspect-ratio",
         "border-image",
         ...UI_BORDER_IMAGE_LONGHANDS,

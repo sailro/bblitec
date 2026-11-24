@@ -527,6 +527,20 @@
       "variants": ["all"]
     },
     {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0070-box-shadow-interpolation.patch",
+      "purpose": "box-shadow lists interpolate in animations and transitions as CSS Backgrounds 3 specifies",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0071-premultiplied-colour-interpolation.patch",
+      "purpose": "animated colours mix in premultiplied sRGB as CSS Color 4 specifies",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
       "library": "dawn",
       "file": "native/patches/dawn/0001-android-surface-loss.patch",
       "purpose": "Report Android Vulkan surface loss at the next acquisition without losing the device",
