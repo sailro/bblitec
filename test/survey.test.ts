@@ -2389,3 +2389,20 @@ test("a survey root calls a dependency whose signature has an undefined-only par
     assert.equal(report.program.attempted, report.program.statements);
     assert.deepEqual(report.refusals, [], listed(report));
 });
+
+test("a survey records an invalid reached shader material's WGSL at the statement that reached it", () => {
+    // The check of reached shader materials runs after the entry lowered: a
+    // compile refuses there, and a survey's census lists it and goes on.
+    const fileName = "corpus/babylon-lite/lab/lite/src/lite/scene163.ts";
+    const source = readFileSync(resolve(fileName), "utf8").replace(
+        "if(distance(input.uv,vec2<f32>(0.5,0.5))<0.18)",
+        "if()",
+    );
+    const { report } = surveySource(source, { fileName }, { roots: false });
+    assert.equal(report.complete, true, report.terminal);
+    assert.match(
+        listed(report),
+        /^\d+: Invalid reached shader material WGSL:/m,
+        listed(report),
+    );
+});

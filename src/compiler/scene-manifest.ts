@@ -68,6 +68,7 @@ interface SceneManifestContext extends Pick<
     | "engineLifecycle"
     | "fail"
     | "failAtFile"
+    | "refuseLoweredSite"
     | "hasFeature"
     | "hasRegisteredScene"
     | "isInFrameCallback"
@@ -653,12 +654,15 @@ export class SceneManifestRecorder {
                 )
                     writable(program).useThinInstanceColors = true;
             }
+            // A survey records the refusal against the statement that
+            // reached the material, after the pass lowered it.
             try {
                 lowerWgslShaderProgram(program);
             } catch (error: unknown) {
-                this.context.fail(
+                this.context.refuseLoweredSite(
                     site,
                     `Invalid reached shader material WGSL: ${error instanceof Error ? error.message : String(error)}`,
+                    site,
                 );
             }
         }
