@@ -30,8 +30,13 @@ async function runInJavaScript(
         {
             exports: {},
             realm,
+            document: { getElementById: () => ({}) },
             require: () => ({
                 createEngine: async () => ({}),
+                // The pin's: an `async` installer settling after its module hop.
+                enableMaterialTracking: async () => {
+                    await Promise.resolve();
+                },
                 wgsl: (parts: TemplateStringsArray) => parts.join(""),
                 ...Object.fromEntries(factories.map((name) => [name, fresh])),
             }),
@@ -227,6 +232,57 @@ test("a record field typed by a view holds the material written to it, the same 
         /struct \w+ \{\s*std::pair<bbl::StoredEngine, bbl::MaterialHandle> mat;/,
     );
     runNatively(t, "view-field", cpp);
+});
+
+// The dimmer's tracking: each collected material's `enableMaterialTracking`
+// promise, mapped into an array `Promise.all` waits on. An owned promise
+// settles in a later microtask, so the array holds the promises themselves,
+// in the application realm.
+const trackingProgram = `
+import { createEngine, createShaderMaterial, enableMaterialTracking, wgsl } from "@babylonjs/lite";
+async function main(): Promise<void> {
+    await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    const make = (name: string) => createShaderMaterial({ name, vertexSource: wgsl\`@vertex fn main(@location(0) position: vec3<f32>) -> @builtin(position) vec4<f32> { return vec4<f32>(position, 1.0); }\`, fragmentSource: wgsl\`@fragment fn main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`, attributes: ["position"], uniforms: ["worldViewProjection"] });
+    const tracked: { mat: { environmentIntensity?: number }; base: number }[] = [];
+    for (const name of ["a", "b"]) {
+        const mat = make(name) as { environmentIntensity?: number };
+        tracked.push({ mat, base: 1 });
+    }
+    let settled = false;
+    const all = Promise.all(tracked.map((e) => enableMaterialTracking(e.mat as never))).then(() => {
+        settled = true;
+    });
+    if (settled) throw new Error("settled before its microtasks");
+    await all;
+    if (!settled) throw new Error("tracking never settled");
+}
+void main();
+`;
+
+test("an owned promise a callback maps each element to is held as that promise, which settles later as in JavaScript", async () => {
+    await runInJavaScript(trackingProgram, ["createShaderMaterial"]);
+    const { cpp, manifest } = compileSource(trackingProgram);
+    // The program runs in the application realm, whose queue settles them.
+    assert.ok(manifest.features.includes("platform:workers"));
+    assert.match(
+        cpp,
+        /bbl::js::Array<bbl::js::Promise<bbl::js::PromiseVoid>> \w+;/,
+    );
+    assert.match(cpp, /bbl::js::promise_all\(/);
+    // The dimmer's own spelling, the promise discarded: the same storage.
+    const discarded = compileSource(
+        trackingProgram
+            .replace(
+                /const all = [^;]*;\n {4}\}\);/,
+                "void Promise.all(tracked.map((e) => enableMaterialTracking(e.mat as never)));",
+            )
+            .replace(/ {4}if \(settled\)[^\n]*\n {4}await all;\n[^\n]*\n/, ""),
+    );
+    assert.ok(discarded.manifest.features.includes("platform:workers"));
+    assert.match(
+        discarded.cpp,
+        /bbl::js::Array<bbl::js::Promise<bbl::js::PromiseVoid>> \w+;/,
+    );
 });
 
 test("a PBR material's own member written through the same view reaches its record", () => {

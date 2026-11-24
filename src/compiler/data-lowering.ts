@@ -41,6 +41,7 @@ import {
 } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
+import { ApplicationRealmRequired } from "./worker-modules.js";
 import { isTaskMethodWrite } from "./effect-task-methods.js";
 import { eventTargetCpp } from "./dom-targets.js";
 import { refuseUnreadable } from "./unreadable-values.js";
@@ -13317,6 +13318,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 dataType,
                 node,
             );
+        // Immediate work stores a `Promise<void>` as the token of its
+        // settlement; an owned promise (`enableMaterialTracking`'s) settles
+        // in a later microtask, the realm's queue, where it is stored as the
+        // promise it is.
+        if (
+            value.kind === "promise" &&
+            dataType.kind === "boolean" &&
+            !this.context.options.workers
+        )
+            throw new ApplicationRealmRequired();
         this.context.fail(
             node,
             `Compile-time ${value.kind} value does not match the expected data ${dataType.kind} ` +
