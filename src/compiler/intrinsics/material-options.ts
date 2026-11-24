@@ -53,8 +53,9 @@ import {
     pinnedDefaultVec2Cpp,
     type PinnedMaterialDefaultName,
 } from "../../lowering/pinned-material-defaults.js";
-import { floatLiteral } from "../../cpp-literals.js";
+import { doubleLiteral, floatLiteral } from "../../cpp-literals.js";
 import { isGlobalUndefined } from "../symbols.js";
+import { propertyNeverRead } from "../unread-properties.js";
 
 /** One pinned scalar default, in the two forms a setter resolves. */
 function pinnedScalarDefault(name: PinnedMaterialDefaultName): {
@@ -91,6 +92,9 @@ export interface MaterialOptionContext
             | "compileVec3"
             | "evaluator"
             | "dataLowerer"
+            | "allocateTemporaryCppName"
+            | "emit"
+            | "program"
         > {}
 
 /**
@@ -121,6 +125,8 @@ export interface CompiledPbrMaterialOptions {
     roughnessFactor: string;
     directIntensity: string;
     environmentIntensity: string;
+    /** The props' own `environmentIntensity` as a number, when they name one. */
+    environmentIntensityProperty?: string;
     alpha: string;
     alphaBlend: string;
     reflectance: string;
@@ -600,11 +606,45 @@ export function compilePbrMaterialOptions(
         direct,
         pinnedDefaultNumber("pbrDirectIntensity"),
     );
-    const environmentOption = pbrUniformNumber(
-        context,
-        environment,
-        pinnedDefaultNumber("pbrEnvironmentIntensity"),
-    );
+    // The props' own number is the material's property where the program
+    // can read it back; one generation does not know is read once, for it
+    // and for the writer's lane.
+    const kept =
+        environment &&
+        !propertyNeverRead(
+            context.program,
+            context.checker,
+            "environmentIntensity",
+        )
+            ? environment
+            : undefined;
+    const environmentValue = kept && selectedStaticNumberValue(context, kept);
+    const environmentHeld =
+        kept && environmentValue === undefined
+            ? context.allocateTemporaryCppName("environment_intensity")
+            : undefined;
+    if (environment && environmentHeld)
+        context.emit({
+            kind: "declaration",
+            type: "const double",
+            name: environmentHeld,
+            initializer: context.compileNumber(environment, "double"),
+        });
+    const environmentOption = environmentHeld
+        ? {
+              cpp: `static_cast<float>(${environmentHeld})`,
+              value: undefined,
+          }
+        : pbrUniformNumber(
+              context,
+              environment,
+              pinnedDefaultNumber("pbrEnvironmentIntensity"),
+          );
+    const environmentIntensityProperty =
+        environmentHeld ??
+        (environmentValue === undefined
+            ? undefined
+            : doubleLiteral(environmentValue));
     const alphaOption = requiredStaticFiniteNumber(
         context,
         alpha,
@@ -735,6 +775,9 @@ export function compilePbrMaterialOptions(
         roughnessFactor: roughnessOption.cpp,
         directIntensity: directOption.cpp,
         environmentIntensity: environmentOption.cpp,
+        ...(environmentIntensityProperty === undefined
+            ? {}
+            : { environmentIntensityProperty }),
         alpha: alphaOption.cpp,
         alphaBlend: alphaBlendCpp,
         reflectance: reflectanceOption.cpp,

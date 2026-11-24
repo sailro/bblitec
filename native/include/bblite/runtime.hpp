@@ -3567,6 +3567,12 @@ struct MaterialRecord {
     // Source control reads retain number precision separately from GPU floats.
     bool source_transmissive = false;
     std::optional<double> source_refraction_intensity;
+    /**
+     * `environmentIntensity` as the material's own property: what its props or
+     * a write gave it, absent otherwise, whatever the family. A PBR draw reads
+     * `environment_intensity`, its writer's `?? 1`.
+     */
+    std::optional<double> source_environment_intensity;
     // Babylon keeps the material-wide alpha separate from the PBR base-color
     // factor. The fragment multiplies both when the factor field is composed.
     float alpha = 1.0f;
@@ -5264,6 +5270,8 @@ struct Engine {
     std::uint64_t draw_call_count = 0;
     OwnerLifetime lifetime;
     DomTargetState dom_targets;
+    /** The properties a program adds to this engine's objects (`engine_object_property`). */
+    std::unordered_map<const void*, std::shared_ptr<void>> object_properties;
     std::shared_ptr<pal::OffscreenRun> offscreen_run;
     /** Generated subsystem state; callbacks hold weak references back to it. */
     std::vector<std::shared_ptr<void>> native_resource_owners;
@@ -5728,6 +5736,44 @@ struct Engine {
     std::vector<std::shared_ptr<pal::LoadedTexels>> unread_loaded_texels;
     std::vector<FileTexture> render_texture_facades;
 };
+
+/**
+ * One property a program adds to engine objects of one kind, a JavaScript own
+ * property the pin's type does not declare: the value each object that has it
+ * holds, by the object's identity (`engine_object_identity`). An object with
+ * no entry has no such property.
+ */
+template <typename Value> using EngineObjectProperty = std::unordered_map<std::uint64_t, Value>;
+
+/** The property a generated accessor names by `key`, made empty on first use. */
+template <typename Value>
+EngineObjectProperty<Value>& engine_object_property(Engine& engine, const void* key) {
+    auto& storage = engine.object_properties[key];
+    if (!storage)
+        storage = std::make_shared<EngineObjectProperty<Value>>();
+    return *static_cast<EngineObjectProperty<Value>*>(storage.get());
+}
+
+/** The value an object holds, or the absent value where it has no such property. */
+template <typename Value>
+[[nodiscard]] Value engine_object_property_value(const EngineObjectProperty<Value>& values,
+                                                 std::uint64_t object) {
+    const auto found = values.find(object);
+    return found == values.end() ? Value{} : found->second;
+}
+
+/** A material slot is never reused, so its index is the object's identity. */
+[[nodiscard]] constexpr std::uint64_t engine_object_identity(MaterialHandle material) noexcept {
+    return material.value;
+}
+/** A reused slot takes the next generation, so the pair names one object. */
+[[nodiscard]] constexpr std::uint64_t engine_object_identity(MeshHandle mesh) noexcept {
+    return (std::uint64_t{mesh.generation} << 32) | mesh.value;
+}
+[[nodiscard]] inline std::uint64_t
+engine_object_identity(const TransformNodeHandle& node) noexcept {
+    return (std::uint64_t{node.generation} << 32) | node.value;
+}
 
 /** A new frame task's handle; handles are never reused. */
 inline TaskHandle append_frame_task(Engine& engine, FrameTaskRecord task) {

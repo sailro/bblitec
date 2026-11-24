@@ -715,19 +715,6 @@ export interface ConvertedMember {
     readonly of: ts.Expression;
 }
 
-/**
- * Whether `type`, or a member of the intersection it is, is a type the pin
- * declares: one that is not, read over an engine object, is a view the
- * program asserts (`mesh.material as { x?: number }`).
- */
-export function includesPinnedType(type: ts.Type): boolean {
-    return type.isIntersection()
-        ? type.types.some(includesPinnedType)
-        : [type.aliasSymbol, type.symbol].some(
-              (symbol) => symbol !== undefined && declaredIn(symbol, "babylon"),
-          );
-}
-
 /** Whether `type` is one of the pin's engine object types (`pinnedHandleKind`). */
 export function isPinnedHandleType(type: ts.Type): boolean {
     return pinnedHandleKind(type) !== undefined;
@@ -787,6 +774,13 @@ function pinnedHandle(
                 )))
         ? kind
         : undefined;
+}
+
+/** The pinned type names whose values are `kind` handles. */
+export function pinnedHandleTypeNames(kind: HandleKind): readonly string[] {
+    return Object.entries(pinnedHandleTypes).flatMap(([name, handle]) =>
+        handle === kind ? [name] : [],
+    );
 }
 
 /** The handle kind a lowered library's record of this pinned name is held as. */

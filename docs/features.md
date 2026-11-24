@@ -75,6 +75,9 @@ Rules:
 - A field typed `unknown` that an assertion reads (through an access or a `const` destructuring) or a write fills with one
   native handle kind stores that handle, absent when a write stores none; a function typed to return `unknown` whose
   returns are one handle kind, `undefined` or such fields returns that handle.
+- A property the pin's type of a material, mesh or transform node does not declare is the program's own: each object
+  keeps it by identity in its engine, absent until written, for reads, writes, `in` and `delete`. Every material keeps
+  its own `environmentIntensity`, absent until its props or a write give it one; a PBR draw reads its `?? 1`.
 - A record type reaching `unknown` members where several writes meet (a rebound binding, a function's result or
   parameter) stores those members as documents.
 - A generic record instantiated at a type and stored as its `unknown` instantiation where a copy is observable shares

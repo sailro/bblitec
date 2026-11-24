@@ -155,6 +155,7 @@ import {
 import { RuntimeSearchParamsRequired } from "./compiler/search-params.js";
 import { featureRequiresApplicationRealm } from "./feature-activation.js";
 import { WindowProperties } from "./compiler/window-properties.js";
+import { EngineObjectProperties } from "./compiler/engine-object-properties.js";
 import { AsyncLowerer, PendingActivationsRequired } from "./compiler/async.js";
 import { sourceLocation } from "./source-location.js";
 import {
@@ -1215,6 +1216,8 @@ class Compiler implements LoweringServices {
     public readonly windowProperties: WindowProperties = new WindowProperties(
         this,
     );
+    public readonly engineObjectProperties: EngineObjectProperties =
+        new EngineObjectProperties(this);
     public readonly dataTypes: DataTypeRegistry;
     public readonly dataLowerer: DataLowerer;
     public readonly classLowerer: ClassLowerer;
@@ -2921,6 +2924,7 @@ class Compiler implements LoweringServices {
     public emitDelete(expression: ts.DeleteExpression): void {
         if (this.recordProxies.remove(expression)) return;
         if (this.windowProperties.remove(expression)) return;
+        if (this.engineObjectProperties.remove(expression)) return;
         this.dataLowerer.emitDelete(expression);
     }
 
@@ -3420,10 +3424,13 @@ class Compiler implements LoweringServices {
         this.ui.emitUiStyleProperty(element, property, site, site, value);
     }
 
-    public emitWindowLogicalAssignment(
+    public emitAddedPropertyLogicalAssignment(
         expression: ts.BinaryExpression,
     ): boolean {
-        return this.windowProperties.assignLogical(expression);
+        return (
+            this.windowProperties.assignLogical(expression) ||
+            this.engineObjectProperties.assign(expression)
+        );
     }
 
     public optionalChainStop(node: ts.Expression): Value | undefined {

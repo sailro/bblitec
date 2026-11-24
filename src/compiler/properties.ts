@@ -32,7 +32,6 @@ import ts from "typescript";
 import {
     absenceOfNull,
     handleFoundCpp,
-    heldHandleKind,
     knownCondition,
     undefinedValue,
 } from "./values/model.js";
@@ -81,7 +80,6 @@ import { readWorkerEventProperty } from "./workers.js";
 import {
     borrowedPlatformEventKind,
     handleCppType,
-    includesPinnedType,
     isPinnedEngineObjectKind,
     touchListDataType,
     typedArrayBytesPerElement,
@@ -156,6 +154,7 @@ import {
     isDocumentVisibilityRead,
 } from "./window-events.js";
 import type { WindowProperties } from "./window-properties.js";
+import type { EngineObjectProperties } from "./engine-object-properties.js";
 import { taskListRemoval } from "./frame-graph-task-list.js";
 
 /** A property the compiled surface deliberately does not serve. */
@@ -1318,6 +1317,16 @@ export const propertyRules: readonly PropertyRule[] = [
         impure: true,
     },
     {
+        // A material's own `environmentIntensity`, absent where neither its
+        // props nor a write gave it one.
+        owner: "material",
+        property: "environmentIntensity",
+        value: "data",
+        dataType: { kind: "optional", inner: { kind: "number" } },
+        record: ["materials", "source_environment_intensity"],
+        nativeOptionalScalar: "double",
+    },
+    {
         // A PBR material's own `doubleSided`; materials whose props never
         // named it have none.
         owner: "material",
@@ -2419,6 +2428,7 @@ interface PropertyAccessContext
     readonly presentationHostCpp: string | undefined;
     readonly ui: UiProjection;
     readonly windowProperties: WindowProperties;
+    readonly engineObjectProperties: EngineObjectProperties;
     compileRecordGetter(
         owner: Value,
         accessor: ts.GetAccessorDeclaration,
@@ -4311,7 +4321,9 @@ export class PropertyAccessLowerer {
                 optionalValueCpp(held.cpp),
                 owner.dataType.inner,
             );
-            const read = this.readOwnerProperty(handle, expression);
+            const read =
+                this.readOwnerProperty(handle, expression) ??
+                this.context.engineObjectProperties.read(handle, expression);
             if (read) {
                 const valuePresent = presenceFlagCpp(read);
                 const { nativeLvalue: _lvalue, ...value } = read;
@@ -4333,7 +4345,12 @@ export class PropertyAccessLowerer {
                   expression.expression,
               );
         const presentRead =
-            presentHandle && this.readOwnerProperty(presentHandle, expression);
+            presentHandle &&
+            (this.readOwnerProperty(presentHandle, expression) ??
+                this.context.engineObjectProperties.read(
+                    presentHandle,
+                    expression,
+                ));
         if (presentRead) return presentRead;
         const shaderFact = readShaderMaterialFact(
             this.context,
@@ -4349,27 +4366,21 @@ export class PropertyAccessLowerer {
             expression,
         );
         if (workerEvent) return workerEvent;
-        // An engine object read through a view the pin does not declare
-        // (`mesh.material as { x?: number }`, `meshes as unknown as View[]`):
-        // a native engine object holds the pin's own members only, so
-        // nothing stores what the program adds.
-        const viewed = heldHandleKind(owner);
-        if (
-            viewed &&
-            !includesPinnedType(
-                this.context.checker.getNonNullableType(
-                    this.context.checker.getTypeAtLocation(
-                        expression.expression,
-                    ),
-                ),
-            )
-        )
+        // A property nothing above claims is, on an engine object, one the
+        // program adds to it.
+        const added = this.context.engineObjectProperties.read(
+            owner,
+            expression,
+        );
+        if (added) return added;
+        const familyMember = this.context.engineObjectProperties.refusal(
+            owner,
+            expression,
+        );
+        if (familyMember)
             return this.context.fail(
                 expression,
-                `'${this.propertyPathForDiagnostic(expression)}' reads a ${viewed} through a view the pin does not declare: ` +
-                    (viewed === "material"
-                        ? "a property the program adds to a ShaderMaterial is not represented, and a PBR or Standard material's own member is read through its pinned type."
-                        : "a property the program adds to an engine object is not represented; only the object's own pinned members are read through the view."),
+                `'${this.propertyPathForDiagnostic(expression)}': ${familyMember}`,
             );
         return this.context.fail(
             expression,

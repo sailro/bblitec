@@ -719,6 +719,7 @@ interface DataLoweringContext extends Pick<
     | "dataTypes"
     | "deferredCapabilities"
     | "classLowerer"
+    | "engineObjectProperties"
     | "compileValue"
     | "callbacks"
     | "compileStringLiteral"
@@ -16736,6 +16737,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (nativeNode) return "false";
             if (narrowed.kind === "light") return "true";
         }
+        const added =
+            key.staticString === undefined
+                ? undefined
+                : this.context.engineObjectProperties.membershipCpp(
+                      narrowed,
+                      key.staticString,
+                      ownerNode,
+                  );
+        if (added) return added;
         if (narrowed.kind === "record") {
             const keys = [
                 ...new Set(

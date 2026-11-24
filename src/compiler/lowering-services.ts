@@ -1,6 +1,7 @@
 import type ts from "typescript";
 import type { CompileError } from "./compile-error.js";
 import type { DataLowerer } from "./data-lowering.js";
+import type { EngineObjectProperties } from "./engine-object-properties.js";
 import type {
     DataTypeRegistry,
     DataIterationElement,
@@ -194,6 +195,8 @@ export interface LoweringServices {
     readonly userFunctions: UserFunctionLowerer;
     readonly dataTypes: DataTypeRegistry;
     readonly dataLowerer: DataLowerer;
+    /** The properties a program adds to engine objects. */
+    readonly engineObjectProperties: EngineObjectProperties;
     readonly classLowerer: ClassLowerer;
     readonly evaluationOrder: EvaluationOrder;
     readonly nativeFunctions: NativeFunctionLowerer;
@@ -280,7 +283,9 @@ export interface LoweringServices {
         value: Value,
         site: ts.Expression,
     ): void;
-    emitWindowLogicalAssignment(expression: ts.BinaryExpression): boolean;
+    emitAddedPropertyLogicalAssignment(
+        expression: ts.BinaryExpression,
+    ): boolean;
     compileValue(expression: ts.Expression): Value;
     /** The undefined an optional chain link is, when its chain stopped at generation. */
     optionalChainStop(node: ts.Expression): Value | undefined;

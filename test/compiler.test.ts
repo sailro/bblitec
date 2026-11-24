@@ -16016,39 +16016,6 @@ test("refuses a mesh id write that would stale an emitted include set", () => {
     );
 });
 
-test("erases a proven write-only optional numeric mesh expando", () => {
-    const result = compileSource(`
-        import { createEngine, createGround, type Mesh } from "@babylonjs/lite";
-        async function main() {
-            const engine = await createEngine({});
-            const ground = createGround(engine, { width: 2, height: 2 });
-            (ground as Mesh & { integrationTag?: number }).integrationTag = 7;
-        }
-        void main();
-    `);
-
-    assert.match(result.cpp, /static_cast<void>\(7\.0\);/);
-    assert.doesNotMatch(result.cpp, /integrationTag/);
-});
-
-test("refuses to erase an optional numeric mesh expando that is read", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-                import { createEngine, createGround, type Mesh } from "@babylonjs/lite";
-                async function main() {
-                    const engine = await createEngine({});
-                    const ground = createGround(engine, { width: 2, height: 2 });
-                    (ground as Mesh & { integrationTag?: number }).integrationTag = 7;
-                    const observed = (ground as Mesh & { integrationTag?: number }).integrationTag;
-                    console.log(observed);
-                }
-                void main();
-            `),
-        /Optional expando property 'integrationTag' is read, so its assignment cannot be erased/,
-    );
-});
-
 test("refuses to erase a DOM call on a receiver erasure cannot classify", () => {
     const program = (helper: string, call: string): string => `
         import { createEngine, createSceneContext, registerScene, startEngine } from "@babylonjs/lite";

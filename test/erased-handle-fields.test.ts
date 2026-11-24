@@ -346,40 +346,6 @@ test("arrays of erased elements written with materials hold the materials by ide
     assert.match(cpp, /bbl::js::Array<bbl::MaterialHandle> items;/);
 });
 
-test("a view read of a material refuses: a property the program adds to a ShaderMaterial is not represented", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-import { createEngine, createSceneContext, createShaderMaterial, createMeshFromData, wgsl, type Mesh } from "@babylonjs/lite";
-const engine = await createEngine({});
-createSceneContext(engine);
-const material = createShaderMaterial({ name: "plain", vertexSource: wgsl\`@vertex fn main(@location(0) position: vec3<f32>) -> @builtin(position) vec4<f32> { return vec4<f32>(position, 1.0); }\`, fragmentSource: wgsl\`@fragment fn main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`, attributes: ["position"], uniforms: ["worldViewProjection"] });
-const meshes: Mesh[] = [];
-for (let i = 0; i < 2; i++) {
-    const mesh = createMeshFromData(engine, "m" + i, new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]), new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]), new Uint32Array([0, 1, 2]));
-    mesh.material = material;
-    meshes.push(mesh);
-}
-const tracked: { mat: { level?: number }; base: number }[] = [];
-const seen = new Set<object>();
-const collect = (list: readonly { material?: unknown }[]): void => {
-    for (const m of list) {
-        const mat = m.material as { level?: number } | undefined;
-        if (mat && typeof mat === "object" && !seen.has(mat)) {
-            seen.add(mat);
-            const base = mat.level ?? 1;
-            mat.level = base;
-            tracked.push({ mat, base });
-        }
-    }
-};
-collect(meshes);
-localStorage.setItem("count", String(tracked.length));
-`),
-        /'mat\.level' reads a material through a view the pin does not declare: a property the program adds to a ShaderMaterial is not represented/,
-    );
-});
-
 // Engine objects an array of erased elements holds, re-viewed as records of
 // a structural type the program asserts (`held as unknown as readonly View[]`).
 const viewedArrayProgram = `
@@ -461,7 +427,7 @@ const versions = ${read};
 localStorage.setItem("probe", \`\${names.join()} \${found} \${versions.join()}\`);
 `;
 
-test("a view over engine objects reads their pinned members and refuses, by name, a member the pin does not declare", () => {
+test("a view over engine objects reads their pinned members, and a member the pin does not declare as the property the program adds", () => {
     const { cpp } = compileSource(
         meshView(
             "holder.current().map((mesh) => mesh.thinInstances?._version ?? 0)",
@@ -473,16 +439,15 @@ test("a view over engine objects reads their pinned members and refuses, by name
         cpp,
         /bbl::thin_instance_data\([^;]*\.thin_instances\)\.version/,
     );
-    assert.throws(
-        () =>
-            compileSource(
-                meshView(
-                    "holder.current().map((mesh) => mesh.extra ?? 0)",
-                ).replace(
-                    "    name?: string | undefined;",
-                    "    name?: string | undefined;\n    extra?: number | undefined;",
-                ),
-            ),
-        /'mesh\.extra' reads a mesh through a view the pin does not declare: a property the program adds to an engine object is not represented/,
+    // Each mesh's own `extra`, which nothing wrote: absent.
+    const added = compileSource(
+        meshView("holder.current().map((mesh) => mesh.extra ?? 0)").replace(
+            "    name?: string | undefined;",
+            "    name?: string | undefined;\n    extra?: number | undefined;",
+        ),
+    ).cpp;
+    assert.match(
+        added,
+        /bbl::engine_object_property_value\(bblscene::v_\w+object_property_\d+\(v_engine\), bbl::engine_object_identity\(\w+\)\)/,
     );
 });

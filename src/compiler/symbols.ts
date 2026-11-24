@@ -104,6 +104,43 @@ function sourceFileOrigin(file: ts.SourceFile): DeclarationOrigin {
           : "program";
 }
 
+const pinnedInterfaces = new WeakMap<
+    ts.TypeChecker,
+    Map<string, ts.Type | undefined>
+>();
+
+/**
+ * The interface `name` the pinned typings export (`PbrMaterialProps`), or
+ * undefined where the program reads no typings declaring it.
+ */
+export function pinnedInterfaceType(
+    program: ts.Program,
+    checker: ts.TypeChecker,
+    name: string,
+): ts.Type | undefined {
+    let types = pinnedInterfaces.get(checker);
+    if (!types)
+        pinnedInterfaces.set(
+            checker,
+            (types = new Map<string, ts.Type | undefined>()),
+        );
+    if (types.has(name)) return types.get(name);
+    const file = program.getSourceFile(compilerPackageTypings().babylon);
+    const module = file && checker.getSymbolAtLocation(file);
+    const symbol =
+        module &&
+        checker
+            .getExportsOfModule(module)
+            .find(
+                (exported) =>
+                    exported.name === name &&
+                    (exported.flags & ts.SymbolFlags.Interface) !== 0,
+            );
+    const type = symbol && checker.getDeclaredTypeOfSymbol(symbol);
+    types.set(name, type);
+    return type;
+}
+
 /** See {@link DeclarationOrigin}. */
 export function declarationOrigin(declaration: ts.Node): DeclarationOrigin {
     const file = declaration.getSourceFile();
