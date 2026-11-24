@@ -26,9 +26,7 @@ import { CompileError } from "./compile-error.js";
 import { declaredSymbol } from "./symbols.js";
 import { sourceLocation, syntaxKindName } from "../source-location.js";
 import {
-    demandsSourceStorage,
     describeStorageRequests,
-    ReplayStorage,
     storageRequestSite,
     type StorageRequest,
 } from "./replay-storage.js";
@@ -477,42 +475,6 @@ function censusStatement(statement: ts.Statement): SurveyStatement {
     };
 }
 
-/**
- * The demands one lowering went on past (`planned`), each once (a storage
- * of their own holds each request once, as a plan's does), and `met`, what
- * ended that lowering, where it is a demand whose storage its key and
- * source types name (`demandsSourceStorage`): one carrying storage lowered
- * past their copies may be the copies', as in a plan, and what the next
- * lowering still meets is met again; so is a refusal met after them. Those
- * of one kind are one demand, as a lowering joins the demands of a kind it
- * meets alongside each other (`StorageDemand.joinedWith`).
- */
-function plannedDemands(
-    checker: ts.TypeChecker,
-    planned: readonly StorageDemand[],
-    met: unknown,
-): StorageDemand[] {
-    const held = new ReplayStorage(checker);
-    const demands = [
-        ...planned,
-        ...(met instanceof StorageDemand &&
-        met.requests.every(demandsSourceStorage)
-            ? [met]
-            : []),
-    ].filter((demand) =>
-        demand.requests.map((request) => held.add(request)).includes(true),
-    );
-    const kinds = new Map<unknown, StorageDemand[]>();
-    for (const demand of demands) {
-        const kind = kinds.get(demand.constructor);
-        if (kind) kind.push(demand);
-        else kinds.set(demand.constructor, [demand]);
-    }
-    return [...kinds.values()].map(([first, ...others]) =>
-        first!.joinedWith(others),
-    );
-}
-
 /** What a replay asks for: a storage demand's requests, else the replay itself. */
 function replayText(replay: Error): string {
     return replay instanceof StorageDemand
@@ -720,12 +682,6 @@ export class SurveyCollector {
      * takes its statements away.
      */
     private readonly probing: EmissionSet<ts.Statement>[] = [];
-    /**
-     * @unjournaled The demands each statement lowering under way went on
-     * past (`demandOrPlan`), innermost last: they outlive the probes that
-     * met them, as a demand thrown out of a probe does.
-     */
-    private readonly planned: StorageDemand[][] = [];
 
     /**
      * `replayable`: the replays a compile applies before its next attempt
@@ -1236,42 +1192,11 @@ export class SurveyCollector {
             for (;;) {
                 let met: unknown;
                 const begun = this.bodiesBegun();
-                // The demands lowering goes on past (`demandOrPlan`) are
-                // the statement's, met in one lowering, probes included:
-                // it lowers again once with all of them.
-                const planned: StorageDemand[] = [];
-                this.planned.push(planned);
                 try {
-                    context.transaction(() => {
-                        lower();
-                        if (planned.length > 0) throw planned[0]!;
-                    });
+                    context.transaction(lower);
                     return;
                 } catch (error) {
                     met = error;
-                } finally {
-                    this.planned.pop();
-                }
-                if (
-                    planned.length > 0 &&
-                    (met instanceof StorageDemand ||
-                        met instanceof CompileError)
-                ) {
-                    const demands = plannedDemands(
-                        context.checker,
-                        planned,
-                        met,
-                    );
-                    const fresh = demands.filter(
-                        (demand) => this.applied(attempt, demand) === true,
-                    );
-                    if (fresh.length > 0) {
-                        taken = fresh.at(-1);
-                        if (attempt.root) attempt.root.stale = true;
-                        continue;
-                    }
-                    // None is new: the first stands as the demand met again.
-                    met = demands[0];
                 }
                 // A read of a binding its block declares later: the binding
                 // takes storage ahead of the statement that block stands
@@ -1354,17 +1279,6 @@ export class SurveyCollector {
         }
         if (lowerNested)
             this.lowerHeld(context, attempt, statement, lowerNested);
-    }
-
-    /**
-     * Takes `demand`, one lowering goes on past (`demandOrPlan`), for the
-     * statement under way: false outside a statement's lowering.
-     */
-    public planDemand(demand: StorageDemand): boolean {
-        const planned = this.current && this.planned.at(-1);
-        if (!planned) return false;
-        planned.push(demand);
-        return true;
     }
 
     /** Storage lowering reads changed: what a probe refused before may lower now. */

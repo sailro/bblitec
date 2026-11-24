@@ -352,54 +352,6 @@ test("one survey pass meets every independent demand", () => {
     );
 });
 
-test("a survey statement takes every demand its probed body goes on past in one lowering", () => {
-    // The callback lowers inside a probe of the data method call, where a
-    // statement does not recover: each join lowering goes on past
-    // (`demandOrPlan`) is the statement's, taken together as one demand of
-    // their kind, so the first pass meets all three instead of one per pass.
-    const lines: string[] = [];
-    const { report } = surveySource(
-        `
-        interface P { x: number; y: number; t: boolean }
-        interface Q { x: number; y: number }
-        interface R { u: number; v: number; s: string }
-        interface S { u: number; v: number }
-        interface M { m: number; n: number; k: number }
-        interface N { m: number; n: number }
-        const ps: P[] = [{ x: 1, y: 2, t: true }];
-        const rs: R[] = [{ u: 1, v: 2, s: "s" }];
-        const ms: M[] = [{ m: 1, n: 2, k: 3 }];
-        const qs: Q[] = [];
-        const ss: S[] = [];
-        const ns: N[] = [];
-        [1, 2].forEach((step) => {
-            for (const p of ps) qs.push(p);
-            for (const r of rs) ss.push(r);
-            for (const m of ms) ns.push(m);
-            localStorage.setItem("step", String(step));
-        });
-        ps[0]!.x = 5;
-        rs[0]!.u = 6;
-        ms[0]!.m = 7;
-        localStorage.setItem("total", String(qs[0]!.x + ss[0]!.u + ns[0]!.m));
-    `,
-        { fileName: resolve("survey-planned-batch.ts") },
-        {
-            roots: false,
-            progress: { report: (line) => lines.push(line), intervalMs: 0 },
-        },
-    );
-    assert.equal(report.complete, true);
-    assert.equal(report.refusals.length, 0, listed(report));
-    const passes = lines.filter((line) => line.startsWith("Survey pass"));
-    assert.equal(passes.length, 1, passes.join(" | "));
-    assert.match(
-        passes[0]!,
-        /^Survey pass 1: 1 demand added for the next pass: record \(P: P joins Q\); record \(R: R joins S\); record \(M: M joins N\) at \S+$/,
-    );
-    assert.equal(report.passes, 2);
-});
-
 test("a survey pass meets every demand and refusal of an awaited call a run-time test splits", () => {
     // `wide ? 2 : 3` is a run-time test the call could split on, so a
     // compile probes the unsplit call; a survey lowers it where `build`'s
@@ -684,11 +636,10 @@ test("a store into a layout built before the pass took its field's engine owner 
 });
 
 test("a read of a record bound before the pass took its storage is that demand's", () => {
-    // The module binds `B` as a record; the second pass's `layout` root
-    // takes its storage with `A`'s join, the third takes `B`'s join, and
-    // `capacity`, lowered later in that pass, reads the record bound
-    // before it: the pass a limit ends at rolls it back for the demand, as
-    // the next pass lowers both with it.
+    // The module binds `B` as a record; the third pass's `layout` root
+    // takes its storage, and `capacity`, lowered later in that pass, reads
+    // the record bound before it: the pass a limit ends at rolls it back
+    // for the demand, as the next pass lowers both with it.
     const source = `
         type Kind = "a" | "b";
         const A = { capacity: 2, slots: [1, 2] } as const;
@@ -706,12 +657,7 @@ test("a read of a record bound before the pass took its storage is that demand's
             demand.demand,
             demand.rolledBackAt.map((site) => site.split(":").at(-1)),
         ]),
-        [
-            [
-                "record ({ capacity, slots }: { capacity, slots } joins { capacity, slots })",
-                ["7"],
-            ],
-        ],
+        [["dynamic", ["7"]]],
     );
     const { report } = surveySource(source, { fileName });
     assert.deepEqual(report.refusals, [], listed(report));
