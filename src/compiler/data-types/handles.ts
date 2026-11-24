@@ -208,11 +208,16 @@ export function isInputSnapshotHandleKind(kind: HandleKind): boolean {
 
 /**
  * A handle whose value is its runtime identity alone, nothing generation-
- * known: an input snapshot, or a decoded audio buffer. A shared body takes
- * one as a native parameter instead of specializing on its value.
+ * known: an input snapshot, a decoded audio buffer, or an owned DOM event. A
+ * shared body takes one as a native parameter instead of specializing on its
+ * value.
  */
 export function isRuntimeIdentityHandleKind(kind: HandleKind): boolean {
-    return isInputSnapshotHandleKind(kind) || kind === "audio-buffer";
+    return (
+        isInputSnapshotHandleKind(kind) ||
+        kind === "audio-buffer" ||
+        kind === "dom-event"
+    );
 }
 
 /** Whether a data type lists input snapshots, as a TouchEvent's TouchList does. */

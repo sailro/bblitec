@@ -674,8 +674,8 @@ function valueResource(
         dataType.handle === "dom-event" &&
         value.kind === "platform-mouse-event"
     ) {
+        // An owned DOM event is input:dom's (pal_dom_events.hpp).
         lowerer.context.reachFeature("input:dom", node);
-        lowerer.context.reachFeature("data:json", node);
         return `bbl::OwnedDomEvent(${value.cpp}${value.platformEventBase ? ".payload<bbl::PlatformMouseEvent>()" : ""})`;
     }
     if (
