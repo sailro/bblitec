@@ -109,6 +109,12 @@ export class RecordKeyOrders {
     private readonly spellings = new EmissionSet<string>();
     /** Enumerated structs, with the first node enumerating each. */
     private readonly enumerations = new EmissionMap<string, ts.Node>();
+    /**
+     * The keys writes no creation places may give each struct's records
+     * (`noteUnplacedWrite`); the empty string stands for a key only the
+     * run time names.
+     */
+    private readonly unplaced = new EmissionMap<string, readonly string[]>();
 
     /** A record of `struct` created making `keys` own, in order. */
     public noteCreation(struct: string, keys: readonly CreatedKeys[]): void {
@@ -118,6 +124,19 @@ export class RecordKeyOrders {
         const known = this.creations.get(struct);
         if (known) known.push(keys);
         else this.creations.set(struct, emissionArray([keys]));
+    }
+
+    /**
+     * A record of `struct` may be given `key` (undefined: one only the
+     * run time names) by a write no creation places (an alias's, a
+     * parameter's): where a creation may lack that key, the write adds it
+     * in an order only the run time knows.
+     */
+    public noteUnplacedWrite(struct: string, key: string | undefined): void {
+        const keys = this.unplaced.get(struct) ?? [];
+        const spelled = key ?? "";
+        if (!keys.includes(spelled))
+            this.unplaced.set(struct, [...keys, spelled]);
     }
 
     /** `struct`'s own keys are enumerated in its field order. */
@@ -360,6 +379,17 @@ export class RecordKeyOrders {
                 made[index] = { key, maybe, own: known.own };
             }
         }
+        // A key a write no creation places may add, which this creation may
+        // lack, joins its record in an order only the run time knows.
+        const owned = (key: string): boolean =>
+            made.some((known) => known.key === key && !known.maybe);
+        for (const key of this.unplaced.get(struct) ?? [])
+            if (
+                key === ""
+                    ? keys.some((field) => !owned(field.key))
+                    : stored.has(key) && !owned(key)
+            )
+                return "varies";
         return ownKeyOrder(made.map(({ key }) => key));
     }
 }

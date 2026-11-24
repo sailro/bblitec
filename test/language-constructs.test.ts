@@ -15119,6 +15119,76 @@ check(
 `,
 );
 
+check(
+    "declared-record-key-order-through-writes-after-creation",
+    `
+    type ToolId = "move" | "clone" | "delete" | "resize" | "paint";
+    interface Tool { name: string }
+    const tools: Partial<Record<ToolId, Tool>> = {};
+    tools.resize = { name: "r" };
+    tools.move = { name: "m" };
+    if (Object.keys(tools).join() !== "resize,move") throw new Error("written keys");
+    if (JSON.stringify(tools) !== '{"resize":{"name":"r"},"move":{"name":"m"}}') throw new Error("written json");
+    const visited: string[] = [];
+    for (const key in tools) visited.push(key);
+    if (visited.join() !== "resize,move") throw new Error("written for-in");
+    const copy = { ...tools };
+    if (Object.keys(copy).join() !== "resize,move") throw new Error("written spread");
+    interface Slots { a?: number; b?: number; c?: number }
+    const values = [1, 2, 3];
+    const first: Slots = {};
+    first.b = values[0]!;
+    first.a = values[1]!;
+    const second: Slots = {};
+    second.c = values[2]!;
+    second.b = values[0]!;
+    const slots: Slots[] = [first, second];
+    if (slots.map((row) => Object.keys(row).join()).join("|") !== "b,a|c,b") throw new Error("two write orders");
+    if (JSON.stringify(slots) !== '[{"b":1,"a":2},{"c":3,"b":1}]') throw new Error("two write orders json");
+    const flags = JSON.parse("[true,false]") as boolean[];
+    const runs: string[] = [];
+    for (const flag of flags) {
+        const run: Slots = {};
+        if (flag) run.a = values[0]!;
+        run.b = values[1]!;
+        run.a = values[2]!;
+        runs.push(Object.keys(run).join() + "=" + JSON.stringify(run));
+    }
+    if (runs.join("|") !== 'a,b={"a":3,"b":2}|b,a={"b":2,"a":3}') throw new Error("conditional write " + runs.join("|"));
+`,
+);
+
+check(
+    "declared-record-key-order-through-writes-no-creation-places",
+    `
+    interface ThroughAlias { a?: number; b?: number; c?: number }
+    interface ThroughParameter { a?: number; b?: number; c?: number }
+    interface ThroughKey { a?: number; b?: number; c?: number }
+    const values = [1, 2, 3];
+    const base: ThroughAlias = {};
+    const alias = base;
+    alias.c = values[0]!;
+    base.a = values[1]!;
+    if (Object.keys(base).join() !== "c,a") throw new Error("alias keys " + Object.keys(base).join());
+    if (JSON.stringify(base) !== '{"c":1,"a":2}') throw new Error("alias json " + JSON.stringify(base));
+    function fill(target: ThroughParameter, first: number): void {
+        target.b = first;
+        target.a = first + 1;
+    }
+    const filled: ThroughParameter = {};
+    fill(filled, values[2]!);
+    const visited: string[] = [];
+    for (const key in filled) visited.push(key);
+    if (visited.join() !== "b,a") throw new Error("parameter keys " + visited.join());
+    if (JSON.stringify({ ...filled }) !== '{"b":3,"a":4}') throw new Error("parameter json " + JSON.stringify(filled));
+    const order = JSON.parse('["c","b"]') as (keyof ThroughKey)[];
+    const keyed: ThroughKey = {};
+    for (const key of order) keyed[key] = values[0]!;
+    if (Object.keys(keyed).join() !== "c,b") throw new Error("computed keys " + Object.keys(keyed).join());
+    if (JSON.stringify(keyed) !== '{"c":1,"b":1}') throw new Error("computed json " + JSON.stringify(keyed));
+`,
+);
+
 test("records no document holds refuse an enumeration their creations order apart", () => {
     assert.throws(
         () =>

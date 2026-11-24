@@ -1938,6 +1938,18 @@ export class DataTypeRegistry {
      * each its own as documents, and refuse where no document holds them.
      * One replay settles every struct the program needs settled.
      */
+    /**
+     * Notes a write of `key` (undefined: one only the run time names) on a
+     * record of struct `name` that no creation places
+     * (`writePlacedOnDeclaration`): a class instance's keys are its
+     * class's; any other record may be given the key in the run time's
+     * order (`RecordKeyOrders.noteUnplacedWrite`).
+     */
+    public noteUnplacedKeyWrite(name: string, key: string | undefined): void {
+        if (!this.isClassStruct(name))
+            this.keyOrders.noteUnplacedWrite(name, key);
+    }
+
     private checkRecordKeyOrders(): void {
         const reordered: RecordKeyOrderRequired[] = [];
         const documents: NativeRecordStorageRequired[] = [];

@@ -18,8 +18,10 @@ import {
     outermostWrapper,
     statementsBeside,
     unwrapExpression,
+    variableKind,
+    writeSites,
 } from "./syntax.js";
-import { someAnalysisNode } from "./analysis-walk.js";
+import { forEachAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
 import { undeclaredMembersObservable } from "./record-observations.js";
 import type { LoweringServices } from "./lowering-services.js";
 import {
@@ -1397,6 +1399,140 @@ export function keysDefinedOnDeclaration(
         keys.push(...named);
     }
     return keys;
+}
+
+/**
+ * The `const` declaration a literal initializes, alone in its list: the
+ * binding it declares, and its statement in the statement list it stands in.
+ */
+function literalDeclaration(
+    checker: ts.TypeChecker,
+    literal: ts.ObjectLiteralExpression,
+):
+    | { binding: ts.Symbol; statement: ts.VariableStatement; scope: ts.Node }
+    | undefined {
+    const initializer = outermostWrapper(literal);
+    const declaration = initializer.parent;
+    const list = declaration.parent;
+    const statement = list?.parent;
+    const scope = statement?.parent;
+    if (
+        !ts.isVariableDeclaration(declaration) ||
+        declaration.initializer !== initializer ||
+        !ts.isIdentifier(declaration.name) ||
+        !ts.isVariableDeclarationList(list) ||
+        list.declarations.length !== 1 ||
+        variableKind(list) !== "const" ||
+        !ts.isVariableStatement(statement) ||
+        !scope
+    )
+        return undefined;
+    const binding = resolvedSymbol(checker, declaration.name);
+    return binding ? { binding, statement, scope } : undefined;
+}
+
+/**
+ * The records a node writes a property of (`record.key = ...`,
+ * `record[key] += ...`, a destructuring leaf, `record.key++`), each
+ * with the literal key it names; no key for one only the run time names.
+ * A `delete` removes a key rather than creating one.
+ */
+export function propertyWrites(
+    node: ts.Node,
+): { owner: ts.Expression; key: string | undefined }[] {
+    return writeSites(node).flatMap(({ target, kind }) => {
+        if (kind === "delete") return [];
+        if (ts.isPropertyAccessExpression(target))
+            return [
+                {
+                    owner: unwrapExpression(target.expression),
+                    key: target.name.text,
+                },
+            ];
+        if (!ts.isElementAccessExpression(target)) return [];
+        const argument = unwrapExpression(target.argumentExpression);
+        return [
+            {
+                owner: unwrapExpression(target.expression),
+                key: ts.isStringLiteralLike(argument)
+                    ? argument.text
+                    : undefined,
+            },
+        ];
+    });
+}
+
+/**
+ * The keys the program writes on the record a literal's `const`
+ * declaration binds, after it and in source order (`const tools = {};
+ * tools.resize = r; tools.move = m`), as JavaScript creates a key at its
+ * first write. A write that is a statement of the declaration's own
+ * statement list runs after the ones before it; any other (in a condition,
+ * a loop or a callback) may run or not, in another order (`maybe`). A key
+ * only the run time names is no creation's (`writePlacedOnDeclaration`).
+ */
+export function keysWrittenOnDeclaration(
+    checker: ts.TypeChecker,
+    literal: ts.ObjectLiteralExpression,
+): readonly CreatedKeys[] {
+    const declared = literalDeclaration(checker, literal);
+    if (!declared) return [];
+    const { binding, statement, scope } = declared;
+    const keys: CreatedKeys[] = [];
+    forEachAnalysisNode(scope, (node) => {
+        if (node.pos < statement.end) return;
+        const written = outermostWrapper(node);
+        const runs =
+            ts.isExpressionStatement(written.parent) &&
+            written.parent.parent === scope;
+        for (const write of propertyWrites(node)) {
+            if (
+                !ts.isIdentifier(write.owner) ||
+                resolvedSymbol(checker, write.owner) !== binding
+            )
+                continue;
+            if (write.key !== undefined)
+                keys.push(
+                    runs ? { key: write.key } : { key: write.key, maybe: true },
+                );
+        }
+    });
+    return keys;
+}
+
+/**
+ * Whether a write of a literal `key` at `site` stores into a record whose
+ * creation accounts for it (`keysWrittenOnDeclaration`): through
+ * `owner`, the binding a literal's `const` declaration makes, after that
+ * declaration, within its statement list. A write through any other
+ * reference (an alias, a parameter, a property holding the record), or of
+ * a key only the run time names, adds a key no creation places.
+ */
+export function writePlacedOnDeclaration(
+    checker: ts.TypeChecker,
+    owner: ts.Expression,
+    key: string | undefined,
+    site: ts.Node,
+): boolean {
+    if (key === undefined) return false;
+    const declaration = ts.isIdentifier(owner)
+        ? resolvedSymbol(checker, owner)?.valueDeclaration
+        : undefined;
+    const initializer =
+        declaration &&
+        ts.isVariableDeclaration(declaration) &&
+        declaration.initializer
+            ? unwrapExpression(declaration.initializer)
+            : undefined;
+    const declared =
+        initializer && ts.isObjectLiteralExpression(initializer)
+            ? literalDeclaration(checker, initializer)
+            : undefined;
+    return (
+        declared !== undefined &&
+        site.pos >= declared.statement.end &&
+        ts.findAncestor(site, (node) => node === declared.scope) !== undefined
+    );
 }
 
 /**

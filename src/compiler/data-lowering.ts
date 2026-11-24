@@ -255,11 +255,14 @@ import {
 import {
     deleteRecordProperty,
     keysDefinedOnDeclaration,
+    keysWrittenOnDeclaration,
     ownEntries,
+    propertyWrites,
     recordCreatedKeys,
     setRecordProperty,
     structOwnEntries,
     undeclaredMemberDropped,
+    writePlacedOnDeclaration,
     type OwnEntry,
 } from "./object-statics.js";
 import type { CreatedKeys } from "./record-key-orders.js";
@@ -15545,8 +15548,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     /**
      * Notes the record of `dataType` a literal creates making `keys` own,
      * then the keys the statements right after its declaration define on it
-     * (`keysDefinedOnDeclaration`): a definition keeps a key's place, and
-     * appends one the record lacks.
+     * (`keysDefinedOnDeclaration`) and the keys later writes give its
+     * binding (`keysWrittenOnDeclaration`): a definition or a write keeps a
+     * key's place, and appends one the record lacks.
      */
     public noteLiteralCreation(
         literal: ts.ObjectLiteralExpression,
@@ -15558,6 +15562,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ...keysDefinedOnDeclaration(this.context.checker, literal).map(
                 (key) => ({ key }),
             ),
+            ...keysWrittenOnDeclaration(this.context.checker, literal),
         ]);
     }
 
@@ -17829,6 +17834,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         expression: ts.BinaryExpression,
         asValue = false,
     ): Value {
+        this.noteUnplacedKeyWrite(expression);
         if (isTaskMethodWrite(this.context, expression.left))
             this.context.fail(
                 expression,
@@ -18292,6 +18298,33 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * bound where the store first consumes it (`compileAssignmentValue`).
      */
 
+    /**
+     * The property writes of `expression` on a struct's records that no
+     * creation places (`writePlacedOnDeclaration`), each a key that may
+     * join a record in the run time's order
+     * (`DataTypeRegistry.noteUnplacedKeyWrite`).
+     */
+    private noteUnplacedKeyWrite(expression: ts.BinaryExpression): void {
+        for (const write of propertyWrites(expression)) {
+            if (
+                writePlacedOnDeclaration(
+                    this.context.checker,
+                    write.owner,
+                    write.key,
+                    expression,
+                )
+            )
+                continue;
+            const owner = this.dataTypeAt(write.owner);
+            const record = owner?.kind === "optional" ? owner.inner : owner;
+            if (record?.kind === "struct")
+                this.context.dataTypes.noteUnplacedKeyWrite(
+                    record.name,
+                    write.key,
+                );
+        }
+    }
+
     public emitAssignment(expression: ts.BinaryExpression): boolean {
         const deferred =
             this.context.deferredCapabilities.assignment(expression);
@@ -18349,6 +18382,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         if (operator === "=")
             this.requireOwnUndefinedWrite(left, expression.right);
+        this.noteUnplacedKeyWrite(expression);
         const json = this.jsonPlace(left);
         if (json) {
             if (operator !== "=") {
