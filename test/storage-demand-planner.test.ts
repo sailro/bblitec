@@ -967,6 +967,52 @@ test("replay storage lays out its records and bindings in an order of the progra
     );
 });
 
+test("replay storage holds one document record whichever site and mapping mode met it first", () => {
+    // A stored record's method meets `Report` as a stored document; a plain
+    // use meets it as a document. Either may come first: the storage holds
+    // a document at its declaration, without `stored`.
+    const { checker, statements } = plannedStatements(`
+        interface Report { message: string; detail: unknown }
+        interface Handle { report(): Report | null }
+        const report: Report = { message: "a", detail: 1 };
+    `);
+    const report = checker.getDeclaredTypeOfSymbol(
+        checker.getSymbolAtLocation(
+            (statements[0] as ts.InterfaceDeclaration).name,
+        )!,
+    );
+    const handleMethod = (statements[1] as ts.InterfaceDeclaration).members[0]!;
+    const demand = (node: ts.Node, stored: boolean) =>
+        new NativeRecordStorageRequired({
+            identity: report,
+            type: report,
+            node,
+            frames: [],
+            document: true,
+            ...(stored ? { stored: true as const } : {}),
+        }).request;
+    const held = (requests: readonly StorageRequest[]) => {
+        const storage = new ReplayStorage(checker);
+        for (const request of requests) storage.add(request);
+        return storage.orderedRecords().map((record) => ({
+            node: record.node,
+            stored: record.stored === true,
+            document: record.document === true,
+        }));
+    };
+    const storedFirst = held([
+        demand(handleMethod, true),
+        demand(statements[2]!, false),
+    ]);
+    assert.deepEqual(
+        held([demand(statements[2]!, false), demand(handleMethod, true)]),
+        storedFirst,
+    );
+    assert.deepEqual(storedFirst, [
+        { node: statements[0], stored: false, document: true },
+    ]);
+});
+
 test("converged storage withdraws the record demands that ask only to share their records", () => {
     // A pass can meet one before the demand that already serves it: the
     // strict lowering demands again the sharing it needs.

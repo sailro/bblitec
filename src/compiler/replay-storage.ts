@@ -318,11 +318,14 @@ export class ReplayStorage {
                     if (known && site !== known)
                         this.records.set(key, {
                             ...known,
-                            ...recordSite(site),
+                            ...recordSite(site, known),
                         });
                     return false;
                 }
-                this.records.set(key, { ...merged, ...recordSite(site) });
+                this.records.set(key, {
+                    ...merged,
+                    ...recordSite(site, merged),
+                });
                 this.plannedComponents = undefined;
                 return true;
             }
@@ -582,11 +585,14 @@ function typeOrder(
 /** Where and as what a record demand was met: the fields its site decides. */
 function recordSite(
     demand: NativeRecordStorageDemand,
+    held: NativeRecordStorageDemand,
 ): Pick<NativeRecordStorageDemand, "identity" | "type" | "node" | "frames"> {
     return {
         identity: demand.identity,
         type: demand.type,
-        node: demand.node,
+        // A document's site is its record type's declaration, whichever use
+        // met it first: the storage it holds does not depend on that order.
+        node: (held.document && typeDeclaration(demand.type)) || demand.node,
         frames: demand.frames,
     };
 }

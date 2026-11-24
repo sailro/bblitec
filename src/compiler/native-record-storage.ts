@@ -145,7 +145,9 @@ export function recordDemandAsks(demand: NativeRecordStorageDemand): string[] {
 /**
  * Replays strengthen ownership and accumulate the joins, document fields
  * and accessors lowering met: `previous` merged with `next`, or undefined
- * when `next` demands nothing `previous` lacks.
+ * when `next` demands nothing `previous` lacks. A document asks no
+ * `stored`: its records map to JSON in either mode (`fromTsType`), so
+ * the demands a document meets hold the same storage in any order.
  */
 export function mergeNativeRecordStorage(
     previous: NativeRecordStorageDemand | undefined,
@@ -180,6 +182,7 @@ export function mergeNativeRecordStorage(
             ),
     );
     const joins = [...(previous?.joins ?? []), ...added];
+    const document = previous?.document || next.document;
     const accessors = new Map(
         (previous?.accessors ?? []).map((accessor) => [
             accessor.name,
@@ -194,7 +197,12 @@ export function mergeNativeRecordStorage(
         (next.dictionary !== undefined && previous?.dictionary === undefined) ||
         (next.native !== undefined && previous?.native === undefined) ||
         (next.classView !== undefined && previous?.classView === undefined) ||
-        RECORD_STORAGE_FLAGS.some((flag) => next[flag] && !previous[flag]);
+        RECORD_STORAGE_FLAGS.some(
+            (flag) =>
+                next[flag] &&
+                !previous[flag] &&
+                !(flag === "stored" && document),
+        );
     const documentFields = new Set(previous?.documentFields);
     for (const name of next.documentFields ?? [])
         if (!documentFields.has(name)) {
@@ -216,7 +224,7 @@ export function mergeNativeRecordStorage(
         });
     }
     if (!changed) return undefined;
-    return {
+    const merged: NativeRecordStorageDemand = {
         ...previous,
         ...next,
         ...(previous?.native ? { native: previous.native } : {}),
@@ -232,6 +240,8 @@ export function mergeNativeRecordStorage(
               }
             : {}),
     };
+    if (document) delete merged.stored;
+    return merged;
 }
 
 /**
