@@ -508,9 +508,11 @@ template <typename T> struct CloneCodec<TypedArray<T>> {
                 reader.remember(view.buffer, ArrayBuffer(owned.storage()));
                 return owned;
             }
+            // A view's byte length is a whole number of elements.
+            const std::size_t length = view.byte_length / sizeof(T);
             return TypedArray<T>(clone_read<ArrayBuffer>(reader, view.buffer),
                                  static_cast<double>(view.byte_offset),
-                                 static_cast<double>(view.byte_length / sizeof(T)));
+                                 static_cast<double>(length));
         }();
         reader.remember(id, value);
         return value;
