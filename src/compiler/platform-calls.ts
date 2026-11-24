@@ -4,7 +4,8 @@ import { compileWebPlatformCall } from "./web-platform.js";
 import { journaled } from "./emission-transaction.js";
 import { deferredCapabilityDescriptor } from "./deferred-capabilities.js";
 import ts from "typescript";
-import { namedMember, type NamedMember } from "./symbols.js";
+import { namedMember, resolvedDomApi, type NamedMember } from "./symbols.js";
+import { DOCUMENT_ELEMENT_FROM_POINT } from "./dom-lowerings.js";
 import {
     uiComputedStyleRead,
     unrepresentedComputedStyle,
@@ -1594,7 +1595,8 @@ export class PlatformCalls {
         // The display hit-tests the page it lays out now. The engine
         // canvas has no element handle, so the answer is a DOM event target.
         if (
-            callee.name === "elementFromPoint" &&
+            resolvedDomApi(this.context.checker, call) ===
+                DOCUMENT_ELEMENT_FROM_POINT &&
             isDocumentReceiver(this.context, callee.expression)
         ) {
             this.context.expectArgumentCount(call, 2, 2);

@@ -59,3 +59,27 @@ test("document.elementFromPoint answers what the display lays out at a point", (
         },
     });
 });
+
+test("a binding of document.elementFromPoint's hit is tested natively, not erased as browser state", () => {
+    const directory = resolve("artifacts/dom-element-from-point-binding");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "worker.ts"), "self.close();");
+    const result = compileSource(
+        `
+        const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
+        worker.terminate();
+        const log = document.createElement("div");
+        document.body.appendChild(log);
+        window.addEventListener("pointerdown", (event) => {
+            const hit = document.elementFromPoint(event.clientX, event.clientY);
+            if (hit) hit.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+            const element = hit instanceof Element ? hit : null;
+            log.textContent = String(element instanceof HTMLCanvasElement);
+        });
+        globalThis.close();
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    assert.match(result.cpp, /bbl::ui_element_from_point\(/);
+    assert.match(result.cpp, /bbl::dom_target_has_tag\(/);
+});
