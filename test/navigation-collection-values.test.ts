@@ -110,7 +110,7 @@ test("navigation copies current owned connection fields once in argument order",
     writeFileSync(join(output, "program.hpp"), result.cpp);
     writeFileSync(
         join(output, "bblite/upstream/navigation.hpp"),
-        new NavigationLowerer(new LoweringContext()).lowerNavigation(false)
+        new NavigationLowerer(new LoweringContext()).lowerNavigation(["solo"])
             .header,
     );
     const file = join(output, "check.cpp"),

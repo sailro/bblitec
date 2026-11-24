@@ -135,12 +135,19 @@ test("navigation source arrays and caller-owned query results generate without d
         "dispose_navigation_plugin",
     ])
         assert.match(compiled.cpp, new RegExp(name));
+    // A build arm only the run time knows keeps the pin's dispatch: both
+    // arms are reached, behind its test.
+    const dispatched = compileSource(
+        `${imports}const plugin=await createNavigationPluginAsync();const value=new Float32Array([1])[0]!;createNavMeshFromSources(plugin,[],{maxObstacles:value});`,
+    );
+    for (const feature of ["navigation:tile-cache", "navigation:arm-dispatch"])
+        assert.ok(dispatched.manifest.features.includes(feature), feature);
     assert.throws(
         () =>
             compileSource(
-                `${imports}const plugin=await createNavigationPluginAsync();const value=new Float32Array([1])[0]!;createNavMeshFromSources(plugin,[],{maxObstacles:value});`,
+                `${imports}const plugin=await createNavigationPluginAsync();createNavMeshFromSources(plugin,[],{tileSize:8});`,
             ),
-        /Navigation build arm 'maxObstacles' must be known at compilation/,
+        /builds a tiled navmesh, which is not lowered/,
     );
 });
 
@@ -283,7 +290,19 @@ test("native raw navigation queries match pinned WASM and disposal releases reso
     );
     pin.disposeNavigationPlugin(plugin);
     const context = new LoweringContext();
-    const lowered = new NavigationLowerer(context).lowerNavigation(false);
+    // Both arms: the build runs the pin's own dispatch at run time.
+    const lowered = new NavigationLowerer(context).lowerNavigation([
+        "solo",
+        "tileCache",
+    ]);
+    const single = new NavigationLowerer(new LoweringContext()).lowerNavigation(
+        ["solo"],
+    );
+    assert.doesNotMatch(single.source, /max_obstacles\.value_or/);
+    assert.match(
+        lowered.source,
+        /params\.max_obstacles\.value_or\(0\.0\) > 0\.0/,
+    );
     const directory = resolve("artifacts/navigation-source-queries");
     mkdirSync(join(directory, "bblite/upstream"), { recursive: true });
     writeFileSync(
@@ -358,6 +377,14 @@ int main(){
     assert(!bbl::pal::navigation_has_query(plugin)&&!bbl::pal::navigation_has_nav_mesh(plugin));
     create_nav_mesh_from_sources(plugin,sources,params,true);
     ${checks}
+    dispose_navigation_plugin(plugin);
+    const auto refuses=[&](bbl::pal::NavMeshBuildParams arm,const char* text){bool thrown=false;try{create_nav_mesh_from_sources(plugin,sources,arm,true);}catch(const std::runtime_error& error){thrown=std::string(error.what()).find(text)!=std::string::npos;}assert(thrown);};
+    bbl::pal::NavMeshBuildParams tiled;tiled.tile_size=8;refuses(tiled,"builds a tiled navmesh");
+    bbl::pal::NavMeshBuildParams empty;empty.max_obstacles=4;empty.tile_size=0;refuses(empty,"zero-cell tiles");
+    bbl::pal::NavMeshBuildParams linked;linked.max_obstacles=4;linked.off_mesh_connections.push_back(bbl::pal::NavOffMeshConnection{});refuses(linked,"_createDefaultTileCacheMeshProcess");
+    bbl::pal::NavMeshBuildParams cached;cached.max_obstacles=4;cached.tile_size=8;
+    create_nav_mesh_from_sources(plugin,sources,cached,true);
+    assert(bbl::pal::navigation_has_nav_mesh(plugin)&&bbl::pal::navigation_has_query(plugin));
     dispose_navigation_plugin(plugin);
 }
 `;

@@ -548,8 +548,9 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
 - `enableCsmStaticCache` (awaited, before registration): static casters render into a cache texture, copied per layer
   into the map before dynamic casters draw; refit gate, per-frame cascade budget and coverage refit
   (`cascadeCoveragePadding`) as pinned.
-- Recast/Detour solo and obstacle tile-cache builds, crowds, obstacles. Tiled builds without obstacles and off-mesh
-  connections in tile caches refuse.
+- Recast/Detour solo and obstacle tile-cache builds, crowds, obstacles. A build whose `maxObstacles` or `tileSize` only
+  the run time knows takes both arms behind the pin's dispatch. Tiled builds without obstacles and off-mesh connections in
+  tile caches refuse, at run time in such a build.
 - Navcat runs as program code: the pin's `navcat*.ts` modules and the vendored navcat/mathcat TypeScript compile
   with the program ([architecture](architecture.md#lowering-invariants)).
 

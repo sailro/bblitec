@@ -15,12 +15,15 @@ import type { NativeCaptureBinding } from "../closure-captures.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
     validateObjectProperties,
-    compileStaticNumber,
+    staticNumberValue,
     type ObjectValidationContext,
     type PositiveIntegerContext,
 } from "../option-helpers.js";
 import { pinnedAgentParamDefaults } from "../../lowering/navigation-lowerer.js";
-import { NAV_MESH_BUILD_PARAM_FIELDS } from "../../lowering/navigation-build-plan.js";
+import {
+    NAV_MESH_ARM_REFUSALS,
+    NAV_MESH_BUILD_PARAM_FIELDS,
+} from "../../lowering/navigation-build-plan.js";
 import {
     emitPresentOption,
     emitScalarOption,
@@ -220,36 +223,25 @@ export function compileNavigationIntrinsic(
                         optionSite,
                         `Unrepresented navigation option '${name}'.`,
                     );
-            const gate = (name: string): number => {
+            // A member's number, 0 where absent, unknown where only the
+            // run time has it.
+            const gate = (name: string): number | undefined => {
                 const member = members.get(name);
                 if (!member || member.value?.kind === "json-null") return 0;
-                if (member.value?.staticNumber === undefined)
-                    return context.fail(
-                        optionSite,
-                        `Navigation build arm '${name}' must be known at compilation.`,
-                    );
-                return member.value.staticNumber;
+                return member.value?.staticNumber;
             };
-            const obstacles = gate("maxObstacles"),
-                tiles = gate("tileSize");
-            if (obstacles <= 0 && tiles > 0)
-                context.fail(
-                    optionSite,
-                    "Tiled navigation without obstacles is not lowered.",
-                );
-            if (obstacles > 0 && members.has("tileSize") && tiles === 0)
-                context.fail(
-                    optionSite,
-                    "Navigation tile cache requires nonzero tileSize.",
-                );
-            if (obstacles > 0 && members.has("offMeshConnections"))
-                context.fail(
-                    optionSite,
-                    "Tile-cache off-mesh connections are not lowered.",
-                );
             context.reachFeature("navigation:recast", call);
-            if (obstacles > 0)
-                context.reachFeature("navigation:tile-cache", call);
+            navMeshBuildArm(
+                context,
+                call,
+                {
+                    obstacles: gate("maxObstacles"),
+                    tiles: gate("tileSize"),
+                    tileSize: members.has("tileSize"),
+                    connections: () => members.has("offMeshConnections"),
+                },
+                () => optionSite,
+            );
             const parameters = emitNavMeshBuildParams(
                 context,
                 members,
@@ -409,14 +401,26 @@ export function compileNavigationIntrinsic(
                     options,
                 ).map((member) => [member.name, member]),
             );
-            // Which arm this build takes is decided HERE and nowhere else:
-            // the feature is what carries it to the emitted dispatch, to
-            // the PAL half that gets compiled, and to the third-party
-            // library that gets linked.
-            const tileCache = buildGate(context, options, "maxObstacles") > 0;
-            if (tileCache) {
-                context.reachFeature("navigation:tile-cache", call);
-            }
+            const connections = context.objectProperty(
+                options,
+                "offMeshConnections",
+            );
+            navMeshBuildArm(
+                context,
+                call,
+                {
+                    obstacles: buildGate(context, options, "maxObstacles"),
+                    tiles: buildGate(context, options, "tileSize"),
+                    tileSize:
+                        context.objectProperty(options, "tileSize") !==
+                        undefined,
+                    connections: () =>
+                        connections !== undefined &&
+                        context.expectStaticArrayLiteral(connections).elements
+                            .length > 0,
+                },
+                (property) => requiredProperty(context, options, property),
+            );
             const parameters = emitNavMeshBuildParams(
                 context,
                 values,
@@ -972,53 +976,6 @@ function validateNavMeshParams(
         "Reached navmesh builds support the solo and tile-cache Recast " +
             "config keys.",
     );
-    // The pin dispatches on `maxObstacles` first and `tileSize` second, so
-    // the corners of those two gates are the arm, and both refusals are
-    // stated together because that is how the table reads:
-    //
-    //   obstacles  tiles      arm
-    //   0          0          solo
-    //   0          > 0        tiled -- no reached scene, refused
-    //   > 0        > 0        tile cache
-    //   > 0        absent     tile cache at the pin's own `?? 32`
-    //   > 0        0          a cache of zero-cell tiles, refused
-    const obstacles = buildGate(context, options, "maxObstacles");
-    const tiles = buildGate(context, options, "tileSize");
-    if (obstacles <= 0 && tiles > 0) {
-        context.fail(
-            requiredProperty(context, options, "tileSize"),
-            "createNavMesh with tileSize > 0 and no obstacles builds a " +
-                "tiled navmesh, which is not lowered; the solo and " +
-                "tile-cache arms are.",
-        );
-    }
-    if (
-        obstacles > 0 &&
-        tiles === 0 &&
-        context.objectProperty(options, "tileSize")
-    ) {
-        context.fail(
-            requiredProperty(context, options, "tileSize"),
-            "createNavMesh with maxObstacles > 0 and tileSize 0 sizes the " +
-                "cache in zero-cell tiles.",
-        );
-    }
-    // The pin's tile-cache arm bakes non-empty off-mesh connections through
-    // its own `_createDefaultTileCacheMeshProcess`, which is not lowered;
-    // the PAL's tile cache installs the wrapper's default process only.
-    const connections = context.objectProperty(options, "offMeshConnections");
-    if (
-        obstacles > 0 &&
-        connections &&
-        context.expectStaticArrayLiteral(connections).elements.length > 0
-    ) {
-        context.fail(
-            connections,
-            "createNavMesh with maxObstacles > 0 and offMeshConnections " +
-                "installs the pinned _createDefaultTileCacheMeshProcess, " +
-                "which is not lowered.",
-        );
-    }
     if (context.objectProperty(options, "doNotReverseIndices")) {
         context.fail(
             options,
@@ -1038,20 +995,64 @@ function requiredProperty(
 }
 
 /**
- * A build gate's value where generation can see it, or 0 where the key is
- * absent.
- *
- * Which build arm runs is a compile-time fact -- it decides which PAL entry
- * point the scene calls and whether the obstacle surface is reachable at all
- * -- so a gate generation cannot fold is refused rather than guessed.
+ * A build gate's value where generation can see it, 0 where the key is
+ * absent, and undefined where only the run time has it
+ * (`navMeshBuildArm`).
  */
 function buildGate(
     context: NavigationIntrinsicContext,
     options: ts.ObjectLiteralExpression,
     name: string,
-): number {
+): number | undefined {
     const value = context.objectProperty(options, name);
-    return value === undefined
-        ? 0
-        : compileStaticNumber(context, value, `createNavMesh's ${name}`);
+    return value === undefined ? 0 : staticNumberValue(context, value);
+}
+
+/**
+ * The arm the pin's `_createNavMeshFromMerged` dispatches a build to, on
+ * `maxObstacles` first and `tileSize` second, reached as the features that
+ * carry it to the emitted dispatch, the PAL half compiled and the library
+ * linked:
+ *
+ *   obstacles  tiles      arm
+ *   0          0          solo
+ *   0          > 0        tiled -- not lowered, refused
+ *   > 0        > 0        tile cache
+ *   > 0        absent     tile cache at the pin's own `?? 32`
+ *   > 0        0          a cache of zero-cell tiles, refused
+ *
+ * A gate only the run time knows leaves the arm to it: both arms are
+ * emitted behind the pin's own test, which throws the refusals there.
+ * `connections` answers whether the build may hand non-empty off-mesh
+ * connections, which the tile-cache arm's mesh process is not lowered for;
+ * only that arm asks.
+ */
+function navMeshBuildArm(
+    context: NavigationIntrinsicContext,
+    call: ts.CallExpression,
+    gates: {
+        readonly obstacles: number | undefined;
+        readonly tiles: number | undefined;
+        readonly tileSize: boolean;
+        readonly connections: () => boolean;
+    },
+    site: (property: "tileSize" | "offMeshConnections") => ts.Node,
+): void {
+    const { obstacles, tiles } = gates;
+    if (obstacles === undefined || tiles === undefined) {
+        context.reachFeature("navigation:tile-cache", call);
+        context.reachFeature("navigation:arm-dispatch", call);
+        return;
+    }
+    if (obstacles <= 0 && tiles > 0)
+        context.fail(site("tileSize"), NAV_MESH_ARM_REFUSALS.tiled);
+    if (obstacles <= 0) return;
+    if (gates.tileSize && tiles === 0)
+        context.fail(site("tileSize"), NAV_MESH_ARM_REFUSALS.zeroTiles);
+    if (gates.connections())
+        context.fail(
+            site("offMeshConnections"),
+            NAV_MESH_ARM_REFUSALS.connections,
+        );
+    context.reachFeature("navigation:tile-cache", call);
 }

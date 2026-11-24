@@ -1442,6 +1442,13 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "updateNavMeshObstacles surface it is what makes possible",
         consumers: CMAKE,
     },
+    "navigation:arm-dispatch": {
+        provenance:
+            "src/navigation/navigation.ts _createNavMeshFromMerged's " +
+            "maxObstacles / tileSize dispatch, kept at run time where a " +
+            "build's parameters are not known at generation",
+        consumers: CMAKE,
+    },
     "navigation:crowd": {
         provenance:
             "src/navigation/navigation.ts createNavCrowd reaches DetourCrowd",

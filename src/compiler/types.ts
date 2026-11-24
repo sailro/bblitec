@@ -3670,6 +3670,9 @@ export type Feature =
     | "particle:node"
     | "navigation:recast"
     | "navigation:tile-cache"
+    // A build whose arm generation does not know: both arms, behind the
+    // pin's own run-time test.
+    | "navigation:arm-dispatch"
     | "navigation:crowd"
     | "sprite:animation"
     | "audio:engine"

@@ -295,6 +295,17 @@ function constantObject(
 
 /** The build arm a reached `createNavMesh` takes. */
 export type NavigationBuildArm = "solo" | "tileCache";
+
+/** The pin's three arm refusals, at generation and in a run-time dispatch. */
+export const NAV_MESH_ARM_REFUSALS = {
+    tiled:
+        "A navmesh build with tileSize > 0 and no obstacles builds a tiled navmesh, which is not lowered; the solo and tile-cache arms are.",
+    zeroTiles:
+        "A navmesh build with maxObstacles > 0 and tileSize 0 sizes the cache in zero-cell tiles.",
+    connections:
+        "A navmesh build with maxObstacles > 0 and offMeshConnections installs the pinned _createDefaultTileCacheMeshProcess, which is not lowered.",
+} as const;
+
 type BuildArm = NavigationBuildArm;
 
 /** A cfg store and the source guards under which it executes. */

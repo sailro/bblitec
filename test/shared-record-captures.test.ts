@@ -116,7 +116,7 @@ test(
         writeFileSync(join(output, "program.hpp"), compileSource(source).cpp);
         writeFileSync(
             join(includes, "navigation.hpp"),
-            new NavigationLowerer(new LoweringContext()).lowerNavigation(false)
+            new NavigationLowerer(new LoweringContext()).lowerNavigation(["solo"])
                 .header,
         );
         runGeneratedProgram(
