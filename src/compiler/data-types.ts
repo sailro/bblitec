@@ -2983,6 +2983,29 @@ export class DataTypeRegistry {
         };
     }
 
+    /**
+     * A parameter whose storage holds a record type (`readonly { material?:
+     * unknown }[]`) passed engine objects (meshes): demands the view the
+     * record type is of them, which a copy into its records would not keep.
+     * Returns where the record type takes no view.
+     */
+    public requireArgumentRecordView(
+        parameter: DataType,
+        argument: DataType,
+        node: ts.Expression,
+    ): void {
+        const element = (type: DataType | undefined): DataType | undefined => {
+            const present = presentDataType(type);
+            return present?.kind === "vector" || present?.kind === "span"
+                ? presentDataType(present.element)
+                : present;
+        };
+        const record = element(parameter);
+        const held = element(argument);
+        if (record?.kind === "struct" && held?.kind === "handle")
+            this.requireNativeRecordView(record.name, held, node);
+    }
+
     /** Demands the view `nativeRecordViewDemand` finds; returns where there is none. */
     public requireNativeRecordView(
         name: string,

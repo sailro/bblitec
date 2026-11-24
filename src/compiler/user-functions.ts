@@ -59,6 +59,7 @@ import {
     fixedTupleElements,
     arrayElementType,
     admitsUndefined,
+    holdsUnknownMember,
 } from "./type-facts.js";
 import {
     requireAbsenceTag,
@@ -80,10 +81,12 @@ import {
     dataTypesEqual,
     isNativeStructuralView,
     isHandleKind,
+    isPinnedHandleType,
     isTypedArrayType,
     type DataType,
     type DataTypeRegistry,
 } from "./data-types.js";
+import { holdsEngineObject } from "./document-read-closure.js";
 import type { Value } from "./types.js";
 import { isEngineScopedHandleKind } from "./data-types/handles.js";
 import { dataTypeKey } from "./data-types/operations.js";
@@ -4732,6 +4735,50 @@ export class UserFunctionLowerer {
                 rootEntry.parameterTypes[index] = undefined;
                 rootEntry.captured[index] = absent;
                 return;
+            }
+            // Engine objects an argument holds where the parameter's type
+            // declares none settle that storage first: the record type that
+            // views them (`requireArgumentRecordView`), and an `unknown`
+            // member their conversion fills. Lowered after, the body reads
+            // those objects, not documents.
+            const expression = argumentExpressions[index];
+            const parameterStorage = rootEntry.parameterTypes[index];
+            if (
+                argument &&
+                expression &&
+                parameterStorage &&
+                holdsEngineObject(
+                    this.checker,
+                    context.program,
+                    this.checker.getTypeAtLocation(expression),
+                    isPinnedHandleType,
+                ) &&
+                !holdsEngineObject(
+                    this.checker,
+                    context.program,
+                    parameter.type,
+                    isPinnedHandleType,
+                )
+            ) {
+                if (argument.dataType)
+                    context.dataTypes.requireArgumentRecordView(
+                        parameterStorage,
+                        argument.dataType,
+                        expression,
+                    );
+                if (holdsUnknownMember(this.checker, parameter.type))
+                    try {
+                        context.probeEmission(() =>
+                            context.dataLowerer.compileKnownValueForSink(
+                                argument,
+                                parameterStorage,
+                                expression,
+                            ),
+                        );
+                    } catch (error) {
+                        // A conversion that refuses leaves the body to decide.
+                        if (!(error instanceof CompileError)) throw error;
+                    }
             }
             const represented = argument
                 ? (nativeStructuralViewType(argument) ?? argument.dataType)

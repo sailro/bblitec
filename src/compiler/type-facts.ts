@@ -625,6 +625,27 @@ export function callableParameterCount(
 }
 
 /** An array or tuple type: its element type, whether writes through it are allowed, and whether it is a tuple. */
+/**
+ * Whether the record type `type` is, or the array it is holds, declares a
+ * member typed `unknown` (`readonly { material?: unknown }[]`): storage
+ * the values written to it settle.
+ */
+export function holdsUnknownMember(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): boolean {
+    const present = checker.getNonNullableType(type);
+    const record = arrayShape(checker, present)?.element ?? present;
+    return record
+        .getProperties()
+        .some(
+            (member) =>
+                (checker.getTypeOfSymbol(member).flags &
+                    ts.TypeFlags.Unknown) !==
+                0,
+        );
+}
+
 export interface ArrayShape {
     readonly element: ts.Type;
     readonly mutable: boolean;

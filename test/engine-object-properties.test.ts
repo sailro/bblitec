@@ -177,6 +177,58 @@ test("a material of a family decided at run time keeps its own environmentIntens
     runNatively(t, "environment-intensity", cpp);
 });
 
+// The dimmer keeping each material it collects in a record whose field is
+// typed by the view: the field holds the material itself, so a later write
+// through it reaches the same object, and so does a property the program
+// adds through it.
+const trackedProgram = `
+import { createEngine, createPbrMaterial, createShaderMaterial, wgsl } from "@babylonjs/lite";
+type Held = { material?: unknown };
+type Lit = { environmentIntensity?: number; level?: number };
+function collect(held: readonly Held[]): string {
+    const seen = new Set<object>();
+    const tracked: { mat: Lit; base: number }[] = [];
+    for (const m of held) {
+        const mat = m.material as Lit | undefined;
+        if (mat && typeof mat === "object" && !seen.has(mat)) {
+            seen.add(mat);
+            const base = mat.environmentIntensity ?? 1;
+            mat.environmentIntensity = base;
+            tracked.push({ mat, base });
+        }
+    }
+    for (const e of tracked) {
+        e.mat.environmentIntensity = e.base * 0.5;
+        e.mat.level = e.base * 10;
+    }
+    const again = held[1]!.material as Lit;
+    return [tracked.map((e) => String(e.mat.environmentIntensity) + ":" + String(e.mat.level)).join(), String(again.environmentIntensity), String(again.level)].join(";");
+}
+async function main(): Promise<void> {
+    await createEngine({});
+    const shader = createShaderMaterial({ name: "s", vertexSource: wgsl\`@vertex fn main(@location(0) position: vec3<f32>) -> @builtin(position) vec4<f32> { return vec4<f32>(position, 1.0); }\`, fragmentSource: wgsl\`@fragment fn main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`, attributes: ["position"], uniforms: ["worldViewProjection"] });
+    const pbr = createPbrMaterial({ environmentIntensity: 0.75 });
+    const plain = createPbrMaterial();
+    const result = collect([{ material: shader }, { material: pbr }, { material: plain }, { material: pbr }]);
+    if (result !== "0.5:10,0.375:7.5,0.5:10;0.375;7.5") throw new Error("tracked " + result);
+}
+void main();
+`;
+
+test("a record field typed by a view holds the material written to it, the same object as in JavaScript", async (t) => {
+    await runInJavaScript(trackedProgram, [
+        "createShaderMaterial",
+        "createPbrMaterial",
+    ]);
+    const { cpp } = compileSource(trackedProgram);
+    // The field keeps the material and its engine, not a record of the view.
+    assert.match(
+        cpp,
+        /struct \w+ \{\s*std::pair<bbl::StoredEngine, bbl::MaterialHandle> mat;/,
+    );
+    runNatively(t, "view-field", cpp);
+});
+
 test("a PBR material's own member written through the same view reaches its record", () => {
     const { cpp } = compileSource(`
 import { createEngine, createPbrMaterial } from "@babylonjs/lite";
