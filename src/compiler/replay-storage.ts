@@ -214,7 +214,18 @@ export class ReplayStorage {
      */
     private readonly takenSinceAttempt = new Set<ts.Declaration | string>();
 
+    /**
+     * @unjournaled How many times this storage changed: a lowering that
+     * meets the same storage again sees the same revision (`revision`).
+     */
+    private changes = 0;
+
     public constructor(private readonly checker: ts.TypeChecker) {}
+
+    /** The storage's revision: it changes whenever what it holds does. */
+    public get revision(): number {
+        return this.changes;
+    }
 
     /** An attempt begins lowering with the storage this holds now. */
     public beginAttempt(): void {
@@ -257,6 +268,7 @@ export class ReplayStorage {
                   )
                 : [];
         const added = this.addRequest(request);
+        if (added) this.changes++;
         if (added && "declaration" in request)
             this.takenSinceAttempt.add(request.declaration);
         for (const union of unions) this.takenSinceAttempt.add(union);
@@ -417,6 +429,7 @@ export class ReplayStorage {
             if (recordDemandAsks(demand).length === 0) {
                 this.records.delete(key);
                 this.plannedComponents = undefined;
+                this.changes++;
             }
     }
 

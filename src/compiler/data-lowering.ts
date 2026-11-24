@@ -776,6 +776,7 @@ interface DataLoweringContext extends Pick<
     | "dynamicBindings"
     | "parameterObjects"
     | "storageTakenDuringAttempt"
+    | "storageRevision"
 > {
     /** Source storages that keep `null` and `undefined` apart. */
     readonly absenceTags: ReadonlySet<ts.Declaration>;
@@ -994,6 +995,18 @@ export class DataLowerer {
         string[]
     >();
     private readonly ownership = new BranchState<LocalOwnership>();
+    /**
+     * @unjournaled `literalDataHolderDemand` answers, by literal member, with
+     * the storage revision each was probed at: the probe rolls back, and
+     * the same storage meets the same demand.
+     */
+    private readonly literalHolderDemands = new WeakMap<
+        ts.Expression,
+        {
+            readonly revision: number;
+            readonly demand: DynamicBindingStorageRequired | undefined;
+        }
+    >();
 
     public constructor(public readonly context: DataLoweringContext) {}
 
@@ -14299,7 +14312,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return undefined;
     }
 
-    /** The holder demand storing a constant of literal data meets, probed. */
+    /**
+     * The holder demand storing a constant of literal data meets, probed
+     * once for each storage revision.
+     */
     private literalDataHolderDemand(
         member: ts.Expression,
         store: () => unknown,
@@ -14314,13 +14330,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             staticJsonValue(this.context, declaration.initializer!) === notJson
         )
             return undefined;
-        return this.probedDemand(
+        const revision = this.context.storageRevision();
+        const known = this.literalHolderDemands.get(member);
+        if (known?.revision === revision) return known.demand;
+        const demand = this.probedDemand(
             store,
             (error): error is DynamicBindingStorageRequired =>
                 error instanceof DynamicBindingStorageRequired &&
                 error.declaration === declaration &&
                 error.requests.length === 1,
         );
+        this.literalHolderDemands.set(member, { revision, demand });
+        return demand;
     }
 
     /**

@@ -8718,6 +8718,10 @@ class Compiler implements LoweringServices {
         return this.replayStorage.takenDuringAttempt(declaration);
     }
 
+    public storageRevision(): number {
+        return this.replayStorage.revision;
+    }
+
     public refusedDemand(error: unknown): CompileError | undefined {
         return error instanceof NativeRecordStorageRequired
             ? this.replayStorage.refusedRecord(error.demand)
