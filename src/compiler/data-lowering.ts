@@ -28,6 +28,7 @@ import {
     compileDataValueSink,
 } from "./data-sinks/operations.js";
 import { structSinkLowersWhole } from "./data-sinks/structures.js";
+import { plainLane } from "./data-sinks/containers.js";
 import { someAnalysisNode, forEachAnalysisNode } from "./analysis-walk.js";
 import {
     EmissionSet,
@@ -13783,7 +13784,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * holds the array); a record field a literal stores the array in keeps
      * them, as a resource field keeps its resource's engine. Engine-less
      * elements stored where their engine is kept: the local the array is
-     * read from keeps it too.
+     * read from keeps it too. Plain lanes stored where the same lanes may
+     * be absent: the local the array is read from holds them so.
      */
     public requireArrayBindingElements(
         value: Value,
@@ -13791,6 +13793,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         target: DataType,
         node: ts.Node,
     ): void {
+        if (
+            target.kind === "optional" &&
+            plainLane(element) &&
+            dataTypesEqual(target.inner, element)
+        ) {
+            const read = this.readLocal(value, node);
+            if (read)
+                throw new DynamicBindingStorageRequired(read, {
+                    elements: target,
+                });
+            return;
+        }
         const handle = (type: DataType): DataType =>
             type.kind === "optional" ? type.inner : type;
         const from = handle(element);

@@ -7735,6 +7735,37 @@ checkInRealm(
 );
 
 checkInRealm(
+    "a-local-array-handed-where-its-lanes-may-be-absent-stays-one-array",
+    `
+    interface Vine {
+        rebuild: (runs: readonly (readonly number[])[], heights?: readonly (number | undefined)[]) => void;
+        total(): number;
+    }
+    function createVine(): Vine {
+        let kept: readonly (number | undefined)[] = [];
+        return {
+            rebuild: (runs, heights) => {
+                kept = heights ?? [];
+                if (runs.length !== 1) throw new Error("runs");
+            },
+            total: () => kept.reduce((sum: number, height) => sum + (height ?? 0), 0),
+        };
+    }
+    const vine = createVine();
+    const hs: number[] = [];
+    hs.push(1, 2);
+    vine.rebuild([[0]], hs);
+    // The vine holds the caller's array: later writes reach it.
+    hs.push(3);
+    hs[0] = hs[0]! * 10;
+    let sum = 0;
+    for (const height of hs) sum += height;
+    if (vine.total() !== 15 || sum !== 15 || hs.length !== 3) throw new Error("heights " + vine.total() + " " + sum);
+    globalThis.close();
+`,
+);
+
+checkInRealm(
     "a-record-holding-an-instance-where-its-base-holds-a-dynamic-value-shares-one-layout",
     `
     class Failure extends Error {
@@ -8329,17 +8360,19 @@ test("imported functions read numeric tuples through nullable lanes", async (t) 
             ),
         /By-reference data arguments require a matching addressable local or path/,
     );
-    assert.throws(
-        () =>
-            compileSource(
-                `import { keep, held } from "./routes.js";
-                const lanes: [number, number, number] = [1, 2, 3];
-                function run(x: number): number { lanes[0] = x; keep(lanes); lanes[2] = 9; return held[0]![2]; }
-                const runs: Array<typeof run> = [run];
-                if (runs[0]!(Math.random()) !== 9) throw new Error("kept");`,
-                { fileName: join(directory, "retains.ts") },
-            ),
-        /An array stored as an array of another element type is a copy/,
+    // A local the callee keeps holds the nullable lanes itself: one array.
+    const retains = compileSource(
+        `import { keep, held } from "./routes.js";
+        const lanes: [number, number, number] = [1, 2, 3];
+        function run(x: number): number { lanes[0] = x; keep(lanes); lanes[2] = 9; return held[0]![2]; }
+        const runs: Array<typeof run> = [run];
+        if (runs[0]!(Math.random()) !== 9) throw new Error("kept");`,
+        { fileName: join(directory, "retains.ts") },
+    );
+    await executeGeneratedAssertions(
+        t,
+        "tuple-nullable-lanes-retained",
+        retains.cpp,
     );
 });
 
@@ -18560,18 +18593,27 @@ test("arrays destructured with code between their reads refuse a converted copy"
         );
 });
 
-test("arrays stored with converted elements refuse where JavaScript keeps one observable array", () => {
-    for (const [source, message] of [
-        [
-            "const values: number[] = []; function view(): readonly (number | undefined)[] { return values; } const roots: Array<typeof view> = [view]; values.push(1); if (roots[0]!().length !== 1) throw new Error('x');",
-            /is a copy, and the program changes the elements of such arrays/,
-        ],
-        [
-            "const values: readonly number[] = [1, 2].map((i) => i * 2); function view(): readonly (number | undefined)[] { return values; } const roots: Array<typeof view> = [view]; if (roots[0]!() !== roots[0]!()) throw new Error('x');",
-            /is a copy, and the program compares such arrays by identity/,
-        ],
-    ] as const)
-        assert.throws(() => compileSource(source), message);
+// A local array read where its lanes may be absent holds them so: every
+// view is the one array, changed through either.
+check(
+    "a-local-array-viewed-with-absent-lanes-is-one-array",
+    `
+    const values: number[] = [];
+    function view(): readonly (number | undefined)[] { return values; }
+    const roots: Array<typeof view> = [view];
+    values.push(1);
+    if (roots[0]!().length !== 1 || roots[0]!()[0] !== 1 || roots[0]!() !== roots[0]!()) throw new Error("one array");
+    `,
+);
+
+test("an array stored with converted elements refuses where its local already holds other storage", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                "const values: readonly number[] = [1, 2].map((i) => i * 2); function view(): readonly (number | undefined)[] { return values; } const roots: Array<typeof view> = [view]; if (roots[0]!() !== roots[0]!()) throw new Error('x');",
+            ),
+        /is a copy, and the program compares such arrays by identity/,
+    );
 });
 
 // An array of a string literal union the program also reads as a string
