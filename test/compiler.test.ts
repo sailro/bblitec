@@ -2853,7 +2853,7 @@ test("hoists module record factories out of hot dynamic lookups", () => {
     assert.equal((result.cpp.match(/bblscene::definition\(/g) ?? []).length, 2);
     assert.match(
         entry,
-        /bbl::js::Map<double, bblscene::Definition> v_DEFINITIONS =/,
+        /bbl::js::Dictionary<double, bblscene::Definition> v_DEFINITIONS =/,
     );
     assert.match(result.cpp, /v_DEFINITIONS\.get\(v_fn\d+_id\)/);
 });
@@ -3401,7 +3401,7 @@ test("materializes a numeric Record for dynamic optional lookup", () => {
 
     assert.match(
         result.cpp,
-        /bbl::js::Map<double, bblscene::Definition> v_definitions\b/,
+        /bbl::js::Dictionary<double, bblscene::Definition> v_definitions\b/,
     );
     assert.match(result.cpp, /\.get_owned\(v_\w*key\)/);
 });
@@ -3449,7 +3449,7 @@ test("inserts runtime keys through a named open Record alias", () => {
         const missing = Number(entries["missing"]) || 0;
     `);
 
-    assert.match(result.cpp, /bbl::js::Map<std::string, std::string>/);
+    assert.match(result.cpp, /bbl::js::Dictionary<std::string, std::string>/);
     assert.match(
         result.cpp,
         /v_fn\d+_entries\.set\(v_fn\d+_key, v_fn\d+_value\);/,
@@ -3491,7 +3491,7 @@ test("preserves object identity through a dynamic Record lookup", () => {
     assert.match(result.cpp, /using Entry = bbl::js::Ref<EntryData>;/);
     assert.match(
         result.cpp,
-        /bbl::js::Map<std::string, bblscene::Entry> v_entries = bbl::js::Map/,
+        /bbl::js::Dictionary<std::string, bblscene::Entry> v_entries = bbl::js::Dictionary/,
     );
     assert.match(result.cpp, /auto& v_entries = [^;]+\.capture0;/);
     assert.doesNotMatch(result.cpp, /record_table_|static thread_local/);
@@ -3602,7 +3602,7 @@ test("a record or an element kept as an object is selected by the record's prese
     `);
     assert.match(
         result.cpp,
-        /_area = \(v_fn\d+_list\.is_null\(\) \|\| v_fn\d+_list\.is_undefined\(\) \? bbl::js::json_value\(bbl::dom_target_value\(/,
+        /_area = \(v_fn\d+_list\.is_null\(\) \|\| v_fn\d+_list\.is_undefined\(\) \? \(v_fn\d+_root\.has_value\(\) \? bbl::js::json_value\(bbl::dom_target_value\(/,
     );
 });
 
