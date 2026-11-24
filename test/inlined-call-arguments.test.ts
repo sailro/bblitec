@@ -93,3 +93,47 @@ test(
         runGeneratedProgram(tools!, "inlined-call-arguments-tagged", cpp);
     },
 );
+
+test(
+    "an argument a looser signature omits binds undefined where the parameter's type admits it",
+    { skip: !tools },
+    () => {
+        // `begin`'s `held` is optional only through its contextual type; the
+        // clamp calls it through a port that declares one parameter.
+        const { cpp } = compileSource(
+            `
+            interface Pose { y: number }
+            interface HostController {
+                begin(name: string, held?: Readonly<Pose> | null): number;
+                count(): number;
+            }
+            interface HostPort { begin(name: string): unknown; count(): number }
+            interface Clamp { follow(index: number): void }
+            function createHostController(): HostController {
+                const previews = new Map<string, number>();
+                return {
+                    begin(name, held) {
+                        previews.set(name, held ? held.y : -1);
+                        return previews.size;
+                    },
+                    count: () => previews.size,
+                };
+            }
+            function createClamp(hosts: HostPort, names: readonly string[]): Clamp {
+                const follow: Clamp["follow"] = (index) => {
+                    const name = names[index];
+                    if (name) hosts.begin(name);
+                };
+                return { follow };
+            }
+            const hosts = createHostController();
+            const clamp = createClamp(hosts, ["a", "b"]);
+            clamp.follow(1);
+            const second = hosts.begin("c", { y: 3 });
+            if (hosts.count() !== 2 || second !== 2) throw new Error("count " + hosts.count() + " " + second);
+            `,
+            { fileName: "omitted-argument.ts" },
+        );
+        runGeneratedProgram(tools!, "inlined-call-arguments-omitted", cpp);
+    },
+);

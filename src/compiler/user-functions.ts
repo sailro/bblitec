@@ -58,6 +58,7 @@ import {
     boundedTupleElements,
     fixedTupleElements,
     arrayElementType,
+    admitsUndefined,
 } from "./type-facts.js";
 import {
     requireAbsenceTag,
@@ -8787,11 +8788,16 @@ export class UserFunctionLowerer {
                 (argument &&
                     this.taggedAbsence(context, parameter, argument, source)) ??
                 argument ??
-                // An omitted optional, or one whose type at this call
-                // accepts `void`, which TypeScript lets a call omit.
+                // An omitted optional, one whose type at this call accepts
+                // `void`, which TypeScript lets a call omit, or one whose
+                // type admits `undefined` (a method a looser signature
+                // calls with fewer arguments): JavaScript binds `undefined`.
                 (parameter.declaration.questionToken ||
                 acceptsOmittedVoid(parameter.type, (type) =>
                     context.dataTypes.resolveTypeParameter(type),
+                ) ||
+                admitsUndefined(
+                    context.dataTypes.resolveTypeParameter(parameter.type),
                 )
                     ? undefinedValue()
                     : context.fail(
