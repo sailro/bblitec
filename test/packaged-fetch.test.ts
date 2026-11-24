@@ -104,6 +104,78 @@ test("packaged fetch owns responses, snapshots selections and rejects missing or
     runPackagedProgram(t, directory, result, "missing.bin");
 });
 
+test("an awaited loader of a packaged document binds the data generation reads, which reaches shader text", (t) => {
+    const directory = resolve("artifacts/packaged-config-binding");
+    const publicDir = join(directory, "public");
+    mkdirSync(publicDir, { recursive: true });
+    writeFileSync(
+        join(publicDir, "config.json"),
+        JSON.stringify({ wood: { drift: 0.17, width: 1.5 } }),
+    );
+    const loader = `
+        interface Config { wood: { drift: number; width: number } }
+        const DEFAULTS: Config = { wood: { drift: 0.1, width: 1 } };
+        async function loadConfig(name: string): Promise<Config> {
+            try {
+                const response = await fetch(\`\${location.origin}/\${name}\`);
+                if (!response.ok) return DEFAULTS;
+                const parsed = (await response.json()) as unknown;
+                if (parsed === null || typeof parsed !== "object") return DEFAULTS;
+                return { wood: { ...DEFAULTS.wood, ...(parsed as Partial<Config>).wood } };
+            } catch {
+                return DEFAULTS;
+            }
+        }
+        const text = (value: number): string => (Number.isInteger(value) ? value.toFixed(1) : String(value));
+    `;
+    const options = {
+        fileName: join(directory, "entry.ts"),
+        publicDir,
+        siteUrl: "https://assets.example/",
+    };
+    // The bound data reaches shader text; the native load still runs.
+    const shader = (name: string): string => `
+        import { createEngine, createSceneContext, createShaderMaterial, wgsl } from "babylon-lite";
+        ${loader}
+        async function build(): Promise<void> {
+            const canvas = document.createElement("canvas");
+            document.body.appendChild(canvas);
+            const engine = await createEngine(canvas);
+            createSceneContext(engine);
+            const config = await loadConfig("${name}");
+            createShaderMaterial({
+                name: "wood",
+                vertexSource: wgsl\`\${\`@vertex fn mainVertex() -> @builtin(position) vec4<f32> { return vec4<f32>(\${text(config.wood.width)}, 0.0, 0.0, 1.0); }\`}\`,
+                fragmentSource: wgsl\`\${\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(\${text(1 - config.wood.drift)}, 0.0, 0.0, 1.0); }\`}\`,
+                attributes: ["position"],
+            });
+        }
+        void build();
+    `;
+    const compiled = compileSource(shader("config.json"), options);
+    assert.match(compiled.cpp, /fetch_packaged/);
+    const sources = JSON.stringify(compiled.manifest);
+    assert.match(sources, /vec4<f32>\(1\.5, 0\.0/);
+    assert.match(sources, /vec4<f32>\(0\.83, 0\.0/);
+    // A run whose fetch the package does not serve binds nothing.
+    assert.throws(
+        () => compileSource(shader("absent.json"), options),
+        /Builder 'text' cannot run at generation/,
+    );
+    const result = compileSource(
+        `${loader}
+        void (async () => {
+            const config = await loadConfig("config.json");
+            if (text(config.wood.width) !== "1.5" || text(1 - config.wood.drift) !== "0.83")
+                throw new Error("bound config " + JSON.stringify(config));
+            globalThis.close();
+        })();
+    `,
+        options,
+    );
+    runPackagedProgram(t, directory, result);
+});
+
 test("a fetch of a URL the deployment holds no file at rejects", (t) => {
     // The native build cannot tell whether a server would answer the URL,
     // so the fetch rejects, as one outside the package does.
@@ -531,11 +603,12 @@ test("a packaged URL read from a config merged over its defaults keeps the packa
             publicDir: join(directory, "public"),
         },
     );
-    // The document, the default's file and the two the document names.
+    // The document and the two files it names: the loader's result is the
+    // packaged document merged at generation, so the defaults' file is
+    // never fetched.
     assert.deepEqual(
         result.manifest.assets.map((asset) => asset.source).sort(),
         [
-            "public/data/a/z.json",
             "public/data/b/x.json",
             "public/data/b/y.json",
             "public/data/config.json",

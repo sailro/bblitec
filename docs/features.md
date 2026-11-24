@@ -183,7 +183,8 @@ Rules:
   (a merge over defaults) is run at generation for the strings its result holds. A document member of a number or
   boolean type that every run reads alike (the defaults a failing load returns included) reads as that constant,
   where every source holds a value of that kind and no write in the program replaces a member on the way once its
-  record is built.
+  record is built. `const x = await f()` nothing writes through binds the plain data a generation run of `f` settles
+  to when every fetch of that run reads a packaged file; the call still runs natively.
 - `fetch` (application realm): absolute HTTP(S), method, string headers, body, static cache mode, `keepalive`, `signal`; streamed
   `body` reader. Known asset fetches use packaged responses. A `typeof fetch` wrapper forwards its runtime `RequestInit`
   (signal, headers). Request objects, teeing and Headers iteration refuse.

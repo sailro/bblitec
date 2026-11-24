@@ -26,7 +26,7 @@
  * the reason the in-process module passes give: anything else is a value two
  * engines need not agree on.
  */
-import { isDeepStrictEqual, types } from "node:util";
+import { types } from "node:util";
 import vm from "node:vm";
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
@@ -56,6 +56,7 @@ import { transpileCommonJs } from "../typescript-transpile.js";
 import { sharedUpstreamStore } from "../upstream-source.js";
 import { mathMemberAccess, mathMemberIsImpure } from "./math-intrinsics.js";
 import { GenerationBlob } from "./generation-blob.js";
+import { isStaticMember } from "./class-members.js";
 
 /** A value generation hands the function or binds to a name it closes over. */
 export type ExecutedScalar = string | number | boolean;
@@ -89,6 +90,13 @@ export interface ExecutedFunctionContext {
     deploymentValue?(
         expression: ts.Expression,
     ): string | boolean | null | undefined;
+    /**
+     * The text of the packaged file a URL the run fetches serves, or
+     * undefined where the package holds none (that fetch rejects, as it
+     * does natively). A packaged file is part of the build, so a run that
+     * reads one describes every run.
+     */
+    packagedText?(url: string): string | undefined;
     /**
      * The value a pinned import is bound to for this run instead of being
      * refused: the caller's own model of that export (a loader recording
@@ -142,6 +150,37 @@ const GENERATION_HOST_GLOBALS: ReadonlyMap<string, unknown> = new Map<
     ["Blob", GenerationBlob],
     ["btoa", btoa],
     ["atob", atob],
+]);
+
+/**
+ * Host globals the realm builds itself, given the host's `read` of a
+ * packaged file: `fetch` of the packaged files, whose responses read their
+ * file's text, and a `console` whose output the program's own run of the
+ * same call writes.
+ */
+const GENERATION_REALM_GLOBALS = `({ read }) => ({
+    fetch: (input) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : String(input.url);
+        const body = read(url);
+        if (body === undefined) return Promise.reject(new TypeError("Failed to fetch " + url));
+        return Promise.resolve(Object.freeze({
+            ok: true,
+            status: 200,
+            statusText: "",
+            url,
+            text: async () => body,
+            json: async () => JSON.parse(body),
+        }));
+    },
+    console: Object.freeze(Object.fromEntries(
+        ["debug", "error", "info", "log", "warn"].map((name) => [name, () => undefined]),
+    )),
+})`;
+
+/** The names `GENERATION_REALM_GLOBALS` binds. */
+const GENERATION_REALM_NAMES: ReadonlySet<string> = new Set([
+    "fetch",
+    "console",
 ]);
 
 /** The pinned imports an executed closure may reach, by imported name. */
@@ -198,6 +237,27 @@ export function runApplicationFunction(
             name: `generation function ${label}`,
             microtaskMode: "afterEvaluate",
         },
+    );
+    const realmGlobals: unknown = vm.runInContext(
+        GENERATION_REALM_GLOBALS,
+        realm,
+    );
+    if (typeof realmGlobals !== "function")
+        throw new Error("A generation function realm has no host globals.");
+    // A fetch the package does not serve rejects natively, but its outcome
+    // is the deployment's, not the build's: the run then describes no run.
+    let unpackaged: string | undefined;
+    Object.assign(
+        realm,
+        Reflect.apply(realmGlobals, undefined, [
+            {
+                read: (url: string): string | undefined => {
+                    const text = context.packagedText?.(url);
+                    if (text === undefined) unpackaged ??= url;
+                    return text;
+                },
+            },
+        ]),
     );
     const parse: unknown = vm.runInContext("JSON.parse", realm);
     const plain: unknown = vm.runInContext(
@@ -278,6 +338,11 @@ export function runApplicationFunction(
             `${label} threw at generation: ${errorMessage(error)}`,
         );
     }
+    if (unpackaged !== undefined)
+        return context.fail(
+            target,
+            `${label} fetches '${unpackaged}', which the package does not hold.`,
+        );
     return {
         value: result,
         isPlain: (value) => Reflect.apply(plain, undefined, [value]) === true,
@@ -295,30 +360,70 @@ export function executeApplicationFunction(
     args: readonly (ExecutedArgument | undefined)[],
     label: string,
 ): unknown {
-    const { value: result, parse } = runApplicationFunction(
-        context,
-        target,
-        args,
-        label,
-    );
-    let text: string | undefined;
-    try {
-        text = JSON.stringify(result);
-    } catch (error: unknown) {
-        return context.fail(
-            target,
-            `${label} returned a value with no JSON form: ${errorMessage(error)}`,
-        );
-    }
-    if (text === undefined || !isDeepStrictEqual(parse(text), result)) {
+    const run = runApplicationFunction(context, target, args, label);
+    const value = plainCopy(run.value, (held) => run.isPlain(held));
+    if (value === notPlain) {
         return context.fail(
             target,
             `${label} returned a value that is not plain data, which ` +
                 "generation cannot carry.",
         );
     }
-    const value: unknown = JSON.parse(text);
     return value;
+}
+
+const notPlain: unique symbol = Symbol("not plain data");
+
+/**
+ * A run's value as plain data of this realm, in its key order: null,
+ * strings, booleans, finite numbers other than -0, arrays of them without
+ * holes or undefined, and plain records of them, whose own members may
+ * also hold undefined. Anything else is `notPlain`.
+ */
+function plainCopy(
+    value: unknown,
+    isPlain: (value: unknown) => boolean,
+): unknown {
+    if (
+        value === null ||
+        typeof value === "string" ||
+        typeof value === "boolean"
+    )
+        return value;
+    if (typeof value === "number")
+        return Number.isFinite(value) && !Object.is(value, -0)
+            ? value
+            : notPlain;
+    if (typeof value !== "object" || !isPlain(value)) return notPlain;
+    if (Array.isArray(value)) {
+        const elements: unknown[] = [];
+        for (let index = 0; index < value.length; index++) {
+            if (!(index in value)) return notPlain;
+            const element: unknown = value[index];
+            const copied =
+                element === undefined ? notPlain : plainCopy(element, isPlain);
+            if (copied === notPlain) return notPlain;
+            elements.push(copied);
+        }
+        return elements;
+    }
+    const record: Record<string, unknown> = {};
+    for (const key of Object.keys(value)) {
+        const member = Object.getOwnPropertyDescriptor(value, key);
+        if (!member || !("value" in member)) return notPlain;
+        const held: unknown = member.value;
+        const copied =
+            held === undefined ? undefined : plainCopy(held, isPlain);
+        if (copied === notPlain) return notPlain;
+        // An own `["__proto__"]` key is data; `=` would set the prototype.
+        Object.defineProperty(record, key, {
+            value: copied,
+            enumerable: true,
+            writable: true,
+            configurable: true,
+        });
+    }
+    return record;
 }
 
 /**
@@ -364,6 +469,33 @@ function contains(outer: ts.Node, inner: ts.Node): boolean {
         outer.getSourceFile() === inner.getSourceFile() &&
         inner.pos >= outer.pos &&
         inner.end <= outer.end
+    );
+}
+
+/** The class whose instance a `this` reads, through arrow functions. */
+function thisClass(node: ts.Node): ts.ClassDeclaration | undefined {
+    for (let current = node.parent; current; current = current.parent) {
+        if (ts.isArrowFunction(current)) continue;
+        if (ts.isFunctionLike(current) || ts.isPropertyDeclaration(current))
+            return ts.isClassDeclaration(current.parent)
+                ? current.parent
+                : undefined;
+    }
+    return undefined;
+}
+
+/** A module-scope class a closure carries: no base class, decorator or static member. */
+function carriedClass(declaration: ts.ClassDeclaration): boolean {
+    return (
+        !declaration.heritageClauses?.some(
+            (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
+        ) &&
+        !ts.getDecorators(declaration)?.length &&
+        !declaration.members.some(
+            (member) =>
+                ts.isClassStaticBlockDeclaration(member) ||
+                isStaticMember(member),
+        )
     );
 }
 
@@ -610,12 +742,13 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
         const part = this.part(statement.getSourceFile());
         if (part.statements.has(statement)) return;
         // An enum is an object of read-only members its statement creates
-        // (a const enum's too, as the closure's transpile preserves it), so
-        // the closure runs that statement as the module does.
-        if (ts.isClassDeclaration(statement)) {
+        // (a const enum's too, as the closure's transpile preserves it), and
+        // a class with no static members is a constructor no module state
+        // rides on, so the closure runs either statement as the module does.
+        if (ts.isClassDeclaration(statement) && !carriedClass(statement)) {
             this.context.fail(
                 statement,
-                `${this.label} reaches a module-scope class, which a generation closure does not carry.`,
+                `${this.label} reaches a module-scope class with static members or a base class, which a generation closure does not carry.`,
             );
         }
         if (
@@ -677,9 +810,19 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
                     this.deployed.set(node, deployed);
                     return "skip";
                 }
+                // A carried class's own members read their instance.
+                const owner =
+                    node.kind === ts.SyntaxKind.ThisKeyword
+                        ? thisClass(node)
+                        : undefined;
                 if (
-                    node.kind === ts.SyntaxKind.ThisKeyword ||
-                    node.kind === ts.SyntaxKind.SuperKeyword
+                    (node.kind === ts.SyntaxKind.ThisKeyword ||
+                        node.kind === ts.SyntaxKind.SuperKeyword) &&
+                    !(
+                        owner &&
+                        carriedClass(owner) &&
+                        !contains(this.target, node)
+                    )
                 ) {
                     this.context.fail(
                         node,
@@ -819,7 +962,8 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
         if (origin === "default-lib") return;
         if (
             origin === "dom" &&
-            GENERATION_HOST_GLOBALS.has(identifier.text) &&
+            (GENERATION_HOST_GLOBALS.has(identifier.text) ||
+                GENERATION_REALM_NAMES.has(identifier.text)) &&
             (ts.isVariableDeclaration(declaration) ||
                 ts.isFunctionDeclaration(declaration)) &&
             declaration.getSourceFile().isDeclarationFile
