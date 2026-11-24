@@ -285,6 +285,40 @@ test("an owned promise a callback maps each element to is held as that promise, 
     );
 });
 
+// Records a `map` callback builds over a literal of materials viewed as a
+// record type: each record keeps the material itself, so writes through it
+// reach the object, and an identity test finds it.
+const mappedProgram = `
+import { createEngine, createPbrMaterial, createShaderMaterial, wgsl } from "@babylonjs/lite";
+type View = { environmentIntensity?: number; level?: number };
+async function main(): Promise<void> {
+    await createEngine({});
+    const a = createShaderMaterial({ name: "a", vertexSource: wgsl\`@vertex fn main(@location(0) position: vec3<f32>) -> @builtin(position) vec4<f32> { return vec4<f32>(position, 1.0); }\`, fragmentSource: wgsl\`@fragment fn main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`, attributes: ["position"], uniforms: ["worldViewProjection"] });
+    const b = createPbrMaterial({ environmentIntensity: 0.5 });
+    const recs: { mat: View; base: number }[] = [a as View, b as View].map((mat) => ({ mat, base: mat.environmentIntensity ?? 1 }));
+    for (const r of recs) {
+        r.mat.environmentIntensity = r.base * 2;
+        r.mat.level = r.base;
+    }
+    const result = [String((a as View).environmentIntensity), String((b as View).environmentIntensity), String((b as View).level), String(recs[1]!.mat === (b as View))].join();
+    if (result !== "2,1,0.5,true") throw new Error("records " + result);
+}
+void main();
+`;
+
+test("records a map callback builds over materials keep each material itself, as in JavaScript", async (t) => {
+    await runInJavaScript(mappedProgram, [
+        "createShaderMaterial",
+        "createPbrMaterial",
+    ]);
+    const { cpp } = compileSource(mappedProgram);
+    assert.match(
+        cpp,
+        /struct \w+ \{\s*std::pair<bbl::StoredEngine, bbl::MaterialHandle> mat;/,
+    );
+    runNatively(t, "mapped-records", cpp);
+});
+
 test("a PBR material's own member written through the same view reaches its record", () => {
     const { cpp } = compileSource(`
 import { createEngine, createPbrMaterial } from "@babylonjs/lite";

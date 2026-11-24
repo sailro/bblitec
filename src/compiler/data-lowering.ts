@@ -12873,14 +12873,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         key?: string | number,
     ): string {
         const container = this.convertedExpression(node);
-        // An element of a stored array is the expression a `map` callback
-        // builds every element with, where there is one.
+        // An element of a stored array, a tuple's by its slot included, is
+        // the expression a `map` callback builds every element with, where
+        // there is one.
         const expression =
             container === undefined
                 ? undefined
                 : key === undefined
                   ? mappedElement(this.context.checker, container)
-                  : literalMember(container, key);
+                  : (literalMember(container, key) ??
+                    (typeof key === "number"
+                        ? mappedElement(this.context.checker, container)
+                        : undefined));
         if (container && !expression && typeof key === "string") {
             const property = this.memberProperty(container, key);
             if (property && member.dataType?.kind === "optional") {
