@@ -530,18 +530,50 @@ export function requireHeldRecordStorage(
         ? node
         : undefined,
 ): void {
-    if (value.kind !== "record") return;
-    const declaration = context.bindings.recordHolder(value, expression);
-    if (!declaration) return;
     // A parameter's record held as field storage has no object yet; the
     // store copies its fields unless the program could tell that copy from
     // the argument's object.
+    holdRecordObject(
+        context,
+        value,
+        node,
+        expression,
+        (parameter) =>
+            storedCopyObservation(context, expression, parameter) !== undefined,
+    );
+}
+
+/**
+ * A compile-time record an identity comparison (`===`, `!==`) reads at
+ * `expression`: the comparison observes its object, so the binding or
+ * parameter that holds it takes native storage, as a store keeping it does
+ * ({@link requireHeldRecordStorage}).
+ */
+export function requireComparedRecordObject(
+    context: HeldRecordContext,
+    value: Value,
+    expression: ts.Expression,
+): void {
+    holdRecordObject(context, value, expression, expression, () => true);
+}
+
+/**
+ * The binding or parameter holding compile-time record `value` takes native
+ * storage, the parameter only where `observed` says the program could tell
+ * a copy of its record from the argument's object.
+ */
+function holdRecordObject(
+    context: HeldRecordContext,
+    value: Value,
+    node: ts.Node,
+    expression: ts.Expression | undefined,
+    observed: (parameter: ts.ParameterDeclaration) => boolean,
+): void {
+    if (value.kind !== "record") return;
+    const declaration = context.bindings.recordHolder(value, expression);
+    if (!declaration) return;
     if (ts.isParameter(declaration)) {
-        if (
-            !context.parameterObjects.has(declaration) &&
-            storedCopyObservation(context, expression, declaration) !==
-                undefined
-        )
+        if (!context.parameterObjects.has(declaration) && observed(declaration))
             demandOrPlan(new ParameterObjectStorageRequired(declaration));
         return;
     }

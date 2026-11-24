@@ -193,6 +193,33 @@ test("conflicting native object views name each storage and where it was demande
 });
 
 check(
+    "a record argument a callee keeps compares by its object",
+    `
+    interface Input { kind: string; error: unknown; context?: string }
+    class SlowError extends Error {}
+    let last: Input | null = null;
+    function funnel(input: Input): boolean {
+        const repeated = input === last;
+        last = input;
+        return repeated;
+    }
+    function background(input: Input & { error: SlowError }): boolean { return funnel(input); }
+    function report(error: SlowError, context: string): boolean { return background({ kind: "boot", error, context }); }
+    const error = new SlowError("slow");
+    const kept: Input & { error: SlowError } = { kind: "boot", error, context: "first" };
+    const seen = [
+        report(error, "a"), report(error, "a"),
+        background(kept), background(kept),
+        background({ kind: "boot", error, context: "first" }),
+        funnel({ ...kept }), funnel(last!),
+    ];
+    if (seen.join() !== "false,false,false,true,false,false,true") throw new Error("identity " + seen.join());
+    const other: Input = { kind: "boot", error };
+    if (last === other || !(last !== other)) throw new Error("distinct literals");
+    `,
+);
+
+check(
     "generic intersection spreads preserve dynamic dictionary keys",
     `
     interface OptionalWeight { weight?:number|boolean; }

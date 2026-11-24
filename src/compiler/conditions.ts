@@ -67,6 +67,7 @@ import {
 } from "./types.js";
 import { readsErasedVoid } from "./undefined-values.js";
 import { knownCondition } from "./values/model.js";
+import { requireComparedRecordObject } from "./dynamic-binding-storage.js";
 
 /** What condition lowering reads of the compiler. */
 interface ConditionContext
@@ -83,6 +84,7 @@ interface ConditionContext
             | "cppString"
             | "dataLowerer"
             | "defaultEngine"
+            | "dynamicBindings"
             | "emit"
             | "emitDiscardedValue"
             | "enterRuntimeControlFlow"
@@ -94,6 +96,7 @@ interface ConditionContext
             | "leaveRuntimeControlFlow"
             | "libraryGlobal"
             | "options"
+            | "parameterObjects"
             | "program"
             | "reachFeature"
             | "reachJsData"
@@ -103,6 +106,7 @@ interface ConditionContext
             | "requireDefaultEngine"
             | "requireEngine"
             | "sharedClosures"
+            | "storageTakenDuringAttempt"
             | "symbols"
             | "unwrap"
             | "unwrapValue"
@@ -1151,6 +1155,20 @@ export class ConditionLowerer {
             // Both operands were already compiled above to inspect static
             // values and string identity. Reuse them: compiling their ASTs
             // again would duplicate call-shaped numeric operands.
+            // An identity comparison of a compile-time record compares its
+            // object: the record's holder takes one.
+            if (equality) {
+                requireComparedRecordObject(
+                    this.context,
+                    leftValue,
+                    unwrapped.left,
+                );
+                requireComparedRecordObject(
+                    this.context,
+                    rightValue,
+                    unwrapped.right,
+                );
+            }
             if (!leftValue.cpp || !rightValue.cpp)
                 this.context.fail(
                     unwrapped,
