@@ -6238,11 +6238,14 @@ export class ExpressionLowerer {
             // falsy while holding it: `flag ? 0 : null` surviving as
             // 0 would fold `if (n)` to true. A data or primitive arm
             // keeps whatever truthiness the ordinary path gives it.
+            // A survivor that is itself `null` or `undefined` (an omitted
+            // argument) is no resource: its absence stands.
             const survivorIsResource =
                 selected.kind !== "number" &&
                 selected.kind !== "string" &&
                 selected.kind !== "boolean" &&
-                selected.kind !== "data";
+                selected.kind !== "data" &&
+                !isAbsentValue(selected);
             if (
                 droppedIsNullish &&
                 survivorIsResource &&
