@@ -319,6 +319,20 @@ function literalTagValues(
     return values.every((value) => value !== undefined) ? values : undefined;
 }
 
+/**
+ * Whether a tag tells two arms apart: the other arm declares it
+ * (`otherValues`) and none of its literals is one of `values`.
+ */
+function disjointTag(
+    otherValues: readonly string[] | undefined,
+    values: readonly string[],
+): boolean {
+    return (
+        otherValues !== undefined &&
+        !otherValues.some((value) => values.includes(value))
+    );
+}
+
 /** The pinned type name each handle kind is declared as. */
 const pinnedHandleTypes: Record<string, HandleKind> = {
     AssetContainer: "asset",
@@ -8585,15 +8599,9 @@ export class DataTypeRegistry {
                     .map(([name, values]) => ({
                         discriminant: name,
                         values,
-                        covered: remaining.filter((other) => {
-                            const otherValues = tags[other]!.get(name);
-                            return (
-                                otherValues !== undefined &&
-                                !otherValues.some((value) =>
-                                    values.includes(value),
-                                )
-                            );
-                        }),
+                        covered: remaining.filter((other) =>
+                            disjointTag(tags[other]!.get(name), values),
+                        ),
                     }))
                     .filter((candidate) => candidate.covered.length > 0)
                     .sort(
@@ -8605,9 +8613,8 @@ export class DataTypeRegistry {
                 const selected = candidates[0];
                 if (!selected) return undefined;
                 conditions.push(selected);
-                remaining = remaining.filter(
-                    (other) => !selected.covered.includes(other),
-                );
+                const covered = new Set(selected.covered);
+                remaining = remaining.filter((other) => !covered.has(other));
             }
             // Every combination of the selected tags' literals is one
             // alternative the arm may hold.
@@ -8630,20 +8637,48 @@ export class DataTypeRegistry {
         // apart by the slots of the fields only some of them declare; other
         // unions need every arm told apart by its tags.
         const group = indices.map((index) => index);
-        const root = (index: number): number =>
-            group[index] === index ? index : root(group[index]!);
-        for (const index of indices)
-            for (const other of indices.slice(index + 1))
-                if (
-                    !distinguish(index, [other]) ||
-                    !distinguish(other, [index])
-                )
-                    group[root(other)] = root(index);
+        const root = (index: number): number => {
+            let found = index;
+            while (group[found] !== found) found = group[found]!;
+            for (let step = index; group[step] !== found;) {
+                const parent = group[step]!;
+                group[step] = found;
+                step = parent;
+            }
+            return found;
+        };
+        // A tag both arms declare with disjoint literals tells them apart,
+        // either way round: `distinguish` covers each with the other's tag.
+        // Arms declaring the same tags, one literal each, are told apart by
+        // any differing literal: they group by their literals.
+        const names = [...(tags[0]?.keys() ?? [])];
+        const singleLiterals = tags.every(
+            (memberTags) =>
+                memberTags.size === names.length &&
+                names.every((name) => memberTags.get(name)?.length === 1),
+        );
+        if (singleLiterals) {
+            const byLiterals = new Map<string, number>();
+            for (const index of indices) {
+                const key = JSON.stringify(
+                    names.map((name) => tags[index]!.get(name)![0]),
+                );
+                const first = byLiterals.get(key);
+                if (first === undefined) byLiterals.set(key, index);
+                else group[root(index)] = root(first);
+            }
+        } else
+            for (const index of indices)
+                for (let other = index + 1; other < indices.length; other++)
+                    if (
+                        ![...tags[index]!].some(([name, values]) =>
+                            disjointTag(tags[other]!.get(name), values),
+                        )
+                    )
+                        group[root(other)] = root(index);
         const outside = (index: number, among: readonly number[]): number[] =>
             among.filter((other) => root(other) !== root(index));
-        const grouped = indices.some(
-            (index) => outside(index, indices).length < indices.length - 1,
-        );
+        const grouped = new Set(indices.map(root)).size < indices.length;
         // A field only some arms of a group declare tells them apart by its
         // slot: an empty one is absent, so no declaring arm may hold null
         // there. A required arm's undefined is an own undefined its write
@@ -8659,15 +8694,14 @@ export class DataTypeRegistry {
                 const declared = propertiesByMember.map((properties) =>
                     properties.find((property) => property.name === name),
                 );
+                const lacking = new Set(
+                    indices.flatMap((index) =>
+                        declared[index] ? [] : [root(index)],
+                    ),
+                );
                 return (
                     !indices.some(
-                        (index) =>
-                            declared[index] &&
-                            indices.some(
-                                (other) =>
-                                    !declared[other] &&
-                                    root(other) === root(index),
-                            ),
+                        (index) => declared[index] && lacking.has(root(index)),
                     ) ||
                     declared.every(
                         (property) =>
@@ -8683,13 +8717,10 @@ export class DataTypeRegistry {
                     )
                 );
             });
-        if (
-            (grouped && (!armFields || !slotsTellApart())) ||
-            indices.some(
-                (index) => !distinguish(index, outside(index, indices)),
-            )
-        )
-            return undefined;
+        // Arms of different groups are told apart pairwise, so `distinguish`
+        // tells an arm apart from every arm outside its group: each one's
+        // tag covers it at every step. Only a group's arms need fields.
+        if (grouped && (!armFields || !slotsTellApart())) return undefined;
         return { propertiesByMember, distinguish, root, outside, grouped };
     }
 
@@ -8749,14 +8780,14 @@ export class DataTypeRegistry {
                     (property) => property.name === propertyName,
                 ),
             );
-            const absent = indices.filter(
-                (index) => !declaring.includes(index),
-            );
+            const declares = new Set(declaring);
+            const absent = indices.filter((index) => !declares.has(index));
             // A declaring arm's group mates lacking the field tell it apart
             // by its slot, whose empty state no declaring arm holds
             // (`unionArmTags`).
+            const absentGroups = new Set(absent.map(root));
             const bySlot = declaring.some((index) =>
-                absent.some((other) => root(other) === root(index)),
+                absentGroups.has(root(index)),
             );
             // The tags tell a declaring arm apart from the arms lacking the
             // field outside its group; an arm no tag restricts leaves the

@@ -1939,8 +1939,43 @@ export function objectProperty(
     object: ts.ObjectLiteralExpression | readonly ts.ObjectLiteralElementLike[],
     name: string,
 ): ts.Expression | undefined {
-    const writer = lastWriter(objectLiteralMembers(object), name);
+    const index = "properties" in object ? literalWriters(object) : undefined;
+    const writer = index
+        ? index.get(name)
+        : lastWriter(objectLiteralMembers(object), name);
     return writer === "unknown" ? undefined : writer?.value;
+}
+
+/**
+ * @unjournaled A pure function of the parsed literal: the member writing
+ * each key of a literal with no spread and no run-time key, where the last
+ * one writing a key decides it (`lastWriter`); null for any other literal.
+ */
+const literalWriterIndexes = new WeakMap<
+    ts.ObjectLiteralExpression,
+    ReadonlyMap<string, ObjectMember> | null
+>();
+
+function literalWriters(
+    literal: ts.ObjectLiteralExpression,
+): ReadonlyMap<string, ObjectMember> | undefined {
+    let index = literalWriterIndexes.get(literal);
+    if (index === undefined) {
+        const members = objectLiteralMembers(literal);
+        const writers = new Map<string, ObjectMember>();
+        for (const member of members)
+            if (member.kind !== "proto" && member.key !== undefined)
+                writers.set(member.key, member);
+        index = members.some(
+            (member) =>
+                member.kind === "spread" ||
+                (member.kind !== "proto" && member.key === undefined),
+        )
+            ? null
+            : writers;
+        literalWriterIndexes.set(literal, index);
+    }
+    return index ?? undefined;
 }
 
 /**
