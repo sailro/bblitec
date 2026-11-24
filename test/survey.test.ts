@@ -352,6 +352,55 @@ test("one survey pass meets every independent demand", () => {
     );
 });
 
+test("a survey pass meets every demand and refusal of an awaited call a run-time test splits", () => {
+    // `wide ? 2 : 3` is a run-time test the call could split on, so a
+    // compile probes the unsplit call; a survey lowers it where `build`'s
+    // statements recover: both document demands are met in the first pass,
+    // and the refusal stands at its own statement, not at the call's.
+    const lines: string[] = [];
+    const { report } = surveySource(
+        `
+        interface A { a: number }
+        interface B { b: number }
+        function a(text: string): A { return JSON.parse(text); }
+        function b(text: string): B { return JSON.parse(text); }
+        async function build(scale: number): Promise<number> {
+            await new Promise<void>((resolve) => setTimeout(resolve, 0));
+            let first: A = { a: 1 };
+            first = a('{"a":2}');
+            let second: B = { b: 1 };
+            second = b('{"b":2}');
+            const registry = new FinalizationRegistry(() => {});
+            return first.a + second.b + scale;
+        }
+        async function main(): Promise<void> {
+            const wide = localStorage.getItem("wide") === "1";
+            const total = await build(wide ? 2 : 3);
+            localStorage.setItem("total", String(total));
+        }
+        void main();
+    `,
+        { fileName: resolve("survey-case-split.ts") },
+        {
+            roots: false,
+            progress: { report: (line) => lines.push(line), intervalMs: 0 },
+        },
+    );
+    assert.equal(report.complete, true);
+    const passes = lines.filter((line) => line.startsWith("Survey pass"));
+    assert.equal(passes.length, 1, passes.join(" | "));
+    assert.match(
+        passes[0]!,
+        /^Survey pass 1: 2 demands added for the next pass: record \(A: document\) at \S*survey-case-split\.ts:2; record \(B: document\) at \S*survey-case-split\.ts:3$/,
+    );
+    assert.equal(report.passes, 2);
+    const [refusal, ...others] = report.refusals;
+    assert.equal(others.length, 0, listed(report));
+    assert.equal(refusal?.message, "Unsupported constructor expression.");
+    assert.equal(refusal.statement.line, 12);
+    assert.equal(refusal.statement.function, "build");
+});
+
 test("a root's refusal through a parameter it holds empty cascades from the parameter", () => {
     // No call passes `base`: the root holds it as empty storage, so the
     // URL generation must know is a caller's, not a gap of the function.

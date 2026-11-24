@@ -7,6 +7,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import { selectedModuleConstants } from "./held-constants.js";
 import { declaredSymbol, resolvedSymbol, sameExpression } from "./symbols.js";
 import { StorageDemand } from "./storage-demand.js";
+import { activeSurvey } from "./survey.js";
 import {
     typeCanCarryReference,
     isVoid,
@@ -58,6 +59,7 @@ export type CaseSplitContext = Pick<
     | "enterRuntimeControlFlow"
     | "evaluationOrder"
     | "increaseIndent"
+    | "keptEmission"
     | "leaveRuntimeControlFlow"
     | "probeEmission"
     | "program"
@@ -164,7 +166,14 @@ export function compileWithRuntimeCaseSplit(
     const tests = selectorTests(context, call, selectors === "held-text");
     if (tests === undefined) return compile();
     try {
-        return context.probeEmission(compile, () => true);
+        // A survey lowers the unsplit call where the statements of its
+        // callee recover, as a shared body outside a probe: a refusal or
+        // storage demand one of them meets is that statement's, so one pass
+        // meets them all and the census names each. Only what the call
+        // itself raises tries the split.
+        return activeSurvey()
+            ? context.keptEmission(compile, () => true)
+            : context.probeEmission(compile, () => true);
     } catch (error) {
         // A storage demand is the unsplit call asking for dynamic storage
         // the runtime test forced; per outcome it may not be needed, so it
