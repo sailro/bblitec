@@ -281,11 +281,12 @@ test("a survey pass rolls back a storage demand's statement and the next pass re
         { fileName: resolve("survey-restart.ts") },
         { progress: { report: (line) => lines.push(line), intervalMs: 0 } },
     );
-    assert.deepEqual(
-        lines.filter((line) => line.startsWith("Survey pass")),
-        [
-            "Survey pass 1: 1 demand added for the next pass: record (Settings: document)",
-        ],
+    // The pass names the demand it took and the site it rose at.
+    const passes = lines.filter((line) => line.startsWith("Survey pass"));
+    assert.equal(passes.length, 1, passes.join(" | "));
+    assert.match(
+        passes[0]!,
+        /^Survey pass 1: 1 demand added for the next pass: record \(Settings: document\) at \S*survey-restart\.ts:2$/,
     );
     assert.match(
         lines.filter((line) => line.startsWith("Survey progress: ")).at(-1)!,
@@ -322,11 +323,11 @@ test("one survey pass meets every independent demand", () => {
         { progress: { report: (line) => lines.push(line), intervalMs: 0 } },
     );
     assert.equal(report.complete, true);
-    assert.deepEqual(
-        lines.filter((line) => line.startsWith("Survey pass")),
-        [
-            "Survey pass 1: 3 demands added for the next pass: record (A: document); record (B: document); record (C: document)",
-        ],
+    const passes = lines.filter((line) => line.startsWith("Survey pass"));
+    assert.equal(passes.length, 1, passes.join(" | "));
+    assert.match(
+        passes[0]!,
+        /^Survey pass 1: 3 demands added for the next pass: record \(A: document\) at \S*survey-plan\.ts:2; record \(B: document\) at \S*survey-plan\.ts:3; record \(C: document\) at \S*survey-plan\.ts:4$/,
     );
     assert.equal(report.statements.demanded, 0);
     assert.equal(report.passes, 2);

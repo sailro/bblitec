@@ -261,8 +261,9 @@ interface Attempt {
      * what they ask for: what it lowered before one can stand on storage
      * the demand changed (a layout already built), so a next pass lowers
      * everything with them, and the census is exact once a pass takes none.
+     * Each with the site it rose at, which a pass names it by.
      */
-    taken: Set<string>;
+    taken: Map<string, string | undefined>;
     /**
      * Those a probe began: journaled, so a probe that rolls back takes
      * its statements away and a committed one keeps them.
@@ -605,7 +606,7 @@ function newAttempt(carries: Partial<Attempt> = {}): Attempt {
         distinct: new Set(),
         probed: new EmissionSet(),
         rootProbes: new Set(),
-        taken: new Set(),
+        taken: new Map(),
         fresh: new Set(),
         phases: [],
         probes: { kept: 0, dropped: 0 },
@@ -1324,7 +1325,7 @@ export class SurveyCollector {
             if (error instanceof CompileError) return error;
             throw error;
         }
-        attempt.taken.add(key);
+        attempt.taken.set(key, replaySite(met));
         attempt.fresh.add(key);
         this.storageChanged();
         return true;
@@ -1450,7 +1451,9 @@ export class SurveyCollector {
         // The demands the pass took, by what they ask for: what a next pass
         // lowers with, and what a chain of passes is waiting on.
         const taken = [...(this.last?.taken ?? [])];
-        const named = taken.slice(0, 8);
+        const named = taken
+            .slice(0, 8)
+            .map(([key, site]) => stopLine(key, site));
         const which =
             named.length > 0
                 ? `: ${named.join("; ")}${taken.length > named.length ? `; ${taken.length - named.length} more` : ""}`
