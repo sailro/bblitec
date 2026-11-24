@@ -1799,6 +1799,55 @@ function argumentShape(argumentValues: readonly Value[]): string {
         .join(",");
 }
 
+/**
+ * What a strict compile keys a shared body's specialization by, that a
+ * survey's probe compares to reuse an earlier probe's lowering of it
+ * (`probedSharedBodies`): its parameter types, and by identity its
+ * compile-time arguments, the bindings it reads and its receiver. Identical
+ * inputs are equal ones, so a reuse is one a strict compile makes.
+ */
+interface ProbedSpecialization {
+    readonly parameterTypes: readonly (DataType | undefined)[];
+    readonly captured: readonly (Value | undefined)[];
+    readonly dependencies: readonly unknown[];
+    readonly receiver: unknown;
+}
+
+/** A shared body a survey's probe lowered: its specialization, and the statements its lowering began. */
+interface ProbedSharedBody {
+    readonly inputs: ProbedSpecialization;
+    readonly value: Value;
+    readonly returnMetadata: Value | undefined;
+    readonly statements: readonly ts.Statement[];
+}
+
+function sameProbedSpecialization(
+    left: ProbedSpecialization,
+    right: ProbedSpecialization,
+): boolean {
+    const same = (a: unknown, b: unknown): boolean =>
+        Array.isArray(a) && Array.isArray(b)
+            ? a.length === b.length &&
+              a.every((part, index) => part === b[index])
+            : a === b;
+    return (
+        left.receiver === right.receiver &&
+        left.captured.length === right.captured.length &&
+        left.captured.every(
+            (value, index) => value === right.captured[index],
+        ) &&
+        left.parameterTypes.length === right.parameterTypes.length &&
+        left.parameterTypes.every((type, index) => {
+            const other = right.parameterTypes[index];
+            return type && other ? dataTypesEqual(type, other) : type === other;
+        }) &&
+        left.dependencies.length === right.dependencies.length &&
+        left.dependencies.every((dependency, index) =>
+            same(dependency, right.dependencies[index]),
+        )
+    );
+}
+
 export class UserFunctionLowerer {
     /**
      * Whether a recursive node parameter takes the runtime SceneNode slot.
@@ -1931,6 +1980,18 @@ export class UserFunctionLowerer {
      * @unjournaled The decline outlives the rolled-back probe that discovered it.
      */
     private readonly declinedSharedBodies = new Map<ts.Node, Set<string>>();
+    /**
+     * The shared bodies a survey's probes lowered, by the survey's epoch
+     * (`speculativeEpoch`) and body, each with its specialization's inputs
+     * and the statements its lowering began.
+     * @unjournaled A probe that rolls back leaves what it lowered for a
+     * later probe on the same storage, as a strict lowering's specialization
+     * leaves it for a later call.
+     */
+    private readonly probedSharedBodies = new WeakMap<
+        object,
+        Map<ts.Node, ProbedSharedBody[]>
+    >();
     private readonly readsReceiverCache = new EmissionMap<
         SupportedFunction,
         boolean
@@ -4811,9 +4872,39 @@ export class UserFunctionLowerer {
                       // emitted calls that group, which the next group is not.
                       context.classLowerer.activeRecursion(),
                   ]);
+        // A survey's probe calls the body an earlier probe lowered on the
+        // same storage, with the same inputs, as the specialization it
+        // emitted, beginning its statements again.
+        const survey =
+            sharedBody &&
+            context.speculating &&
+            !context.dataTypes.captureTypeArguments()
+                ? activeSurvey()
+                : undefined;
+        const epoch = survey?.speculativeEpoch();
+        const inputs: ProbedSpecialization | undefined = epoch && {
+            parameterTypes: [...rootEntry.parameterTypes],
+            captured: [...rootEntry.captured],
+            dependencies: functionDependencies(context, declarations),
+            receiver: declarations.some((declaration) =>
+                this.readsReceiver(declaration),
+            )
+                ? context.activeThis()
+                : undefined,
+        };
+        const probed =
+            epoch && inputs
+                ? this.probedSharedBodies
+                      .get(epoch)
+                      ?.get(root.declaration)
+                      ?.find((entry) =>
+                          sameProbedSpecialization(entry.inputs, inputs),
+                      )
+                : undefined;
+        if (probed) survey?.touchProbed(probed.statements);
         const previous =
             specialization === undefined
-                ? undefined
+                ? probed
                 : this.emittedRecursiveGroups.get(
                       root.declaration,
                       specialization,
@@ -4944,18 +5035,25 @@ export class UserFunctionLowerer {
                     );
                 }
             };
-            context.bindings.pushScope(context.allocateUserFunctionPrefix());
-            try {
-                if (sharedBody && (!callSiteEffects || reuseCallSite))
-                    context.emitReusableNativeBody(
-                        root.declaration,
-                        emitBodies,
-                        reuseCallSite,
-                    );
-                else emitBodies();
-            } finally {
-                context.bindings.popScope();
-            }
+            const emitted = (): void => {
+                context.bindings.pushScope(
+                    context.allocateUserFunctionPrefix(),
+                );
+                try {
+                    if (sharedBody && (!callSiteEffects || reuseCallSite))
+                        context.emitReusableNativeBody(
+                            root.declaration,
+                            emitBodies,
+                            reuseCallSite,
+                        );
+                    else emitBodies();
+                } finally {
+                    context.bindings.popScope();
+                }
+            };
+            let begun: readonly ts.Statement[] | undefined;
+            if (survey) begun = survey.beganInProbe(emitted).statements;
+            else emitted();
             if (localGroup) {
                 const bodies = entries
                     .map((entry) => localGroup.bodies.get(entry.declaration)!)
@@ -4982,6 +5080,27 @@ export class UserFunctionLowerer {
                         writable(entry.value).nativeCaptures = [binding];
                     }
                 }
+            }
+            if (
+                epoch &&
+                inputs &&
+                begun &&
+                survey?.speculativeEpoch() === epoch
+            ) {
+                let bodies = this.probedSharedBodies.get(epoch);
+                if (!bodies)
+                    this.probedSharedBodies.set(
+                        epoch,
+                        (bodies = new Map<ts.Node, ProbedSharedBody[]>()),
+                    );
+                let lowered = bodies.get(root.declaration);
+                if (!lowered) bodies.set(root.declaration, (lowered = []));
+                lowered.push({
+                    inputs,
+                    value: rootEntry.value,
+                    returnMetadata: rootEntry.returnMetadata,
+                    statements: begun,
+                });
             }
             if (specialization !== undefined) {
                 this.emittedRecursiveGroups.set(

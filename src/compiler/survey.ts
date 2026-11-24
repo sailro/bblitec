@@ -32,7 +32,7 @@ import {
 } from "./replay-storage.js";
 import { StorageDemand } from "./storage-demand.js";
 import { EmissionSet, EmissionTransaction } from "./emission-transaction.js";
-import { keepingCoverage } from "./source-coverage.js";
+import { coverLoweredAgain, keepingCoverage } from "./source-coverage.js";
 import {
     bindingNameIdentifiers,
     hasDeclareModifier,
@@ -297,6 +297,8 @@ interface Attempt {
      * shared body a probe could not keep, and each call a probe lowered
      * inline with the refusal that ended it. A probe lowers neither again:
      * a body a probe cannot lower is lowered where its statements recover.
+     * Its identity keys what probes lowered on the same storage
+     * (`speculativeEpoch`).
      */
     speculative: SpeculativeRefusals;
 }
@@ -673,6 +675,12 @@ export class SurveyCollector {
     private apply: ((demand: StorageDemand) => boolean) | undefined;
     /** @unjournaled The refusals a shared body's recovering lowering withholds (`withholdingRefusals`). */
     private withheld: { refusals: number } | undefined;
+    /**
+     * @unjournaled The statements each probe lowering under way began
+     * (`beganInProbe`): journaled sets, so an inner probe that rolls back
+     * takes its statements away.
+     */
+    private readonly probing: EmissionSet<ts.Statement>[] = [];
 
     /**
      * `replayable`: the replays a compile applies before its next attempt
@@ -1088,6 +1096,37 @@ export class SurveyCollector {
         const attempt = this.current;
         if (!attempt) return;
         (speculating ? attempt.probed : attempt.distinct).add(statement);
+        if (speculating) for (const begun of this.probing) begun.add(statement);
+    }
+
+    /**
+     * A key for what probes lowered since storage last changed: a probe
+     * may stand on such a lowering, rolled back since, instead of lowering
+     * it again (`beganInProbe`, `touchProbed`). Undefined outside an attempt.
+     */
+    public speculativeEpoch(): object | undefined {
+        return this.current?.speculative;
+    }
+
+    /** `lower`, a lowering inside a probe, with the statements it began. */
+    public beganInProbe<T>(lower: () => T): {
+        result: T;
+        statements: readonly ts.Statement[];
+    } {
+        const begun = new EmissionSet<ts.Statement>();
+        this.probing.push(begun);
+        try {
+            const result = lower();
+            return { result, statements: [...begun] };
+        } finally {
+            this.probing.pop();
+        }
+    }
+
+    /** Notes that a probe began and lowered `statements` again (`beganInProbe`). */
+    public touchProbed(statements: readonly ts.Statement[]): void {
+        for (const statement of statements) this.touch(statement, true);
+        coverLoweredAgain(statements);
     }
 
     /**
