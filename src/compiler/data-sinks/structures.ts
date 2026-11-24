@@ -4,6 +4,7 @@ import {
     dataTypesEqual,
     isAbsentSpreadProperty,
     lackedField,
+    slotHoldsOwnPresence,
     type DataStructField,
     type DataType,
 } from "../data-types.js";
@@ -407,12 +408,13 @@ function requireCopiedOwnUndefinedFields(
 
 /**
  * The value a struct field holds where a record lacks it: `{}` for one a
- * default fills or an optional accessor slot, `std::nullopt` for an optional
- * one; undefined for a field the record must hold.
+ * default fills or a slot holding its own presence (`slotHoldsOwnPresence`),
+ * `std::nullopt` for an optional one; undefined for a field the record must
+ * hold.
  */
 export function absentFieldCpp(field: DataStructField): string | undefined {
     return field.defaultWhenMissing ||
-        (field.accessorReceiver && field.type.kind === "optional")
+        (slotHoldsOwnPresence(field) && field.type.kind === "optional")
         ? "{}"
         : field.type.kind === "optional"
           ? "std::nullopt"
@@ -614,12 +616,7 @@ function valueStruct(
         );
         const definedLater =
             literal !== undefined &&
-            lowerer.lackedFieldsDefinedOnDeclaration(
-                literal,
-                fields,
-                (field) => held.has(field.sourceName),
-                lacked,
-            );
+            lowerer.lackedFieldsDefinedOnDeclaration(literal, lacked);
         // A class instance seen as a record lists the record type's members.
         if (value.classDeclaration === undefined) {
             if (literal)
@@ -881,7 +878,7 @@ function valueStruct(
                             field,
                             stored,
                         );
-                    const presence = source.accessorReceiver
+                    const presence = slotHoldsOwnPresence(source)
                         ? `if (!${sourceCpp}.has_own()) return {}; `
                         : "";
                     return `([&]() -> ${slot} { ${presence}${lines.join(" ")} return ${initialized}; }())`;

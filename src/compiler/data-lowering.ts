@@ -240,6 +240,7 @@ import {
     isPinnedHandleType,
     isUiElementHandleType,
     soleArrayArmIndex,
+    slotHoldsOwnPresence,
     soleMemberIndex,
 } from "./data-types.js";
 import { holdsEngineObject } from "./document-read-closure.js";
@@ -15206,14 +15207,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 !compiled.has(field.sourceName) &&
                 absentFieldCpp(field) === undefined,
         );
-        if (
-            !this.lackedFieldsDefinedOnDeclaration(
-                literal,
-                fields,
-                (field) => compiled.has(field.sourceName),
-                lacked,
-            )
-        )
+        if (!this.lackedFieldsDefinedOnDeclaration(literal, lacked))
             this.context.fail(
                 literal,
                 `Struct literal is missing field '${lacked[0]!.sourceName}'.`,
@@ -15555,29 +15549,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     /**
      * Whether a literal's record can hold placeholders in the fields it
      * lacks: the statements right after its declaration define each
-     * (`keysDefinedOnDeclaration`) before anything reads the record, and
-     * each follows every field the literal holds, in definition order, as
-     * those definitions append it.
+     * (`keysDefinedOnDeclaration`) before anything reads the record. The
+     * keys those definitions append are the creation's own key order
+     * (`noteLiteralCreation`), whatever place the struct gives the field.
      */
     public lackedFieldsDefinedOnDeclaration(
         literal: ts.ObjectLiteralExpression,
-        fields: readonly DataStructField[],
-        holds: (field: DataStructField) => boolean,
         lacked: readonly DataStructField[],
     ): boolean {
         if (!lacked.length) return true;
         const keys = keysDefinedOnDeclaration(this.context.checker, literal);
-        const lastHeld = fields.reduce(
-            (last, field, index) => (holds(field) ? index : last),
-            -1,
-        );
-        let definedAt = -1;
-        return lacked.every((field) => {
-            const at = keys.indexOf(field.sourceName);
-            const appended = at > definedAt && fields.indexOf(field) > lastHeld;
-            definedAt = at;
-            return appended;
-        });
+        return lacked.every((field) => keys.includes(field.sourceName));
     }
 
     /**
@@ -16114,14 +16096,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 !field.defaultWhenMissing &&
                 !assigned.has(field.name),
         );
-        if (
-            !this.lackedFieldsDefinedOnDeclaration(
-                literal,
-                fields,
-                (field) => assigned.has(field.name),
-                lacked,
-            )
-        ) {
+        if (!this.lackedFieldsDefinedOnDeclaration(literal, lacked)) {
             this.context.fail(
                 literal,
                 `Struct literal is missing field '${lacked[0]!.name}'.`,
@@ -16546,7 +16521,23 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             else this.context.emitDiscardedValue(owner);
             return;
         }
-        const field = this.context.dataTypes.structField(type.name, key, node);
+        const field = this.context.dataTypes.structField(
+            type.name,
+            key,
+            node,
+            "accessors",
+        );
+        // A `?` property's accessor slot empties unless it is nonconfigurable,
+        // where strict code's delete throws.
+        if (field.accessor && slotHoldsOwnPresence(field)) {
+            this.context.reachJsData();
+            this.context.emit({
+                kind: "expression",
+                code: `if (!${owner.cpp}${this.context.dataTypes.memberAccess(type.name)}${field.name}.erase()) std::rethrow_exception(bbl::js::make_error("TypeError", ${this.context.cppString(`Cannot delete property '${key}' of #<Object>`)}, std::exception_ptr{}));`,
+            });
+            this.context.bindings.invalidateRecordProperties(owner);
+            return;
+        }
         if (field.accessor)
             this.context.fail(
                 node,

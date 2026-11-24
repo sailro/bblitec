@@ -29,20 +29,29 @@ template <typename Getter, typename Setter> struct AccessorClosures {
 /** A JavaScript property of a native record that a getter can define: a read
  * runs the getter, a write the setter, and a record that stores plain data in
  * such a field keeps it inline (one branch per access, no allocation). A
- * definition can make that data read-only, and the property nonconfigurable. */
+ * definition can make that data read-only, and the property nonconfigurable.
+ * An empty slot is a property the record does not own: a `?` field's. */
 template <typename T> class Accessor {
 public:
     Accessor() = default;
-    explicit Accessor(T value) : value_(std::move(value)) {}
+    explicit Accessor(T value) : value_(std::move(value)), own_(true) {}
     Accessor(Callback<T()> getter, Callback<void(T)> setter)
-        : getter_(std::move(getter)), setter_(std::move(setter)) {}
+        : getter_(std::move(getter)), setter_(std::move(setter)), own_(true) {}
     template <typename Getter, typename Setter>
     Accessor(AccessorClosures<Getter, Setter> closures)
-        : getter_(std::move(closures.getter)), setter_(std::move(closures.setter)) {}
+        : getter_(std::move(closures.getter)), setter_(std::move(closures.setter)), own_(true) {}
 
     [[nodiscard]] T get() const { return getter_ ? getter_() : value_; }
     [[nodiscard]] bool configurable() const { return configurable_; }
     [[nodiscard]] bool writable() const { return writable_; }
+    [[nodiscard]] bool has_own() const { return own_; }
+    /** `delete`: false, the property kept, where it is nonconfigurable. */
+    [[nodiscard]] bool erase() {
+        if (!configurable_)
+            return false;
+        *this = Accessor{};
+        return true;
+    }
     void set(T value) {
         if (setter_)
             setter_(std::move(value));
@@ -52,8 +61,10 @@ public:
         else if (!writable_)
             std::rethrow_exception(
                 make_error("TypeError", "Cannot assign to a read-only property"));
-        else
+        else {
             value_ = std::move(value);
+            own_ = true;
+        }
     }
     /** `writable` applies to a data replacement: a nonconfigurable read-only
      * value stays read-only and keeps its SameValue. */
@@ -70,6 +81,7 @@ public:
                 make_error("TypeError", "Cannot redefine a nonconfigurable property"));
         replacement.configurable_ = configurable;
         replacement.writable_ = !data || writable;
+        replacement.own_ = true;
         *this = std::move(replacement);
     }
     void gc_trace(const TraceVisitor& visitor) const {
@@ -85,6 +97,7 @@ private:
     Callback<void(T)> setter_;
     bool configurable_ = true;
     bool writable_ = true;
+    bool own_ = false;
 };
 
 /** A finite record slot whose authored accessor observes the supplied receiver. */

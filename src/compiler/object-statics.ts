@@ -1705,15 +1705,17 @@ function applyPropertyDefinitions(
                     definition.node,
                     `Object.${operation} does not define class instance descriptor slots.`,
                 );
+            // A `?` property's accessor slot holds whether it is own
+            // (`slotHoldsOwnPresence`); shared or tag-decided absence has
+            // no slot of its own.
             if (
-                field.optionalProperty ||
                 field.sharedAbsent ||
                 field.uncheckedProperty ||
                 field.presentForTags
             )
                 context.fail(
                     definition.node,
-                    `Object.${operation} requires an accessor property that is always own or a nonconfigurable or read-only data property that is always own.`,
+                    `Object.${operation} requires an accessor property, or a nonconfigurable or read-only data property, whose slot holds whether it is own.`,
                 );
             if (
                 !field.accessor ||

@@ -1313,6 +1313,18 @@ function fieldPresence(
     };
 }
 
+/**
+ * Whether a field's slot holds whether its record owns the property
+ * (`has_own()`): a receiver-aware slot, or a `?` property's accessor slot,
+ * empty where the record lacks it.
+ */
+export function slotHoldsOwnPresence(field: DataStructField): boolean {
+    return (
+        field.accessorReceiver !== undefined ||
+        (field.accessor !== undefined && field.optionalProperty === true)
+    );
+}
+
 /** The storage a field holds its values in: its present type, literal tags as strings. */
 function fieldStorage(type: DataType): DataType {
     return type.kind === "optional"
@@ -10063,7 +10075,10 @@ export class DataTypeRegistry {
                           // may lack; the slot does not say whether it has it.
                           optional && view
                           ? "ambiguous"
-                          : "own",
+                          : // Any other `?` accessor slot holds whether it is own.
+                            optional
+                            ? "stored"
+                            : "own",
                     valueAbsence(values.map((value) => value.type)),
                 ),
             );
@@ -10489,7 +10504,7 @@ export class DataTypeRegistry {
                 ...(holdsValueCpp ? { holdsValueCpp } : {}),
             };
         }
-        const held = field.accessorReceiver
+        const held = slotHoldsOwnPresence(field)
             ? `${slot}.has_own()`
             : presence === "nullable"
               ? `bbl::js::held_own_property(${slot}, ${stringLiteral(field.sourceName)})`
@@ -12444,10 +12459,11 @@ export class DataTypeRegistry {
                     )) {
                         // JSON.stringify writes what a getter returns. A
                         // getter that may return undefined decides at run
-                        // time whether the key is written at all.
+                        // time whether the key is written at all, which a
+                        // slot holding its own presence writes per record.
                         if (
                             field.accessor &&
-                            !field.accessorReceiver &&
+                            !slotHoldsOwnPresence(field) &&
                             field.type.kind === "optional"
                         )
                             this.fail(
@@ -12466,7 +12482,7 @@ export class DataTypeRegistry {
                                 ".",
                                 node,
                             );
-                        if (field.accessorReceiver)
+                        if (slotHoldsOwnPresence(field))
                             this.definedFieldValueCpp(
                                 current.name,
                                 field,
@@ -13034,7 +13050,7 @@ export class DataTypeRegistry {
             const snapshottedKeys = new Map(
                 fields.flatMap((field, index) =>
                     !isSymbolPropertyKey(field.sourceName) &&
-                    (field.accessorReceiver ||
+                    (slotHoldsOwnPresence(field) ||
                         (field.optionalProperty &&
                             !field.accessor &&
                             !isUndefinedDataType(field.type)))
@@ -13043,7 +13059,7 @@ export class DataTypeRegistry {
                 ),
             );
             for (const [field, key] of snapshottedKeys) {
-                const own = field.accessorReceiver
+                const own = slotHoldsOwnPresence(field)
                     ? `value.${field.name}.has_own()`
                     : (this.ownPresence(
                           name,
