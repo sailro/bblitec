@@ -1623,12 +1623,22 @@ export class StaticEvaluator {
         allowMaterializedOptional = false,
     ): ts.Expression | undefined {
         const left = this.unwrap(expression.left);
+        // A value only the browser holds (a URL parameter's parse) that
+        // erasure evaluates to null or undefined.
+        const browserAbsent = (): boolean => {
+            if (!this.isBrowserOnlyExpression(left)) return false;
+            const kind = this.evaluateBrowserValue(left)?.kind;
+            return kind === "null" || kind === "undefined";
+        };
         if (ts.isIdentifier(left)) {
             const value = this.lookupOptional(left);
             if (!value) {
                 return undefined;
             }
-            if (value.kind === "json-null") {
+            if (
+                value.kind === "json-null" ||
+                (value.kind === "browser" && browserAbsent())
+            ) {
                 return expression.right;
             }
             if (isJsonValue(value) || presenceCpp(value) !== undefined) {
@@ -1646,11 +1656,7 @@ export class StaticEvaluator {
         }
         if (ts.isPropertyAccessExpression(left)) {
             // A global member no host installs reads undefined.
-            if (
-                this.isBrowserOnlyExpression(left) &&
-                this.evaluateBrowserValue(left)?.kind === "undefined"
-            )
-                return expression.right;
+            if (browserAbsent()) return expression.right;
             // Records are identifier-bound, so only those owners and the
             // compile-time records their member chains reach are probed:
             // the probe is a full value compile with emit authority, and an
