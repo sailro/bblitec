@@ -618,6 +618,31 @@ check(
     `,
 );
 
+// A conditional's arms, a generic rest (`Omit<T & Scaled, "scale">`) and
+// that rest spread with the omitted field, are one record per instantiation.
+check(
+    "omitted-field-arm-under-instantiation",
+    `
+    interface Scaled { readonly scale?: number }
+    function withScale<T extends object>(value: T, scale: number): T & Scaled {
+        const clamped = Math.max(0.01, Math.min(1, Number.isFinite(scale) ? scale : 1));
+        const { scale: _old, ...rest } = value as T & Scaled;
+        return (clamped >= 1 - 1e-9 ? rest : { ...rest, scale: clamped }) as T & Scaled;
+    }
+    interface Panel { readonly depth: number; readonly scale?: number }
+    interface Frame { readonly side: number; readonly scale?: number; readonly panel?: Panel }
+    const previous: Frame = { side: 1, scale: 0.8 };
+    const panel: Panel = { depth: 0.4 };
+    const frame = withScale({ ...previous, panel: withScale(panel, 0.75) }, 1);
+    const shrunk = withScale(previous, 0.5);
+    if (frame.scale !== undefined || frame.panel?.scale !== 0.75 || frame.panel.depth !== 0.4 || frame.side !== 1 ||
+        Object.keys(frame).join() !== "side,panel" || Object.keys(frame.panel).join() !== "depth,scale")
+        throw new Error("full frame");
+    if (shrunk.scale !== 0.5 || shrunk.side !== 1 || Object.keys(shrunk).join() !== "side,scale")
+        throw new Error("shrunk frame");
+    `,
+);
+
 check(
     "nested-instantiation-intersection-fields",
     `

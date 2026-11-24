@@ -454,21 +454,26 @@ export function recordComponents(
     for (const group of groups.values()) {
         if (group.length < 2) continue;
         const members = group.map(({ type }) => type);
-        // An instantiation stands for the concrete shapes it joined.
-        const concrete = group
-            .filter(
-                ({ identity }) =>
-                    !instantiated(identity) && !constructedOnly(identity),
-            )
-            .map(({ type }) => type);
-        const unions = concrete.filter((member): member is ts.UnionType =>
+        // An instantiation stands for the concrete shapes it joined; where
+        // only instantiations joined (two generic records under one call's
+        // instantiation), they are the shapes, laid out under it.
+        const shaped = group.filter(
+            ({ identity }) => !constructedOnly(identity),
+        );
+        const concrete = shaped.filter(
+            ({ identity }) => !instantiated(identity),
+        );
+        const laidOut = (concrete.length > 0 ? concrete : shaped).map(
+            ({ type }) => type,
+        );
+        const unions = laidOut.filter((member): member is ts.UnionType =>
             member.isUnion(),
         );
         // The layout stores the members that are no union and every arm of
         // those that are, each type once.
         const shapes = [
             ...new Map(
-                concrete
+                laidOut
                     .flatMap((member) => unionMembers(member))
                     .map((shape) => [recordIdentity(checker, shape), shape]),
             ).values(),

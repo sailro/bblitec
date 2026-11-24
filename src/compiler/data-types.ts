@@ -3266,11 +3266,35 @@ export class DataTypeRegistry {
     }
 
     /**
+     * The instantiation in force under `demand` of a generic record type
+     * that is not one type under every instantiation (`joinableRecord`),
+     * unless its struct `name`, where one stores it, holds a class's
+     * instances: the identity a record join names it by.
+     */
+    private recordInstantiation(
+        demand: NativeRecordStorageDemand,
+        record: ts.Type,
+        name?: string,
+    ): InstantiatedRecord | undefined {
+        return !this.joinableRecord(demand, record) &&
+            (name === undefined || !this.isClassStruct(name))
+            ? this.withRecordDemand(demand, () =>
+                  this.plainUnderSubstitution(record)
+                      ? this.instantiatedRecordOf(record)
+                      : undefined,
+              )
+            : undefined;
+    }
+
+    /**
      * A use of a union's struct names a field only some members declare (a
      * literal `{ ok: false, reason }`, a read through a view) where the
      * union stores its members' common view: replays store every member's
      * fields, the arms its tags cannot tell apart told apart by those
-     * fields' slots. Refuses with `message` otherwise.
+     * fields' slots. A generic record's struct lacking a field that a
+     * record built from it declares (`{ ...rest, fit }` stored as `rest`'s
+     * `Omit<T, "fit">`) joins the two under their instantiations. Refuses
+     * with `message` otherwise.
      */
     public requireArmFields(
         structName: string,
@@ -3332,6 +3356,49 @@ export class DataTypeRegistry {
                         },
                     ],
                 });
+            // A generic record and the record built as it declaring the
+            // field join under the instantiations their call puts in force.
+            if (
+                checked &&
+                checked.getProperty(field) &&
+                !this.joined(source.type, checked)
+            ) {
+                const sourceInstantiation = this.recordInstantiation(
+                    source,
+                    source.type,
+                    structName,
+                );
+                const targetInstantiation = this.recordInstantiation(
+                    this.recordDemand(checked, node),
+                    checked,
+                );
+                const demanded = this.demandedJoins
+                    .get(source.type)
+                    ?.some(
+                        (join) =>
+                            join.target === checked &&
+                            join.sourceInstantiation === sourceInstantiation &&
+                            join.targetInstantiation === targetInstantiation &&
+                            join.kind === "assertion",
+                    );
+                if ((sourceInstantiation || targetInstantiation) && !demanded)
+                    throw new NativeRecordStorageRequired({
+                        ...source,
+                        joins: [
+                            {
+                                source: source.type,
+                                target: checked,
+                                ...(sourceInstantiation
+                                    ? { sourceInstantiation }
+                                    : {}),
+                                ...(targetInstantiation
+                                    ? { targetInstantiation }
+                                    : {}),
+                                kind: "assertion",
+                            },
+                        ],
+                    });
+            }
         }
         if (
             !source ||
@@ -4659,15 +4726,8 @@ export class DataTypeRegistry {
             record: ts.Type | undefined,
             name: string,
         ): InstantiatedRecord | undefined =>
-            demand &&
-            record &&
-            !joinable(demand, record) &&
-            !this.isClassStruct(name)
-                ? this.withRecordDemand(demand, () =>
-                      this.plainUnderSubstitution(record)
-                          ? this.instantiatedRecordOf(record)
-                          : undefined,
-                  )
+            demand && record
+                ? this.recordInstantiation(demand, record, name)
                 : undefined;
         const sourceInstantiation = instantiation(
             source,
