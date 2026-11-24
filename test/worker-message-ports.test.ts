@@ -9,7 +9,7 @@ import {
 } from "./native-fixture.js";
 
 const workerSource = `
-interface Attach { type: "attach"; port: MessagePort; }
+interface Connect { type: "connect"; port: MessagePort; }
 interface Request { values: Float32Array; reply?: MessagePort; }
 function serve(port: MessagePort): void {
     port.onmessage = (event: MessageEvent) => {
@@ -31,19 +31,19 @@ function serve(port: MessagePort): void {
     port.start?.();
 }
 addEventListener("message", (event: MessageEvent) => {
-    const data = event.data as Attach;
-    if (data.type === "attach") serve(data.port);
+    const data = event.data as Connect;
+    if (data.type === "connect") serve(data.port);
 });
 `;
 
 const entrySource = `
-interface Attach { type: "attach"; port: MessagePort; }
+interface Connect { type: "connect"; port: MessagePort; }
 interface Reply { sum: number; echo: Float32Array; }
 const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
 const ports = new Set<MessagePort>();
 const channel = new MessageChannel();
-const attach: Attach = { type: "attach", port: channel.port2 };
-worker.postMessage(attach, [channel.port2]);
+const connect: Connect = { type: "connect", port: channel.port2 };
+worker.postMessage(connect, [channel.port2]);
 ports.add(channel.port1);
 const host = channel.port1;
 const local = new MessageChannel();
@@ -162,8 +162,8 @@ function handle(port: MessagePort, data: Request | null | undefined): void {
     throw new Error("worker failure");
 }
 addEventListener("message", (event: MessageEvent) => {
-    const data = event.data as { type: "attach"; port: MessagePort } | null | undefined;
-    if (!data || data.type !== "attach") return;
+    const data = event.data as { type: "connect"; port: MessagePort } | null | undefined;
+    if (!data || data.type !== "connect") return;
     const port = data.port;
     port.onmessage = (ev: MessageEvent) => handle(port, ev.data as Request | null | undefined);
 });
@@ -206,7 +206,7 @@ channel.port1.onmessage = (event: MessageEvent) => {
 const post: Post = (message, transfer) => {
     channel.port1.postMessage(message, transfer ?? []);
 };
-worker.postMessage({ type: "attach", port: channel.port2 }, [channel.port2]);
+worker.postMessage({ type: "connect", port: channel.port2 }, [channel.port2]);
 const sources = [new Float32Array([1]), new Float32Array([2, 3])];
 const buffers = sources.length > 0 ? sources.flatMap((source) => [source.buffer]) : [];
 post({ constants: { a: 3, b: [5, 6] }, values: sources }, buffers);
@@ -297,21 +297,21 @@ test("dynamic documents cross realms with the typed arrays they hold", (t) => {
 });
 
 const shapedWorkerSource = `
-interface Digest { composed: number; parts: Readonly<Record<string, number>> }
-function digest(table: Readonly<Record<string, unknown>>): number { return Object.keys(table).length; }
-interface Init { type: "init"; digest: Digest; buffer: ArrayBuffer; sab?: SharedArrayBuffer; capacity: number }
+interface Summary { total: number; counts: Readonly<Record<string, number>> }
+function summary(table: Readonly<Record<string, unknown>>): number { return Object.keys(table).length; }
+interface Setup { type: "setup"; summary: Summary; buffer: ArrayBuffer; shared?: SharedArrayBuffer; length: number }
 interface Add { type: "add"; index: number }
-type In = Init | Add;
+type In = Setup | Add;
 let header: Int32Array | null = null;
-function init(msg: Init): void {
-    const { sab, capacity } = msg;
-    if (sab) header = new Int32Array(sab, 0, capacity);
-    const view = new Int32Array(msg.buffer, 4, capacity);
-    self.postMessage(view[0]! + view[1]! + digest(msg.digest.parts) + (header ? 100 : 0));
+function setup(msg: Setup): void {
+    const { shared, length } = msg;
+    if (shared) header = new Int32Array(shared, 0, length);
+    const view = new Int32Array(msg.buffer, 4, length);
+    self.postMessage(view[0]! + view[1]! + summary(msg.summary.counts) + (header ? 100 : 0));
 }
 function handle(data: In | null | undefined): void {
     if (!data) return;
-    if (data.type === "init") init(data);
+    if (data.type === "setup") setup(data);
 }
 addEventListener("message", (ev: MessageEvent) => handle(ev.data as In | null | undefined));
 `;
@@ -325,7 +325,7 @@ worker.addEventListener("message", (event: MessageEvent<number>) => {
 });
 const buffer = new ArrayBuffer(16);
 new Int32Array(buffer).set([1, 2, 3, 4]);
-worker.postMessage({ type: "init", digest: { composed: 1, parts: { a: 1, b: 2 } }, buffer, capacity: 2 });
+worker.postMessage({ type: "setup", summary: { total: 1, counts: { a: 1, b: 2 } }, buffer, length: 2 });
 `;
 
 test("a message keeps its shape beside a document member and views its buffers", (t) => {

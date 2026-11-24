@@ -15,11 +15,11 @@ test("a fresh dictionary reads as a record of a key union and spreads its entrie
             if (omitted > 0) throw new Error("split");
             return Object.fromEntries(entries) as Record<K, number>;
         }
-        const tuning = record({ walk: "w", run: "r" }, (name) => (name === "w" ? 1 : 2));
-        if (!tuning || tuning.walk + tuning.run !== 3) throw new Error("entries");
-        interface Round { pickupArrive: number; walk: number; run: number }
-        const round: Round | undefined = tuning && { pickupArrive: 5, ...tuning, run: 7 };
-        if (!round || round.walk !== 1 || round.run !== 7 || round.pickupArrive !== 5) throw new Error("spread");
+        const settings = record({ walk: "w", run: "r" }, (name) => (name === "w" ? 1 : 2));
+        if (!settings || settings.walk + settings.run !== 3) throw new Error("entries");
+        interface Merged { extra: number; walk: number; run: number }
+        const merged: Merged | undefined = settings && { extra: 5, ...settings, run: 7 };
+        if (!merged || merged.walk !== 1 || merged.run !== 7 || merged.extra !== 5) throw new Error("spread");
     `);
     const tools = optionalNativeFixtureTools(false);
     if (!tools) return t.skip("Native fixture compiler unavailable.");
@@ -37,17 +37,17 @@ test("a key-union record stored as the struct of its keys is that struct", (t) =
             if (omitted > 0) throw new Error("split");
             return Object.fromEntries(entries) as Record<K, number>;
         }
-        interface Amenity { timeoutSeconds: number; rejectSeconds: number }
-        interface Tuning { amenity: Amenity | undefined; scale: number }
-        function tuning(scale: number): Tuning {
-            return { amenity: record({ timeoutSeconds: "t", rejectSeconds: "r" }, (name) => (name === "t" ? 4 : 5)), scale };
+        interface Pair { first: number; second: number }
+        interface Settings { pair: Pair | undefined; scale: number }
+        function settings(scale: number): Settings {
+            return { pair: record({ first: "t", second: "r" }, (name) => (name === "t" ? 4 : 5)), scale };
         }
-        const state: { tuning: Tuning | null } = { tuning: null };
-        state.tuning = tuning(2);
-        const amenity = state.tuning.amenity;
-        if (!amenity || amenity.timeoutSeconds + amenity.rejectSeconds !== 9) throw new Error("amenity");
+        const state: { settings: Settings | null } = { settings: null };
+        state.settings = settings(2);
+        const pair = state.settings.pair;
+        if (!pair || pair.first + pair.second !== 9) throw new Error("pair");
     `);
-    assert.match(cpp, /bblscene::AmenityData\{bbl::js::present\(/);
+    assert.match(cpp, /bblscene::PairData\{bbl::js::present\(/);
     const tools = optionalNativeFixtureTools(false);
     if (!tools) return t.skip("Native fixture compiler unavailable.");
     runGeneratedProgram(tools, "enum-record-entries/struct", cpp, {
