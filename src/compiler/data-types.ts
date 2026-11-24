@@ -1301,21 +1301,32 @@ function isContainerStorage(type: DataType): boolean {
 }
 
 /**
- * The side storing a field as an array or a map where the other side holds
- * it as a document: JavaScript holds one object under both, which a native
- * copy splits.
+ * The side storing a field as an array, a map or a record documents hold
+ * boxed (`boxed`: a class instance) where the other side holds it as a
+ * document: JavaScript holds one object under both, which a native copy
+ * splits.
  */
 function typedSideOfDocument(
     held: DataType,
     stored: DataType,
+    boxed: (type: DataType) => boolean,
 ): "held" | "stored" | undefined {
     const from = fieldStorage(held),
         to = fieldStorage(stored);
-    return from.kind === "json" && isContainerStorage(to)
+    return from.kind === "json" && storesTyped(to, boxed)
         ? "stored"
-        : to.kind === "json" && isContainerStorage(from)
+        : to.kind === "json" && storesTyped(from, boxed)
           ? "held"
           : undefined;
+}
+
+/** Whether a field's storage holds its value typed beside a document: an array, a map or a boxed instance. */
+function storesTyped(
+    type: DataType,
+    boxed: (type: DataType) => boolean,
+): boolean {
+    const storage = fieldStorage(type);
+    return isContainerStorage(storage) || boxed(storage);
 }
 
 /** Whether field storage holds records, directly or in an array. */
@@ -2994,9 +3005,10 @@ export class DataTypeRegistry {
 
     /**
      * One layout storing property `name` that one record type stores as a
-     * document and another as an array or map holds one value: each record
-     * type storing it typed stores it as a document too (`documentFields`),
-     * as `requireSharedValueViews` rules for the fields of shared records.
+     * document and another typed (`typedSideOfDocument`) holds one value:
+     * each record type storing it typed stores it as a document too
+     * (`documentFields`), as `requireSharedValueViews` rules for the
+     * fields of shared records.
      */
     private requireDocumentProperty(
         name: string,
@@ -3005,13 +3017,10 @@ export class DataTypeRegistry {
         values: readonly { readonly mapped: DataType | undefined }[],
         node: ts.Node,
     ): void {
-        if (
-            !(left.kind === "json" && isContainerStorage(right)) &&
-            !(right.kind === "json" && isContainerStorage(left))
-        )
-            return;
+        const boxed = this.holdsBoxedInstance;
+        if (!typedSideOfDocument(left, right, boxed)) return;
         for (const [index, { mapped }] of values.entries()) {
-            if (!mapped || !isContainerStorage(fieldStorage(mapped))) continue;
+            if (!mapped || !storesTyped(mapped, boxed)) continue;
             const owner = declared[index]!.owner;
             const property = this.checker.getPropertyOfType(owner, name);
             if (
@@ -3037,6 +3046,10 @@ export class DataTypeRegistry {
             ? undefined
             : { ...this.recordDemand(record, node), document: true };
     }
+
+    /** Whether storage holds an instance documents hold boxed (`documentHoldsBoxed`). */
+    private readonly holdsBoxedInstance = (type: DataType): boolean =>
+        type.kind === "struct" && this.documentHoldsBoxed(type);
 
     /**
      * The document layout for a plain record type its objects need (an
@@ -4346,7 +4359,9 @@ export class DataTypeRegistry {
             );
             return (
                 from !== undefined &&
-                typedSideOfDocument(from.type, field.type) !== undefined
+                // A boxed instance keeps its object in a document: no split.
+                typedSideOfDocument(from.type, field.type, () => false) !==
+                    undefined
             );
         });
         // A union view of a stored record always shares its layout.
@@ -4593,10 +4608,13 @@ export class DataTypeRegistry {
      * other as an array or map holds one object in JavaScript: the record
      * storing it typed takes the document layout, which holds that value,
      * or, where its type declares a method or an accessor, stores just that
-     * field as a document.
+     * field as a document. A field the other holds as a boxed instance (a
+     * class's, `documentHoldsBoxed`) is stored as a document alone, which
+     * holds the instance itself.
      */
     public requireSharedValueViews(source: DataType, target: DataType): void {
         const seen = new Set<string>();
+        const boxed = this.holdsBoxedInstance;
         const compare = (a: DataType, b: DataType): void => {
             const left = fieldStorage(a),
                 right = fieldStorage(b);
@@ -4656,7 +4674,7 @@ export class DataTypeRegistry {
             for (const field of right) {
                 const from = sources.get(field.sourceName);
                 if (!from) continue;
-                const side = typedSideOfDocument(from.type, field.type);
+                const side = typedSideOfDocument(from.type, field.type, boxed);
                 const typed =
                     side === "stored"
                         ? rightRecord
@@ -4665,10 +4683,17 @@ export class DataTypeRegistry {
                           : undefined;
                 // A document holds no method or accessor: a record type
                 // declaring one keeps its native layout, the field the
-                // document holds stored as a document.
+                // document holds stored as a document; so does a field
+                // holding a boxed instance, which a document holds as
+                // itself.
                 const demand =
                     typed &&
-                    (this.declaresBehavior(typed)
+                    (this.declaresBehavior(typed) ||
+                    boxed(
+                        fieldStorage(
+                            side === "stored" ? field.type : from.type,
+                        ),
+                    )
                         ? this.documentFieldDemand(typed, field.sourceName)
                         : this.documentRecordDemand(typed));
                 if (demand) throw new NativeRecordStorageRequired(demand);
@@ -9348,7 +9373,20 @@ export class DataTypeRegistry {
             );
             const empty = (value: (typeof values)[number]): boolean =>
                 valued.length > 0 && nullish(value);
-            const mappedValue = (valued[0] ?? values.find(storing))?.mapped;
+            // A shape typing it only as a dynamic value (`unknown`) holds it
+            // as one, as the shapes after it do.
+            const first = valued[0] ?? values.find(storing);
+            const mappedValue =
+                first &&
+                (first.mapped ??
+                    (holdsOnly(first.type, ["unknown"])
+                        ? this.withDynamicJsonTypes(
+                              true,
+                              () =>
+                                  valueOf(declared[values.indexOf(first)]!)
+                                      .mapped,
+                          )
+                        : undefined));
             if (!mappedValue) {
                 this.unstoredLayoutProperties.set(type, {
                     name,

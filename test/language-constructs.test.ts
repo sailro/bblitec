@@ -7735,6 +7735,64 @@ checkInRealm(
 );
 
 checkInRealm(
+    "a-record-holding-an-instance-where-its-base-holds-a-dynamic-value-shares-one-layout",
+    `
+    class Failure extends Error {
+        constructor(readonly code: number) {
+            super("failure " + code);
+            this.name = "Failure";
+        }
+    }
+    interface Report {
+        kind: string;
+        error: unknown;
+        context?: string;
+    }
+    let log = "";
+    let last: Report | null = null;
+    let gate: ((input: Report) => boolean) | null = null;
+    function describe(error: unknown): string {
+        if (!error || typeof error !== "object") return typeof error === "string" ? error : "?";
+        const message = (error as Record<string, unknown>)["message"];
+        return typeof message === "string" ? message : "?";
+    }
+    function funnel(input: Report): void {
+        if (gate?.(input) === true) return;
+        log += input.kind + ":" + describe(input.error) + (input.context ?? "") + ";";
+    }
+    function reportFailure(input: Report & { error: Failure }): void {
+        if (!(input.error instanceof Failure)) return;
+        funnel(input);
+    }
+    // An open value asserted to a record type and compared by identity: a
+    // copy of the narrower record could not be told apart from it.
+    interface Token {
+        readonly id?: number;
+    }
+    const tokens = new Set<Token>();
+    function remember(value: unknown): boolean {
+        const token = value as Token;
+        if (tokens.has(token)) return false;
+        tokens.add(token);
+        return true;
+    }
+    gate = (input) => {
+        last = input;
+        return input.kind === "quiet";
+    };
+    const parsed: unknown = JSON.parse('{"id":1}');
+    log += (remember(parsed) ? "new" : "old") + (remember(parsed) ? "new" : "old") + ";";
+    const boot = { kind: "boot", error: new Failure(7), context: "@1" };
+    reportFailure(boot);
+    if (last !== boot || boot.error.code !== 7) throw new Error("shared record");
+    reportFailure({ kind: "quiet", error: new Failure(8) });
+    funnel({ kind: "plain", error: "text" });
+    if (log !== "newold;boot:failure 7@1;plain:text;") throw new Error("log " + log);
+    globalThis.close();
+`,
+);
+
+checkInRealm(
     "an-authored-error-a-dynamic-slot-holds-is-the-error-it-is",
     `
     class Failure extends Error {
