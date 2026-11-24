@@ -4134,6 +4134,29 @@ export class DataTypeRegistry {
             : this.collectionKeyStorage(type);
     }
 
+    /**
+     * The named records a named record type holds in its fields, for one
+     * that takes a layout only where it is stored (a field holds an anonymous
+     * record of methods): wherever it is stored they are behind its object,
+     * so they take reference storage before a value of theirs is emitted by
+     * value. Each is a named type its own `named-type` site already mapped.
+     */
+    public markHeldNamedRecords(type: ts.Type, node: ts.Node): void {
+        for (const property of this.checker.getPropertiesOfType(type)) {
+            const held = this.checker.getNonNullableType(
+                this.checker.getTypeOfSymbol(property),
+            );
+            if (
+                !isPlainRecord(this.checker, held) ||
+                declaredRecordName(held) === undefined
+            )
+                continue;
+            const mapped = this.fromTsType(held, node);
+            if (mapped?.kind === "struct")
+                this.markStoredObjectReferences(mapped);
+        }
+    }
+
     /** Resolve ownership demands before any earlier initializer or alias is emitted. */
     public predeclareOwnedRecord(demand: NativeRecordStorageDemand): void {
         this.withRecordDemand(demand, () => {

@@ -1765,18 +1765,40 @@ class Compiler implements LoweringServices {
                         : undefined);
                 if (type) this.dataTypes.markStoredObjectReferences(type);
             });
+        // Named record types with no layout outside a stored position, whose
+        // held named records are marked once every named type is mapped.
+        const unlaid: (ts.InterfaceDeclaration | ts.TypeAliasDeclaration)[] =
+            [];
         for (const site of storedReferenceSites(
             this.program.getSourceFiles(),
             this.symbols,
         ))
             this.predeclaring(
                 site.kind === "retained" ? site.target : site.node,
-                () => this.predeclareSite(site),
+                () => {
+                    if (site.kind !== "named-type") this.predeclareSite(site);
+                    else if (
+                        !this.dataTypes.fromTsType(
+                            this.checker.getTypeAtLocation(site.node.name),
+                            site.node,
+                        )
+                    )
+                        unlaid.push(site.node);
+                },
+            );
+        for (const node of unlaid)
+            this.predeclaring(node, () =>
+                this.dataTypes.markHeldNamedRecords(
+                    this.checker.getTypeAtLocation(node.name),
+                    node,
+                ),
             );
     }
 
     /** Predeclares the storage one stored-reference site needs. */
-    private predeclareSite(site: StoredReferenceSite): void {
+    private predeclareSite(
+        site: Exclude<StoredReferenceSite, { kind: "named-type" }>,
+    ): void {
         switch (site.kind) {
             case "retained": {
                 const targetType = this.checker.getTypeAtLocation(site.target);
@@ -1801,12 +1823,6 @@ class Compiler implements LoweringServices {
                 }
                 break;
             }
-            case "named-type":
-                this.dataTypes.fromTsType(
-                    this.checker.getTypeAtLocation(site.node.name),
-                    site.node,
-                );
-                break;
             case "annotated": {
                 // Mapping an explicitly stored container eagerly marks any
                 // object-valued entries as shared references. Do this before
