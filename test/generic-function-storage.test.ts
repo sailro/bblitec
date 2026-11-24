@@ -643,6 +643,43 @@ check(
     `,
 );
 
+// A base record type holding a generic record's instantiations, each read back
+// through an assertion under its own instantiation, holds their own fields in
+// one layout: a plan of one session read by the other reads what JavaScript does.
+check(
+    "instantiations-held-as-one-base-record",
+    `
+    interface Plan { readonly signature: string }
+    interface Move<S> { readonly id: number; readonly state: S }
+    interface SessionPlan<S> extends Plan { readonly moves: readonly Move<S>[] }
+    interface Session { plan(count: number): Plan | null; apply(plan: Plan | null): string }
+    function createSession<S>(states: readonly S[], show: (state: S) => string): Session {
+        return {
+            plan(count) {
+                if (count <= 0) return null;
+                const moves: Move<S>[] = states.slice(0, count).map((state, id) => ({ id, state }));
+                const plan: SessionPlan<S> = { signature: moves.map((move) => move.id).join("|"), moves };
+                return plan;
+            },
+            apply(plan) {
+                const moves = (plan as SessionPlan<S> | null)?.moves ?? [];
+                return moves.map((move) => move.id + ":" + show(move.state)).join(",");
+            },
+        };
+    }
+    interface House { u: number; v: number }
+    interface Tower { a: number; r: number }
+    const house = createSession<House>([{ u: 1, v: 2 }, { u: 3, v: 4 }], (state) => state.u + "/" + state.v);
+    const tower = createSession<Tower>([{ a: 5, r: 6 }], (state) => state.a + "/" + state.r);
+    const sessions: Session[] = [house, tower];
+    const plans = sessions.map((session, index) => session.plan(2 - index));
+    const applied = sessions.map((session, index) => session.apply(plans[index] ?? null));
+    if (applied.join(";") !== "0:1/2,1:3/4;0:5/6" || plans[0]?.signature !== "0|1" || house.apply(null) !== "")
+        throw new Error("plans " + applied.join(";"));
+    if (house.apply(plans[1] ?? null) !== "0:undefined/undefined") throw new Error("crossed " + house.apply(plans[1] ?? null));
+    `,
+);
+
 // A generic callable record stored as its registry's instantiation is the one
 // function object JavaScript keeps, its optional property read through it.
 check(

@@ -39,6 +39,12 @@ export interface RecordComponent {
     /** The members that are record unions. */
     readonly unions: readonly ts.UnionType[];
     /**
+     * The instantiations of generic records the component joined beside
+     * its concrete shapes: each lays its own fields out under its
+     * instantiation, in the one layout the shapes' fields take.
+     */
+    readonly instantiated: readonly InstantiatedRecord[];
+    /**
      * Member types whose static type can be wrong about a field: storage
      * of the type may hold a record of a member lacking it, put there
      * through an array the program also holds as an array of the narrower
@@ -456,8 +462,9 @@ export function recordComponents(
         else groups.set(root, [{ identity, type }]);
     }
     const components = new Map<RecordComponentKey, RecordComponent>();
-    const instantiated = (identity: RecordComponentKey): boolean =>
-        "generic" in identity;
+    const instantiated = (
+        identity: RecordComponentKey,
+    ): identity is InstantiatedRecord => "generic" in identity;
     // A record type only constructed as another lends the layout no shape.
     const shaping = new Set<RecordComponentKey>();
     for (const {
@@ -483,8 +490,9 @@ export function recordComponents(
     for (const group of groups.values()) {
         if (group.length < 2) continue;
         const members = group.map(({ type }) => type);
-        // An instantiation stands for the concrete shapes it joined; where
-        // only instantiations joined (two generic records under one call's
+        // The concrete members are the shapes, and each instantiation beside
+        // them adds its own fields under its instantiation; where only
+        // instantiations joined (two generic records under one call's
         // instantiation), they are the shapes, laid out under it.
         const shaped = group.filter(
             ({ identity }) => !constructedOnly(identity),
@@ -495,6 +503,12 @@ export function recordComponents(
         const laidOut = (concrete.length > 0 ? concrete : shaped).map(
             ({ type }) => type,
         );
+        const beside =
+            concrete.length > 0
+                ? shaped.flatMap(({ identity }) =>
+                      instantiated(identity) ? [identity] : [],
+                  )
+                : [];
         const unions = laidOut.filter((member): member is ts.UnionType =>
             member.isUnion(),
         );
@@ -524,6 +538,7 @@ export function recordComponents(
             shapes: [named, ...shapes.filter((shape) => shape !== named)],
             named,
             unions,
+            instantiated: beside,
             holdsNarrower,
         };
         for (const { identity } of group) components.set(identity, component);

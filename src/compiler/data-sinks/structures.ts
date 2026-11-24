@@ -764,6 +764,12 @@ function valueStruct(
             node,
             "accessors",
         );
+        lowerer.context.dataTypes.joinInstantiationBeside(
+            sourceType,
+            dataType,
+            lowerer.convertedExpression(node) ??
+                recordExpression(lowerer, value, node),
+        );
         // Receiver-aware slots retain presence independently of their payload.
         // Fresh plain literals can move their data into new owner cells;
         // authored accessors and aliased records must share one layout.

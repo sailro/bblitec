@@ -1588,6 +1588,8 @@ interface StructProperty {
 /** A struct property of one of the shapes a struct's layout holds. */
 interface OwnedStructProperty extends StructProperty {
     readonly owner: ts.Type;
+    /** An instantiation's own property: the type arguments it is declared under. */
+    readonly substitution?: ReadonlyMap<ts.Symbol, ts.Type>;
 }
 
 function declaredStructProperty(symbol: ts.Symbol): StructProperty {
@@ -3384,31 +3386,14 @@ export class DataTypeRegistry {
             const checked =
                 actual &&
                 (this.checker.getBaseConstraintOfType(actual) ?? actual);
+            // The struct and the record declaring the field (built as it, or
+            // read through an assertion) join; a generic one under the
+            // instantiation its call puts in force.
             if (
                 checked &&
                 this.checker
                     .getPropertiesOfType(checked)
                     .some((property) => property.name === field) &&
-                isRecordLike(this.checker, checked) &&
-                isPlainRecord(this.checker, source.type) &&
-                !this.joined(source.type, checked) &&
-                layoutsCompatible(this.checker, source.type, checked)
-            )
-                throw new NativeRecordStorageRequired({
-                    ...source,
-                    joins: [
-                        {
-                            source: source.type,
-                            target: checked,
-                            kind: "assertion",
-                        },
-                    ],
-                });
-            // A generic record and the record built as it declaring the
-            // field join under the instantiations their call puts in force.
-            if (
-                checked &&
-                checked.getProperty(field) &&
                 !this.joined(source.type, checked)
             ) {
                 const sourceInstantiation = this.recordInstantiation(
@@ -3429,7 +3414,13 @@ export class DataTypeRegistry {
                             join.targetInstantiation === targetInstantiation &&
                             join.kind === "assertion",
                     );
-                if ((sourceInstantiation || targetInstantiation) && !demanded)
+                if (
+                    sourceInstantiation || targetInstantiation
+                        ? !demanded
+                        : isRecordLike(this.checker, checked) &&
+                          isPlainRecord(this.checker, source.type) &&
+                          layoutsCompatible(this.checker, source.type, checked)
+                )
                     throw new NativeRecordStorageRequired({
                         ...source,
                         joins: [
@@ -3574,6 +3565,56 @@ export class DataTypeRegistry {
         });
         return resolved.every((argument) => argument !== undefined)
             ? instantiatedRecord(generic, resolved)
+            : undefined;
+    }
+
+    /**
+     * The declared type of the generic record an instantiation instantiates
+     * and the substitution its arguments give that type's own parameters:
+     * the instantiation's fields are the declared type's, laid out under
+     * it. Undefined for an intersection's, which declares no parameters,
+     * and where an argument is itself an instantiation.
+     */
+    private instantiationLayout(
+        record: InstantiatedRecord,
+    ):
+        | { type: ts.Type; substitution: ReadonlyMap<ts.Symbol, ts.Type> }
+        | undefined {
+        const { generic } = record;
+        const symbol = "escapedName" in generic ? generic : generic.symbol;
+        if (
+            !symbol ||
+            (!("escapedName" in generic) && generic.isIntersection())
+        )
+            return undefined;
+        const declaration = symbol.declarations?.find(
+            (
+                node,
+            ): node is
+                | ts.TypeAliasDeclaration
+                | ts.InterfaceDeclaration
+                | ts.ClassLikeDeclaration =>
+                (ts.isTypeAliasDeclaration(node) ||
+                    ts.isInterfaceDeclaration(node) ||
+                    ts.isClassLike(node)) &&
+                node.typeParameters !== undefined,
+        );
+        const parameters = declaration?.typeParameters ?? [];
+        const substitution = new Map<ts.Symbol, ts.Type>();
+        for (const [index, parameter] of parameters.entries()) {
+            const argument = record.arguments[index];
+            const name = declaredSymbol(this.checker, parameter.name);
+            if (!argument || "generic" in argument || !name) return undefined;
+            substitution.set(name, argument);
+        }
+        return substitution.size > 0
+            ? {
+                  type:
+                      "escapedName" in generic
+                          ? this.checker.getDeclaredTypeOfSymbol(generic)
+                          : generic,
+                  substitution,
+              }
             : undefined;
     }
 
@@ -4707,6 +4748,81 @@ export class DataTypeRegistry {
     }
 
     /**
+     * A record of an instantiation stored as a component's struct where
+     * instantiations of its generic record lay their own fields out beside
+     * the shapes (`RecordComponent.instantiated`) joins the component as
+     * they did, before any conversion copies it: its own fields join the
+     * one layout theirs take, rather than being converted to another
+     * instantiation's storage. The `expression` stored, its own and
+     * contextual types, names the records.
+     */
+    public joinInstantiationBeside(
+        sourceType: DataType<"struct">,
+        targetType: DataType<"struct">,
+        expression: ts.Expression | undefined,
+    ): void {
+        const source = this.storedRecordSource(
+            sourceType,
+            expression && this.checker.getTypeAtLocation(expression),
+            expression,
+        );
+        const target = this.storedRecordSource(
+            targetType,
+            expression && this.checker.getContextualType(expression),
+            expression,
+        );
+        if (source && target)
+            this.requireBesideJoin(
+                source,
+                this.checker.getNonNullableType(source.type),
+                this.checker.getNonNullableType(target.type),
+            );
+    }
+
+    /**
+     * Demands that `record`, an instantiation met as or through
+     * `target`'s struct, join `target`'s component where instantiations of
+     * its generic record lay their fields out beside the component's shapes
+     * (`joinInstantiationBeside`); nothing otherwise.
+     */
+    private requireBesideJoin(
+        source: NativeRecordStorageDemand,
+        record: ts.Type,
+        target: ts.Type,
+    ): void {
+        const beside = this.recordComponentOf(target)?.instantiated;
+        if (!beside?.length) return;
+        const instantiated = this.recordInstantiation(source, record);
+        if (
+            !instantiated ||
+            !beside.some(
+                (identity) => identity.generic === instantiated.generic,
+            ) ||
+            beside.includes(instantiated) ||
+            this.demandedJoins
+                .get(record)
+                ?.some(
+                    (join) =>
+                        join.target === target &&
+                        join.sourceInstantiation === instantiated,
+                )
+        )
+            return;
+        this.requireJoin({
+            ...source,
+            type: record,
+            joins: [
+                {
+                    source: record,
+                    target,
+                    sourceInstantiation: instantiated,
+                    kind: "value",
+                },
+            ],
+        });
+    }
+
+    /**
      * A record the program may still reach, stored as another record type.
      * JavaScript keeps one object under both types. A native copy is kept
      * only where nothing in the program can tell it from that object
@@ -4770,6 +4886,8 @@ export class DataTypeRegistry {
             source && this.checker.getNonNullableType(source.type);
         const targetRecord =
             target && this.checker.getNonNullableType(target.type);
+        if (source && sourceRecord && targetRecord)
+            this.requireBesideJoin(source, sourceRecord, targetRecord);
         const union = targetRecord?.isUnion() === true;
         const lacked = lackedField(sourceFields, targetFields);
         const split = targetFields.find((field) => {
@@ -9717,7 +9835,9 @@ export class DataTypeRegistry {
      * declaration of it the struct stores: the type's own, or, for a member
      * of a record component, the union of its shapes' properties (its
      * members', a record union's arms') in the widest shape's order, a
-     * property some shape lacks held absent in that shape's records.
+     * property some shape lacks held absent in that shape's records. The
+     * instantiations a component joined beside its shapes add theirs, each
+     * declared under its instantiation (`instantiationLayout`).
      */
     private layoutProperties(type: ts.Type): {
         readonly shapes: number;
@@ -9726,17 +9846,30 @@ export class DataTypeRegistry {
             readonly OwnedStructProperty[]
         >;
     } {
-        const shapes = this.recordComponentOf(type)?.shapes ?? [type];
+        const component = this.recordComponentOf(type);
+        const shapes = component?.shapes ?? [type];
         const properties = new Map<string, OwnedStructProperty[]>();
+        const add = (owned: OwnedStructProperty): void => {
+            const declared = properties.get(owned.symbol.name);
+            if (declared) declared.push(owned);
+            else properties.set(owned.symbol.name, [owned]);
+        };
         for (const owner of shapes)
-            for (const property of this.structProperties(owner)) {
-                const declared = properties.get(property.symbol.name);
-                if (declared) declared.push({ owner, ...property });
-                else
-                    properties.set(property.symbol.name, [
-                        { owner, ...property },
-                    ]);
-            }
+            for (const property of this.structProperties(owner))
+                add({ owner, ...property });
+        for (const identity of component?.instantiated ?? []) {
+            const layout = this.instantiationLayout(identity);
+            if (!layout) continue;
+            for (const property of this.withTypeArguments(
+                layout.substitution,
+                () => this.structProperties(layout.type),
+            ))
+                add({
+                    owner: layout.type,
+                    ...property,
+                    substitution: layout.substitution,
+                });
+        }
         return { shapes: shapes.length, properties };
     }
 
@@ -9828,6 +9961,13 @@ export class DataTypeRegistry {
             mapped: DataType | undefined;
             callable: boolean;
         } => {
+            // An instantiation's own property maps under its instantiation.
+            if (owned.substitution) {
+                const { substitution, ...declaredOwn } = owned;
+                return this.withTypeArguments(substitution, () =>
+                    valueOf(declaredOwn),
+                );
+            }
             const { owner, symbol: property } = owned;
             const declaration =
                 property.valueDeclaration ?? property.declarations?.[0];
@@ -9982,8 +10122,10 @@ export class DataTypeRegistry {
                 stored = storage(unionField);
                 break;
             }
-            // Records of a member not declaring it hold it absent.
-            const absent = declared.length < layout.shapes;
+            // Records of a shape not declaring it hold it absent.
+            const absent =
+                declared.filter(({ substitution }) => !substitution).length <
+                layout.shapes;
             const unchecked =
                 partial ||
                 absent ||
@@ -11973,7 +12115,30 @@ export class DataTypeRegistry {
                 `Struct ${name} has no field '${field}'.`,
             );
         if (found.accessor && !accessors) this.failAccessorField(found, node);
+        this.joinReadInstantiation(name, node);
         return found;
+    }
+
+    /**
+     * A read at `node` of `structName`'s field through a record of an
+     * instantiation joins the struct's component first where instantiations
+     * of its generic record lay their fields out beside its shapes
+     * (`requireBesideJoin`).
+     */
+    private joinReadInstantiation(structName: string, node: ts.Node): void {
+        const expression =
+            ts.isPropertyAccessExpression(node) ||
+            ts.isElementAccessExpression(node)
+                ? node.expression
+                : undefined;
+        const source = this.nativeRecordSources.get(structName)?.type;
+        const target = source && this.checker.getNonNullableType(source);
+        if (!expression || !target) return;
+        if (!this.recordComponentOf(target)?.instantiated.length) return;
+        const read = this.checker.getNonNullableType(
+            this.checker.getTypeAtLocation(expression),
+        );
+        this.requireBesideJoin(this.recordDemand(read, node), read, target);
     }
 
     /**
