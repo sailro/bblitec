@@ -5663,7 +5663,20 @@ export class ExpressionLowerer {
             "read",
         );
         if (data) {
-            return data;
+            // `xs[i]!` over optional engine handles is the handle an engine
+            // call takes: an absent one throws the TypeError the callee would
+            // throw reading it. Other storage keeps what `!` leaves at run
+            // time, null and undefined included.
+            const inner =
+                assertedNonNull && data.dataType?.kind === "optional"
+                    ? data.dataType.inner
+                    : undefined;
+            return inner?.kind === "handle"
+                ? this.context.dataLowerer.leafValue(
+                      `bbl::js::present(${data.cpp})`,
+                      inner,
+                  )
+                : data;
         }
         const collectionElement =
             this.context.handleCollections.collectionElementAccess(unwrapped);

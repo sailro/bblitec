@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
+import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
@@ -79,6 +81,90 @@ assert(bbl::matrix_reads[1]==1.0000000000000002&&bbl::matrix_reads[2]==1.0000000
 assert(bbl::matrix_inputs[3].first.load(0)==1.0000000000000002&&bbl::matrix_inputs[4].first.load(0)==1.0000000000000002);
 assert(bbl::matrix_inputs[5].second==0);
 assert(bbl::matrix_inputs[0].first.load(12)==11&&bbl::matrix_inputs[1].first.load(12)==1.0000000000000004);
+}`,
+        { flags: ["/DBBLITE_WORKERS=1", "/DBBLITE_OFFSCREEN_SURFACES=1"] },
+    );
+});
+
+// pom-brick-batch: a caster list holds a mesh or nothing per slot, and the
+// guarded slot passes `casters[i]!` to the engine.
+test("a mesh asserted present out of a list of optional meshes reaches the engine as JavaScript passes it", (t) => {
+    const source = `
+import {createEngine,createBox,setThinInstances,type Mesh} from "@babylonjs/lite";
+const engine=await createEngine(new OffscreenCanvas(1,1));
+const a=createBox(engine),b=createBox(engine),c=createBox(engine);
+const shared:Mesh[]=[];
+const casters:(Mesh|undefined)[]=[];
+for(let i=0;i<4;i++){
+  shared.push(i===0?a:i===3?c:b);
+  casters.push(i===1?undefined:i===2?c:i===3?b:a);
+}
+const matrices=new Float32Array(16);
+for(let i=0;i<casters.length;i++){
+  if(casters[i]&&casters[i]!==shared[i])setThinInstances(casters[i]!,matrices,i);
+}
+globalThis.close();
+`;
+    // JavaScript passes c at slot 2 and b at slot 3.
+    const calls: [string, number][] = [];
+    const boxes = ["a", "b", "c"];
+    runInNewContext(
+        ts.transpileModule(
+            source.replace("await createEngine", "createEngine"),
+            {
+                compilerOptions: {
+                    target: ts.ScriptTarget.ESNext,
+                    module: ts.ModuleKind.CommonJS,
+                },
+            },
+        ).outputText,
+        {
+            exports: {},
+            OffscreenCanvas: class {},
+            globalThis: { close() {} },
+            require: () => ({
+                createEngine: () => ({}),
+                createBox: () => ({ name: boxes.shift() }),
+                setThinInstances: (
+                    mesh: { name: string },
+                    _: unknown,
+                    count: number,
+                ) => calls.push([mesh.name, count]),
+            }),
+        },
+    );
+    assert.deepEqual(calls, [
+        ["c", 2],
+        ["b", 3],
+    ]);
+    const result = compileSource(source);
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native compiler required for the engine calls.");
+        return;
+    }
+    runGeneratedProgram(
+        native,
+        "thin-instance-asserted-present",
+        `#include <bblite/pal_async_engine.hpp>
+#include <cassert>
+namespace bbl::pal {
+std::shared_ptr<Engine> create_realm_engine(EngineOptions, const std::shared_ptr<OffscreenCanvas>&) { return std::make_shared<Engine>(); }
+}
+namespace bbl {
+std::vector<std::pair<std::uint32_t,double>> captured;
+Engine create_engine(EngineOptions) { return {}; }
+MeshHandle create_box(Engine& engine,BoxOptions) { engine.meshes.emplace_back(); return {static_cast<std::uint32_t>(engine.meshes.size()-1)}; }
+void set_thin_instances(Engine&,MeshHandle mesh,const std::variant<js::F32Array,js::F64Array>&,double count) { captured.emplace_back(mesh.value,count); }
+}
+#define main generated_scene_main
+${result.cpp}
+#undef main
+int main() {
+assert(generated_scene_main()==0);
+assert(bbl::captured.size()==2);
+assert(bbl::captured[0]==std::make_pair(std::uint32_t{2},2.0));
+assert(bbl::captured[1]==std::make_pair(std::uint32_t{1},3.0));
 }`,
         { flags: ["/DBBLITE_WORKERS=1", "/DBBLITE_OFFSCREEN_SURFACES=1"] },
     );
