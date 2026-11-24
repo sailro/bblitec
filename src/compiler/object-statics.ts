@@ -20,6 +20,7 @@ import {
     unwrapExpression,
 } from "./syntax.js";
 import { someAnalysisNode } from "./analysis-walk.js";
+import { undeclaredMembersObservable } from "./record-observations.js";
 import type { LoweringServices } from "./lowering-services.js";
 import {
     booleanValue,
@@ -128,11 +129,39 @@ type ObjectStaticContext = Pick<
 /** What the own-entry walks read. */
 type OwnEntryContext = Pick<
     ObjectStaticContext,
-    "checker" | "dataTypes" | "dataLowerer" | "fail"
+    "checker" | "dataTypes" | "dataLowerer" | "fail" | "program"
 >;
 
 type OwnObjectContext = OwnEntryContext &
     Pick<ObjectStaticContext, "moduleNamespaces">;
+
+/**
+ * Whether a generation-known member `key` of the value `node` copies into
+ * struct `structName` is dropped: the struct declares no such field and
+ * nothing could see a member the source's type does not declare
+ * (`undeclaredMembersObservable`). A declared key, or an observable one, is
+ * read as a field (refused where the struct lacks it).
+ */
+export function undeclaredMemberDropped(
+    context: Pick<OwnEntryContext, "checker" | "dataTypes" | "program">,
+    structName: string,
+    key: string,
+    node: ts.Node,
+): boolean {
+    return (
+        context.dataTypes.findStructField(structName, key, node) ===
+            undefined &&
+        !undeclaredMembersObservable(
+            context.program,
+            context.checker,
+            context.checker.getTypeAtLocation(
+                ts.isSpreadAssignment(node) || ts.isSpreadElement(node)
+                    ? node.expression
+                    : node,
+            ),
+        )
+    );
+}
 
 /** Raw descriptor order, with JavaScript's integer keys first. */
 export function recordPropertyKeys(owner: Value): string[] {
@@ -229,8 +258,11 @@ export function structOwnEntries(
         context.dataTypes.keyOrders.noteEnumeration(dataType.name, node);
     refuseErrorReflection(context, owner, node);
     const access = context.dataTypes.memberAccess(dataType.name);
-    const sourceFields = owner.recordOwnKeys
-        ? owner.recordOwnKeys.map((key) =>
+    const ownKeys = owner.recordOwnKeys?.filter(
+        (key) => !undeclaredMemberDropped(context, dataType.name, key, node),
+    );
+    const sourceFields = ownKeys
+        ? ownKeys.map((key) =>
               context.dataTypes.structField(
                   dataType.name,
                   key,

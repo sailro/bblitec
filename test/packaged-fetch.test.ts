@@ -176,6 +176,121 @@ test("an awaited loader of a packaged document binds the data generation reads, 
     runPackagedProgram(t, directory, result);
 });
 
+test("a member the bound data holds and its declared type does not is dropped only where no value of the type is observed", (t) => {
+    const directory = resolve("artifacts/packaged-config-members");
+    const publicDir = join(directory, "public");
+    mkdirSync(publicDir, { recursive: true });
+    writeFileSync(
+        join(publicDir, "config.json"),
+        JSON.stringify({ deck: { _note: "documentation", width: 2 } }),
+    );
+    const program = (observe: string, use: string) => `
+        interface Deck { width: number; wear: number }
+        const DECK: Deck = { width: 1, wear: 0.25 };
+        interface Config { deck: Partial<Deck> }
+        async function loadConfig(name: string): Promise<Config> {
+            const response = await fetch(\`\${location.origin}/\${name}\`);
+            return (await response.json()) as Config;
+        }
+        function deckText(opts: { deck?: Partial<Deck> }): string {
+            const merged: Deck = { ...DECK, ...opts.deck };
+            ${observe}
+            return merged.width.toFixed(1) + "," + merged.wear.toFixed(2);
+        }
+        ${use}
+    `;
+    const options = {
+        fileName: join(directory, "entry.ts"),
+        publicDir,
+        siteUrl: "https://assets.example/",
+    };
+    const shader = `
+        import { createEngine, createSceneContext, createShaderMaterial, wgsl } from "babylon-lite";
+        async function build(): Promise<void> {
+            const canvas = document.createElement("canvas");
+            document.body.appendChild(canvas);
+            const engine = await createEngine(canvas);
+            createSceneContext(engine);
+            const config = await loadConfig("config.json");
+            createShaderMaterial({
+                name: "deck",
+                vertexSource: wgsl\`\${\`@vertex fn mainVertex() -> @builtin(position) vec4<f32> { return vec4<f32>(\${deckText({ deck: { ...DECK, ...config.deck } })}, 0.0, 1.0); }\`}\`,
+                fragmentSource: wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`,
+                attributes: ["position"],
+            });
+        }
+        void build();
+    `;
+    // No Deck is ever observed: the documentation member is dropped.
+    assert.match(
+        JSON.stringify(compileSource(program("", shader), options).manifest),
+        /vec4<f32>\(2\.0,0\.25, 0\.0/,
+    );
+    // A Deck whose keys are enumerated keeps the member, which no field holds.
+    assert.throws(
+        () =>
+            compileSource(
+                program(
+                    'if (Object.keys(merged).length > 2) document.title = "documented";',
+                    shader,
+                ),
+                options,
+            ),
+        /Struct Deck has no field '_note'/,
+    );
+    // So does one a callback whose parameter reads it as any object enumerates.
+    assert.throws(
+        () =>
+            compileSource(
+                program(
+                    `const decks: Deck[] = [merged];
+                    decks.forEach((v: object) => { if (Object.keys(v).length > 2) document.title = "documented"; });`,
+                    shader,
+                ),
+                options,
+            ),
+        /Struct Deck has no field '_note'/,
+    );
+    // So does one a record it is held in carries where code walks into any
+    // object, itself or as a literal's member.
+    const nested = `const nested = (o: unknown): number => typeof o === "object" && o !== null ? Object.values(o).filter((v: unknown) => typeof v === "object" && v !== null && Object.keys(v).length > 2).length : 0;`;
+    for (const walk of [
+        `const holder = { deck: merged }; if (nested(holder) > 0) document.title = "documented";`,
+        `if (nested({ deck: merged }) > 0) document.title = "documented";`,
+    ])
+        assert.throws(
+            () => compileSource(program(`${nested} ${walk}`, shader), options),
+            /Struct Deck has no field '_note'/,
+        );
+    // And one handed to an alias, whose implicit index signature then lets
+    // it reach a parameter that enumerates an indexed object's keys.
+    assert.throws(
+        () =>
+            compileSource(
+                program(
+                    `type DeckShape = { width: number; wear: number };
+                    const shape: DeckShape = merged;
+                    const indexed = (lanes: { [i: number]: number }): number => Object.keys(lanes).length;
+                    if (indexed(shape) > 2) document.title = "documented";`,
+                    shader,
+                ),
+                options,
+            ),
+        /Struct Deck has no field '_note'/,
+    );
+    const result = compileSource(
+        program(
+            "",
+            `void (async () => {
+                const config = await loadConfig("config.json");
+                if (deckText({ deck: { ...DECK, ...config.deck } }) !== "2.0,0.25") throw new Error("deck");
+                globalThis.close();
+            })();`,
+        ),
+        options,
+    );
+    runPackagedProgram(t, directory, result);
+});
 test("a fetch of a URL the deployment holds no file at rejects", (t) => {
     // The native build cannot tell whether a server would answer the URL,
     // so the fetch rejects, as one outside the package does.

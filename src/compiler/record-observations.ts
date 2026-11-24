@@ -8,11 +8,19 @@ import {
     nullability,
     arrayElementType,
     arrayShape,
+    callSignatures,
+    libraryDeclaredType,
+    objectLikeType,
+    reachedTypes,
+    signatureParameterTypes,
+    stringIndexType,
     unionMembers,
+    viewsAnyRecord,
     weakTypeProperties,
 } from "./type-facts.js";
 import {
     programObservations,
+    type MemberDefinition,
     type ObservedWrite,
     type ProgramObservations,
 } from "./program-observations.js";
@@ -29,6 +37,7 @@ import {
 } from "./binding-references.js";
 import { OPEN_HOLDER_FLAGS } from "./written-holders.js";
 import {
+    declarationInDefaultLibrary,
     declarationOrigin,
     declaredSymbol,
     resolvedSymbol,
@@ -56,6 +65,8 @@ import {
     literalKey,
     valueConsumer,
     isGeneratorFunction,
+    isDestructuringPattern,
+    wrappedParent,
 } from "./syntax.js";
 
 /** What a record-observation question reads: the program and the code its calls run. */
@@ -216,6 +227,291 @@ export function observedUnderOwnType(
         observations.copies.some(({ from }) => typed(from));
     ownTypeReads.set(literal, observed);
     return observed;
+}
+
+/** Where a record's own keys can show, over a program ({@link undeclaredMembersObservable}). */
+interface KeyObservations {
+    /** The types whose values' own keys are viewed, none viewing any record. */
+    readonly views: readonly ts.Type[];
+    /**
+     * The types of values handed or asserted where any record may be viewed,
+     * or handed to code the program does not hold.
+     */
+    readonly escapes: readonly ts.Type[];
+    /** Values a hand-off, a spread or an assertion carries, own keys and all, into an `into`. */
+    readonly flows: readonly {
+        readonly from: ts.Type;
+        readonly into: ts.Type;
+    }[];
+    /** A member defined reflectively is read as a function value: every record may show. */
+    readonly unbounded: boolean;
+}
+
+/** @unjournaled Pure functions of the checked program, kept across replays. */
+const keyObservations = new WeakMap<ts.Program, KeyObservations>();
+/** @unjournaled Pure answers of the checked program, kept across replays. */
+const undeclaredMemberAnswers = new WeakMap<ts.Type, boolean>();
+
+/**
+ * Whether the program could see a member a record of type `record` holds
+ * that its type does not declare: through a key view
+ * (`ProgramObservations.keyViews`) of a type that can hold it; through a
+ * value that can hold it handed or asserted where any record may be viewed
+ * (`viewsAnyRecord`) or handed to code the program does not hold, the
+ * default library's aside; or through a hand-off, a spread or an assertion
+ * of it into a type whose records could. A view of a type that views any record sees
+ * such a record only through the value that widened into it: one handed
+ * or asserted, or one handed to a function whose parameter reads wider
+ * than its callers type it.
+ */
+export function undeclaredMembersObservable(
+    program: ts.Program,
+    checker: ts.TypeChecker,
+    record: ts.Type,
+): boolean {
+    const known = undeclaredMemberAnswers.get(record);
+    if (known !== undefined) return known;
+    let index = keyObservations.get(program);
+    if (!index)
+        keyObservations.set(
+            program,
+            (index = indexKeyObservations(program, checker)),
+        );
+    const { views, escapes, flows, unbounded } = index;
+    if (unbounded) return true;
+    const observable = (candidate: ts.Type, seen: Set<ts.Type>): boolean => {
+        // A cycle of copies shows nothing of its own.
+        if (seen.has(candidate)) return false;
+        seen.add(candidate);
+        const holds = (holder: ts.Type): boolean =>
+            holdsRecord(checker, holder, [candidate]);
+        return (
+            views.some(holds) ||
+            escapes.some(holds) ||
+            flows.some(
+                ({ from, into }) => holds(from) && observable(into, seen),
+            )
+        );
+    };
+    const answer = observable(record, new Set());
+    undeclaredMemberAnswers.set(record, answer);
+    return answer;
+}
+
+/** {@link KeyObservations}, from the program's observations. */
+function indexKeyObservations(
+    program: ts.Program,
+    checker: ts.TypeChecker,
+): KeyObservations {
+    const observations = programObservations(program);
+    const typeOf = (node: ts.Node): ts.Type => checker.getTypeAtLocation(node);
+    const wide = (type: ts.Type): boolean => viewsAnyRecord(checker, type);
+    const escapes: ts.Type[] = [];
+    const flows: { from: ts.Type; into: ts.Type }[] = [];
+    const flowing = new Map<ts.Type, Set<ts.Type>>();
+    // A value that escapes takes every record it leads to along: code that
+    // views it as any record can walk into what it holds.
+    const escapeReached = (type: ts.Type): void => {
+        for (const reached of reachedTypes(checker, type))
+            if (!wide(reached)) escapes.push(reached);
+    };
+    // A value handed on is seen as its slot's type there too, member by
+    // member: an interface's record given to an alias-typed slot takes the
+    // alias's implicit index signature on, and so do the records it holds.
+    const reach = (from: ts.Type, into: ts.Type | undefined): void => {
+        if (wide(from) || into === undefined || into === from) return;
+        if (wide(into)) {
+            escapeReached(from);
+            return;
+        }
+        if (!unionMembers(from).some(objectLikeType)) return;
+        let targets = flowing.get(from);
+        if (!targets) flowing.set(from, (targets = new Set()));
+        if (targets.has(into)) return;
+        targets.add(into);
+        flows.push({ from, into });
+        const element = arrayElementType(checker, from);
+        const slotElement = arrayElementType(checker, into);
+        if (element && slotElement) reach(element, slotElement);
+        if (libraryDeclaredType(from)) return;
+        for (const slot of unionMembers(checker.getNonNullableType(into)))
+            for (const property of checker.getPropertiesOfType(from)) {
+                const member = checker.getPropertyOfType(slot, property.name);
+                reach(
+                    checker.getTypeOfSymbol(property),
+                    member
+                        ? checker.getTypeOfSymbol(member)
+                        : stringIndexType(checker, slot),
+                );
+            }
+    };
+    for (const value of observations.handed) {
+        const own = typeOf(value);
+        if (wide(own)) continue;
+        // A member of a literal is handed where the literal is.
+        const root = literalRoot(value);
+        if (
+            foreignArgument(checker, value) ||
+            (root !== outermostWrapper(value) &&
+                ts.isExpression(root) &&
+                wide(checker.getContextualType(root) ?? typeOf(root)))
+        )
+            escapeReached(own);
+        else reach(own, checker.getContextualType(value));
+    }
+    // A function whose parameter reads wider than its callers type it
+    // (`(v: object) => Object.keys(v)` given where `(value: T) => void` is
+    // expected) views what they hand it as any record: what the expected
+    // signature passes, and as a call's argument all its receiver and
+    // arguments lead to.
+    const parameterTypes = (node: ts.Node, type = typeOf(node)) =>
+        callSignatures(checker, type, "present").flatMap((signature) =>
+            signatureParameterTypes(checker, signature, node),
+        );
+    const widens = (parameter: ts.Type): boolean =>
+        reachedTypes(checker, parameter).some(wide);
+    for (const value of [
+        ...observations.handed,
+        ...observations.givenFunctions,
+    ]) {
+        const own = parameterTypes(value).filter(widens);
+        if (own.length === 0) continue;
+        const contextual = checker.getContextualType(value);
+        const expected = contextual ? parameterTypes(value, contextual) : [];
+        if (own.every((parameter) => expected.includes(parameter))) continue;
+        expected.forEach(escapeReached);
+        const call = argumentCall(value);
+        if (!call) continue;
+        const receiver = namedMember(
+            checker,
+            unwrapExpression(call.expression),
+        );
+        if (receiver) escapeReached(typeOf(receiver.expression));
+        for (const argument of call.arguments ?? [])
+            escapeReached(typeOf(argument));
+    }
+    // A member defined as such a function is called through any type naming
+    // it: every call of a member of that name hands it its arguments. A read
+    // of it as a function value lets it go where the walk cannot follow, so
+    // its parameter may receive whatever its declared type admits; a
+    // reflective definition's value is not followed and admits anything.
+    let unbounded = false;
+    // A reflective definition's value is not followed: it may be one.
+    const definedFunction = (
+        definition: Exclude<MemberDefinition, { via: "reflect" }>,
+    ): ts.Node | undefined => {
+        switch (definition.via) {
+            case "literal":
+            case "write":
+                return (
+                    definition.stored ??
+                    (ts.isMethodDeclaration(definition.node)
+                        ? definition.node.name
+                        : undefined)
+                );
+            case "class":
+                return ts.isPropertyDeclaration(definition.node) &&
+                    definition.node.initializer
+                    ? definition.node.initializer
+                    : ts.isMethodDeclaration(definition.node) ||
+                        ts.isParameter(definition.node)
+                      ? definition.node.name
+                      : undefined;
+        }
+    };
+    const wideningParameters = (
+        definition: MemberDefinition,
+    ): readonly ts.Type[] | undefined => {
+        if (definition.via === "reflect") return undefined;
+        const defined = definedFunction(definition);
+        return defined ? parameterTypes(defined).filter(widens) : [];
+    };
+    for (const [name, definitions] of observations.definitions) {
+        const parameters = definitions.map(wideningParameters);
+        if (parameters.every((types) => types?.length === 0)) continue;
+        for (const { node } of observations.memberCalls.get(name) ?? []) {
+            const call = ts.isExpression(node) && wrappedParent(node);
+            if (call && ts.isCallExpression(call))
+                for (const argument of call.arguments)
+                    escapeReached(typeOf(argument));
+        }
+        if (
+            (observations.namedReads.get(name) ?? []).some(
+                ({ node }) =>
+                    callSignatures(checker, typeOf(node), "present").length > 0,
+            )
+        )
+            for (const types of parameters)
+                if (types === undefined) unbounded = true;
+                else
+                    for (const parameter of types)
+                        escapes.push(...reachedTypes(checker, parameter));
+    }
+    // A rest's keys are a key view; a spread's land in the literal.
+    for (const { from, into } of observations.copies) {
+        if (!ts.isObjectLiteralExpression(into) || isDestructuringPattern(into))
+            continue;
+        const own = typeOf(from);
+        if (wide(own)) continue;
+        const target = checker.getContextualType(into) ?? typeOf(into);
+        if (foreignArgument(checker, into)) escapeReached(own);
+        else reach(own, target);
+    }
+    for (const assertion of observations.typeAssertions) {
+        if (ts.isConstTypeReference(assertion.type)) continue;
+        const own = typeOf(unwrapExpression(assertion.expression));
+        if (wide(own)) continue;
+        reach(own, typeOf(assertion));
+    }
+    return {
+        views: [...observations.keyViews].filter((view) => !wide(view)),
+        escapes,
+        flows,
+        unbounded,
+    };
+}
+
+/** The outermost literal a value is a member or element of, or the value: through wrappers each. */
+function literalRoot(value: ts.Node): ts.Node {
+    let site = outermostWrapper(value);
+    while (
+        ts.isPropertyAssignment(site.parent) ||
+        ts.isShorthandPropertyAssignment(site.parent) ||
+        ts.isSpreadAssignment(site.parent) ||
+        ts.isSpreadElement(site.parent) ||
+        ts.isArrayLiteralExpression(site.parent) ||
+        ts.isObjectLiteralExpression(site.parent)
+    )
+        site =
+            ts.isArrayLiteralExpression(site.parent) ||
+            ts.isObjectLiteralExpression(site.parent)
+                ? outermostWrapper(site.parent)
+                : site.parent;
+    return site;
+}
+
+/** The call a value is given to as an argument, itself or as a part of literals. */
+function argumentCall(
+    value: ts.Node,
+): ts.CallExpression | ts.NewExpression | undefined {
+    const site = literalRoot(value);
+    const call = site.parent;
+    return (ts.isCallExpression(call) || ts.isNewExpression(call)) &&
+        (call.arguments ?? []).some((argument) => argument === site)
+        ? call
+        : undefined;
+}
+
+/**
+ * Whether a value is given, itself or as a part of literals, to a call of
+ * code the program does not hold, the default library's aside: a callee
+ * the checker resolves to no declaration, or to one without a body.
+ */
+function foreignArgument(checker: ts.TypeChecker, value: ts.Node): boolean {
+    const call = argumentCall(value);
+    if (!call || calledFunction(checker, call)) return false;
+    const declaration = calledDeclaration(checker, call);
+    return !(declaration && declarationInDefaultLibrary(declaration));
 }
 
 /**

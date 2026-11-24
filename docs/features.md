@@ -184,7 +184,9 @@ Rules:
   boolean type that every run reads alike (the defaults a failing load returns included) reads as that constant,
   where every source holds a value of that kind and no write in the program replaces a member on the way once its
   record is built. `const x = await f()` nothing writes through binds the plain data a generation run of `f` settles
-  to when every fetch of that run reads a packaged file; the call still runs natively.
+  to when every fetch of that run reads a packaged file; the call still runs natively. A generation-known member a
+  declared record type lacks is dropped where no value of that type is ever enumerated, reflected on, cloned, messaged
+  or handed to an `unknown`/`object`/index-signature slot or to code the program does not hold; elsewhere it refuses.
 - `fetch` (application realm): absolute HTTP(S), method, string headers, body, static cache mode, `keepalive`, `signal`; streamed
   `body` reader. Known asset fetches use packaged responses. A `typeof fetch` wrapper forwards its runtime `RequestInit`
   (signal, headers). Request objects, teeing and Headers iteration refuse.

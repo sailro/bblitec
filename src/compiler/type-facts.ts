@@ -407,6 +407,47 @@ export function isTypeReference(type: ts.Type): type is ts.TypeReference {
     );
 }
 
+/** Whether a type is declared by a library: a declaration file declares its symbol. */
+export function libraryDeclaredType(type: ts.Type): boolean {
+    return (type.getSymbol()?.declarations ?? []).some(
+        (declaration) => declaration.getSourceFile().isDeclarationFile,
+    );
+}
+
+/**
+ * The types a value of `type` can lead to: its union and intersection
+ * members and, through each, a generic instantiation's or an alias's type
+ * arguments (an array's, a `Promise`'s, a `Record`'s), its index
+ * signatures' value types and the member types of an object type the
+ * program declares. A library type's members are not followed: it holds a
+ * program's values only through its type arguments.
+ */
+export function reachedTypes(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): readonly ts.Type[] {
+    const reached = new Set<ts.Type>();
+    const visit = (candidate: ts.Type): void => {
+        if (reached.has(candidate)) return;
+        reached.add(candidate);
+        if (candidate.isUnionOrIntersection()) {
+            candidate.types.forEach(visit);
+            return;
+        }
+        if ((candidate.flags & ts.TypeFlags.Object) === 0) return;
+        if (isTypeReference(candidate))
+            checker.getTypeArguments(candidate).forEach(visit);
+        candidate.aliasTypeArguments?.forEach(visit);
+        for (const info of checker.getIndexInfosOfType(candidate))
+            visit(info.type);
+        if (libraryDeclaredType(candidate)) return;
+        for (const property of checker.getPropertiesOfType(candidate))
+            visit(checker.getTypeOfSymbol(property));
+    };
+    visit(type);
+    return [...reached];
+}
+
 /**
  * The element type of an array-like type, or undefined for another type.
  */
@@ -418,6 +459,14 @@ export function arrayElementType(
         checker.getNonNullableType(type),
         ts.IndexKind.Number,
     );
+}
+
+/** The value type of a type's string index signature, or undefined without one. */
+export function stringIndexType(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): ts.Type | undefined {
+    return checker.getIndexTypeOfType(type, ts.IndexKind.String);
 }
 
 /** A tuple type's elements: each one's type and its required/optional/rest/variadic flags. */
@@ -564,6 +613,35 @@ export function holdsObjectKeyword(type: ts.Type): boolean {
     return (
         present.length === 1 &&
         (present[0]!.flags & ts.TypeFlags.NonPrimitive) !== 0
+    );
+}
+
+/**
+ * Whether a slot of this type may view a record of any declared type:
+ * `any`, `unknown`, `object`, an object type with no member (`{}`, an opaque
+ * interface), a type with a string index signature, or an intersection with
+ * such a part (`object & Record<"texture", unknown>`, what an `in` test
+ * narrows `unknown` to).
+ */
+export function viewsAnyRecord(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): boolean {
+    return unionMembers(type).some(
+        (member) =>
+            (member.isIntersection() &&
+                member.types.some((part) => viewsAnyRecord(checker, part))) ||
+            (member.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0 ||
+            holdsObjectKeyword(member) ||
+            ((member.flags & ts.TypeFlags.Object) !== 0 &&
+                checker.getPropertiesOfType(member).length === 0 &&
+                member.getCallSignatures().length === 0 &&
+                member.getConstructSignatures().length === 0) ||
+            checker
+                .getIndexInfosOfType(member)
+                .some(
+                    (info) => (info.keyType.flags & ts.TypeFlags.String) !== 0,
+                ),
     );
 }
 

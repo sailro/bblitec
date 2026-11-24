@@ -137,6 +137,8 @@ export interface NamedRead {
  *   `getOwnPropertyDescriptors`/`hasOwn`, `Object.assign` sources, object
  *   spreads and rests, `for...in`, `in`, `hasOwnProperty`, `JSON.stringify`
  *   and `structuredClone`;
+ * - key views: the enumerations but object spreads, which copy the keys
+ *   into the record `copies` names rather than show them;
  * - widened arrays: the element types of mutable arrays read where a
  *   mutable array of another element type is expected, and that type;
  * - assertions: the types `as`/`<T>` retype a value to, the types of the
@@ -175,6 +177,7 @@ export interface ProgramObservations {
     /** Operand/key types at identity, typeof or truthiness uses, consulted only when reached. */
     readonly identityConsumers: ReadonlyMap<ts.Node, ReadonlySet<ts.Type>>;
     readonly enumerations: ReadonlySet<ts.Type>;
+    readonly keyViews: ReadonlySet<ts.Type>;
     readonly assertions: readonly {
         readonly asserted: ts.Type;
         /** The types of the values that reach the assertion. */
@@ -206,6 +209,10 @@ export interface ProgramObservations {
     }[];
     /** Values given where their contextual type declares another type for them. */
     readonly handed: readonly ts.Expression[];
+    /** The function literals given where `handed` values are, which it leaves out. */
+    readonly givenFunctions: readonly (
+        ts.ArrowFunction | ts.FunctionExpression
+    )[];
     readonly definitions: ReadonlyMap<string, readonly MemberDefinition[]>;
     readonly keyedDefinitions: readonly MemberDefinition[];
     readonly typeAssertions: readonly (ts.AsExpression | ts.TypeAssertion)[];
@@ -390,6 +397,7 @@ function observe(program: ts.Program): ProgramObservations {
     const identities = new Set<ts.Type>();
     const identityConsumers = new Map<ts.Node, Set<ts.Type>>();
     const enumerations = new Set<ts.Type>();
+    const keyViews = new Set<ts.Type>();
     const assertions: {
         asserted: ts.Type;
         from: readonly ts.Type[];
@@ -411,10 +419,16 @@ function observe(program: ts.Program): ProgramObservations {
     const wholesaleReads: ts.Node[] = [];
     const copies: { from: ts.Node; into: ts.Node }[] = [];
     const handed: ts.Expression[] = [];
+    const givenFunctions: (ts.ArrowFunction | ts.FunctionExpression)[] = [];
     // A literal or a function is created where it is given: it has no
     // other type to bring.
     const hand = (value: ts.Expression | undefined): void => {
         if (
+            value &&
+            (ts.isArrowFunction(value) || ts.isFunctionExpression(value))
+        )
+            givenFunctions.push(value);
+        else if (
             value &&
             !ts.isLiteralExpression(value) &&
             !ts.isFunctionLike(value) &&
@@ -589,9 +603,15 @@ function observe(program: ts.Program): ProgramObservations {
         compared(left);
         compared(right);
     };
-    const enumerated = (node: ts.Node): void => {
+    const copiedKeys = (node: ts.Node): ts.Type | undefined => {
         const type = typeOf(node);
-        if (objectLike(type)) enumerations.add(type);
+        if (!objectLike(type)) return undefined;
+        enumerations.add(type);
+        return type;
+    };
+    const enumerated = (node: ts.Node): void => {
+        const type = copiedKeys(node);
+        if (type) keyViews.add(type);
     };
     const read = (
         name: string,
@@ -927,7 +947,10 @@ function observe(program: ts.Program): ProgramObservations {
         } else if (ts.isSwitchStatement(node)) identity(node.expression);
         else if (ts.isForInStatement(node)) enumerated(node.expression);
         else if (ts.isSpreadAssignment(node)) {
-            enumerated(node.expression);
+            // A destructuring pattern's rest shows the keys it takes.
+            if (isDestructuringPattern(node.parent))
+                enumerated(node.expression);
+            else copiedKeys(node.expression);
             wholesaleReads.push(node.expression);
             copies.push({ from: node.expression, into: node.parent });
         } else if (
@@ -1069,6 +1092,7 @@ function observe(program: ts.Program): ProgramObservations {
         identities,
         identityConsumers,
         enumerations,
+        keyViews,
         assertions,
         widenedArrays,
         arrayLocalElements,
@@ -1077,6 +1101,7 @@ function observe(program: ts.Program): ProgramObservations {
         wholesaleReads,
         copies,
         handed,
+        givenFunctions,
         definitions,
         keyedDefinitions,
         typeAssertions,

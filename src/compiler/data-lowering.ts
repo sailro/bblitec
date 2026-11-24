@@ -257,6 +257,7 @@ import {
     recordCreatedKeys,
     setRecordProperty,
     structOwnEntries,
+    undeclaredMemberDropped,
     type OwnEntry,
 } from "./object-statics.js";
 import type { CreatedKeys } from "./record-key-orders.js";
@@ -15482,6 +15483,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     public ownObjectContext(): Parameters<typeof structOwnEntries>[0] {
         return {
             checker: this.context.checker,
+            program: this.context.program,
             dataTypes: this.context.dataTypes,
             dataLowerer: this,
             fail: (node, message) => this.context.fail(node, message),
@@ -15678,6 +15680,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         spread.recordProperties ?? {},
                     )) {
                         if (replaced.has(name)) continue;
+                        if (
+                            undeclaredMemberDropped(
+                                this.ownObjectContext(),
+                                dataType.name,
+                                name,
+                                property,
+                            )
+                        )
+                            continue;
                         // A key a conditional spread decides is stored only
                         // while it is own, keeping an earlier value
                         // otherwise; an unwritten `?` field is already
