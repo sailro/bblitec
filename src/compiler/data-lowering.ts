@@ -23224,9 +23224,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         // are), engine-owned resources stored as plain handles, handles
         // the target's handle holds (meshes as scene nodes), lanes a
         // union or optional element holds (numbers among `number |
-        // string` lanes), or parsed elements the target's scalar lanes
-        // read convert one by one: each conversion keeps what an element
-        // shares with the source's.
+        // string` lanes), parsed elements the target's scalar lanes read,
+        // or scalar lanes parsed elements hold convert one by one: each
+        // conversion keeps what an element shares with the source's.
         const target = dataType.element;
         if (
             iterated &&
@@ -23242,7 +23242,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     )) ||
                 (target.kind === "optional" &&
                     dataTypesEqual(target.inner, sourceElement)) ||
-                (sourceElement.kind === "json" && isScalarDataType(target)))
+                (sourceElement.kind === "json" && isScalarDataType(target)) ||
+                (target.kind === "json" &&
+                    isScalarDataType(
+                        sourceElement.kind === "optional"
+                            ? sourceElement.inner
+                            : sourceElement,
+                    )))
         )
             return {
                 ...this.leafValue(

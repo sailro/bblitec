@@ -720,3 +720,34 @@ test("a guarded parse returned as its record type keeps the document", (t) => {
         t,
     );
 });
+
+test("an array literal spreads native string lanes beside parsed ids, each lane stored as a parsed value", (t) => {
+    nativeCheck(
+        "scalar-lanes-beside-parsed",
+        `
+        type RequestedIds = readonly (string | null | undefined)[];
+        interface Entry { id: string }
+        interface Selection { primary: Entry; secondary?: Entry }
+        interface Needs { wallSurface?: RequestedIds; houses?: readonly string[] }
+        const catalog = JSON.parse('{"entries":[{"id":"a"},{"id":"c"}]}') as { entries: Entry[] };
+        const select = (name: string): Selection => {
+            const entry = catalog.entries.find((e) => e.id === name) ?? catalog.entries[1]!;
+            return name.length > 1 ? { primary: entry, secondary: catalog.entries[0]! } : { primary: entry };
+        };
+        const participants = (s: Selection): string[] =>
+            s.secondary ? [s.primary.id, s.secondary.id] : [s.primary.id];
+        const ids = (requested: RequestedIds | undefined): string[] =>
+            [...new Set((requested ?? []).map((id) => (id === null ? "null" : id ?? "default") + "!"))];
+        function resolve(needs: Needs): string[] {
+            const houses = (needs.houses ?? []).map(select);
+            return ids([...(needs.wallSurface ?? []), ...houses.flatMap(participants)]);
+        }
+        const walls: string[] = ["x", "y"];
+        const first = resolve({ wallSurface: walls.filter((w) => w !== "y"), houses: ["a", "bb"] }).join(",");
+        if (first !== "x!,a!,c!") throw new Error("string lanes " + first);
+        const second = resolve({ wallSurface: [undefined, "z", null], houses: ["a"] }).join(",");
+        if (second !== "default!,z!,null!,a!") throw new Error("absent lanes " + second);
+    `,
+        t,
+    );
+});
