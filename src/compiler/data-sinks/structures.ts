@@ -944,7 +944,11 @@ function valueStruct(
                     stored.kind === "string")
             );
         };
-        const fresh = fields.every((field) => !field.accessor)
+        // Only a record whose every property is required has every key's
+        // entry to copy; an optional one stays a view of the dictionary.
+        const fresh = fields.every(
+            (field) => !field.accessor && !field.optionalProperty,
+        )
             ? freshDictionaryEntries(lowerer, value, node)
             : undefined;
         if (fresh) {
