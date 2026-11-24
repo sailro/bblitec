@@ -149,6 +149,65 @@ test("a call's result stays refused where no one function's returns hold it", ()
         );
 });
 
+// A function stored in an options slot whose signature admits `null` and
+// `undefined` returns only `undefined`: a strict comparison of a call
+// through the slot answers from the function's own storage, as
+// JavaScript does.
+const CROWN_LAYOUT = `
+    interface Save { crown?: string; flat: boolean; bare?: boolean }
+    type Part = string | number | boolean | null | undefined | readonly Part[];
+    interface Options { effectiveCrown(save: Save): Part; roofIsFlat(save: Save): boolean }
+    function createLayout(options: Options) {
+        const extra = (save: Save): number =>
+            options.effectiveCrown(save) !== undefined || options.roofIsFlat(save) ? 0 : 2;
+        const label = (save: Save): string => String(options.effectiveCrown(save) ?? "roof");
+        return { extra, label };
+    }
+    const saves: Save[] = [{ flat: false }, { crown: "crenel", flat: false }, { crown: "crenel", flat: false, bare: true }, { flat: true }];
+`;
+for (const [name, layout, expected] of [
+    [
+        "a function literal of the options record",
+        `const layout = createLayout({ effectiveCrown: (s) => s.crown, roofIsFlat: (s) => s.flat });`,
+        "2:roof,0:crenel,0:crenel,0:roof",
+    ],
+    [
+        "a function another record lends",
+        `interface Catalog { crownOf(s: Save): string | undefined }
+        function createCatalog(): Catalog {
+            return { crownOf: (s) => (s.bare && s.crown === "crenel" ? undefined : s.crown) };
+        }
+        const { crownOf } = createCatalog();
+        const layout = createLayout({ effectiveCrown: crownOf, roofIsFlat: (s) => s.flat });`,
+        "2:roof,0:crenel,2:roof,0:roof",
+    ],
+    [
+        "a function chosen at run time",
+        `let rounds = 0;
+        for (let at = 0; at < 2; at++) rounds += at;
+        const flatOnly = (s: Save): Part => (s.flat ? null : undefined);
+        const layout = createLayout(rounds > 5
+            ? { effectiveCrown: flatOnly, roofIsFlat: (s) => s.flat }
+            : { effectiveCrown: (s) => s.crown, roofIsFlat: (s) => s.flat });`,
+        "2:roof,0:crenel,0:crenel,0:roof",
+    ],
+] as const)
+    test(`a call through an options slot compares with undefined exactly for ${name}`, (t) => {
+        const source = `${CROWN_LAYOUT}${layout}
+            const seen = saves.map((s) => layout.extra(s) + ":" + layout.label(s)).join(",");
+            if (seen !== "${expected}") throw new Error(seen);`;
+        runInNewContext(
+            ts.transpileModule(source, {
+                compilerOptions: { target: ts.ScriptTarget.ES2022 },
+            }).outputText,
+        );
+        runChecked(
+            t,
+            compileSource(source).cpp,
+            `slot-call-absence-${name.replace(/\W+/g, "-")}`,
+        );
+    });
+
 /** Builds the program into `artifacts/<name>` and runs it: it throws on a wrong value. */
 function runChecked(t: test.TestContext, cpp: string, name: string): void {
     const tools = optionalNativeFixtureTools(false);

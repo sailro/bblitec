@@ -298,7 +298,9 @@ function shortCircuits(
  * - an unchecked lookup (`Value.preserveUncheckedLookup`) misses as
  *   `undefined`, unless its values may be `null` too ("either");
  * - a type that admits only `undefined` is `undefined`, only `null` is
- *   `null`, both is "either"; an optional chain that can short-circuit (a `?.`
+ *   `null`, both is "either" unless the storage knows its absent state is
+ *   `undefined` (`undefinedOnly`: a function stored in a slot whose
+ *   signature admits `null` too returns none); an optional chain that can short-circuit (a `?.`
  *   receiver that may be nullish) admits `undefined`, and so does one whose
  *   type names neither: it is absent only where a receiver's storage is;
  * - a type that names neither leaves the representation to say: a
@@ -344,6 +346,13 @@ export function absenceKind(
     }
     if (value.preserveUncheckedLookup)
         return absent.null ? "either" : "undefined";
+    if (
+        absent.null &&
+        absent.undefined &&
+        value.dataType?.kind === "optional" &&
+        value.dataType.undefinedOnly
+    )
+        return "undefined";
     return (
         absentValueKind(absent) ??
         (presenceFlagCpp(value) !== undefined ? "undefined" : "unconstrained")
