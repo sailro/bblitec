@@ -1954,7 +1954,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     },
     "ui:svg-image": {
         provenance:
-            "generation-validated inline SVG <image> markup over packaged PNG/JPEG assets",
+            "generation-validated inline and retained SVG <image> elements over packaged PNG/JPEG assets",
         consumers: CMAKE,
     },
     "data:locale": {

@@ -23,10 +23,10 @@ int main() {
     auto& engine = bbl::pal::window_document_engine();
     // Matches (a-i); line breaks (S), quotes, escapes and tabs (N, Q) and an undeclared
     // choice (C) throw; a declared choice (x); the application's choice (j); disabled,
-    // checked and focus states (k-o); no hover without a UI projection (p); focusables (q).
+    // checked and focus states (k-o); no hover without a UI projection (p); focusables (q); dataset reads through optional chains (r).
     const auto& log =
         bbl::handle_at(engine.ui_elements, bbl::ui_get_element_by_id(engine, "selector-log")).text;
-    if (log != "abcdefghiSSNNNNQCxjklmnopq") {
+    if (log != "abcdefghiSSNNNNQCxjklmnopqr") {
         std::fprintf(stderr, "runtime selector trace: %s\n", log.c_str());
         return 1;
     }

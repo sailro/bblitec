@@ -39,6 +39,19 @@ test("SVG images draw packaged rasters at their viewport rectangles", (t) => {
             '<image href="assets/green.png" x="10" y="20" width="20" height="10"/>' +
             '<rect x="0" y="32" width="5" height="5" fill="#0000ff"/></svg>';
         document.body.append(host);
+        // Markup an SVG element receives is its retained children; a runtime
+        // href selects among the packaged candidates.
+        const retained=document.createElement("div");
+        retained.style.cssText="position:absolute;left:100px;top:0;width:40px;height:40px";
+        const icon=document.createElementNS("http://www.w3.org/2000/svg","svg");
+        icon.setAttribute("viewBox","0 0 40 40");icon.setAttribute("width","40");icon.setAttribute("height","40");
+        icon.setAttribute("stroke","#0000ff");icon.setAttribute("stroke-width","4");
+        const source=performance.now()>1?"assets/red.png":"assets/green.png";
+        icon.innerHTML=\`<image href="\${source}" x="10" y="5" width="20" height="10" preserveAspectRatio="none"/>\` +
+            '<line x1="0" y1="34" x2="40" y2="34"/>';
+        retained.append(icon);
+        document.body.append(retained);
+        if (icon.childNodes.length!==2||(icon.lastChild as Element).getAttribute("y2")!=="34") throw new Error("children");
         globalThis.close();`,
         {
             fileName: join(directory, "entry.ts"),
@@ -49,6 +62,8 @@ test("SVG images draw packaged rasters at their viewport rectangles", (t) => {
     assert.ok(result.manifest.features.includes("ui:svg-image"));
     assert.match(result.cpp, /<image data-bbl-href=\\"assets\/red\.png\\"/);
     assert.match(result.cpp, /preserveAspectRatio=\\"none\\"/);
+    assert.match(result.cpp, /ui_create_svg_element\([^;]*"image"\)/);
+    assert.match(result.cpp, /ui_create_svg_element\([^;]*"line"\)/);
     writeFileSync(join(directory, "program.hpp"), result.cpp);
     runRmlUiFixture(t, "ui-svg-image", {
         macros: {
@@ -112,6 +127,28 @@ test("SVG images refuse unrepresented sources, attributes and tinting", () => {
             ),
         /requires static attribute 'href'/,
     );
+    // An SVG element's markup is its retained shape, text and image children.
+    for (const [markup, message] of [
+        ["'<div></div>'", /holds HTML content/],
+        [
+            "'<foreignObject/>'",
+            /outside the retained SVG shape, text and image subset/,
+        ],
+        ["'<line x1=\"0\"/>loose'", /text outside a <text>/],
+        [
+            '`<image href="assets/${String(performance.now())}.png" width="1" height="1"/>`',
+            /on an SVG element takes runtime text in text and attribute values/,
+        ],
+    ] as const)
+        assert.throws(
+            () =>
+                compileSource(
+                    `const icon=document.createElementNS("http://www.w3.org/2000/svg","svg");icon.innerHTML=${markup};document.body.append(icon);`,
+                    { fileName: join(directory, "entry.ts") },
+                ),
+            message,
+            markup,
+        );
 });
 
 test("a percentage root viewport stretches its viewBox to an author size", () => {

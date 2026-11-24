@@ -162,6 +162,8 @@ import {
     createsFormControls,
     isUiMetadataAttribute,
     parseAuthoredMarkup,
+    parseAuthoredSvgMarkup,
+    svgContentDocument,
     type UiAuthoredMarkupNode,
 } from "./ui-authored-markup.js";
 import {
@@ -495,6 +497,21 @@ const GENERATION_ATTRIBUTES: ReadonlySet<string> = new Set([
     "rel",
     "hidden",
 ]);
+
+/**
+ * The template operand an SVG image's href is when it is one runtime value,
+ * which selects among the packaged images its candidates name.
+ */
+function uiImageSourceHole(
+    node: UiAuthoredMarkupNode & { kind: "element" },
+    attribute: { readonly name: string; readonly value: string },
+): number | undefined {
+    const hole =
+        node.svg && node.tag === "image" && attribute.name === "href"
+            ? /^__BBLITE_UI_MARKUP_(\d+)__$/.exec(attribute.value)
+            : null;
+    return hole ? Number(hole[1]) : undefined;
+}
 
 /** Elements whose `value` property is their form value. */
 const UI_FORM_VALUE_TAGS = ["textarea", "input", "select", "option", "output"];
@@ -4915,7 +4932,13 @@ export class UiProjection {
                                   this.uiMarkupParts(node.right, domains),
                                   UiProjection.UI_MARKUP_ALTERNATIVES + 1,
                               )
-                            : [form.source]),
+                            : isDomReceiver(
+                                    this.context,
+                                    node.left.expression,
+                                    "SVGElement",
+                                )
+                              ? [svgContentDocument(form.source)]
+                              : [form.source]),
                     );
                 } catch (error) {
                     if (!(error instanceof CompileError)) throw error;
@@ -5529,25 +5552,36 @@ export class UiProjection {
     }
 
     /**
-     * Markup creating form controls, parsed into its element tree: a static
-     * string, or a flat template whose runtime operands are text (escaped, as
-     * in projected markup), each a hole the tree's text or an attribute value
-     * holds. An attribute generation decides ({@link GENERATION_ATTRIBUTES})
-     * takes none.
+     * Markup creating form controls, or any markup an SVG element receives,
+     * parsed into its element tree: a static string, or a flat template whose
+     * runtime operands are text (escaped, as in projected markup), each a hole
+     * the tree's text or an attribute value holds. An attribute generation
+     * decides ({@link GENERATION_ATTRIBUTES}) takes none.
      */
-    private uiAuthoredMarkup(expression: ts.Expression):
+    private uiAuthoredMarkup(
+        expression: ts.Expression,
+        svgReceiver: boolean,
+    ):
         | {
               nodes: UiAuthoredMarkupNode[];
               substitutions: readonly ts.Expression[];
           }
         | undefined {
-        const form = this.uiMarkupForm(expression, new Map());
-        if (form.kind === "structured") return undefined;
-        this.prefetchUiMarkup();
-        if (!createsFormControls(form.source)) return undefined;
         const fail = (message: string): never =>
             this.context.fail(expression, `Native UI innerHTML ${message}`);
-        const nodes = parseAuthoredMarkup(form.source, fail);
+        const form = this.uiMarkupForm(expression, new Map());
+        if (form.kind === "structured") {
+            if (svgReceiver)
+                fail(
+                    "on an SVG element requires a static string or a flat template.",
+                );
+            return undefined;
+        }
+        this.prefetchUiMarkup();
+        if (!svgReceiver && !createsFormControls(form.source)) return undefined;
+        const nodes = svgReceiver
+            ? parseAuthoredSvgMarkup(form.source, fail)
+            : parseAuthoredMarkup(form.source, fail);
         const holed = (node: UiAuthoredMarkupNode): boolean =>
             node.kind === "element" &&
             (node.tag.includes("__BBLITE_UI_MARKUP_") ||
@@ -5555,12 +5589,13 @@ export class UiProjection {
                     (attribute) =>
                         /__BBLITE_UI_MARKUP_\d+__/i.test(attribute.name) ||
                         (GENERATION_ATTRIBUTES.has(attribute.name) &&
-                            attribute.value.includes("__BBLITE_UI_MARKUP_")),
+                            attribute.value.includes("__BBLITE_UI_MARKUP_") &&
+                            uiImageSourceHole(node, attribute) === undefined),
                 ) ||
                 node.children.some(holed));
         if (nodes.some(holed))
             fail(
-                `with form controls takes runtime text in text and attribute values, not in tag or attribute names or ${[...GENERATION_ATTRIBUTES].join(", ")}.`,
+                `${svgReceiver ? "on an SVG element" : "with form controls"} takes runtime text in text and attribute values, not in tag or attribute names or ${[...GENERATION_ATTRIBUTES].join(", ")}.`,
             );
         return {
             nodes,
@@ -5569,9 +5604,10 @@ export class UiProjection {
     }
 
     /**
-     * Builds static form-control markup as the retained elements createElement
-     * would create, so its controls own value, checkedness, selectedness and
-     * listeners. Each element is complete before it joins its parent.
+     * Builds static form-control or SVG markup as the retained elements
+     * createElement or createElementNS would create, so its controls own
+     * value, checkedness, selectedness and listeners, and its shapes draw as
+     * retained SVG. Each element is complete before it joins its parent.
      */
     private emitUiAuthoredMarkup(
         receiver: Value,
@@ -5582,17 +5618,38 @@ export class UiProjection {
         }: NonNullable<ReturnType<UiProjection["uiAuthoredMarkup"]>>,
         site: ts.Expression,
     ): void {
+        // An SVG image's runtime href selects among packaged candidates.
+        const imageSources = new Set<number>();
+        const findImageSources = (node: UiAuthoredMarkupNode): void => {
+            if (node.kind !== "element") return;
+            for (const attribute of node.attributes) {
+                const hole = uiImageSourceHole(node, attribute);
+                if (hole !== undefined) imageSources.add(hole);
+            }
+            node.children.forEach(findImageSources);
+        };
+        nodes.forEach(findImageSources);
         // The template's operands run before the assignment, in order.
-        const texts = substitutions.map((substitution) =>
-            this.uiTemplateValueCpp(
-                this.context.bindings.pinValueToTemporary(
-                    this.context.compileValue(substitution),
-                    "markup_text",
-                    substitution,
-                ),
-                substitution,
-                "Native UI innerHTML",
-            ),
+        const texts = substitutions.map((substitution, index) =>
+            imageSources.has(index)
+                ? this.context.bindings.pinValueToTemporary(
+                      {
+                          kind: "string",
+                          cpp: this.runtimeUiImageSource(substitution),
+                          dataType: { kind: "string" },
+                      },
+                      "markup_image",
+                      substitution,
+                  ).cpp
+                : this.uiTemplateValueCpp(
+                      this.context.bindings.pinValueToTemporary(
+                          this.context.compileValue(substitution),
+                          "markup_text",
+                          substitution,
+                      ),
+                      substitution,
+                      "Native UI innerHTML",
+                  ),
         );
         const textCpp = (value: string): string => {
             if (!value.includes("__BBLITE_UI_MARKUP_"))
@@ -5635,8 +5692,11 @@ export class UiProjection {
                 kind: "declaration",
                 type: "const auto",
                 name,
-                initializer: `bbl::ui_create_element(${engine}, ${this.context.cppString(node.tag)})`,
+                initializer: `bbl::ui_create_${node.svg ? "svg_" : ""}element(${engine}, ${this.context.cppString(node.tag)})`,
             });
+            if (node.svg) this.context.reachFeature("ui:inline-svg", site);
+            if (node.svg && node.tag === "image")
+                this.context.reachFeature("ui:svg-image", site);
             const element: Value = {
                 kind: "ui-element",
                 cpp: name,
@@ -5664,6 +5724,13 @@ export class UiProjection {
                     attribute.value,
                     site,
                 );
+                if (
+                    node.svg &&
+                    node.tag === "image" &&
+                    attribute.name === "href" &&
+                    !value.includes("__BBLITE_UI_MARKUP_")
+                )
+                    this.registerImageSource(value);
                 if (attribute.name === "class" || attribute.name === "id")
                     this.recordUiStaticAttribute(
                         element,
@@ -6861,7 +6928,10 @@ export class UiProjection {
                 "markup_receiver",
                 receiver,
             );
-            const authored = this.uiAuthoredMarkup(right);
+            const authored = this.uiAuthoredMarkup(
+                right,
+                isDomReceiver(this.context, receiver, "SVGElement"),
+            );
             if (authored) {
                 this.emitUiAuthoredMarkup(pinned, engine, authored, right);
                 return;

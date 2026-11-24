@@ -21196,6 +21196,42 @@ checkInRealm(
     });
     `,
 );
+check(
+    "a-module-const-snapshots-the-let-it-reads",
+    `
+    let committed = 0;
+    const previous = committed;
+    const read = (): number => previous;
+    const bump = (): void => { committed = 7; };
+    const later: Array<() => number> = [read, () => committed];
+    bump();
+    if (previous !== 0 || later[0]!() !== 0 || later[1]!() !== 7) throw new Error("snapshot");
+`,
+);
+checkInRealm(
+    "a stored function a builder returns completes as the callback it was handed",
+    `
+    function rollbackTo<T>(read: () => T, present: (value: T) => void): () => void {
+        return () => present(read());
+    }
+    let committed = 0;
+    let shown = 0;
+    const pick = (value: number): Promise<boolean> | boolean => (value > 1 ? Promise.resolve(false) : true);
+    const previous = committed;
+    const rollback = rollbackTo(() => previous, (value) => {
+        if (committed === 5) return;
+        shown = value;
+    });
+    committed = 7;
+    shown = 7;
+    const result = pick(committed);
+    if (result instanceof Promise)
+        void result.then((accepted) => { if (!accepted) rollback(); }).catch(rollback).then(() => {
+            if (shown !== 0) throw new Error("rolled back to " + shown);
+            globalThis.close();
+        });
+    `,
+);
 checkInRealm(
     "Promise.all settles to a new array",
     `

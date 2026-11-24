@@ -3087,12 +3087,16 @@ export class DataLowerer {
                 const key = this.context.compileValue(
                     unwrapped.argumentExpression,
                 );
-                return (
+                const member = (presentOwner: Value): Value | undefined =>
                     this.context.propertyAccess.readIndexedProperty(
-                        owner,
+                        presentOwner,
                         key,
                         unwrapped,
-                    ) ??
+                    );
+                return (
+                    (ts.isOptionalChain(unwrapped) && !isPresentValue(owner)
+                        ? this.optionalAccess(owner, unwrapped, member)
+                        : member(owner)) ??
                     this.context.fail(
                         unwrapped.argumentExpression,
                         "A retained element member read requires a generation-known string key.",
@@ -3606,6 +3610,15 @@ export class DataLowerer {
                 cpp: `([&]() {\nif (${present}) {\n${selectedLines.join("\n")}\n${selected.cpp ? `${selected.cpp};` : ""}\n}\n}())`,
             };
         }
+        // An element's dataset or style view is no value of its own: it is
+        // the owner of the chain's next link (`el?.dataset.key`), which
+        // reads it under the presence it carries.
+        if (
+            selected.kind === "ui-element" &&
+            (selected.uiDataset || selected.uiStyle) &&
+            selectedLines.length === 0
+        )
+            return { ...selected, optionalFoundCpp: present };
         const checkerType = this.dataTypeAt(access);
         const checkedSelectedType =
             checkerType?.kind === "optional" ? checkerType.inner : checkerType;

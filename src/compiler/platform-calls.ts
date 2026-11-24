@@ -49,6 +49,7 @@ import { compileFullscreenCall } from "./fullscreen.js";
 import { compileCanvasCaptureStream } from "./media-streams.js";
 import { timerCancellation } from "./workers.js";
 import { isDocumentReceiver } from "./dom-targets.js";
+import { RETAINED_SVG_TAGS } from "./ui-authored-markup.js";
 import {
     isPinnedType,
     platformHandleKind,
@@ -1666,24 +1667,10 @@ export class PlatformCalls {
                 argumentAt(call, svg ? 1 : 0),
             );
             const normalizedTag = svg ? tag : tag.toLowerCase();
-            if (
-                svg &&
-                ![
-                    "svg",
-                    "path",
-                    "rect",
-                    "circle",
-                    "line",
-                    "ellipse",
-                    "polyline",
-                    "polygon",
-                    "text",
-                    "textPath",
-                ].includes(tag)
-            )
+            if (svg && !RETAINED_SVG_TAGS.has(tag))
                 this.context.fail(
                     call,
-                    `Native SVG element '${tag}' is outside the bounded svg/shape/text subset.`,
+                    `Native SVG element '${tag}' is outside the bounded svg/shape/text/image subset.`,
                 );
             if (!/^[a-z][a-z0-9-]*$/i.test(tag)) {
                 this.context.fail(
@@ -1699,6 +1686,8 @@ export class PlatformCalls {
             }
             this.context.reachFeature("ui:rml", call);
             if (svg) this.context.reachFeature("ui:inline-svg", call);
+            if (svg && tag === "image")
+                this.context.reachFeature("ui:svg-image", call);
             const uiStaticId = this.ui.createUiStaticElement(normalizedTag);
             this.ui.uiStaticIdsByCreation.set(call, uiStaticId);
             return {
@@ -2387,8 +2376,8 @@ export class PlatformCalls {
             }
             const staticValue = this.ui.tryUiStaticString(argumentAt(call, 1));
             if (
-                element.uiTag === "img" &&
-                name === "src" &&
+                ((element.uiTag === "img" && name === "src") ||
+                    (element.uiTag === "image" && name === "href")) &&
                 staticValue !== undefined
             )
                 this.ui.registerImageSource(staticValue);

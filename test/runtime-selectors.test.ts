@@ -212,6 +212,12 @@ test("runtime selectors match, order and throw as the browser; document states r
         const targets = Array.from(panel.querySelectorAll<HTMLElement>("button, input")).filter((element) =>
             !(element.tabIndex < 0 || element.matches(":disabled") || element.closest("[hidden], [inert]")));
         if (targets.length === 3 && targets[2] === box) note("q");
+        // An optional chain reads a found element's dataset; an absent one is undefined.
+        const found = [...panel.querySelectorAll<HTMLElement>(".row")]
+            .find((element) => element.dataset["row"] === runtime("it's"))?.dataset["row"];
+        const missing = panel.querySelector<HTMLElement>(".missing")?.dataset.pageStep;
+        if (found === "it's" && missing === undefined &&
+            panel.querySelector<HTMLElement>(".page")?.dataset.pageStep === "2") note("r");
 
         const result = document.createElement("div");
         result.id = "selector-log";

@@ -11,7 +11,7 @@ import { inheritsFrom } from "./type-facts.js";
 export function isDomReceiver(
     context: Pick<LoweringServices, "checker" | "libraryGlobal">,
     expression: ts.Expression,
-    interfaceName: "Document" | "Window" | "HTMLStyleElement",
+    interfaceName: "Document" | "Window" | "HTMLStyleElement" | "SVGElement",
 ): boolean {
     const global =
         interfaceName === "Document"

@@ -1801,12 +1801,20 @@ export class BrowserErasure {
             // getComputedStyle(element) views the element's computed style.
             const computed = computedStyleElement(this.context, unwrapped);
             if (computed) return owner(computed);
-            if (isOperandSelection(unwrapped)) {
-                // Any yielded operand is the owner: all must bridge one kind.
-                const owners = valueOperands(
-                    unwrapped,
-                    this.context.unwrap,
-                ).map(owner);
+            // Any yielded operand is the owner, and any element of an array
+            // literal (`[...list].find(...)`): all must bridge one kind.
+            const operands = isOperandSelection(unwrapped)
+                ? valueOperands(unwrapped, this.context.unwrap)
+                : ts.isArrayLiteralExpression(unwrapped) &&
+                    unwrapped.elements.length > 0
+                  ? unwrapped.elements.map((element) =>
+                        ts.isSpreadElement(element)
+                            ? element.expression
+                            : element,
+                    )
+                  : undefined;
+            if (operands) {
+                const owners = operands.map(owner);
                 return owners.every((each) => each?.kind === owners[0]?.kind)
                     ? owners[0]
                     : undefined;

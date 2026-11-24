@@ -78,7 +78,7 @@ import {
 } from "./type-facts.js";
 import {
     isNonThenableDataType,
-    hasUndefinedCallbackCompletion,
+    hasProvenUndefinedCompletion,
     hasNonThenableCompletion,
     provenVoidAsUndefined,
     readsErasedVoid,
@@ -392,6 +392,30 @@ export class DeclarationLowerer {
                 this.context.sourceFiles(),
                 symbol,
             )
+        );
+    }
+
+    /**
+     * Whether an initializer reads, as it runs, a `let` or `var` a write may
+     * change: a function it holds reads at its calls instead.
+     */
+    private readsReassignedVariable(initializer: ts.Expression): boolean {
+        return someAnalysisNode(
+            initializer,
+            (node) => {
+                if (!ts.isIdentifier(node)) return false;
+                const declaration =
+                    this.context.symbols.valueSymbol(node)?.valueDeclaration;
+                return (
+                    declaration !== undefined &&
+                    ts.isVariableDeclaration(declaration) &&
+                    !declaration.getSourceFile().isDeclarationFile &&
+                    declaration.name !== node &&
+                    variableKind(declaration) !== "const" &&
+                    !this.neverReassigned(declaration)
+                );
+            },
+            { functions: "skip" },
         );
     }
 
@@ -1729,13 +1753,14 @@ export class DeclarationLowerer {
         if (
             value.impure ||
             readsImpure ||
-            expressionHasEffects(declaration.initializer)
+            expressionHasEffects(declaration.initializer) ||
+            this.readsReassignedVariable(declaration.initializer)
         ) {
-            // A `const` bound to a clock is a snapshot of it, so later
-            // uses must read the native local rather than fold back to
-            // the initializer and call the clock again. Same removal a
-            // `let` declaration takes above, for the same reason: the
-            // initializer stops being the value.
+            // A `const` bound to a clock, or to a variable a later write
+            // changes, is a snapshot of it, so later uses must read the
+            // native local rather than fold back to the initializer and
+            // read again. Same removal a `let` declaration takes above, for
+            // the same reason: the initializer stops being the value.
             const symbol = this.context.symbols.valueSymbol(declaration.name);
             if (symbol) {
                 this.context.staticConstants.delete(symbol);
@@ -3004,10 +3029,15 @@ export class DeclarationLowerer {
         const source = !value.cpp
             ? callbackFunction(this.context.checker, value)
             : undefined;
-        const undefinedCompletion = hasUndefinedCallbackCompletion(
-            this.context.checker,
-            value,
-        );
+        // The returned function's body reads the builder's bindings (a
+        // callback it was handed): its completions are proven in them.
+        const undefinedCompletion =
+            source !== undefined &&
+            this.context.withCallbackScopes(value, () =>
+                hasProvenUndefinedCompletion(this.context, source, {
+                    requireFieldProofs: true,
+                }),
+            );
         const nonThenableCompletion =
             undefinedCompletion ||
             hasNonThenableCompletion(this.context.checker, source);

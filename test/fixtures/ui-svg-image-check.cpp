@@ -111,6 +111,10 @@ int main() try {
         check(paint_at(frame, 12, 25).alpha < .02f && paint_at(frame, 27, 25).alpha < .02f,
               "meet letterboxes inside the rectangle");
         check(solid(paint_at(frame, 2, 34), 0, 0, 1), "shapes keep painting beside images");
+        check(solid(paint_at(frame, 120, 10), 0, 1, 0) && paint_at(frame, 108, 10).alpha < .02f,
+              "a retained image draws the candidate its runtime href selects");
+        check(solid(paint_at(frame, 110, 34), 0, 0, 1),
+              "a retained line inherits its root's stroke");
     }
     SDL_DestroyWindow(window);
     SDL_Quit();

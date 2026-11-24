@@ -870,7 +870,7 @@ UiElementHandle ui_create_compiled_script(Engine& engine) {
 UiElementHandle ui_create_svg_element(Engine& engine, std::string_view tag) {
     if (tag != "svg" && tag != "path" && tag != "rect" && tag != "circle" && tag != "line" &&
         tag != "ellipse" && tag != "polyline" && tag != "polygon" && tag != "text" &&
-        tag != "textPath")
+        tag != "textPath" && tag != "image")
         throw std::runtime_error("Unsupported retained SVG tag.");
     const auto handle = ui_create_element(engine, tag);
     ui_element(engine, handle).svg_namespace = true;
@@ -7928,7 +7928,7 @@ struct UiRmlRuntime {
             raw.RemoveProperty("image-color");
         }
         if (attributes_changed || projected.svg_markup != markup.source) {
-            raw.SetInnerRML(markup.source);
+            raw.SetInnerRML(inline_svg_images(markup.source));
             projected.svg_markup = std::move(markup.source);
         }
         // Children taking the pointer make RmlUi's hit test reach the root, which answers for
