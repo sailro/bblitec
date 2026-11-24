@@ -12397,6 +12397,10 @@ export class DataTypeRegistry {
                 this.jsonValueCpp(type.value, "value", node) === undefined
             )
                 return undefined;
+        } else if (type.kind === "table") {
+            // A one-dimensional table is a tuple of its numbers
+            // (`tableCppType`); a deeper one has no document form here.
+            if (type.dimensions.length !== 1) return undefined;
         } else if (
             ![
                 "json",

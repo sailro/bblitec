@@ -564,3 +564,20 @@ check(
     if (seen !== "10,30|10|true" || logged !== "123") throw new Error(seen + " " + logged);
 `,
 );
+
+check(
+    "parsed-or-constant-numeric-triple",
+    `
+    type Rgb = [number, number, number];
+    const PALETTE: readonly Rgb[] = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    interface Span { seed: number; color?: Rgb }
+    const spans = JSON.parse('[{"seed":1},{"seed":2,"color":[0.5,0.25,0.75]},{"seed":5}]') as Span[];
+    const colors = new Float32Array(spans.length * 3);
+    spans.forEach((sp, i) => {
+        const rgb = sp.color ?? PALETTE[sp.seed % PALETTE.length]!;
+        colors[i * 3] = rgb[0]; colors[i * 3 + 1] = rgb[1]; colors[i * 3 + 2] = rgb[2];
+    });
+    const seen = Array.from(colors).join(",");
+    if (seen !== "0,1,0,0.5,0.25,0.75,0,0,1") throw new Error(seen);
+`,
+);
