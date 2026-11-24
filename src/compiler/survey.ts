@@ -1447,14 +1447,22 @@ export class SurveyCollector {
                         : ""),
             );
         if (added === 0) return false;
+        // The demands the pass took, by what they ask for: what a next pass
+        // lowers with, and what a chain of passes is waiting on.
+        const taken = [...(this.last?.taken ?? [])];
+        const named = taken.slice(0, 8);
+        const which =
+            named.length > 0
+                ? `: ${named.join("; ")}${taken.length > named.length ? `; ${taken.length - named.length} more` : ""}`
+                : "";
         const demands = `${added} demand${added === 1 ? "" : "s"}`;
         if (this.passLimit !== undefined && this.passes >= this.passLimit) {
             this.progress?.report(
-                `Survey pass ${this.passes}: ${demands} left; the pass limit ends the survey here`,
+                `Survey pass ${this.passes}: ${demands} left; the pass limit ends the survey here${which}`,
             );
             return false;
         }
-        const line = `Survey pass ${this.passes}: ${demands} added for the next pass`;
+        const line = `Survey pass ${this.passes}: ${demands} added for the next pass${which}`;
         this.progress?.report(line);
         this.leaveCensus(line, census);
         return true;

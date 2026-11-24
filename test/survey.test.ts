@@ -283,7 +283,9 @@ test("a survey pass rolls back a storage demand's statement and the next pass re
     );
     assert.deepEqual(
         lines.filter((line) => line.startsWith("Survey pass")),
-        ["Survey pass 1: 1 demand added for the next pass"],
+        [
+            "Survey pass 1: 1 demand added for the next pass: record (Settings: document)",
+        ],
     );
     assert.match(
         lines.filter((line) => line.startsWith("Survey progress: ")).at(-1)!,
@@ -322,7 +324,9 @@ test("one survey pass meets every independent demand", () => {
     assert.equal(report.complete, true);
     assert.deepEqual(
         lines.filter((line) => line.startsWith("Survey pass")),
-        ["Survey pass 1: 3 demands added for the next pass"],
+        [
+            "Survey pass 1: 3 demands added for the next pass: record (A: document); record (B: document); record (C: document)",
+        ],
     );
     assert.equal(report.statements.demanded, 0);
     assert.equal(report.passes, 2);
