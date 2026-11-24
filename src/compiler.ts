@@ -1458,7 +1458,7 @@ class Compiler implements LoweringServices {
         );
         this.dataLowerer = new DataLowerer(this);
         this.classLowerer = new ClassLowerer(this);
-        this.evaluationOrder = new EvaluationOrder(
+        this.evaluationOrder = EvaluationOrder.ofProgram(
             checker,
             this.dataTypes.classHierarchy,
             engineBodies,

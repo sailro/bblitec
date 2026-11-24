@@ -981,6 +981,12 @@ export function handedFunctions(
 /** One analysis of the pinned program per resolver, shared by every scene. */
 const pinnedOrders = new WeakMap<EngineBodies, EvaluationOrder>();
 
+/**
+ * One analysis of a compile's program per checker and engine resolver,
+ * shared by the compile's attempts (`EvaluationOrder.ofProgram`).
+ */
+const programOrders = new WeakMap<ts.TypeChecker, EvaluationOrder>();
+
 export class EvaluationOrder {
     /** @unjournaled A cache of one unit's own accesses, from its source alone. */
     private readonly direct = new Map<Unit, DirectAccess>();
@@ -1013,6 +1019,24 @@ export class EvaluationOrder {
         /** The engine's pinned bodies, for a scene program's calls into it. */
         private readonly engine?: () => EngineBodies,
     ) {}
+
+    /**
+     * The analysis of `checker`'s program: every answer it keeps is the
+     * program's, so each attempt of a compile, which lowers the program
+     * again, reads the answers the earlier ones found.
+     */
+    public static ofProgram(
+        checker: ts.TypeChecker,
+        hierarchy: ClassHierarchy,
+        engine: () => EngineBodies,
+    ): EvaluationOrder {
+        let order = programOrders.get(checker);
+        if (order?.engine !== engine) {
+            order = new EvaluationOrder(checker, hierarchy, engine);
+            programOrders.set(checker, order);
+        }
+        return order;
+    }
 
     /** Whether a call into the engine reads its pinned bodies: an answer kept by program depends on it. */
     public get readsEngineBodies(): boolean {
