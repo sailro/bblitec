@@ -13352,6 +13352,25 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             presentDataType(typed)?.kind === "handle"
                 ? typed
                 : ((value && heldNativeHandle(value)) ?? typed);
+        // A local array of erased elements holds the handles written to it
+        // as a dynamic binding holds its elements (its array or source
+        // storage refines to them).
+        const handle = presentDataType(written);
+        if (
+            handle?.kind === "handle" &&
+            ts.isVariableDeclaration(declaration) &&
+            this.context.dataTypes.erasedArrayShape(declaration)
+        ) {
+            const binding = this.context.dynamicBindings.get(declaration);
+            if (
+                binding === undefined ||
+                binding === "array" ||
+                binding === "source"
+            )
+                throw new DynamicBindingStorageRequired(declaration, {
+                    elements: handle,
+                });
+        }
         if (written)
             this.context.dataTypes.requireWrittenHandleFieldStorage(
                 declaration,
@@ -13385,6 +13404,30 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         consumer.index
                     ]
                 );
+            case "initializer":
+            case "assigned": {
+                // An array bound or assigned whole: the array the binding
+                // or field names holds its elements.
+                const target =
+                    consumer.kind === "initializer"
+                        ? consumer.declaration
+                        : unwrapExpression(consumer.assignment.left);
+                const symbol = ts.isVariableDeclaration(target)
+                    ? resolvedSymbol(checker, target.name)
+                    : ts.isPropertyAccessExpression(target)
+                      ? accessedPropertySymbol(checker, target)
+                      : ts.isIdentifier(target)
+                        ? resolvedSymbol(checker, target)
+                        : undefined;
+                const declaration =
+                    symbol?.declarations?.length === 1
+                        ? symbol.declarations[0]
+                        : undefined;
+                return declaration &&
+                    arrayShape(checker, checker.getTypeAtLocation(declaration))
+                    ? declaration
+                    : undefined;
+            }
             case "compared": {
                 const { comparison } = consumer;
                 const other = unwrapExpression(

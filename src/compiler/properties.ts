@@ -32,7 +32,7 @@ import ts from "typescript";
 import {
     absenceOfNull,
     handleFoundCpp,
-    holdsMaterial,
+    heldHandleKind,
     knownCondition,
     undefinedValue,
 } from "./values/model.js";
@@ -81,7 +81,7 @@ import { readWorkerEventProperty } from "./workers.js";
 import {
     borrowedPlatformEventKind,
     handleCppType,
-    includesPinnedHandleType,
+    includesPinnedType,
     isPinnedEngineObjectKind,
     touchListDataType,
     typedArrayBytesPerElement,
@@ -4349,23 +4349,27 @@ export class PropertyAccessLowerer {
             expression,
         );
         if (workerEvent) return workerEvent;
-        // A material read through a view the pin does not declare
-        // (`mesh.material as { x?: number }`): a native material holds the
-        // pin's own members only, so nothing stores what the program adds.
+        // An engine object read through a view the pin does not declare
+        // (`mesh.material as { x?: number }`, `meshes as unknown as View[]`):
+        // a native engine object holds the pin's own members only, so
+        // nothing stores what the program adds.
+        const viewed = heldHandleKind(owner);
         if (
-            holdsMaterial(owner) &&
-            !includesPinnedHandleType(
+            viewed &&
+            !includesPinnedType(
                 this.context.checker.getNonNullableType(
                     this.context.checker.getTypeAtLocation(
                         expression.expression,
                     ),
                 ),
-                "material",
             )
         )
             return this.context.fail(
                 expression,
-                `'${this.propertyPathForDiagnostic(expression)}' reads a material through a view the pin does not declare: a property the program adds to a ShaderMaterial is not represented, and a PBR or Standard material's own member is read through its pinned type.`,
+                `'${this.propertyPathForDiagnostic(expression)}' reads a ${viewed} through a view the pin does not declare: ` +
+                    (viewed === "material"
+                        ? "a property the program adds to a ShaderMaterial is not represented, and a PBR or Standard material's own member is read through its pinned type."
+                        : "a property the program adds to an engine object is not represented; only the object's own pinned members are read through the view."),
             );
         return this.context.fail(
             expression,

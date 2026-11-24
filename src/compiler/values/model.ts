@@ -2,7 +2,7 @@ import type ts from "typescript";
 import { cppIdentifierPattern, stringLiteral } from "../../cpp-literals.js";
 import { writable } from "../emission-transaction.js";
 import { isHandleKind } from "../data-types/handles.js";
-import type { DataType } from "../data-types/model.js";
+import type { DataType, HandleKind } from "../data-types/model.js";
 import { isUndefinedDataType } from "../data-types/operations.js";
 import type { ValueBase, ValueFields, ValueKind } from "../types.js";
 import type { ValuePayloads } from "./payloads.js";
@@ -562,16 +562,23 @@ export function nativeDataMetadata(value: Value | undefined): ValueFields {
     return metadata;
 }
 
+/** The engine object a value holds: its own handle kind, or the handle it is stored as. */
+export function heldHandleKind(value: {
+    readonly kind: string;
+    readonly dataType?: DataType | undefined;
+}): HandleKind | undefined {
+    if (isHandleKind(value.kind)) return value.kind;
+    return value.dataType?.kind === "handle"
+        ? value.dataType.handle
+        : undefined;
+}
+
 /** Whether a value holds a material: a material itself, or a material handle stored as data. */
 export function holdsMaterial(value: {
     readonly kind: string;
     readonly dataType?: DataType | undefined;
 }): boolean {
-    return (
-        value.kind === "material" ||
-        (value.dataType?.kind === "handle" &&
-            value.dataType.handle === "material")
-    );
+    return heldHandleKind(value) === "material";
 }
 
 /** Whether a material value is a PBR material's: a scene creation or a loaded asset's. */

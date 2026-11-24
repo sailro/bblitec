@@ -280,11 +280,13 @@ export class ReplayStorage {
             case "dynamic": {
                 const known = this.dynamicBindings.get(request.declaration);
                 // A callback binding's record of callables, and an array
-                // binding's elements, refine the storage it holds.
+                // binding's elements (its declared or source array), refine
+                // the storage it holds.
                 const upgrade =
                     typeof request.storage === "object" &&
                     ((known === "callback" && "callable" in request.storage) ||
-                        (known === "array" && "elements" in request.storage));
+                        ((known === "array" || known === "source") &&
+                            "elements" in request.storage));
                 if (
                     this.dynamicBindings.has(request.declaration) &&
                     !upgrade &&

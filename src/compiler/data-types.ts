@@ -190,6 +190,7 @@ import {
     holdsNoPayload,
     holdsOnly,
     arrayShape,
+    type ArrayShape,
     callSignatures,
     classInstanceDeclaration,
     inheritsFrom,
@@ -229,6 +230,7 @@ import {
     bindingElementKey,
     propertyKey,
     unwrapExpression,
+    outermostWrapper,
     isTypeAssertion,
     wrappersUnder,
     declarationNamed,
@@ -712,14 +714,17 @@ export interface ConvertedMember {
     readonly of: ts.Expression;
 }
 
-/** Whether `type`, or a member of the intersection it is, is a pinned `kind` handle type. */
-export function includesPinnedHandleType(
-    type: ts.Type,
-    kind: HandleKind,
-): boolean {
+/**
+ * Whether `type`, or a member of the intersection it is, is a type the pin
+ * declares: one that is not, read over an engine object, is a view the
+ * program asserts (`mesh.material as { x?: number }`).
+ */
+export function includesPinnedType(type: ts.Type): boolean {
     return type.isIntersection()
-        ? type.types.some((member) => includesPinnedHandleType(member, kind))
-        : pinnedHandleKind(type) === kind;
+        ? type.types.some(includesPinnedType)
+        : [type.aliasSymbol, type.symbol].some(
+              (symbol) => symbol !== undefined && declaredIn(symbol, "babylon"),
+          );
 }
 
 /** Whether `type` is one of the pin's engine object types (`pinnedHandleKind`). */
@@ -1519,6 +1524,20 @@ const ERASED_COLLECTION_LOOKUPS: Readonly<
     Map: ["get", "set", "has", "delete"],
     Set: ["add", "has", "delete"],
 };
+
+/**
+ * An array's storage: a vector where it is mutable, or of booleans (deque
+ * storage keeps real boolean references, which contiguous spans cannot); a
+ * span for a readonly view of other elements.
+ */
+function arrayLayout(
+    mutable: boolean,
+    element: DataType,
+): DataType<"vector" | "span"> {
+    return mutable || element.kind === "boolean"
+        ? { kind: "vector", element }
+        : { kind: "span", element };
+}
 
 /** A `Map` or `Set` whose keys are typed `unknown` or `object`. */
 function erasedCollectionKind(
@@ -2925,11 +2944,22 @@ export class DataTypeRegistry {
         )
             return undefined;
         const expression = unwrapExpression(owner);
-        const checked = this.nativeOwnerType(
-            member?.type ?? this.checker.getTypeAtLocation(owner),
-            actual,
-            expression,
-        );
+        // Where the owner's own type does not say what it holds (a binding
+        // of erased elements), the type the program asserts it as does
+        // (`held as unknown as readonly View[]`).
+        const checked =
+            this.nativeOwnerType(
+                member?.type ?? this.checker.getTypeAtLocation(owner),
+                actual,
+                expression,
+            ) ??
+            (member
+                ? undefined
+                : this.nativeOwnerType(
+                      this.checker.getTypeAtLocation(outermostWrapper(owner)),
+                      actual,
+                      expression,
+                  ));
         if (
             !checked ||
             !this.checker.isTypeAssignableTo(
@@ -4327,11 +4357,13 @@ export class DataTypeRegistry {
         const absent = ts.isParameter(declaration)
             ? nullability(this.checker.getTypeAtLocation(declaration))
             : undefined;
-        const storage = this.engineOwnedStorage(
-            absent?.null || absent?.undefined
-                ? this.nullableType(present, !absent.null)
-                : target,
-        );
+        const storage =
+            this.erasedArrayStorage(declaration, present) ??
+            this.engineOwnedStorage(
+                absent?.null || absent?.undefined
+                    ? this.nullableType(present, !absent.null)
+                    : target,
+            );
         const known = this.storage.assertedHandleFields.get(declaration);
         if (!known || erasedFieldWidens(known, storage))
             throw new AssertedHandleFieldStorageRequired(declaration, storage);
@@ -4359,6 +4391,7 @@ export class DataTypeRegistry {
                 this.erasedCollection(declaration, collection) !== undefined
             );
         }
+        if (this.erasedArrayShape(declaration)) return true;
         if (
             ts.isPropertySignature(declaration) ||
             ts.isPropertyDeclaration(declaration)
@@ -4371,6 +4404,72 @@ export class DataTypeRegistry {
             ((type.flags & ts.TypeFlags.Unknown) !== 0 ||
                 holdsObjectKeyword(type))
         );
+    }
+
+    /**
+     * The shape of the array a program declaration (a binding, a parameter,
+     * not a rest one, or a record field) is typed, when its elements are
+     * `unknown` or `object` where it is lowered. A binding's elements take
+     * the handles written to it as a dynamic binding's (`{ elements }`); a
+     * parameter's or a field's as erased storage
+     * (`requireWrittenHandleFieldStorage`).
+     */
+    public erasedArrayShape(
+        declaration: ts.Declaration,
+    ): ArrayShape | undefined {
+        if (
+            declaration.getSourceFile().isDeclarationFile ||
+            !(
+                ts.isVariableDeclaration(declaration) ||
+                ts.isPropertySignature(declaration) ||
+                ts.isPropertyDeclaration(declaration) ||
+                (ts.isParameter(declaration) && !declaration.dotDotDotToken)
+            )
+        )
+            return undefined;
+        const shape = arrayShape(
+            this.checker,
+            this.checker.getTypeAtLocation(declaration),
+        );
+        if (!shape || shape.tuple) return undefined;
+        // A type parameter no substitution replaces here stands for its
+        // constraint, and for `unknown` without one.
+        const resolved = this.resolveTypeParameter(shape.element);
+        const element =
+            (resolved.flags & ts.TypeFlags.TypeParameter) !== 0
+                ? this.checker.getBaseConstraintOfType(resolved)
+                : resolved;
+        return !element ||
+            (element.flags & ts.TypeFlags.Unknown) !== 0 ||
+            holdsObjectKeyword(element)
+            ? shape
+            : undefined;
+    }
+
+    /**
+     * The storage of an erased array parameter or field
+     * (`erasedArrayShape`) whose elements a reached write gives one native
+     * `handle` kind: its own array layout, each element held as an array
+     * of that handle holds it, by identity.
+     */
+    private erasedArrayStorage(
+        declaration: ts.Declaration,
+        handle: DataType,
+    ): DataType | undefined {
+        const shape =
+            !ts.isVariableDeclaration(declaration) &&
+            this.erasedArrayShape(declaration);
+        return shape
+            ? arrayLayout(shape.mutable, this.arrayElementOf(handle))
+            : undefined;
+    }
+
+    /** The storage an erased array a written handle settled has where `node` names it. */
+    private erasedArrayDemand(node: ts.Node): DataType | undefined {
+        const declaration = this.arraySources?.declarationOf(node);
+        return declaration && this.erasedArrayShape(declaration)
+            ? this.storage.assertedHandleFields.get(declaration)
+            : undefined;
     }
 
     /** The handle storage a reached use settled an erased parameter with. */
@@ -6369,6 +6468,8 @@ export class DataTypeRegistry {
                 if (!elementType) {
                     return undefined;
                 }
+                const demanded = this.erasedArrayDemand(node);
+                if (demanded) return demanded;
                 if ((elementType.flags & ts.TypeFlags.Unknown) !== 0) {
                     const finite = this.finiteArrayType(node);
                     if (finite) return finite;
@@ -6380,12 +6481,7 @@ export class DataTypeRegistry {
                 if (!storedElement) {
                     return undefined;
                 }
-                // Boolean arrays use deque storage to keep real boolean
-                // references; their readonly views cannot be contiguous spans.
-                return symbolName === "Array" ||
-                    storedElement.kind === "boolean"
-                    ? { kind: "vector", element: storedElement }
-                    : { kind: "span", element: storedElement };
+                return arrayLayout(symbolName === "Array", storedElement);
             }
             // A view the program's own object implements is that object.
             if (symbolName && KEYED_COLLECTIONS.has(symbolName)) {
@@ -11154,13 +11250,13 @@ export class DataTypeRegistry {
         node: ts.Node,
     ): DataType | undefined {
         const mapped = this.storedElementType(elementType, node);
-        return (
-            mapped &&
-            markIdentityFunctions(
-                this.markStoredObjectReferences(
-                    this.arrayElementStorage(mapped),
-                ),
-            )
+        return mapped && this.arrayElementOf(mapped);
+    }
+
+    /** How an array holds an element of storage `mapped`. */
+    private arrayElementOf(mapped: DataType): DataType {
+        return markIdentityFunctions(
+            this.markStoredObjectReferences(this.arrayElementStorage(mapped)),
         );
     }
 
