@@ -157,7 +157,9 @@ export function armSpecializesCall(
  * (`deferredSelection`) is tested by that selection's condition, which
  * nothing an argument does changes: it alone splits a call whose arguments
  * do more. With more than two tests, the call splits only on those whose
- * staying a runtime test, with every other test fixed, still refuses; a call
+ * staying a runtime test, with every other test fixed, still refuses, and
+ * an arm that refuses adds those that still refuse so within that arm,
+ * the others fixed to it (`armDependedSelectors`); a call
  * that depends on more than `MAX_SELECTORS`, whose tests' outcomes make
  * more than `MAX_ARMS` arms, or that reads more than
  * `MAX_CANDIDATE_SELECTORS`, keeps its refusal, which then says so.
@@ -205,59 +207,78 @@ export function compileWithRuntimeCaseSplit(
                 runtime.variable,
                 `at most ${MAX_CANDIDATE_SELECTORS} run-time tests; it reads ${runtime.variable.length}`,
             );
-        const selectors = dependedSelectors(context, runtime, compile);
-        if (selectors === undefined) throw error;
-        if (selectors.length > MAX_SELECTORS)
-            throw beyondSplit(
-                error,
-                selectors,
-                `at most ${MAX_SELECTORS} run-time tests; it reads ${selectors.length}`,
+        const depended = dependedSelectors(context, runtime, compile);
+        if (depended === undefined) throw error;
+        let selectors = depended;
+        for (;;) {
+            if (selectors.length > MAX_SELECTORS)
+                throw beyondSplit(
+                    error,
+                    selectors,
+                    `at most ${MAX_SELECTORS} run-time tests; it reads ${selectors.length}`,
+                );
+            const arms = selectors.reduce(
+                (product, selector) => product * selector.outcomes.length,
+                1,
             );
-        const arms = selectors.reduce(
-            (product, selector) => product * selector.outcomes.length,
-            1,
-        );
-        if (arms === 0)
-            context.sceneManifest.shaderDerivations.refuseWithoutCreations(
+            if (arms === 0) {
+                const chosen = selectors;
+                context.sceneManifest.shaderDerivations.refuseWithoutCreations(
+                    () => {
+                        throw beyondSplit(
+                            error,
+                            chosen,
+                            "the shader variants the program creates, and it creates none",
+                        );
+                    },
+                );
+            }
+            if (arms > MAX_ARMS)
+                throw beyondSplit(
+                    error,
+                    selectors,
+                    `run-time tests in at most ${MAX_ARMS} arms; its tests make ${arms}`,
+                );
+            let armRefusal: CompileError | undefined;
+            const chosen = selectors;
+            const split = context.probeEmission(
                 () => {
-                    throw beyondSplit(
-                        error,
-                        selectors,
-                        "the shader variants the program creates, and it creates none",
-                    );
-                },
-            );
-        if (arms > MAX_ARMS)
-            throw beyondSplit(
-                error,
-                selectors,
-                `run-time tests in at most ${MAX_ARMS} arms; its tests make ${arms}`,
-            );
-        let armRefusal: CompileError | undefined;
-        const split = context.probeEmission(
-            () => {
-                try {
-                    return splitCall(
-                        context,
-                        call,
-                        runtime.fixed,
-                        selectors,
-                        compile,
-                    );
-                } catch (inner) {
-                    // An arm's own storage demand restarts generation with
-                    // it satisfied, after which the split can succeed.
-                    if (inner instanceof CompileError) {
-                        armRefusal = inner;
-                        return undefined;
+                    try {
+                        return splitCall(
+                            context,
+                            call,
+                            runtime.fixed,
+                            chosen,
+                            compile,
+                        );
+                    } catch (inner) {
+                        // An arm's own storage demand restarts generation
+                        // with it satisfied, after which the split can
+                        // succeed.
+                        if (inner instanceof CompileError) {
+                            armRefusal = inner;
+                            return undefined;
+                        }
+                        throw inner;
                     }
-                    throw inner;
-                }
-            },
-            (result) => result !== undefined,
-        );
-        if (split) return split;
-        throw armRefused(error, armRefusal, selectors);
+                },
+                (result) => result !== undefined,
+            );
+            if (split) return split;
+            // A test that matters only inside an arm joins the split.
+            const joined = armDependedSelectors(
+                context,
+                runtime,
+                chosen,
+                compile,
+            );
+            if (joined.length === 0)
+                throw armRefused(error, armRefusal, chosen);
+            selectors = runtime.variable.filter(
+                (candidate) =>
+                    chosen.includes(candidate) || joined.includes(candidate),
+            );
+        }
     }
 }
 
@@ -673,33 +694,91 @@ function selectorKind(
  */
 function dependedSelectors(
     context: CaseSplitContext,
-    { fixed, variable: candidates }: RuntimeSelectors,
+    runtime: RuntimeSelectors,
     compile: () => Value | undefined,
 ): readonly Selector[] | undefined {
+    const candidates = runtime.variable;
     if (candidates.length <= 2) return candidates;
-    const refuses = (outcomes: readonly (Outcome | undefined)[]): boolean => {
-        try {
-            context.probeEmission(
-                () =>
-                    withOutcomes(context, fixed, candidates, outcomes, compile),
-                () => false,
-            );
-            return false;
-        } catch (error) {
-            // A storage or realm demand restarts generation with it held,
-            // as an arm's does; the probe then answers on the next attempt.
-            if (error instanceof CompileError) return true;
-            throw error;
-        }
-    };
     const depended = candidates.filter((_, index) =>
-        refuses(
+        refusesWith(
+            context,
+            runtime,
             candidates.map((candidate, other) =>
                 other === index ? undefined : falseOutcome(candidate),
             ),
+            compile,
         ),
     );
     return depended.length > 0 ? depended : undefined;
+}
+
+/**
+ * The tests a split on `chosen` missed: each other candidate that, left a
+ * runtime test in some arm of `chosen` while every other candidate is
+ * false, still refuses (`dependedSelectors`' rule within that arm).
+ */
+function armDependedSelectors(
+    context: CaseSplitContext,
+    runtime: RuntimeSelectors,
+    chosen: readonly Selector[],
+    compile: () => Value | undefined,
+): readonly Selector[] {
+    const candidates = runtime.variable;
+    const arms = armOutcomes(chosen);
+    return candidates.filter(
+        (candidate, index) =>
+            !chosen.includes(candidate) &&
+            arms.some((arm) =>
+                refusesWith(
+                    context,
+                    runtime,
+                    candidates.map((other, position) => {
+                        const at = chosen.indexOf(other);
+                        return position === index
+                            ? undefined
+                            : at >= 0
+                              ? arm[at]
+                              : falseOutcome(other);
+                    }),
+                    compile,
+                ),
+            ),
+    );
+}
+
+/** Every combination of the selectors' outcomes: one per arm, in selector order. */
+function armOutcomes(selectors: readonly Selector[]): readonly Outcome[][] {
+    return selectors.reduce<Outcome[][]>(
+        (arms, selector) =>
+            arms.flatMap((arm) =>
+                selector.outcomes.map((outcome) => [...arm, outcome]),
+            ),
+        [[]],
+    );
+}
+
+/**
+ * Whether the call refuses with the candidates at `outcomes` (`undefined`
+ * leaves one runtime), compiled in a probe that keeps nothing.
+ */
+function refusesWith(
+    context: CaseSplitContext,
+    { fixed, variable }: RuntimeSelectors,
+    outcomes: readonly (Outcome | undefined)[],
+    compile: () => Value | undefined,
+): boolean {
+    try {
+        context.probeEmission(
+            () => withOutcomes(context, fixed, variable, outcomes, compile),
+            () => false,
+        );
+        return false;
+    } catch (error) {
+        // A storage or realm demand restarts generation with it held, as
+        // an arm's does; the probe then answers on the next attempt.
+        if (error instanceof CompileError) return true;
+        throw error;
+    }
 }
 
 /** A name calling a module's own function (`isModuleScopeFunction`), directly or through an import. */

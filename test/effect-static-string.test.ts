@@ -236,6 +236,92 @@ int main() {
     );
 });
 
+test("a test that matters only inside one arm of a split joins it, and each arm is JavaScript's", (t) => {
+    const source = `
+import { createEngine, createEffectWrapper, type EngineContext } from "@babylonjs/lite";
+interface Surface { label: string; water?: boolean; glow?: boolean; mask?: boolean }
+function surfaceWgsl(water: boolean, mask: boolean): string {
+    return \`// \${water} \${mask}
+@fragment fn effectFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+}
+function surface(engine: EngineContext, opts: Surface) {
+    return createEffectWrapper(engine, {
+        name: opts.label,
+        fragmentWGSL: surfaceWgsl(opts.water === true, opts.mask === true),
+        bindings: [{ binding: 0, kind: "uniform", uniformByteLength: 16 }],
+    });
+}
+async function main() {
+    const engine = await createEngine(document.createElement("canvas"));
+    const flags = JSON.parse("[false,true,true]") as boolean[];
+    const water = flags[0]!;
+    const glass = flags[1]!;
+    const gate = flags[2]!;
+    // The glass test changes nothing while the gate is false: it decides
+    // the mask only inside the gate's arm.
+    surface(engine, {
+        label: "surface",
+        ...(water ? { water: true } : {}),
+        ...(glass ? { glow: true } : gate ? { mask: true } : {}),
+    });
+}
+main();`;
+    const compiled = compileSource(source);
+    assert.equal(
+        (compiled.cpp.match(/const bool \w*case_test_\d+/g) ?? []).length,
+        3,
+    );
+    const texts = compiled.manifest.effects.map(
+        ({ fragment }) => fragment.split("\n")[0]!,
+    );
+    assert.deepEqual(
+        [...new Set(texts)].sort(),
+        [false, true]
+            .flatMap((water) =>
+                [false, true].flatMap((glass) =>
+                    [false, true].map(
+                        (gate) => `// ${water} ${!glass && gate}`,
+                    ),
+                ),
+            )
+            .filter((text, index, all) => all.indexOf(text) === index)
+            .sort(),
+    );
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native compiler required.");
+        return;
+    }
+    runGeneratedProgram(
+        native,
+        "effect-static-string/arm-dependency",
+        `#include <bblite/runtime.hpp>
+#include <bblite/js_data.hpp>
+#include <cassert>
+#include <cstring>
+namespace {
+const char* texts[] = { ${texts.map((text) => JSON.stringify(text)).join(", ")} };
+int creations = 0;
+}
+namespace bbl {
+Engine create_engine(EngineOptions) { return {}; }
+EffectWrapperHandle create_effect_wrapper(Engine&, std::uint32_t variant) {
+    assert(std::strcmp(texts[variant], "// false false") == 0);
+    ++creations;
+    return {variant};
+}
+}
+#define main generated_main
+${compiled.cpp}
+#undef main
+int main() {
+    assert(generated_main() == 0);
+    assert(creations == 1);
+}`,
+        { expectedOutput: "" },
+    );
+});
+
 test("effect builder replay refuses changed inputs and unbounded shader text", () => {
     const source = program(`
         setup(engine, { label: "refuse", radius: Math.random() });
