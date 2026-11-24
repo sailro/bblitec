@@ -4697,6 +4697,25 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
               );
     }
 
+    /**
+     * A reference struct spells an absent object as its null reference
+     * (`truthinessCondition`). Read from `expression`, where the checker
+     * proves it present (`provenPresent`), it holds an object: the value
+     * states its truthiness, so a parameter that admits `undefined` keeps
+     * knowing it is there.
+     */
+    public presentReference(value: Value, expression: ts.Expression): Value {
+        if (
+            value.kind !== "data" ||
+            value.dataType?.kind !== "struct" ||
+            value.truthinessCpp !== undefined ||
+            !this.context.dataTypes.isReferenceStruct(value.dataType.name) ||
+            !provenPresent(this.context.checker.getTypeAtLocation(expression))
+        )
+            return value;
+        return { ...value, truthinessCpp: "true" };
+    }
+
     public narrowOptional(
         value: Value,
         expression: ts.Expression | ts.BindingName,
@@ -20476,8 +20495,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.context.dataTypes.isReferenceStruct(value.dataType.name)
         ) {
             // An optional object stored in a Map/array uses the reference's
-            // null state directly rather than wrapping it in std::optional.
-            return `static_cast<bool>(${value.cpp})`;
+            // null state directly rather than wrapping it in std::optional;
+            // one known to hold an object states so (`presentReference`).
+            return (
+                objectTruthinessCpp(value) ?? `static_cast<bool>(${value.cpp})`
+            );
         }
         // An inline record is an object, present wherever it is held.
         if (value.kind === "data" && value.dataType?.kind === "struct")

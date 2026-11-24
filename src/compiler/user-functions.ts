@@ -3262,7 +3262,10 @@ export class UserFunctionLowerer {
             (parameter?.questionToken !== undefined ||
                 (expected !== undefined && nullability(expected).undefined))
                 ? compiled
-                : context.dataLowerer.narrowOptional(compiled, argument);
+                : context.dataLowerer.presentReference(
+                      context.dataLowerer.narrowOptional(compiled, argument),
+                      argument,
+                  );
         if (
             value.kind === "record" &&
             expected &&
