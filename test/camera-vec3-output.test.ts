@@ -65,7 +65,10 @@ if(camera.worldMatrixVersion!==changedVersion+5)throw new Error("unchanged math 
     const directory = resolve("artifacts/camera-vec3-output");
     const sources = cameraSources(directory, { arcRotate: true, free: true });
     const context = new LoweringContext();
-    const navigation = new NavigationLowerer(context).lowerNavigation(["solo"]);
+    const navigation = new NavigationLowerer(context).lowerNavigation(
+        ["solo"],
+        true,
+    );
     writeFileSync(
         join(directory, "include/bblite/upstream/navigation.hpp"),
         navigation.header,

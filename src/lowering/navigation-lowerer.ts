@@ -334,8 +334,14 @@ export class NavigationLowerer {
      * @param arms The build arms reached builds take. Generation decided
      * each it could: one arm emits one call and one surface, not a
      * run-time test of a settled fact; both keep the pin's own test.
+     * @param sceneMeshes Whether a scene renderer owns meshes: only then
+     * does `createNavMesh` (which takes an engine's meshes) lower, with
+     * the world composition `renderer_plan.hpp` carries.
      */
-    public lowerNavigation(arms: readonly NavigationBuildArm[]): LoweredSource {
+    public lowerNavigation(
+        arms: readonly NavigationBuildArm[],
+        sceneMeshes: boolean,
+    ): LoweredSource {
         const tileCache = arms.includes("tileCache");
         const modulePath = NAVIGATION_MODULE;
         const symbolName = "createNavMesh";
@@ -695,12 +701,16 @@ void update_nav_mesh_obstacles(bbl::pal::NavigationHandle plugin) {
                 ],
                 `
 bbl::pal::NavigationHandle create_navigation_plugin();
-void create_nav_mesh(
+${
+    sceneMeshes
+        ? `void create_nav_mesh(
     Engine& engine,
     bbl::pal::NavigationHandle plugin,
     const std::vector<MeshHandle>& meshes,
     const bbl::pal::NavMeshBuildParams& params);
-${obstacleDeclarations}
+`
+        : ""
+}${obstacleDeclarations}
 ${navigationSourceQueryDeclarations}
 ${navigationQueryDefaultsDeclaration()}
 ${navigationBuildPlanDeclarations(arms)}
@@ -745,11 +755,15 @@ Vec3d get_agent_position(
 #include <${featureMacroInclude("BBLITE_HAS_NAV_CROWD")}>
 #include <bblite/upstream/navigation.hpp>
 #include <bblite/mesh_cpu_streams.hpp>
-// The merge composes each caster's own world through the one emitted
+${
+    sceneMeshes
+        ? `// The merge composes each caster's own world through the one emitted
 // composition every consumer reads, so a mesh that gained a transform-node
 // parent follows it here too.
 #include <bblite/upstream/renderer_plan.hpp>
-
+`
+        : ""
+}
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -777,7 +791,9 @@ void create_nav_mesh_from_sources(bbl::pal::NavigationHandle plugin,
     create_nav_mesh_from_merged(plugin, merged, params);
 }
 
-${navigationMeshMergeDefinition(this.context)}
+${
+    sceneMeshes
+        ? `${navigationMeshMergeDefinition(this.context)}
 void create_nav_mesh(
     Engine& engine,
     bbl::pal::NavigationHandle plugin,
@@ -786,7 +802,9 @@ void create_nav_mesh(
     const auto merged = merge_nav_meshes(engine, meshes);
     create_nav_mesh_from_merged(plugin, merged, params);
 }
-
+`
+        : ""
+}
 /** A double the port carries, at the float width the seam takes. */
 bbl::pal::NavVec3 nav_vec3(Vec3d value) {
     return bbl::pal::NavVec3{

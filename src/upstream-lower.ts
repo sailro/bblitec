@@ -2029,6 +2029,7 @@ ${lowerThinInstanceSync(context)}
                         : features.includes("navigation:tile-cache")
                           ? ["tileCache"]
                           : ["solo"],
+                    features.includes("renderer:scene"),
                 ),
             "upstream/include/bblite/upstream/navigation.hpp",
         );

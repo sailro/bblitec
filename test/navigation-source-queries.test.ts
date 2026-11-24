@@ -291,14 +291,20 @@ test("native raw navigation queries match pinned WASM and disposal releases reso
     pin.disposeNavigationPlugin(plugin);
     const context = new LoweringContext();
     // Both arms: the build runs the pin's own dispatch at run time.
-    const lowered = new NavigationLowerer(context).lowerNavigation([
-        "solo",
-        "tileCache",
-    ]);
+    const lowered = new NavigationLowerer(context).lowerNavigation(
+        ["solo", "tileCache"],
+        true,
+    );
+    // One arm, and no scene renderer: no run-time arm test, and no mesh
+    // merge reading the renderer's world composition.
     const single = new NavigationLowerer(new LoweringContext()).lowerNavigation(
         ["solo"],
+        false,
     );
     assert.doesNotMatch(single.source, /max_obstacles\.value_or/);
+    assert.doesNotMatch(single.source, /renderer_plan\.hpp|create_nav_mesh\(/);
+    assert.doesNotMatch(single.header, /create_nav_mesh\(/);
+    assert.match(lowered.source, /renderer_plan\.hpp/);
     assert.match(
         lowered.source,
         /params\.max_obstacles\.value_or\(0\.0\) > 0\.0/,
