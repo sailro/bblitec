@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
 import { createCompilerProgram } from "../src/compiler/program.js";
@@ -60,6 +61,92 @@ test("a map callback's record keeps a null member's absence in a declared record
         if (all[0]!.tone !== undefined || all[1]!.tone !== "problem") throw new Error("tones");
     `);
     runChecked(t, result.cpp, "map-record-absence-check");
+});
+
+// A function returning `Spot | null | undefined` whose caller keeps its
+// committed spot on `undefined` and stores `null` or a spot: the returns
+// keep the two absent values apart, as JavaScript does.
+const SPOT_CALLER = `
+    const committed: { spot: Spot | null } = { spot: null };
+    function reachable(x: number, held: boolean): Spot | null {
+        pending = held;
+        const result = scan(x);
+        if (result === undefined) return committed.spot;
+        committed.spot = result;
+        return result;
+    }
+    const seen = [reachable(1, false), reachable(2, true), reachable(2, false)]
+        .map((spot) => spot?.id ?? "null").join(",");
+    if (seen !== "1,1,null") throw new Error(seen);
+`;
+const SPOT_PRELUDE = `
+    interface Spot { id: number }
+    const spots: Spot[] = [{ id: 1 }];
+    let pending = false;
+`;
+for (const [name, callee] of [
+    [
+        "an arrow returning another arrow's result",
+        `const project = (x: number, pick: (spot: Spot) => Spot): Spot | null | undefined => {
+            if (pending) return undefined;
+            const spot = spots.find((s) => s.id === x);
+            return spot ? pick(spot) : null;
+        };
+        const scan = (x: number): Spot | null | undefined => project(x, (spot) => spot);`,
+    ],
+    [
+        "a function declaration",
+        `function scan(x: number): Spot | null | undefined {
+            if (pending) return undefined;
+            return spots.find((s) => s.id === x) ?? null;
+        }`,
+    ],
+    [
+        "a function reading only its parameters",
+        `function find(x: number, held: boolean, from: Spot[]): Spot | null | undefined {
+            if (held) return undefined;
+            for (const spot of from) if (spot.id === x) return spot;
+            return null;
+        }
+        const scan = (x: number): Spot | null | undefined => find(x, pending, spots);`,
+    ],
+] as const)
+    test(`a call's result keeps null and undefined apart through ${name}`, (t) => {
+        const source = SPOT_PRELUDE + callee + SPOT_CALLER;
+        runInNewContext(
+            ts.transpileModule(source, {
+                compilerOptions: { target: ts.ScriptTarget.ES2022 },
+            }).outputText,
+        );
+        const result = compileSource(source);
+        assert.match(result.cpp, /bbl::js::Tagged<bblscene::Spot>/);
+        runChecked(
+            t,
+            result.cpp,
+            `call-result-absence-${name.replace(/\W+/g, "-")}`,
+        );
+    });
+
+test("a call's result stays refused where no one function's returns hold it", () => {
+    // An overload, and a function stored with several call signatures,
+    // name no one return to keep the two absent values apart in.
+    for (const callee of [
+        `function scan(x: number): Spot | null | undefined;
+        function scan(x: string): Spot | null | undefined;
+        function scan(x: number | string): Spot | null | undefined {
+            if (pending) return undefined;
+            return spots.find((s) => s.id === Number(x)) ?? null;
+        }`,
+        `const scan: {
+            (x: number): Spot | null | undefined;
+            (x: string): Spot | null | undefined;
+        } = (x: number | string): Spot | null | undefined =>
+            pending ? undefined : (spots.find((s) => s.id === Number(x)) ?? null);`,
+    ])
+        assert.throws(
+            () => compileSource(SPOT_PRELUDE + callee + SPOT_CALLER),
+            /told apart only once one of them is ruled out/,
+        );
 });
 
 /** Builds the program into `artifacts/<name>` and runs it: it throws on a wrong value. */

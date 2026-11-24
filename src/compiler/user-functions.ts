@@ -2835,23 +2835,33 @@ export class UserFunctionLowerer {
             : mapped;
     }
 
+    /**
+     * The storage a shared body of `declaration` returns `type` in: tagged
+     * where a caller tells its returned `null` from `undefined`
+     * (`absenceTaggedStorage`).
+     */
     private sharedReturnType(
         context: UserFunctionContext,
         type: ts.Type,
-        node: ts.Node,
+        declaration: SupportedFunction,
     ): DataType | undefined {
         const mapped = this.ownedEventResult(
-            context.dataTypes.fromSharedReturnType(type, node),
-            node,
+            context.dataTypes.fromSharedReturnType(type, declaration),
+            declaration,
         );
-        return mapped?.kind === "struct" &&
+        const stored =
+            mapped?.kind === "struct" &&
             sourceTypeHasObservedIdentity(
                 this.checker,
                 type,
                 programObservations(context.program).identities,
             )
-            ? context.dataTypes.markStoredObjectReferences(mapped)
-            : mapped;
+                ? context.dataTypes.markStoredObjectReferences(mapped)
+                : mapped;
+        return (
+            stored &&
+            context.dataTypes.absenceTaggedStorage(declaration, stored)
+        );
     }
 
     private compileSharedCall(

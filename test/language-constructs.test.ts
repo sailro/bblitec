@@ -14080,15 +14080,28 @@ check(
 );
 
 test("strict equality refuses operands that may be null or undefined without storage telling them apart", () => {
-    for (const source of [
-        "interface Box { v: number; } const boxes: Box[] = [{ v: 1 }]; function pick(i: number): Box | null | undefined { return i < 0 ? null : i > 5 ? undefined : boxes[i]; } const g = new Float32Array([0, 1]); if (pick(g[0]!) === pick(g[1]!)) throw new Error();",
-        "type Fn = () => number; const fns: Array<Fn | null | undefined> = [null, undefined]; let last: Fn | null | undefined = null; for (const f of fns) { if (f === last) throw new Error(); last = f; }",
-    ])
-        assert.throws(
-            () => compileSource(source),
-            /compared strictly with another value that may be absent only once one of them is ruled out/,
-        );
+    assert.throws(
+        () =>
+            compileSource(
+                "type Fn = () => number; const fns: Array<Fn | null | undefined> = [null, undefined]; let last: Fn | null | undefined = null; for (const f of fns) { if (f === last) throw new Error(); last = f; }",
+            ),
+        /compared strictly with another value that may be absent only once one of them is ruled out/,
+    );
 });
+
+// A function's result whose callers tell null from undefined is tagged
+// storage, so strict equality of two results compares them exactly.
+check(
+    "strict-equality-of-tagged-call-results",
+    `
+    interface Box { v: number; }
+    const boxes: Box[] = [{ v: 1 }, { v: 2 }];
+    function pick(i: number): Box | null | undefined { return i < 0 ? null : i > 5 ? undefined : boxes[i]; }
+    const g = new Float32Array([0, 1, -1, -2, 7, 9]);
+    const same = (a: number, b: number): boolean => pick(g[a]!) === pick(g[b]!);
+    if (same(0, 1) || !same(0, 0) || !same(2, 3) || !same(4, 5) || same(2, 4)) throw new Error("tagged results");
+`,
+);
 
 check(
     "tuple-spreads-into-class-method-parameters",

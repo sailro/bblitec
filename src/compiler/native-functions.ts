@@ -1145,8 +1145,16 @@ export class NativeFunctionLowerer {
         if (!returnType) {
             return { kind: "void", cpp };
         }
+        // A tagged result is read twice (its state and its value): the call
+        // runs once, into a temporary.
         return {
-            ...this.context.dataLowerer.leafValue(cpp, returnType),
+            ...(returnType.kind === "tagged"
+                ? this.context.dataLowerer.storedCallResult(
+                      cpp,
+                      returnType,
+                      "tagged_result",
+                  )
+                : this.context.dataLowerer.leafValue(cpp, returnType)),
             nativeOwnedRvalue: true,
         };
     }
@@ -1714,10 +1722,13 @@ export class NativeFunctionLowerer {
             ) {
                 return undefined;
             }
-            returnType =
+            // A caller telling the returned `null` from `undefined` tags it.
+            returnType = this.context.dataTypes.absenceTaggedStorage(
+                declaration,
                 options.markAllStructReturns && mapped.kind === "struct"
                     ? this.context.dataTypes.markStoredObjectReferences(mapped)
-                    : mapped;
+                    : mapped,
+            );
         }
         const parameters: DataFunctionParameter[] = [];
         for (const parameter of declaration.parameters) {

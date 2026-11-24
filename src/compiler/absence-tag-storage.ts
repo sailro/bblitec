@@ -2,6 +2,7 @@ import { StorageDemand } from "./storage-demand.js";
 import type { StorageRequest } from "./replay-storage.js";
 import ts from "typescript";
 import {
+    calledFunction,
     declaredSymbol,
     isRetypableDeclaration,
     resolvedSymbol,
@@ -12,13 +13,54 @@ import { unwrapExpression } from "./syntax.js";
 /**
  * A source storage that can keep JavaScript's two absent values apart
  * (`DataType<"tagged">`): a variable, a parameter (of a function or of a
- * signature a function is stored as) or a record property.
+ * signature a function is stored as), a record property, or the return of
+ * a function ({@link ReturningFunction}).
  */
 export type AbsenceTagDeclaration =
     | ts.VariableDeclaration
     | ts.ParameterDeclaration
     | ts.PropertySignature
-    | ts.PropertyDeclaration;
+    | ts.PropertyDeclaration
+    | ReturningFunction;
+
+/**
+ * A function whose returns are the storage of its calls' results: a
+ * function declaration, or a function literal a `const` binding holds.
+ */
+type ReturningFunction =
+    ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression;
+
+function isReturningFunction(
+    declaration: ts.Node | undefined,
+): declaration is ReturningFunction {
+    return (
+        declaration !== undefined &&
+        (ts.isFunctionDeclaration(declaration) ||
+            ts.isArrowFunction(declaration) ||
+            ts.isFunctionExpression(declaration))
+    );
+}
+
+/**
+ * The function whose returns a call's result is, when the call runs one
+ * authored function through its one signature (`calledFunction`): an
+ * unresolved callee, an overload or a callee typed with several
+ * signatures has none, so an observation of its result refuses.
+ */
+function returningFunctionOf(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression,
+): ReturningFunction | undefined {
+    const called = calledFunction(checker, call);
+    return isReturningFunction(called) &&
+        callSignatures(
+            checker,
+            checker.getTypeAtLocation(call.expression),
+            "present",
+        ).length === 1
+        ? called
+        : undefined;
+}
 
 /**
  * A strict comparison, spelling, `typeof` or default parameter observed
@@ -36,20 +78,25 @@ export class AbsenceTagStorageRequired extends StorageDemand {
     }
 }
 
-/** A program source's own storage ({@link isRetypableDeclaration}) that holds a value. */
+/**
+ * A program source's own storage ({@link isRetypableDeclaration}) that
+ * holds a value, or a function's return.
+ */
 function isAbsenceTagDeclaration(
     declaration: ts.Declaration | undefined,
 ): declaration is AbsenceTagDeclaration {
     return (
-        isRetypableDeclaration(declaration) &&
-        !ts.isMethodSignature(declaration)
+        isReturningFunction(declaration) ||
+        (isRetypableDeclaration(declaration) &&
+            !ts.isMethodSignature(declaration))
     );
 }
 
 /**
  * The one storage `expression` reads its value from directly: a variable or
- * parameter it names, or the property a dotted read selects when a single
- * declaration declares it. Undefined for any other expression.
+ * parameter it names, the property a dotted read selects when a single
+ * declaration declares it, or the returns of the function a call runs.
+ * Undefined for any other expression.
  */
 function absenceTagDeclaration(
     checker: ts.TypeChecker,
@@ -61,11 +108,13 @@ function absenceTagDeclaration(
     if (ts.isIdentifier(node)) {
         const declaration = resolvedSymbol(checker, node)?.valueDeclaration;
         return isAbsenceTagDeclaration(declaration) &&
+            !isReturningFunction(declaration) &&
             !ts.isPropertySignature(declaration) &&
             !ts.isPropertyDeclaration(declaration)
             ? declaration
             : undefined;
     }
+    if (ts.isCallExpression(node)) return returningFunctionOf(checker, node);
     // An element read keeps the tags of the array the storage holds.
     if (ts.isElementAccessExpression(node))
         return checker.isArrayType(
