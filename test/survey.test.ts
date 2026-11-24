@@ -151,6 +151,34 @@ test("a later call of a text helper gives the text a compile gives", () => {
     }
 });
 
+test("a later call of another argument shape lowers its body again", () => {
+    // The first, argument-less call lowers the body with `label` absent, its
+    // branch dead; the second supplies it, and a compile refuses there.
+    const source = `
+    let total = 0;
+    function track(label?: string): void {
+        if (label !== undefined) {
+            const registry = new FinalizationRegistry(() => {});
+            if (registry) total += label.length;
+        }
+        total += 1;
+    }
+    track();
+    track("named");
+    localStorage.setItem("t", String(total));`;
+    const fileName = resolve("survey-argument-shape.ts");
+    assert.throws(
+        () => compileSource(source, { fileName }),
+        /Unsupported constructor expression/,
+    );
+    const { report } = surveySource(source, { fileName }, { roots: false });
+    assert.match(
+        listed(report),
+        /^5: Unsupported constructor expression\./m,
+        listed(report),
+    );
+});
+
 test("an entry-only survey lowers a body its probes reach, which no root lowers later", () => {
     // `defaults` is called only from a conditional arm and a catch block, which
     // the survey lowers inside probes; with roots a later root lowers its body,

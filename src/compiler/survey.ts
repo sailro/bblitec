@@ -244,6 +244,8 @@ interface Attempt {
     >;
     /** The functions whose bodies this attempt lowered outside a probe. */
     lowered: Set<ts.Node>;
+    /** The argument shapes each of `lowered` was lowered with (`loweredBefore`). */
+    loweredShapes: Map<ts.Node, Set<string>>;
     /** Those of `lowered` whose lowering did not end: the next call lowers the body again. */
     unfinished: Set<ts.Node>;
     /** The statement lowerings inside survey roots. */
@@ -593,6 +595,7 @@ function newAttempt(carries: Partial<Attempt> = {}): Attempt {
         replays: [],
         demands: new Map(),
         lowered: new Set(),
+        loweredShapes: new Map(),
         unfinished: new Set(),
         rooted: 0,
         settling: false,
@@ -733,17 +736,35 @@ export class SurveyCollector {
 
     /**
      * Whether this attempt already lowered `declaration`'s body outside a
-     * probe; a lowering outside a probe that answers false lowers it now.
+     * probe with arguments of `shape` (their count and kinds); a lowering
+     * outside a probe that answers false lowers it now. A call of another
+     * shape lowers the body again, once per shape: the storage demands its
+     * arguments raise (an options record a first, argument-less call never
+     * passed) are met in the pass.
      */
-    public loweredBefore(declaration: ts.Node, speculating: boolean): boolean {
+    public loweredBefore(
+        declaration: ts.Node,
+        speculating: boolean,
+        shape: string,
+    ): boolean {
         const attempt = this.current;
         if (!attempt) return false;
+        let shapes = attempt.loweredShapes.get(declaration);
         if (attempt.lowered.has(declaration)) {
-            if (!attempt.unfinished.has(declaration)) return true;
-            if (!speculating) attempt.unfinished.delete(declaration);
+            if (!attempt.unfinished.has(declaration) && shapes?.has(shape))
+                return true;
+            if (!speculating) {
+                attempt.unfinished.delete(declaration);
+                shapes?.add(shape);
+            }
             return false;
         }
-        if (!speculating) attempt.lowered.add(declaration);
+        if (!speculating) {
+            attempt.lowered.add(declaration);
+            if (!shapes)
+                attempt.loweredShapes.set(declaration, (shapes = new Set()));
+            shapes.add(shape);
+        }
         return false;
     }
 

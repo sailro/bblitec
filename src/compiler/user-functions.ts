@@ -1784,6 +1784,20 @@ type KnownPrimitives = Readonly<
     >
 >;
 
+/**
+ * The shape a survey tells calls of one body apart by (`loweredBefore`): how
+ * many arguments a call supplies and each one's kind of value and data.
+ */
+function argumentShape(argumentValues: readonly Value[]): string {
+    return argumentValues
+        .map((value) =>
+            value.kind === "data"
+                ? `data:${value.dataType?.kind ?? ""}`
+                : value.kind,
+        )
+        .join(",");
+}
+
 export class UserFunctionLowerer {
     /**
      * Whether a recursive node parameter takes the runtime SceneNode slot.
@@ -2308,10 +2322,11 @@ export class UserFunctionLowerer {
     }
 
     /**
-     * A survey lowers each function's body in full once per attempt: a later
-     * plain call, its arguments already lowered, returns empty storage of the
-     * declared result (nothing when discarded), so every statement lowers
-     * about once. Undefined when the call lowers its body: the first one, a
+     * A survey lowers each function's body in full once per attempt and
+     * argument shape: a later plain call of a shape already lowered, its
+     * arguments already lowered, returns empty storage of the declared result
+     * (nothing when discarded), so every statement lowers about once per
+     * shape. Undefined when the call lowers its body: the first one, a
      * callback invocation, or a result whose type has no storage.
      */
     private repeatedSurveyCall(
@@ -2325,6 +2340,7 @@ export class UserFunctionLowerer {
             !activeSurvey()?.loweredBefore(
                 ir.declaration,
                 context.speculating,
+                argumentShape(argumentValues),
             ) ||
             body
         )
