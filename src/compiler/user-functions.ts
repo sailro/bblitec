@@ -3966,13 +3966,66 @@ export class UserFunctionLowerer {
     }
 
     /**
+     * Whether `call` of `callee`, whose argument `index` binds its
+     * parameter present (`present`, `bindsPresent`), has the shared body
+     * answer that parameter's presence test (`presenceTested`). Only the
+     * root of a group no call re-enters specializes: a recursive group, and
+     * a body that needs a local native, share one body for every presence.
+     * The native-function router asks it before any group lowers, to leave
+     * such a call to this owner. A default the argument leaves unused is
+     * the native function's too: it evaluates the default only for an
+     * absent argument, as JavaScript does.
+     */
+    public specializesOnPresence(
+        context: Pick<UserFunctionContext, "bindings" | "dataTypes" | "fail">,
+        call: ts.CallExpression,
+        callee: ts.Identifier,
+        declaration: SupportedFunction,
+        index: number,
+        present: () => boolean,
+    ): boolean {
+        const parameter = positionalParameter(call, declaration, index);
+        if (!parameter) return false;
+        const type = this.checker.getTypeAtLocation(parameter);
+        return (
+            this.presenceTested(
+                parameter,
+                declaration,
+                context.dataTypes.dynamicJsonType(type) ??
+                    context.dataTypes.fromTsType(type, parameter),
+            ) &&
+            present() &&
+            !this.irFor(declaration, callee.text, (node, message) =>
+                context.fail(node, message),
+            ).needsLocalNative &&
+            this.reachedRecursiveGroup(context, declaration) === undefined
+        );
+    }
+
+    /**
+     * Whether a body tests the presence of `parameter`, held in `storage`,
+     * which an argument that binds it present answers in a specialized
+     * body: optional storage, and a test of it in the body.
+     */
+    private presenceTested(
+        parameter: ts.ParameterDeclaration,
+        declaration: SupportedFunction,
+        storage: DataType | undefined,
+    ): boolean {
+        return (
+            storage?.kind === "optional" &&
+            parameterPresenceTested(this.checker, parameter, declaration)
+        );
+    }
+
+    /**
      * The recursive group a call reaches. Calls through an existing sibling's
      * storage no longer need a shared group: the cycle is recomputed without
      * crossing those bindings, keeping their captures and the identities of
      * nonrecursive siblings. A cycle that dissolves leaves an ordinary call.
      */
     private reachedRecursiveGroup(
-        context: UserFunctionContext,
+        context: Pick<UserFunctionContext, "bindings">,
         root: SupportedFunction,
     ): readonly SupportedFunction[] | undefined {
         const represented = (declaration: SupportedFunction): boolean => {
@@ -4515,18 +4568,16 @@ export class UserFunctionLowerer {
                         declaration === root.declaration && !recursive
                             ? rootArguments[index]
                             : undefined;
-                    // A default initializer tests its parameter too.
+                    // A default tests its parameter too.
                     if (
-                        (mapped?.kind === "optional" ||
-                            parameter.initializer !== undefined) &&
                         presentArgument &&
-                        bindsPresent(presentArgument) &&
                         (parameter.initializer !== undefined ||
-                            parameterPresenceTested(
-                                this.checker,
+                            this.presenceTested(
                                 parameter,
                                 declaration,
-                            ))
+                                mapped,
+                            )) &&
+                        bindsPresent(presentArgument)
                     ) {
                         if (mapped?.kind === "optional") mapped = mapped.inner;
                         presentParameters.push(index);

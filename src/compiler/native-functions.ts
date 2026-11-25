@@ -71,7 +71,6 @@ import {
     fixedLengthParameterWrites,
     parameterIsReadOnly,
     parameterOnlyRead,
-    parameterPresenceTested,
 } from "./parameter-effects.js";
 import { isVoid } from "./type-facts.js";
 import {
@@ -122,6 +121,7 @@ export interface NativeFunctionContext extends Pick<
     | "defineThis"
     | "activeThis"
     | "registerClassInstance"
+    | "userFunctions"
     | "fail"
 > {}
 
@@ -434,24 +434,26 @@ export class NativeFunctionLowerer {
         )
             return undefined;
         if (fixedByCaseSplit(this.context, call)) return undefined;
-        // A body that tests whether a parameter is present specializes on an
-        // argument that binds it present, which the shared body owner does.
+        // A call whose shared body specializes on a parameter's presence is
+        // that owner's.
         if (
-            declaration.parameters.some((parameter, index) => {
-                const argument = call.arguments[index];
-                return (
-                    argument !== undefined &&
-                    parameterPresenceTested(
-                        this.context.checker,
-                        parameter,
-                        declaration,
-                    ) &&
-                    this.context.probeEmission(
-                        () => bindsPresent(this.context.compileValue(argument)),
-                        () => false,
-                    ) === true
-                );
-            })
+            call.arguments.some((argument, index) =>
+                this.context.userFunctions.specializesOnPresence(
+                    this.context,
+                    call,
+                    callee,
+                    declaration,
+                    index,
+                    () =>
+                        this.context.probeEmission(
+                            () =>
+                                bindsPresent(
+                                    this.context.compileValue(argument),
+                                ),
+                            () => false,
+                        ),
+                ),
+            )
         )
             return undefined;
         const signature = this.resolveSignature(declaration, callee);
