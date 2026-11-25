@@ -9,8 +9,8 @@ import {
     isEngineScopedHandleKind,
     isRuntimeIdentityHandleKind,
     isWindowHandleKind,
-    pinnedHandleKind,
 } from "./data-types/handles.js";
+import { pinnedHandleKind } from "./data-types/pinned-handles.js";
 import {
     AssertedHandleFieldStorageRequired,
     type ErasedHandleStorage,
@@ -63,13 +63,15 @@ export {
     isWindowHandleKind,
     handleCppType,
     resourceValueCppType,
+} from "./data-types/handles.js";
+export {
     pinnedHandleKind,
     isPinnedHandleType,
     isPinnedEngineObjectKind,
     pinnedSourceHandleKind,
     pinnedHandleTypeNames,
     pinnedRecordHandleKind,
-} from "./data-types/handles.js";
+} from "./data-types/pinned-handles.js";
 export {
     TYPED_ARRAY_KINDS,
     BUFFER_VIEW_KINDS,

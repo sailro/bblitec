@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { isPinnedHandleType } from "./data-types/handles.js";
+import { isPinnedHandleType } from "./data-types/pinned-handles.js";
 import { programObservations } from "./program-observations.js";
 import { isPlainRecord, isRecordUnion } from "./record-components.js";
 import { declaredIn } from "./symbols.js";
