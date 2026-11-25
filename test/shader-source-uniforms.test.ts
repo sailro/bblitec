@@ -667,6 +667,31 @@ test("a parsed document's number a lane tests for presence splits on present, nu
     );
 });
 
+test("a coalesced document number a lane tests for presence lifts without a presence split, as JavaScript reads it", (t) => {
+    // `parsed[1] ?? 0.25` is never nullish: the lane's presence test is
+    // decided, and only the lifted text is compiled.
+    const { compiled, cpp } = compileShaderMaterialFixture(
+        seededScene("parsed[1] ?? 0.25", "false"),
+    );
+    const { lifted, plain } = seededFragments(compiled);
+    assert.equal(lifted.length, 1);
+    assert.equal(plain.length, 0);
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native compiler required.");
+        return;
+    }
+    // The document holds null there, so JavaScript passes 0.25.
+    runGeneratedProgram(
+        native,
+        "shader-source-uniforms/seeded-coalesced",
+        recordedUniformsProgram(cpp, compiled.cpp, [
+            Math.fround(Number((0.25).toFixed(4))),
+        ]),
+        { expectedOutput: "" },
+    );
+});
+
 test("a parsed document's null a lane tests for presence takes the plain arm, as JavaScript does", (t) => {
     const { compiled, cpp } = compileShaderMaterialFixture(
         seededScene("parsed[1] ?? undefined", "false"),

@@ -120,6 +120,12 @@ type ParameterUse = UseBase &
               readonly kind: "method";
               readonly call: ts.CallExpression;
               readonly method: string;
+              /**
+               * The method is a function the object's member holds, which
+               * cannot reach the object as its `this`
+               * (`memberCallLeavesReceiver`): the call reaches that member.
+               */
+              readonly memberOnly: boolean;
           }
         | {
               readonly kind: "argument";
@@ -693,6 +699,11 @@ class EffectWalker {
             !typeCanCarryReference(this.checker.getTypeAtLocation(receiverNode))
         )
             return;
+        const memberOnly = memberCallLeavesReceiver(
+            this.checker,
+            receiverNode,
+            method,
+        );
         for (const value of receiver)
             if (value.at.length === 0)
                 this.uses.push({
@@ -700,6 +711,7 @@ class EffectWalker {
                     node: call,
                     call,
                     method,
+                    memberOnly,
                     path: value.from,
                     derived: value.derived,
                     ...scope,
@@ -737,7 +749,11 @@ class EffectWalker {
                     : callback.parameters[positions.receiver];
             if (whole) this.bindPattern(whole.name, receiver, call, scope);
         }
-        if (!SCALAR_RESULT_METHODS.has(method))
+        // The function a member holds returns what it reaches, as a called
+        // value does; another method may return its receiver.
+        if (memberOnly)
+            this.result(call, projectMember(receiver, method), scope);
+        else if (!SCALAR_RESULT_METHODS.has(method))
             this.result(call, [...receiver, ...elements], scope);
     }
 
@@ -2368,6 +2384,56 @@ export function functionWritesThis(
 }
 
 /**
+ * Whether calling the function a record's member `method` holds, through
+ * the record, cannot reach the record as its `this`: every value an object
+ * literal declares the member with is an arrow function, which has no
+ * `this` of its own, or a function writing nothing through `this` and
+ * handing none of it on (`functionWritesThis`).
+ */
+function memberCallLeavesReceiver(
+    checker: ts.TypeChecker,
+    receiver: ts.Expression,
+    method: string,
+): boolean {
+    const declarations = checker.getPropertyOfType(
+        checker.getNonNullableType(checker.getTypeAtLocation(receiver)),
+        method,
+    )?.declarations;
+    return (
+        declarations !== undefined &&
+        declarations.length > 0 &&
+        declarations.every((declaration) => {
+            if (!ts.isObjectLiteralExpression(declaration.parent)) return false;
+            const fn = ts.isMethodDeclaration(declaration)
+                ? declaration
+                : ts.isPropertyAssignment(declaration)
+                  ? literalMemberFunction(checker, declaration.initializer)
+                  : undefined;
+            return (
+                fn !== undefined &&
+                (ts.isArrowFunction(fn) || !functionWritesThis(checker, fn))
+            );
+        })
+    );
+}
+
+/** The function an object literal's member is initialized with, if it names one. */
+function literalMemberFunction(
+    checker: ts.TypeChecker,
+    initializer: ts.Expression,
+): ts.SignatureDeclaration | undefined {
+    const value = unwrapExpression(initializer);
+    if (ts.isArrowFunction(value) || ts.isFunctionExpression(value))
+        return value;
+    const declaration = ts.isIdentifier(value)
+        ? resolvedSymbol(checker, value)?.valueDeclaration
+        : undefined;
+    return declaration && ts.isFunctionDeclaration(declaration)
+        ? declaration
+        : undefined;
+}
+
+/**
  * Whether a function tests whether one of its parameters is present: a
  * comparison of the parameter with `null` or `undefined` in its body, or
  * the parameter passed whole to a program function that tests its own. A
@@ -2449,7 +2515,14 @@ function parameterArgumentEffect(
         let returned = false;
         for (const use of effects.uses) {
             const object =
-                use.kind === "write" ? use.path.slice(0, -1) : use.path;
+                use.kind === "write"
+                    ? use.path.slice(0, -1)
+                    : use.kind === "method" && use.memberOnly
+                      ? // A call of the function a member holds reaches it;
+                        // a write replacing the member is one of the object
+                        // holding it, which reaches every member.
+                        boundedKeyPath([...use.path, use.method])
+                      : use.path;
             const length = Math.min(object.length, at.length);
             // A use of another member leaves this object as it is.
             if (

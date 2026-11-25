@@ -186,8 +186,14 @@ export function compileWithRuntimeCaseSplit(
     } catch (error) {
         // A storage demand is the unsplit call asking for dynamic storage
         // the runtime test forced; per outcome it may not be needed, so it
-        // stands only when the split fails too.
-        if (!refusesPerOutcome(error)) throw error;
+        // stands only when the split fails too. Arguments evaluated ahead
+        // into temporaries split only a call that refuses: once its storage
+        // is granted, the call compiles once, or refuses and splits then.
+        if (
+            !refusesPerOutcome(error) ||
+            (error instanceof StorageDemand && tests.hoisted.length > 0)
+        )
+            throw error;
         const temporaries = hoistedTemporaries(context, tests.hoisted);
         try {
             return splitRefusedCall(context, call, compile, tests, error, () =>

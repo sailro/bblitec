@@ -512,10 +512,11 @@ export function isAbsentValue(value: Value): boolean {
 
 /**
  * Whether generation has proven a value present where its storage could
- * hold an absence (a parsed document's member): a case split's arm found it.
+ * hold an absence (a parsed document's member): a case split's arm found it,
+ * or the value is never nullish (`doc.v ?? 0.2`).
  */
 export function provenPresent(value: Value): boolean {
-    return value.optionalFoundCpp === "true";
+    return value.optionalFoundCpp === "true" || value.neverNullish === true;
 }
 
 /**
