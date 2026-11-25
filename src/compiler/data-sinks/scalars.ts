@@ -698,7 +698,10 @@ export const scalarsSinks: DataSinkOperations<
             }
             if (type?.kind === "struct") {
                 lowerer.context.dataTypes.markStoredObjectReferences(type);
-                return `(${value.cpp}).weak_identity()`;
+                // An instance's view keys as the instance it stands for.
+                return lowerer.context.dataTypes.viewsInstances(type.name)
+                    ? `bbl::js::viewed_identity(${value.cpp})`
+                    : `(${value.cpp}).weak_identity()`;
             }
             if (value.kind === "mesh")
                 return `bbl::mesh_weak_identity(${lowerer.context.requireEngine(value, node)}, ${value.cpp})`;

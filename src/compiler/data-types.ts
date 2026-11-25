@@ -584,6 +584,12 @@ export const callMember = "bbl_call";
 export const classTagMember = "bbl_class_tag";
 
 /**
+ * The member a struct of instance views keeps the instance a view stands
+ * for in (`bbl::js::ViewedObject`); the runtime's `instance_view` names it.
+ */
+const viewedMember = "bbl_viewed";
+
+/**
  * One local class with a demanded runtime representation.
  *
  * `type` is the instantiated class type the demand named, so a generic
@@ -2505,6 +2511,12 @@ export class DataTypeRegistry {
     private readonly proxyRecords = new EmissionSet<
         NativeRecordStorageDemand["identity"]
     >();
+    /** Record types whose class instances are stored as views (`instanceViews`), by record identity. */
+    private readonly instanceViewRecords = new EmissionSet<
+        NativeRecordStorageDemand["identity"]
+    >();
+    /** The structs of those record types: each keeps the instance a view stands for (`viewedMember`). */
+    private readonly instanceViewStructs = new EmissionSet<string>();
     private readonly proxyTargets = new EmissionSet<
         NativeRecordStorageDemand["identity"]
     >();
@@ -2571,6 +2583,12 @@ export class DataTypeRegistry {
             if (demand.armFields)
                 this.withRecordDemand(demand, () =>
                     this.armFieldUnions.add(this.structIdentity(demand.type)),
+                );
+            if (demand.instanceViews)
+                this.withRecordDemand(demand, () =>
+                    this.instanceViewRecords.add(
+                        this.structIdentity(demand.type),
+                    ),
                 );
             if (demand.view)
                 this.withRecordDemand(demand, () =>
@@ -2750,16 +2768,54 @@ export class DataTypeRegistry {
         const instance = this.classInstanceType(declaration);
         if (!source || !instance || this.isClassStruct(name)) return undefined;
         const view = this.checker.getNonNullableType(source.type);
-        // An intersection of object types (`Query & Pick<Store, "resolve">`)
-        // is a view as one object type is.
-        return objectLikeType(view) &&
-            this.checker.getPropertiesOfType(view).length > 0 &&
-            callSignatures(this.checker, view, "exact").length === 0 &&
-            view.getConstructSignatures().length === 0 &&
-            this.checker.getIndexInfosOfType(view).length === 0 &&
+        return this.viewableRecord(view) &&
             this.checker.isTypeAssignableTo(instance, view)
             ? { ...source, classView: declaration }
             : undefined;
+    }
+
+    /**
+     * The record type `type`, met at `node`, as one whose class instances
+     * are each stored as their one view (`instance_view`): the type a
+     * class's instances and other objects both are, which no one class's
+     * instance storage holds.
+     */
+    public instanceViewsDemand(
+        type: ts.Type,
+        node: ts.Node,
+    ): NativeRecordStorageDemand | undefined {
+        const view = this.checker.getNonNullableType(type);
+        return this.viewableRecord(view)
+            ? { ...this.recordDemand(view, node), instanceViews: true }
+            : undefined;
+    }
+
+    /** Whether struct `name` stores class instances as views (`instanceViewsDemand`). */
+    public viewsInstances(name: string): boolean {
+        return this.instanceViewStructs.has(name);
+    }
+
+    /**
+     * The address the object `cpp` of reference struct `name` is identified
+     * by: an instance's view is the instance it stands for.
+     */
+    public referenceIdentityCpp(name: string, cpp: string): string {
+        return this.viewsInstances(name)
+            ? `bbl::js::viewed_object(${cpp})`
+            : `${cpp}.get()`;
+    }
+
+    /** Whether a record type can be a view of an object: named properties only. */
+    private viewableRecord(view: ts.Type): boolean {
+        // An intersection of object types (`Query & Pick<Store, "resolve">`)
+        // is a view as one object type is.
+        return (
+            objectLikeType(view) &&
+            this.checker.getPropertiesOfType(view).length > 0 &&
+            callSignatures(this.checker, view, "exact").length === 0 &&
+            view.getConstructSignatures().length === 0 &&
+            this.checker.getIndexInfosOfType(view).length === 0
+        );
     }
 
     /** The class whose instances a record type is stored as (`classViewDemand`). */
@@ -9941,6 +9997,9 @@ export class DataTypeRegistry {
         const partial = this.assertedEmpty(type);
         const view = this.recordViews.has(this.structIdentity(type));
         const proxy = this.proxyRecords.has(this.structIdentity(type));
+        const instanceViews = this.instanceViewRecords.has(
+            this.structIdentity(type),
+        );
         const valueOf = (
             owned: OwnedStructProperty,
         ): {
@@ -10166,9 +10225,15 @@ export class DataTypeRegistry {
             // A property one member declares as an accessor and another as
             // data is one accessor slot: it holds a data property's value
             // inline, and a write to a getter-only slot throws, as it does
-            // in JavaScript (`bbl::js::Accessor`).
+            // in JavaScript (`bbl::js::Accessor`). An instance's view reads
+            // and writes the instance's own properties through its slots.
             const accessors = declared.map(({ symbol }) =>
-                this.propertyAccessor(symbol, view || proxy),
+                this.propertyAccessor(
+                    symbol,
+                    view ||
+                        proxy ||
+                        (instanceViews && mapped.kind !== "function"),
+                ),
             );
             const accessor = accessors.includes("get-set")
                 ? "get-set"
@@ -10213,9 +10278,10 @@ export class DataTypeRegistry {
                 ),
             );
         }
-        // A component's members are one object under several types, and a
-        // function object is one object wherever it is passed.
-        if (partial || proxy || component || call) {
+        // A component's members are one object under several types, a
+        // function object is one object wherever it is passed, and an
+        // instance's view is one object for that instance.
+        if (partial || proxy || component || call || instanceViews) {
             this.referenceStructNames.add(provisionalName);
         }
         if (
@@ -10245,6 +10311,7 @@ export class DataTypeRegistry {
             )
         )
             this.prototypeAccessorStructs.add(mapped.name);
+        if (instanceViews) this.instanceViewStructs.add(mapped.name);
         return mapped;
     }
 
@@ -13637,6 +13704,9 @@ export class DataTypeRegistry {
                 ...(definition.classTag
                     ? [`    int ${classTagMember}{};`]
                     : []),
+                ...(this.instanceViewStructs.has(definition.name)
+                    ? [`    bbl::js::ViewedObject ${viewedMember}{};`]
+                    : []),
                 ...(definition.call
                     ? [`    ${this.cppType(definition.call)} ${callMember};`]
                     : []),
@@ -13672,6 +13742,9 @@ export class DataTypeRegistry {
                               ),
                           ...(definition.call
                               ? [`        visitor(record.${callMember});`]
+                              : []),
+                          ...(this.instanceViewStructs.has(definition.name)
+                              ? [`        visitor(record.${viewedMember});`]
                               : []),
                           "    }",
                       ]),

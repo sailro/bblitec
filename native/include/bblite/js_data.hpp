@@ -676,7 +676,28 @@ public:
         return left.block_ == right.block_;
     }
 
+    /** A reference that does not count: `lock` answers its object while a counted one holds it. */
+    class Weak {
+    public:
+        Weak() = default;
+        explicit Weak(const Ref& target)
+            : identity_(target.weak_identity()), block_(target.block_) {}
+        [[nodiscard]] bool expired() const noexcept { return identity_.expired(); }
+        [[nodiscard]] Ref lock() const {
+            if (identity_.expired() || block_->count == 0)
+                return {};
+            block_->retain();
+            return Ref(block_);
+        }
+
+    private:
+        std::weak_ptr<const void> identity_;
+        Block* block_ = nullptr;
+    };
+
 private:
+    friend class ViewedObject;
+
     T& require_value() const {
         if (!block_)
             throw_nullish_access();
@@ -761,6 +782,106 @@ template <typename T, typename... Args> [[nodiscard]] Ref<T> make_ref(Args&&... 
     if constexpr (requires { result->bind_accessors(result); })
         result->bind_accessors(result);
     return result;
+}
+
+/**
+ * The class instance a record type's view stands for (`instance_view`): a
+ * counted, traced reference to an object of any class, whose address is the
+ * view's identity. Empty in a record that is no view.
+ */
+class ViewedObject {
+public:
+    ViewedObject() = default;
+    template <typename T>
+    explicit ViewedObject(const Ref<T>& object)
+        : node_(object.block_), object_(object.get()), identity_(object.weak_identity()) {
+        if (node_)
+            node_->pin();
+    }
+    ViewedObject(const ViewedObject& other)
+        : node_(other.node_), object_(other.object_), identity_(other.identity_) {
+        if (node_)
+            node_->pin();
+    }
+    ViewedObject& operator=(ViewedObject other) noexcept {
+        std::swap(node_, other.node_);
+        std::swap(object_, other.object_);
+        std::swap(identity_, other.identity_);
+        return *this;
+    }
+    ~ViewedObject() {
+        if (node_)
+            node_->unpin();
+    }
+    /** The instance's address, null for a record that is no view. */
+    [[nodiscard]] const void* get() const noexcept { return object_; }
+    /** The instance's weak-collection key (`Ref::weak_identity`). */
+    [[nodiscard]] const std::weak_ptr<const void>& identity() const noexcept { return identity_; }
+    void gc_trace(const TraceVisitor& visitor) const { visitor.reference(node_); }
+
+private:
+    gc::Node* node_ = nullptr;
+    const void* object_ = nullptr;
+    std::weak_ptr<const void> identity_;
+};
+
+/** The object a record that may be an instance's view is: that instance, or the record itself. */
+template <typename V> [[nodiscard]] const void* viewed_object(const Ref<V>& record) {
+    const auto* view = record.get();
+    return view && view->bbl_viewed.get() ? view->bbl_viewed.get() : view;
+}
+
+/** `viewed_object`'s weak-collection key. */
+template <typename V>
+[[nodiscard]] std::weak_ptr<const void> viewed_identity(const Ref<V>& record) {
+    const auto* view = record.get();
+    return view && view->bbl_viewed.get() ? view->bbl_viewed.identity() : record.weak_identity();
+}
+
+namespace detail {
+/** Each instance's live view as the record type `V` (`instance_view`), by the instance's identity. */
+template <typename V> struct InstanceViews {
+    std::map<std::weak_ptr<const void>, typename Ref<V>::Weak,
+             std::owner_less<std::weak_ptr<const void>>>
+        entries;
+    typename decltype(entries)::iterator cursor = entries.end();
+    /** Drops a few entries whose view died, as `WeakMap` prunes its keys. */
+    void prune() {
+        for (std::size_t i = 0; i < 2 && !entries.empty(); ++i) {
+            if (cursor == entries.end())
+                cursor = entries.begin();
+            const auto entry = cursor++;
+            if (entry->second.expired())
+                entries.erase(entry);
+        }
+    }
+};
+template <typename V> InstanceViews<V>& instance_views() {
+    thread_local InstanceViews<V> views;
+    return views;
+}
+} // namespace detail
+
+/**
+ * The one view of `object` as the record type `V`, whose properties read and
+ * write the instance: `make` builds it the first time, and again only after
+ * no reference holds the last one, when nothing can tell the two apart.
+ */
+template <typename V, typename T, typename Make>
+[[nodiscard]] Ref<V> instance_view(const Ref<T>& object, Make&& make) {
+    if (!object)
+        return {};
+    auto& views = detail::instance_views<V>();
+    views.prune();
+    const auto key = object.weak_identity();
+    const auto found = views.entries.find(key);
+    if (found != views.entries.end())
+        if (auto view = found->second.lock())
+            return view;
+    Ref<V> view = std::forward<Make>(make)();
+    view->bbl_viewed = ViewedObject(object);
+    views.entries.insert_or_assign(key, typename Ref<V>::Weak(view));
+    return view;
 }
 
 /**

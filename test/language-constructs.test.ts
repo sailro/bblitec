@@ -3546,23 +3546,48 @@ check(
     `,
 );
 
-test("a record type stored as one class's instances refuses another record where a copy is observable", () => {
-    const prelude =
-        "interface Tool { activate(): void } const made: Tool[] = []; class Move implements Tool { constructor() { made.push(this); } activate(): void {} }";
-    assert.throws(
-        () =>
-            compileSource(
-                `${prelude} class Paint implements Tool { activate(): void {} } const tools: Tool[] = [new Move(), new Paint()]; const same = tools[0] === made[0]; export {};`,
-            ),
-        /'Tool' is stored as the 'Move' instances it holds; a 'Paint' instance stored as it would be a copy of the one object JavaScript keeps/,
-    );
-    assert.throws(
-        () =>
-            compileSource(
-                `${prelude} const tools: Tool[] = [new Move(), { activate(): void {} }]; const same = tools[0] === made[0]; export {};`,
-            ),
-        /'Tool' is stored as the 'Move' instances it holds; a record that is not one stored as it would be a copy of the one object JavaScript keeps/,
-    );
+check(
+    "a record type a class's instances and other objects both are holds each instance's one view",
+    `
+    interface Tool { activate(): void }
+    const made: Tool[] = [];
+    let active = "";
+    class Move implements Tool { constructor() { made.push(this); } activate(): void { active += "m"; } }
+    class Paint implements Tool { activate(): void { active += "p"; } }
+    const move = new Move();
+    const paint = new Paint();
+    const literal: Tool = { activate(): void { active += "l"; } };
+    const tools: Tool[] = [move, paint, literal];
+    for (const tool of tools) tool.activate();
+    if (active !== "mpl" || tools[0] !== made[0] || tools[0] !== move || tools[1] !== paint || tools[2] !== literal)
+        throw new Error("one tool each " + active);
+    if (tools.indexOf(paint) !== 1 || tools.indexOf(move) !== 0 || made.indexOf(move) !== 0 || (tools[0] as object) === paint)
+        throw new Error("searched by identity");
+    const seen = new Set<Tool>([move, literal]);
+    const order = new Map<Tool, number>([[paint, 2]]);
+    if (!seen.has(tools[0]!) || seen.has(paint) || order.get(tools[1]!) !== 2 || order.has(move)) throw new Error("keyed by identity");
+    const notes = new WeakMap<object, string>();
+    notes.set(move, "move");
+    notes.set(tools[1]!, "paint");
+    if (notes.get(tools[0]!) !== "move" || notes.get(paint) !== "paint" || notes.has(literal)) throw new Error("weak keys");
+    interface Counter { count: number; readonly busy: boolean; bump(): number }
+    class Tally {
+        count = 0;
+        get busy(): boolean { return this.count > 0; }
+        bump(): number { return ++this.count; }
+        view(): Counter { return this.count < 0 ? idle : this; }
+    }
+    const idle: Counter = { count: -1, busy: false, bump: () => 0 };
+    const tally = new Tally();
+    const counter = tally.view();
+    counter.count = 4;
+    if (tally.count !== 4 || !counter.busy || counter.bump() !== 5 || tally.count !== 5) throw new Error("written through the view");
+    tally.count = 7;
+    if (counter.count !== 7 || tally.view() !== counter || counter !== tally || idle === tally.view()) throw new Error("one tally " + counter.count);
+    `,
+);
+
+test("a record type stored as one class's instances refuses a method read as a value", () => {
     assert.throws(
         () =>
             compileSource(
@@ -3571,6 +3596,105 @@ test("a record type stored as one class's instances refuses another record where
         /Method 'inc' is read as a value; method values are unsupported/,
     );
 });
+
+check(
+    "an interface a class's this and a module literal both produce is the instance or the literal",
+    `
+    interface View { count: number; radius: number[] }
+    interface Envelope {
+        readonly compact: boolean;
+        preferredDistance(view: View, a: number, b: number): number;
+        permitsApproach(view: View, walker: number, other: number): boolean;
+    }
+    class Contacts {
+        private compactCount = 0;
+        private readonly members: number[] = [0, 0];
+        constructor(private readonly view: View) {}
+        get compact(): boolean { return this.compactCount > 0; }
+        add(slot: number): void { this.compactCount++; this.members[slot] = 1; }
+        preferredDistance(view: View, a: number, b: number): number { return view.radius[a]! + view.radius[b]! + this.view.count; }
+        permitsApproach(_view: View, walker: number, other: number): boolean { return this.members[walker]! > 0 && other >= 0; }
+        envelope(slot?: number): Envelope {
+            return this.compactCount > 0 && (slot === undefined || this.members[slot]! > 0) ? this : normalEnvelope;
+        }
+    }
+    const normalEnvelope: Envelope = {
+        compact: false,
+        preferredDistance: (view, a, b) => view.radius[a]! + view.radius[b]!,
+        permitsApproach: () => false,
+    };
+    const contacts = new WeakMap<View, Contacts>();
+    function envelopeOf(view: View, slot?: number): Envelope {
+        return contacts.get(view)?.envelope(slot) ?? normalEnvelope;
+    }
+    const view: View = { count: 2, radius: [0.5, 0.25] };
+    let text = "";
+    const first = envelopeOf(view, 0);
+    text += String(first.compact) + first.preferredDistance(view, 0, 1) + first.permitsApproach(view, 0, 1);
+    const created = new Contacts(view);
+    contacts.set(view, created);
+    created.add(0);
+    const second = envelopeOf(view, 0);
+    text += "," + String(second.compact) + second.preferredDistance(view, 0, 1) + second.permitsApproach(view, 0, 1);
+    text += "," + String(envelopeOf(view, 1) === normalEnvelope) + String(second === created) + String(envelopeOf(view) === second);
+    if (text !== "false0.75false,true2.75true,truetruetrue") throw new Error(text);
+    `,
+);
+
+check(
+    "one interface two unrelated classes' instances hold is each instance",
+    `
+    interface Shape { readonly size: number; area(): number }
+    class Square { constructor(private side: number) {} get size(): number { return this.side; } area(): number { return this.side * this.side; } grow(): void { this.side++; } }
+    class Disc { constructor(private radius: number) {} get size(): number { return this.radius; } area(): number { return 3 * this.radius * this.radius; } }
+    const square = new Square(2);
+    const disc = new Disc(1);
+    const shapes: Shape[] = [];
+    shapes.push(square);
+    shapes.push(disc);
+    shapes.push({ size: 1, area: () => 3 });
+    let total = 0;
+    for (const shape of shapes) total += shape.area() + shape.size;
+    if (total !== 14 || shapes[0] !== square || shapes.indexOf(disc) !== 1 || shapes.includes(new Disc(1))) throw new Error("shapes " + total);
+    square.grow();
+    if (shapes[0]!.size !== 3 || shapes[0]!.area() !== 9) throw new Error("grown");
+    `,
+);
+
+// A class handing out `this` as an interface a literal also produces, in a
+// program whose identity uses hold no such record.
+const unrelatedIdentityPrelude = `
+    interface Gauge { readonly tight: boolean; span(a: number, b: number): number }
+    class Tally {
+        count = 0;
+        get tight(): boolean { return this.count > 0; }
+        span(a: number, b: number): number { return a * b + this.count; }
+        gauge(): Gauge { return this.count > 0 ? this : loose; }
+    }
+    const loose: Gauge = { tight: false, span: (a, b) => a + b };
+    const tally = new Tally();
+    const before = tally.gauge();
+    tally.count = 1;
+    const after = tally.gauge();
+    if (before.tight || before.span(2, 3) !== 5 || !after.tight || after.span(2, 3) !== 7) throw new Error("gauges");
+`;
+
+check(
+    "an interface a class's this and a literal produce compiles beside an unrelated object identity",
+    `${unrelatedIdentityPrelude}
+    const tokens: object[] = [{}, {}];
+    if (tokens[0] === tokens[1]) throw new Error("tokens");
+    `,
+);
+
+check(
+    "an interface a class's this and a literal produce compiles beside an unrelated asserted document",
+    `${unrelatedIdentityPrelude}
+    const parsed = JSON.parse('{"x":1}') as { x: number };
+    const others = [parsed, parsed];
+    if (others[0] !== others[1] || parsed.x !== 1) throw new Error("parsed");
+    `,
+);
 
 // A weak map keyed through an `object` parameter keys what the calls of
 // its function pass; only a key that can hold the record type keeps a
@@ -3607,24 +3731,20 @@ check(
     `,
 );
 
-test("a broad key that can hold a record keeps it keyed by identity", () => {
-    for (const keyed of [
-        "function mark(): number { return note(world.tallies[0]!.gauge(), 'kept'); }",
-        "function mark(): void { let key: object = world; notes.set(key, []); }",
-        "const handed: unknown = notes;",
-    ])
-        assert.throws(
-            () =>
-                compileSource(
-                    `${objectKeyedNotes} const gauges: Gauge[] = world.tallies.map((tally) => tally.gauge()); ${keyed} export {};`,
-                ),
-            /'Gauge' is stored as the 'Tally' instances it holds; a record that is not one stored as it would be a copy of the one object JavaScript keeps/,
-        );
-    // A const of a broad type holds the object its initializer gives.
-    compileSource(
-        `${objectKeyedNotes} const gauges: Gauge[] = world.tallies.map((tally) => tally.gauge()); function mark(): void { const key: object = world; notes.set(key, []); } export {};`,
-    );
-});
+check(
+    "a broad key that can hold a class's interface view keys the instance",
+    `${objectKeyedNotes}
+    world.tallies[1]!.count = 2;
+    const gauges: Gauge[] = world.tallies.map((tally) => tally.gauge());
+    function mark(): number { return note(world.tallies[1]!.gauge(), "kept"); }
+    notes.set(world, []);
+    const handed: unknown = notes;
+    if (mark() !== 1 || note(gauges[1]!, "again") !== 2 || note(world.tallies[1]!, "instance") !== 3 || gauges[0] !== loose)
+        throw new Error("keyed by the instance");
+    if (annotate(world) !== 1 || !gauges[1]!.tight || gauges[1] !== world.tallies[1]) throw new Error("world");
+    if (notes.has(loose)) throw new Error("loose");
+    `,
+);
 
 check(
     "fresh class instances are the only handle of their interface views",

@@ -53,6 +53,13 @@ export interface NativeRecordStorageDemand {
      */
     classView?: ts.ClassLikeDeclaration;
     /**
+     * A record type that class instances and other objects (a literal, a
+     * second class's instances) both produce, where a copy could be told
+     * apart: each instance it holds is stored as that instance's one view,
+     * whose properties read and write the instance (`instance_view`).
+     */
+    instanceViews?: true;
+    /**
      * Distinct checked native owners cannot overwrite one structural demand:
      * the storage each demanded, and where.
      */
@@ -130,8 +137,7 @@ export function documentStorageSite(
 
 /**
  * The two object views `previous` and `next` hold that no one object is:
- * two native owners of distinct storage, two classes, or a native owner
- * and a class.
+ * two native owners of distinct storage, or a native owner and a class.
  */
 function objectViewConflict(
     previous: NativeRecordStorageDemand | undefined,
@@ -143,15 +149,6 @@ function objectViewConflict(
         !dataTypesEqual(previous.native.storage, next.native.storage)
     )
         return [nativeViewSite(previous.native), nativeViewSite(next.native)];
-    if (
-        previous?.classView &&
-        next.classView &&
-        previous.classView !== next.classView
-    )
-        return [
-            classViewSite(previous.classView),
-            classViewSite(next.classView),
-        ];
     const native = previous?.native ?? next.native;
     const classView = previous?.classView ?? next.classView;
     return native && classView
@@ -180,6 +177,7 @@ const RECORD_STORAGE_FLAGS = [
     "nativeConflict",
     "dictionaryConflict",
     "bareCallable",
+    "instanceViews",
 ] as const;
 
 /** The properties an anonymous record type's report name spells before it elides the rest. */
@@ -254,6 +252,13 @@ export function mergeNativeRecordStorage(
             ),
     );
     const joins = [...(previous?.joins ?? []), ...added];
+    // Two classes' instances viewed as one record type are each a view.
+    const instanceViews =
+        previous?.instanceViews ||
+        next.instanceViews ||
+        (previous?.classView !== undefined &&
+            next.classView !== undefined &&
+            previous.classView !== next.classView);
     const document = previous?.document || next.document;
     const accessors = new Map(
         (previous?.accessors ?? []).map((accessor) => [
@@ -268,7 +273,10 @@ export function mergeNativeRecordStorage(
         (dictionaryConflict && !previous?.dictionaryConflict) ||
         (next.dictionary !== undefined && previous?.dictionary === undefined) ||
         (next.native !== undefined && previous?.native === undefined) ||
-        (next.classView !== undefined && previous?.classView === undefined) ||
+        (next.classView !== undefined &&
+            previous?.classView === undefined &&
+            !instanceViews) ||
+        (instanceViews && !previous?.instanceViews) ||
         RECORD_STORAGE_FLAGS.some(
             (flag) =>
                 next[flag] &&
@@ -313,6 +321,10 @@ export function mergeNativeRecordStorage(
             : {}),
     };
     if (document) delete merged.stored;
+    if (instanceViews) {
+        merged.instanceViews = true;
+        delete merged.classView;
+    }
     return merged;
 }
 

@@ -569,7 +569,8 @@ function valueStruct(
     // the retained receiver, just as a view of a local class record does.
     value = lowerer.context.classLowerer.hydrate(value, node) ?? value;
     if (value.kind === "record") {
-        refuseClassRecordCopy(lowerer, dataType, value, node);
+        const viewed = viewedInstance(lowerer, dataType, value, node);
+        if (!viewed) refuseClassRecordCopy(lowerer, dataType, value, node);
         requireCopiedOwnUndefinedFields(lowerer, dataType, node, value);
         const fields = lowerer.context.dataTypes.structFields(
             dataType.name,
@@ -654,96 +655,113 @@ function valueStruct(
             fields,
             () => node,
         );
-        const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${storeMembers(
-            lowerer,
-            node,
-            fields,
-            (field) => field.sourceName,
-            (field) => {
-                const getter = value.recordGetters?.[field.sourceName];
-                const setter = value.recordSetters?.[field.sourceName];
-                if (getter || setter)
-                    return accessorSlot(
-                        lowerer,
-                        dataType,
-                        field,
-                        value,
-                        node,
-                        self,
-                    );
-                if (field.type.kind === "function") {
-                    const method =
-                        value.recordMethods?.[field.sourceName] ??
-                        lowerer.context.classLowerer.viewMethod(
-                            value,
-                            field.sourceName,
-                            node,
-                        );
-                    if (method) {
-                        lowerer.context.recordProxies.requireIndependentFunction(
+        const build = (): string =>
+            `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${storeMembers(
+                lowerer,
+                node,
+                fields,
+                (field) => field.sourceName,
+                (field) => {
+                    const getter = value.recordGetters?.[field.sourceName];
+                    const setter = value.recordSetters?.[field.sourceName];
+                    if (getter || setter)
+                        return accessorSlot(
+                            lowerer,
+                            dataType,
                             field,
-                            method,
+                            value,
+                            node,
+                            self,
                         );
-                        const functionType = field.type;
-                        // A method nothing can read is stored empty when
-                        // its body refuses: no call can reach it.
-                        const callback =
-                            compiledUnlessUnobserved(
-                                lowerer.context,
+                    if (field.type.kind === "function") {
+                        const method =
+                            value.recordMethods?.[field.sourceName] ??
+                            lowerer.context.classLowerer.viewMethod(
+                                value,
                                 field.sourceName,
-                                () =>
-                                    lowerer.context.compileStoredDataFunction(
-                                        method,
-                                        functionType,
-                                        value,
-                                        ts.isMethodDeclaration(method) &&
-                                            ts.isClassLike(method.parent),
-                                        homeReceiver(self, method),
-                                    ),
-                            ) ??
-                            lowerer.context.dataTypes.absentValue(field.type);
+                                node,
+                            );
+                        if (method) {
+                            lowerer.context.recordProxies.requireIndependentFunction(
+                                field,
+                                method,
+                            );
+                            const functionType = field.type;
+                            // A method nothing can read is stored empty when
+                            // its body refuses: no call can reach it.
+                            const callback =
+                                compiledUnlessUnobserved(
+                                    lowerer.context,
+                                    field.sourceName,
+                                    () =>
+                                        lowerer.context.compileStoredDataFunction(
+                                            method,
+                                            functionType,
+                                            value,
+                                            ts.isMethodDeclaration(method) &&
+                                                ts.isClassLike(method.parent),
+                                            homeReceiver(self, method),
+                                        ),
+                                ) ??
+                                lowerer.context.dataTypes.absentValue(
+                                    field.type,
+                                );
+                            return lowerer.context.dataTypes.structFieldInitializerCpp(
+                                field,
+                                callback,
+                            );
+                        }
+                    }
+                    if (viewed)
                         return lowerer.context.dataTypes.structFieldInitializerCpp(
                             field,
-                            callback,
+                            viewedField(lowerer, dataType, viewed, field, node),
                         );
-                    }
-                }
-                const property = value.recordProperties?.[field.sourceName];
-                if (property?.callbackDeclaration)
-                    lowerer.context.recordProxies.requireIndependentFunction(
+                    const property = value.recordProperties?.[field.sourceName];
+                    if (property?.callbackDeclaration)
+                        lowerer.context.recordProxies.requireIndependentFunction(
+                            field,
+                            property.callbackDeclaration,
+                        );
+                    if (field.accessorReceiver && property?.conditionalOwnKey)
+                        return conditionalOwnFieldInitializer(
+                            lowerer,
+                            property,
+                            field,
+                            node,
+                        );
+                    const missing = (): never => {
+                        lowerer.context.dataTypes.requireViewConstruction(node);
+                        return lowerer.context.fail(
+                            node,
+                            `Compile-time record is missing required field '${field.sourceName}'.${lowerer.context.dataTypes.sharedLayoutNote(node)}`,
+                        );
+                    };
+                    const stored = property
+                        ? field.defaultWhenMissing &&
+                          property.dataType?.kind === "optional" &&
+                          field.type.kind !== "optional"
+                            ? armFieldOrDefault(lowerer, property, field, node)
+                            : storeFieldMember(lowerer, property, field, node)
+                        : (absentFieldCpp(field) ??
+                          (definedLater && lacked.includes(field)
+                              ? "{}"
+                              : missing()));
+                    return lowerer.context.dataTypes.structFieldInitializerCpp(
                         field,
-                        property.callbackDeclaration,
+                        stored,
                     );
-                if (field.accessorReceiver && property?.conditionalOwnKey)
-                    return conditionalOwnFieldInitializer(
-                        lowerer,
-                        property,
-                        field,
-                        node,
-                    );
-                const missing = (): never => {
-                    lowerer.context.dataTypes.requireViewConstruction(node);
-                    return lowerer.context.fail(
-                        node,
-                        `Compile-time record is missing required field '${field.sourceName}'.${lowerer.context.dataTypes.sharedLayoutNote(node)}`,
-                    );
-                };
-                const stored = property
-                    ? field.defaultWhenMissing &&
-                      property.dataType?.kind === "optional" &&
-                      field.type.kind !== "optional"
-                        ? armFieldOrDefault(lowerer, property, field, node)
-                        : storeFieldMember(lowerer, property, field, node)
-                    : (absentFieldCpp(field) ??
-                      (definedLater && lacked.includes(field)
-                          ? "{}"
-                          : missing()));
-                return lowerer.context.dataTypes.structFieldInitializerCpp(
-                    field,
-                    stored,
-                );
-            },
-        ).join(", ")}}`;
+                },
+            ).join(", ")}}`;
+        // An instance's view is built once, where the instance has none.
+        if (viewed) {
+            let aggregate = "";
+            const lines = lowerer.context.captureEmittedLines(() => {
+                aggregate = build();
+            });
+            return `bbl::js::instance_view<bblscene::${dataType.name}Data>(${viewed.cpp}, [&]() -> bblscene::${dataType.name} { ${lines.join(" ")} return bbl::js::make_ref<bblscene::${dataType.name}Data>(${aggregate}); })`;
+        }
+        const aggregate = build();
         if (self)
             return completeLiteralSelf(
                 lowerer.context,
@@ -1263,8 +1281,8 @@ function assertedNonInstance(
 
 /**
  * A record type stored as one class's instances (`classViewDemand`) holds
- * only them: a literal or another class's instance stored as it would be
- * a second kind of object under one layout.
+ * only them: a literal or another class's instance stored as it makes each
+ * class instance it holds a view of it instead (`instanceViewsDemand`).
  */
 function refuseForeignClassView(
     lowerer: DataSinkHost,
@@ -1277,11 +1295,66 @@ function refuseForeignClassView(
     const viewed = type && dataTypes.classViewOf(type);
     if (!viewed || (instance && dataTypes.sharesClassStruct(viewed, instance)))
         return;
+    const views = dataTypes.instanceViewsDemand(type, node);
+    if (views) throw new NativeRecordStorageRequired(views);
     const name = viewed.name?.text ?? "class";
     lowerer.context.fail(
         node,
         `'${lowerer.context.checker.typeToString(type)}' is stored as the '${name}' instances it holds; ${instance?.name ? `a '${instance.name.text}' instance` : "a record that is not one"} stored as it would be a copy of the one object JavaScript keeps.`,
     );
+}
+
+/**
+ * The stored class instance a record of `value`'s class converts into a
+ * view of, where `dataType` stores class instances as views
+ * (`instanceViewsDemand`): the instance's struct and the `Ref` it is.
+ */
+function viewedInstance(
+    lowerer: DataSinkHost,
+    dataType: DataType<"struct">,
+    value: Value,
+    node: ts.Node,
+): { readonly cpp: string; readonly struct: string } | undefined {
+    const dataTypes = lowerer.context.dataTypes;
+    const declaration = value.classDeclaration;
+    if (!declaration || !dataTypes.viewsInstances(dataType.name))
+        return undefined;
+    if (
+        value.dataType?.kind === "struct" &&
+        dataTypes.isClassStruct(value.dataType.name)
+    )
+        return { cpp: value.cpp, struct: value.dataType.name };
+    const message = `A '${declaration.name?.text ?? "class"}' instance viewed as '${dataType.name}' is a compile-time record; its view needs the one object JavaScript keeps.`;
+    const demand = dataTypes.sharedClassDemand(declaration);
+    if (demand) lowerer.context.refuseWithDemand(node, message, demand);
+    return lowerer.context.fail(node, message);
+}
+
+/**
+ * A field of an instance's view: an accessor reading and writing the
+ * instance's own member of the same storage.
+ */
+function viewedField(
+    lowerer: DataSinkHost,
+    dataType: DataType<"struct">,
+    viewed: { readonly cpp: string; readonly struct: string },
+    field: DataStructField,
+    node: ts.Node,
+): string {
+    const dataTypes = lowerer.context.dataTypes;
+    const member = dataTypes.classStructField(viewed.struct, field.sourceName);
+    if (
+        !member ||
+        member.accessor ||
+        !field.accessor ||
+        !dataTypesEqual(member.type, field.type) ||
+        dataTypes.classFieldPresenceSlot(viewed.struct, field.sourceName)
+    )
+        return lowerer.context.fail(
+            node,
+            `A view of a '${viewed.struct}' instance as '${dataType.name}' reads and writes its property '${field.sourceName}' only where the instance stores it as one member of the same type.`,
+        );
+    return `bbl::js::member_accessor<${dataTypes.cppType(field.type)}>(${viewed.cpp}, &bblscene::${viewed.struct}Data::${member.name})`;
 }
 
 /**

@@ -1949,7 +1949,11 @@ export class BindingScopes {
             this.context.dataTypes.isReferenceStruct(value.dataType.name)
         ) {
             const reference = writable(stored);
-            reference.objectIdentityCpp = `${storedCpp}.get()`;
+            reference.objectIdentityCpp =
+                this.context.dataTypes.referenceIdentityCpp(
+                    value.dataType.name,
+                    storedCpp,
+                );
             const found =
                 objectTruthinessCpp(value) ??
                 (nativeRecordOwner ? "true" : undefined);
@@ -3478,7 +3482,13 @@ export class BindingScopes {
                 ...stored,
                 cpp,
                 nativeCaptures: [this.context.registerNativeBinding(cpp)],
-                objectIdentityCpp: `${cpp}.get()`,
+                objectIdentityCpp:
+                    stored.dataType?.kind === "struct"
+                        ? this.context.dataTypes.referenceIdentityCpp(
+                              stored.dataType.name,
+                              cpp,
+                          )
+                        : `${cpp}.get()`,
             };
         }
         const properties: Record<string, Value> = {};

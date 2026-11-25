@@ -5588,7 +5588,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         cpp: `(${leftFound} ? ${left.cpp} : ` + `${cppType}{})`,
                         objectIdentityCpp:
                             `(${leftFound} ? ` +
-                            `${left.objectIdentityCpp ?? `${left.cpp}.get()`} : nullptr)`,
+                            `${left.objectIdentityCpp ?? this.context.dataTypes.referenceIdentityCpp(left.dataType.name, left.cpp)} : nullptr)`,
                     };
                 }
                 const optionalType: DataType = {
@@ -8937,7 +8937,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ...(dataType.kind === "struct"
                 ? this.context.dataTypes.isReferenceStruct(dataType.name)
                     ? {
-                          objectIdentityCpp: `${cpp}.get()`,
+                          objectIdentityCpp:
+                              this.context.dataTypes.referenceIdentityCpp(
+                                  dataType.name,
+                                  cpp,
+                              ),
                           optionalFoundCpp: this.referencePresence(cpp),
                       }
                     : { objectIdentityCpp: `std::addressof(${cpp})` }
@@ -9022,7 +9026,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                   ? this.context.dataTypes.isReferenceStruct(
                         value.dataType.name,
                     )
-                      ? `${value.cpp}.get()`
+                      ? this.context.dataTypes.referenceIdentityCpp(
+                            value.dataType.name,
+                            value.cpp,
+                        )
                       : `std::addressof(${value.cpp})`
                   : undefined);
         return cpp === undefined ? undefined : { cpp, read: computed };

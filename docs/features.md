@@ -47,7 +47,9 @@ Rules:
   One that constructions bind to different instances of a local class stores that class.
 - A class instance built before anything stored one replays with its class shared from that construction; a field
   holding a stored class is a slot. A record type (an interface, `Pick<C, K>`) storing one class's instances where the
-  program can observe a copy is stored as those instances.
+  program can observe a copy is stored as those instances. One that other objects (a literal, another class's
+  instances) are too holds each instance's one view: its properties read and write the instance, and it compares and
+  keys as the instance.
   A stored record method nothing can read is stored empty when its body refuses.
 - Generation-known positions fold through `const` literals, settled conditionals, spreads, parameterless literal-returning
   functions, closed `const` function literals, direct literal-returning helpers with known readonly scalar arguments,
