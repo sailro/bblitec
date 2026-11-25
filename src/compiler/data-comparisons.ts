@@ -6,6 +6,7 @@ import type { DataLowerer } from "./data-lowering.js";
 import {
     dataTypesEqual,
     unrecordedFact,
+    isBinaryDataType,
     isTypedArrayType,
     isTypedArrayUnion,
     type DataType,
@@ -283,7 +284,7 @@ export function dataUnionEquality(
             ? type.members.every(supported)
             : type.kind === "optional"
               ? supported(type.inner)
-              : isTypedArrayType(type) ||
+              : isBinaryDataType(type) ||
                 [
                     "number",
                     "boolean",
