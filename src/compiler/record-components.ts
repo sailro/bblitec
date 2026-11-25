@@ -751,14 +751,15 @@ function layoutsHoldBoth(
             ),
         );
     }
-    // A field one shape types dynamic and the other as a class instance is
-    // one document field: documents hold class instances boxed
-    // (`requireSharedValueViews`).
-    if (
-        (holdsOnly(a, ["unknown"]) && classInstanceDeclaration(b)) ||
-        (holdsOnly(b, ["unknown"]) && classInstanceDeclaration(a))
-    )
-        return true;
+    // A field one shape types dynamic and the other as a class instance or
+    // a primitive is one dynamic field: documents hold class instances
+    // boxed (`requireSharedValueViews`) and primitives by value. `unknown`
+    // is tested as declared: without null and undefined it is `{}`.
+    const dynamicHolds = (dynamic: ts.Type, held: ts.Type): boolean =>
+        holdsOnly(dynamic, ["unknown"]) &&
+        (classInstanceDeclaration(held) !== undefined ||
+            holdsOnly(held, ["string", "number", "boolean"]));
+    if (dynamicHolds(left, b) || dynamicHolds(right, a)) return true;
     // A function of one signature is a value of the other: one field holds
     // both where their parameters and results are held alike.
     const signatures = compatibleSignatures(checker, a, b);

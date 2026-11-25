@@ -5525,6 +5525,12 @@ export class DataTypeRegistry {
             (right.kind === "string" || right.kind === "enum")
         )
             return { kind: "string" };
+        // A dynamic value holds a primitive by value.
+        if (
+            (left.kind === "json" && isScalarDataType(right)) ||
+            (right.kind === "json" && isScalarDataType(left))
+        )
+            return { kind: "json" };
         const array = (type: DataType): DataType | undefined =>
             type.kind === "vector" || type.kind === "span"
                 ? type.element

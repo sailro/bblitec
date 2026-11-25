@@ -220,6 +220,26 @@ check(
 );
 
 check(
+    "an inferred record kept as an interface typing its field unknown is one object",
+    `
+    interface Input { kind: string; error: unknown; context?: string }
+    class SlowError extends Error {}
+    let last: Input | null = null;
+    function funnel(input: Input): boolean {
+        const repeated = input === last;
+        last = input;
+        return repeated;
+    }
+    const error = new SlowError("slow");
+    const kept = { kind: "boot", error, context: "first" };
+    const text = { kind: "boot", error: "text", context: "second" };
+    const seen = [funnel(kept), funnel(kept), funnel({ ...kept }), funnel(text), funnel(text)];
+    if (seen.join() !== "false,true,false,false,true") throw new Error("identity " + seen.join());
+    if (last !== text || last.error !== "text" || kept.error !== error || !(kept.error instanceof SlowError)) throw new Error("fields");
+    `,
+);
+
+check(
     "generic intersection spreads preserve dynamic dictionary keys",
     `
     interface OptionalWeight { weight?:number|boolean; }
