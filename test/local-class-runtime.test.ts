@@ -5,6 +5,7 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import { runSelfCheckingProgram } from "./self-checking-program.js";
 
 /**
  * The demand-driven runtime representation of a local class.
@@ -595,6 +596,41 @@ test("stores a class hierarchy as one tagged struct and dispatches on the tag", 
     assert.doesNotMatch(result.cpp, /struct (Square|Circle)Data/);
     assert.match(result.cpp, /->bbl_class_tag = 0;[^]*->bbl_class_tag = 1;/);
     assert.match(result.cpp, /if \(v_\w+->bbl_class_tag == 0\) \{/);
+});
+
+test("owns only the fields an instance's own class chain declares", (t) => {
+    // One struct holds the hierarchy; a base and a sibling instance lack
+    // the fields only another class declares, in their views and JSON.
+    return runSelfCheckingProgram(
+        t,
+        "local-class-runtime/hierarchy-own-fields",
+        `
+class Base { label = "tag"; }
+class Left extends Base { detail = "extra"; count = 2; }
+class Right extends Base { other = 7; }
+const document = JSON.parse("{}") as Record<string, unknown>;
+const items: Base[] = [];
+items.push(new Base());
+items.push(new Left());
+items.push(new Right());
+document.items = items;
+document.direct = items[0]!;
+const text = JSON.stringify(document);
+if (text !== '{"items":[{"label":"tag"},{"label":"tag","detail":"extra","count":2},{"label":"tag","other":7}],"direct":{"label":"tag"}}')
+    throw new Error(text);
+if (JSON.stringify(items) !== JSON.stringify(document.items)) throw new Error(JSON.stringify(items));
+const view = document.direct as Record<string, unknown>;
+if (Object.keys(view).join(",") !== "label" || view.detail !== undefined || "detail" in view)
+    throw new Error("base view " + Object.keys(view).join(","));
+const left = (document.items as Record<string, unknown>[])[1]!;
+if (left.detail !== "extra" || !("count" in left) || "other" in left) throw new Error("left view");
+let seen = "";
+for (const item of items) seen += Object.keys(item).join("+") + ";";
+if (seen !== "label;label+detail+count;label+other;") throw new Error(seen);
+if ("detail" in items[0]! || !("other" in items[2]!)) throw new Error("in");
+`,
+        { expectedOutput: "" },
+    );
 });
 
 test("shares a callback that calls an abstract method", () => {

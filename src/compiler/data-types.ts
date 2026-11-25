@@ -461,6 +461,8 @@ export interface DataStructField {
     defaultWhenMissing?: boolean;
     /** Which union tags actually own this field (wire serialization observes absence). */
     presentForTags?: Array<Array<{ discriminant: string; value: string }>>;
+    /** A hierarchy struct's field only some classes declare: the class tags whose instances own it. */
+    ownForClassTags?: readonly number[];
     /** A class layout slot storing whether this source property is present. */
     presenceOf?: string;
     /**
@@ -497,6 +499,11 @@ export function structFieldKey(
     field: DataStructField,
 ): string {
     return `${structName}.${field.name}`;
+}
+
+/** How many alternatives the tag test of a field's ownership joins (`fieldTagsCpp`). */
+function tagAlternatives(field: DataStructField): number {
+    return field.ownForClassTags?.length ?? field.presentForTags?.length ?? 0;
 }
 
 /**
@@ -10634,7 +10641,7 @@ export class DataTypeRegistry {
             );
         if (tags !== undefined)
             return {
-                ownCpp: `${field.presentForTags!.length > 1 ? `(${tags})` : tags} && ${held}`,
+                ownCpp: `${tagAlternatives(field) > 1 ? `(${tags})` : tags} && ${held}`,
             };
         return {
             ownCpp: held,
@@ -10650,7 +10657,8 @@ export class DataTypeRegistry {
     public presenceByTags(structName: string, field: DataStructField): boolean {
         return (
             this.structsByName.has(structName) &&
-            field.presentForTags !== undefined &&
+            (field.presentForTags !== undefined ||
+                field.ownForClassTags !== undefined) &&
             !field.accessor
         );
     }
@@ -10666,19 +10674,42 @@ export class DataTypeRegistry {
         access: "->" | ".",
     ): string | undefined {
         const definition = this.structsByName.get(structName);
-        const alternatives = field.presentForTags;
-        if (
-            !definition ||
-            !alternatives ||
-            !this.presenceByTags(structName, field)
-        )
+        if (!definition || !this.presenceByTags(structName, field))
             return undefined;
-        return this.tagConditionCpp(
+        return this.fieldTagsCpp(
             definition,
-            alternatives,
-            (tag) => `${ownerCpp}${access}${tag.name}`,
+            field,
+            (member) => `${ownerCpp}${access}${member}`,
             "bblscene::",
         );
+    }
+
+    /**
+     * The run-time test that a record's tags make `field` own, reading each
+     * tag member through `member`: a union arm declaring it is selected, or
+     * the instance is of a class declaring it. Undefined for a field every
+     * record of the struct owns.
+     */
+    private fieldTagsCpp(
+        definition: DataStructDefinition,
+        field: DataStructField,
+        member: (name: string) => string,
+        namespace: string,
+    ): string | undefined {
+        if (field.ownForClassTags)
+            return field.ownForClassTags.length === 0
+                ? "false"
+                : field.ownForClassTags
+                      .map((tag) => `${member(classTagMember)} == ${tag}`)
+                      .join(" || ");
+        return field.presentForTags
+            ? this.tagConditionCpp(
+                  definition,
+                  field.presentForTags,
+                  (tag) => member(tag.name),
+                  namespace,
+              )
+            : undefined;
     }
 
     /**
@@ -10938,6 +10969,25 @@ export class DataTypeRegistry {
                 }
             }
         });
+        // An instance owns the fields its own class and the classes it
+        // extends declare, not those only another class of the hierarchy does.
+        const concrete = this.classHierarchy.concreteClasses(root);
+        const declaredBy = concrete.map((member) =>
+            classChain(this.classHierarchy.table(member)).flatMap(
+                (link) =>
+                    layouts[classes.indexOf(link.declaration)]?.fields ?? [],
+            ),
+        );
+        for (const field of fields) {
+            const tags = concrete.flatMap((_, tag) =>
+                declaredBy[tag]!.some(
+                    (declared) => declared.sourceName === field.sourceName,
+                )
+                    ? [tag]
+                    : [],
+            );
+            if (tags.length < concrete.length) field.ownForClassTags = tags;
+        }
         this.registerStructDefinition(`class#${name}`, {
             name,
             fields,
@@ -13091,12 +13141,14 @@ export class DataTypeRegistry {
                     );
                     return;
                 }
-                // An absent shared object reads undefined, not its null, and
-                // a nullable field's empty storage refuses to guess.
+                // An absent shared object, or a field the record's tags do
+                // not make own, reads undefined, not its slot, and a nullable
+                // field's empty storage refuses to guess.
                 const presence = presences[index];
                 const read =
                     presence &&
                     (field.type.kind === "struct" ||
+                        this.presenceByTags(name, field) ||
                         presence.emptySlot === "ambiguous")
                         ? `${presence.ownCpp} ? ${cpp} : bbl::js::JsonValue{}`
                         : cpp;
@@ -13336,10 +13388,19 @@ export class DataTypeRegistry {
                             `    writer.key(${key});`,
                             `    ${this.jsonWriteCpp(field.type, `value.${field.name}${field.accessor ? ".get()" : ""}`)}`,
                         ];
-                // A field only some union arms declare is written for them.
-                return field.presentForTags && definition
+                // A field only some union arms or classes declare is
+                // written for them.
+                const tags =
+                    definition &&
+                    this.fieldTagsCpp(
+                        definition,
+                        field,
+                        (member) => `value.${member}`,
+                        "",
+                    );
+                return tags
                     ? [
-                          `    if (${this.tagConditionCpp(definition, field.presentForTags, (tag) => `value.${tag.name}`, "")}) {`,
+                          `    if (${tags}) {`,
                           ...written.map((line) => `    ${line}`),
                           "    }",
                       ]
@@ -13623,15 +13684,14 @@ export class DataTypeRegistry {
                           ...["const ", ""].flatMap((qualifier) => [
                               `    template <typename Visitor> friend void clone_fields(${qualifier}${definition.name}${this.isReferenceStruct(definition.name) ? "Data" : ""}&${cloneFields.length ? " record" : ""}, Visitor&&${cloneFields.length ? " visitor" : ""}) {`,
                               ...cloneFields.map((field) => {
-                                  if (field.presentForTags) {
-                                      const condition = this.tagConditionCpp(
-                                          definition,
-                                          field.presentForTags,
-                                          (tag) => `record.${tag.name}`,
-                                          "",
-                                      );
+                                  const condition = this.fieldTagsCpp(
+                                      definition,
+                                      field,
+                                      (member) => `record.${member}`,
+                                      "",
+                                  );
+                                  if (condition)
                                       return `        visitor.when(${stringLiteral(field.sourceName)}, record.${field.name}, ${condition});`;
-                                  }
                                   return `        visitor(${stringLiteral(field.sourceName)}, record.${field.name}${field.defaultWhenMissing ? ", true" : ""});`;
                               }),
                               "    }",
