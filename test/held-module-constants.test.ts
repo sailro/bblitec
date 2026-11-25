@@ -101,17 +101,36 @@ test("a member no store sets leaves the one constant its default names", (t) => 
     );
 });
 
-test("a member some store sets to another object keeps the refusal", () => {
-    assert.throws(
-        () =>
-            compileSource(
-                laneScene(
-                    '(row === 1 ? { id, lane: { key: "odd", place: "input.position", gain: 3 } } : { id })',
-                    "const TOTAL = 5;",
-                ),
-                { fileName: "test/held-constants-other-entry.ts" },
-            ),
-        /Expected a string literal/,
+test("a member some store sets to an object literal compiles once per row it selects", (t) => {
+    // The stored literal is a row of its own beside PLAIN; both place the
+    // vertex alike, so one program serves them, and each keeps its gain.
+    const { compiled, cpp } = compileShaderMaterialFixture(
+        laneScene(
+            '(row === 1 ? { id, lane: { key: "odd", place: "input.position", gain: 3 } } : { id })',
+            "const TOTAL = 5;",
+        ),
+    );
+    assert.deepEqual(
+        compiled.manifest.customShaderPrograms.map(
+            (program) =>
+                /vec4<f32>\(([^,]+), 1\.0\)/.exec(program.vertexSource)?.[1],
+        ),
+        ["input.position"],
+    );
+    assert.match(
+        compiled.cpp,
+        /if \(v_bblite_case_value_\d+->key == "odd"\) \{/,
+    );
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native compiler required.");
+        return;
+    }
+    runGeneratedProgram(
+        native,
+        "held-module-constants/literal-lane",
+        `${cpp}\n#define main generated_main\n${compiled.cpp}\n#undef main\nint main(){assert(generated_main()==0);}`,
+        { expectedOutput: "" },
     );
 });
 
