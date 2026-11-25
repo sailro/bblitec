@@ -317,6 +317,27 @@ export interface RecordJoin {
 /** What a record component keys its members by. */
 export type RecordComponentKey = ts.Symbol | ts.Type | InstantiatedRecord;
 
+/**
+ * Whether two joins join the same records the same way. A record is its
+ * identity (`recordIdentity`), as components key it, not its checker type:
+ * the checker types an object literal afresh each time it is asked.
+ */
+export function sameRecordJoin(
+    checker: ts.TypeChecker,
+    left: RecordJoin,
+    right: RecordJoin,
+): boolean {
+    return (
+        left.kind === right.kind &&
+        left.sourceInstantiation === right.sourceInstantiation &&
+        left.targetInstantiation === right.targetInstantiation &&
+        recordIdentity(checker, left.source) ===
+            recordIdentity(checker, right.source) &&
+        recordIdentity(checker, left.target) ===
+            recordIdentity(checker, right.target)
+    );
+}
+
 const COMPONENT_KEY = "record-component:";
 
 /**

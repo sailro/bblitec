@@ -159,6 +159,7 @@ test("merged record demands keep each join's own source", () => {
     // Members of one component demand under one key; a later member's
     // demand must not take over an earlier member's joins.
     const merged = mergeNativeRecordStorage(
+        frontend.checker,
         {
             identity: "component",
             type: a,

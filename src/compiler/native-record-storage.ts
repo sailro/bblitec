@@ -2,7 +2,11 @@ import { StorageDemand } from "./storage-demand.js";
 import { CompileError } from "./compile-error.js";
 import type { StorageRequest } from "./replay-storage.js";
 import ts from "typescript";
-import type { InstantiatedRecord, RecordJoin } from "./record-components.js";
+import {
+    sameRecordJoin,
+    type InstantiatedRecord,
+    type RecordJoin,
+} from "./record-components.js";
 import type { DataType } from "./data-types/model.js";
 import { dataTypeKey, dataTypesEqual } from "./data-types/operations.js";
 import { declaredRecordName } from "./type-facts.js";
@@ -227,6 +231,7 @@ export function recordDemandAsks(demand: NativeRecordStorageDemand): string[] {
  * the demands a document meets hold the same storage in any order.
  */
 export function mergeNativeRecordStorage(
+    checker: ts.TypeChecker,
     previous: NativeRecordStorageDemand | undefined,
     next: NativeRecordStorageDemand,
 ): NativeRecordStorageDemand | undefined {
@@ -242,13 +247,8 @@ export function mergeNativeRecordStorage(
             previous.dictionary !== next.dictionary);
     const added = (next.joins ?? []).filter(
         (join) =>
-            !(previous?.joins ?? []).some(
-                (known) =>
-                    known.source === join.source &&
-                    known.target === join.target &&
-                    known.sourceInstantiation === join.sourceInstantiation &&
-                    known.targetInstantiation === join.targetInstantiation &&
-                    known.kind === join.kind,
+            !(previous?.joins ?? []).some((known) =>
+                sameRecordJoin(checker, known, join),
             ),
     );
     const joins = [...(previous?.joins ?? []), ...added];

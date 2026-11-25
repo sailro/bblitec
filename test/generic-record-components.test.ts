@@ -320,6 +320,44 @@ test("a record demand no native object can hold stands refused across replays", 
     assert.equal(storage.records.size, 0);
 });
 
+test("a join from a literal the checker types afresh is held once", () => {
+    const { checker, sourceFile } = createCompilerProgram(
+        `interface Full{a:number;b:number}
+        type View=Pick<Full,'a'>;
+        class Holder{readonly view:View={a:0};}`,
+        resolve("fresh-literal-join.ts"),
+    );
+    const holder = sourceFile.statements.find(ts.isClassDeclaration)!;
+    const field = holder.members.find(ts.isPropertyDeclaration)!;
+    const literal = field.initializer!;
+    const target = checker.getTypeAtLocation(field.type!);
+    const request = () => {
+        const source = checker.getTypeAtLocation(literal);
+        return {
+            kind: "record" as const,
+            demand: {
+                identity: recordIdentity(checker, source),
+                type: source,
+                node: literal,
+                frames: [],
+                joins: [{ source, target, kind: "construction" as const }],
+            },
+        };
+    };
+    const first = request();
+    const again = request();
+    // Each lowering that asks for the literal's type gets a new one.
+    assert.notEqual(first.demand.type, again.demand.type);
+    const storage = new ReplayStorage(checker);
+    assert.equal(storage.add(first), true);
+    assert.equal(storage.add(again), false);
+    assert.equal(
+        storage.records.get(recordIdentity(checker, first.demand.type))?.joins
+            ?.length,
+        1,
+    );
+});
+
 check(
     "optional-scalar-own-undefined-logical-and-assign",
     `
