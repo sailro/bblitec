@@ -305,7 +305,7 @@ import {
     calledFunction,
     namedMember,
     libraryStaticMember,
-    nullishLiteral,
+    nullishComparison,
     isLibraryStatic,
 } from "./compiler/symbols.js";
 import {
@@ -352,7 +352,6 @@ import { parameterProjectionIsReadOnly } from "./compiler/parameter-projection-e
 import { homeObjectMembers } from "./compiler/home-object-methods.js";
 import {
     argumentAt,
-    equalityOperator,
     heldIdentifiers,
     identifierText,
     isAssignmentExpression,
@@ -363,6 +362,7 @@ import {
     stringLiteralText,
     unwrappedIdentifier,
     writeSites,
+    type WriteSite,
     isValueReference,
     expressionHasEffects,
     expressionMayRunCode,
@@ -4416,16 +4416,8 @@ class Compiler implements LoweringServices {
             node = member;
         }
         const list = within(() => this.selectedReturnedExpression(node, site));
-        if (ts.isCallExpression(list)) {
-            const inner = within(() => this.returnedExpression(list));
-            return (
-                inner &&
-                this.literalListItems(inner.returned, {
-                    ...inner,
-                    within: (read) => within(() => inner.within(read)),
-                })
-            );
-        }
+        if (ts.isCallExpression(list))
+            return this.returnedMemberItems(list, [], within);
         return this.literalListItems(list, { ...site, within });
     }
 
@@ -6283,22 +6275,13 @@ class Compiler implements LoweringServices {
                             });
                         if (target && passed.size > 0) walk(target, passed);
                     }
-                    if (
-                        ts.isBinaryExpression(node) &&
-                        equalityOperator(node.operatorToken.kind)
-                    )
-                        for (const [side, other] of [
-                            [node.left, node.right],
-                            [node.right, node.left],
-                        ] as const)
-                            if (
-                                boundOf(unwrapExpression(side)) !== undefined &&
-                                nullishLiteral(
-                                    this.checker,
-                                    unwrapExpression(other),
-                                ) !== undefined
-                            )
-                                allowed.add(unwrapExpression(side));
+                    const comparison = ts.isBinaryExpression(node)
+                        ? nullishComparison(this.checker, node)
+                        : undefined;
+                    const tested =
+                        comparison && unwrapExpression(comparison.tested);
+                    if (tested && boundOf(tested) !== undefined)
+                        allowed.add(tested);
                     const parameter = boundOf(node);
                     if (
                         !stray &&
@@ -6443,18 +6426,15 @@ class Compiler implements LoweringServices {
     private localText(read: ts.Identifier): string | undefined {
         const symbol = this.symbols.valueSymbol(read);
         const declaration = symbol?.valueDeclaration;
-        const kind =
-            declaration && ts.isVariableDeclaration(declaration)
-                ? variableKind(declaration)
-                : undefined;
         if (
             !symbol ||
             !declaration ||
             !ts.isVariableDeclaration(declaration) ||
-            !declaration.initializer ||
-            (kind !== "let" && kind !== "const")
+            !declaration.initializer
         )
             return undefined;
+        const kind = variableKind(declaration);
+        if (kind !== "let" && kind !== "const") return undefined;
         const unit = ts.findAncestor(declaration, ts.isFunctionLike);
         const scope = declaration.parent.parent.parent;
         if (!unit || ts.findAncestor(read, ts.isFunctionLike) !== unit)
@@ -6537,7 +6517,31 @@ class Compiler implements LoweringServices {
      */
     private unchangedUntil(expression: ts.Node, read: ts.Node): boolean {
         const unit = ts.findAncestor(read, ts.isFunctionLike);
-        return !someAnalysisNode(
+        return !this.readsReplaced(
+            expression,
+            (writes) =>
+                writes.some(
+                    (write) =>
+                        ts.findAncestor(write.node, ts.isFunctionLike) !==
+                            unit ||
+                        (write.node.getStart() >= expression.getEnd() &&
+                            write.node.getEnd() <= read.getStart()),
+                ),
+            { functions: "skip" },
+        );
+    }
+
+    /**
+     * Whether `expression` reads a member a write in the program replaces
+     * (`recordFieldIsWritten`) or a name whose writes (`bindingRebinds`)
+     * `replaced` counts.
+     */
+    private readsReplaced(
+        expression: ts.Node,
+        replaced: (writes: readonly WriteSite[]) => boolean,
+        policy?: { readonly functions?: "skip" },
+    ): boolean {
+        return someAnalysisNode(
             expression,
             (node) => {
                 if (ts.isPropertyAccessExpression(node))
@@ -6551,20 +6555,16 @@ class Compiler implements LoweringServices {
                 const symbol = this.symbols.valueSymbol(node);
                 return (
                     symbol !== undefined &&
-                    bindingRebinds(
-                        this.checker,
-                        [node.getSourceFile()],
-                        symbol,
-                    ).some(
-                        (write) =>
-                            ts.findAncestor(write.node, ts.isFunctionLike) !==
-                                unit ||
-                            (write.node.getStart() >= expression.getEnd() &&
-                                write.node.getEnd() <= read.getStart()),
+                    replaced(
+                        bindingRebinds(
+                            this.checker,
+                            [node.getSourceFile()],
+                            symbol,
+                        ),
                     )
                 );
             },
-            { functions: "skip" },
+            policy,
         );
     }
 
@@ -6595,52 +6595,26 @@ class Compiler implements LoweringServices {
 
     /**
      * What a condition is where text is folded later than the program
-     * evaluates it (`letText`): what generation knows of it now, when it reads
+     * evaluates it (`localText`): what generation knows of it now, when it reads
      * nothing that could have changed since -- names never rebound, members
      * no write in the program replaces (`recordFieldIsWritten`) -- and calls
      * or writes nothing. Undefined otherwise: the condition is then a
      * run-time test.
      */
     private settledCondition(condition: ts.Expression): boolean | undefined {
-        let stable = true;
-        const visit = (node: ts.Node): void => {
-            if (!stable) return;
-            if (
-                ts.isCallExpression(node) ||
-                ts.isNewExpression(node) ||
-                ts.isTaggedTemplateExpression(node) ||
-                ts.isElementAccessExpression(node) ||
-                writeSites(node).length > 0
-            ) {
-                stable = false;
-                return;
-            }
-            if (ts.isPropertyAccessExpression(node)) {
-                if (
-                    recordFieldIsWritten(
-                        this,
-                        this.checker.getTypeAtLocation(node.expression),
-                        node.name.text,
-                    )
-                )
-                    stable = false;
-                else visit(node.expression);
-                return;
-            }
-            if (ts.isIdentifier(node) && isValueReference(node)) {
-                const symbol = this.symbols.valueSymbol(node);
-                if (
-                    symbol &&
-                    bindingRebinds(this.checker, [node.getSourceFile()], symbol)
-                        .length > 0
-                )
-                    stable = false;
-                return;
-            }
-            ts.forEachChild(node, visit);
-        };
-        visit(condition);
-        if (!stable) return undefined;
+        if (
+            someAnalysisNode(
+                condition,
+                (node) =>
+                    ts.isCallExpression(node) ||
+                    ts.isNewExpression(node) ||
+                    ts.isTaggedTemplateExpression(node) ||
+                    ts.isElementAccessExpression(node) ||
+                    writeSites(node).length > 0,
+            ) ||
+            this.readsReplaced(condition, (writes) => writes.length > 0)
+        )
+            return undefined;
         const compiled = unlessRefused(() =>
             this.probeEmission(
                 () => this.conditions.compileCondition(condition),
