@@ -98,6 +98,21 @@ export function scalarFacts(
     };
 }
 
+/**
+ * Whether an argument binds a parameter as present: a value no run makes
+ * nullish (`neverNullish`), or a number, string or boolean whose storage
+ * has no absent state, which converting it to the parameter keeps.
+ */
+export function bindsPresent(value: Value): boolean {
+    const kind = value.kind === "data" ? value.dataType?.kind : value.kind;
+    return (
+        value.neverNullish === true ||
+        kind === "number" ||
+        kind === "string" ||
+        kind === "boolean"
+    );
+}
+
 /** Whether a value carries a generation-known string, number or boolean. */
 export function hasScalarFacts(value: Value): boolean {
     return (

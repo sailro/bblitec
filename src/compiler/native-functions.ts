@@ -9,7 +9,7 @@ import ts from "typescript";
 import { bindingIsOnlyCalledDirectly } from "./binding-rebinds.js";
 import { schedulerOf } from "./schedulers.js";
 import { CompileError } from "./compile-error.js";
-import { isAbsentValue } from "./values/model.js";
+import { bindsPresent, isAbsentValue } from "./values/model.js";
 import {
     expressionMayRunCode,
     soleReturnedExpression,
@@ -71,6 +71,7 @@ import {
     fixedLengthParameterWrites,
     parameterIsReadOnly,
     parameterOnlyRead,
+    parameterPresenceTested,
 } from "./parameter-effects.js";
 import { isVoid } from "./type-facts.js";
 import {
@@ -433,6 +434,26 @@ export class NativeFunctionLowerer {
         )
             return undefined;
         if (fixedByCaseSplit(this.context, call)) return undefined;
+        // A body that tests whether a parameter is present specializes on an
+        // argument that binds it present, which the shared body owner does.
+        if (
+            declaration.parameters.some((parameter, index) => {
+                const argument = call.arguments[index];
+                return (
+                    argument !== undefined &&
+                    parameterPresenceTested(
+                        this.context.checker,
+                        parameter,
+                        declaration,
+                    ) &&
+                    this.context.probeEmission(
+                        () => bindsPresent(this.context.compileValue(argument)),
+                        () => false,
+                    ) === true
+                );
+            })
+        )
+            return undefined;
         const signature = this.resolveSignature(declaration, callee);
         if (!signature) {
             return undefined;

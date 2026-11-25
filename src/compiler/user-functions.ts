@@ -32,6 +32,7 @@ import {
 } from "./binding-rebinds.js";
 import {
     absenceOf,
+    bindsPresent,
     hasScalarFacts,
     holdsUnreadable,
     knownCondition,
@@ -106,6 +107,7 @@ import {
     parameterIsReadOnly,
     parameterIsRebound,
     parameterOnlyRead,
+    parameterPresenceTested,
 } from "./parameter-effects.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 import { programObservations } from "./program-observations.js";
@@ -4495,6 +4497,10 @@ export class UserFunctionLowerer {
             const arrayStorage = returnsArray
                 ? arrayReturnStorage(this.checker, declaration)
                 : undefined;
+            // The root's parameters whose argument binds them present
+            // (`bindsPresent`) and whose presence the body tests: the body
+            // specializes on that presence, each holding its present type.
+            const presentParameters: number[] = [];
             const parameterTypes = ir.parameters.map(
                 ({ type, declaration: parameter }, index) => {
                     let mapped =
@@ -4502,6 +4508,23 @@ export class UserFunctionLowerer {
                             ? ({ kind: "json" } as const)
                             : (context.dataTypes.dynamicJsonType(type) ??
                               context.dataTypes.fromTsType(type, parameter));
+                    const presentArgument =
+                        declaration === root.declaration && !recursive
+                            ? rootArguments[index]
+                            : undefined;
+                    if (
+                        mapped?.kind === "optional" &&
+                        presentArgument &&
+                        bindsPresent(presentArgument) &&
+                        parameterPresenceTested(
+                            this.checker,
+                            parameter,
+                            declaration,
+                        )
+                    ) {
+                        mapped = mapped.inner;
+                        presentParameters.push(index);
+                    }
                     const supplied =
                         declaration === root.declaration
                             ? rootArguments[index]?.dataType
@@ -4614,6 +4637,7 @@ export class UserFunctionLowerer {
                 declaration,
                 returnType,
                 parameterTypes,
+                presentParameters,
                 parameterReadOnly,
                 cppName,
                 captured,
@@ -4963,6 +4987,7 @@ export class UserFunctionLowerer {
                 : this.emittedRecursiveGroups.key(scope, [
                       context.dataTypes.captureTypeArguments(),
                       rootEntry.captured,
+                      rootEntry.presentParameters,
                       reuseCallSite ? rootEntry.argumentFacts : undefined,
                       reuseCallSite,
                       declarations.some((declaration) =>
@@ -5281,6 +5306,7 @@ export class UserFunctionLowerer {
                 "accessors",
             );
             const member = context.dataTypes.memberAccess(result.dataType.name);
+            const resultType = context.checker.getTypeAtLocation(call);
             projected.recordProperties = Object.fromEntries(
                 Object.keys(metadata.recordProperties).map((key) => {
                     const field = fields.find(
@@ -5294,14 +5320,22 @@ export class UserFunctionLowerer {
                         `(${result.cpp})${member}${field.name}`,
                         field.type,
                     );
-                    const identity =
-                        metadata.recordProperties![key]?.engineIdentity;
+                    const returned = metadata.recordProperties![key];
+                    const identity = returned?.engineIdentity;
                     if (
                         field.readOnly &&
                         property.kind === "engine" &&
                         identity
                     )
                         writable(property).engineIdentity = identity;
+                    // The scalar every return gave a field no write in the
+                    // program replaces is the field's.
+                    if (
+                        returned &&
+                        hasScalarFacts(returned) &&
+                        !recordFieldIsWritten(context, resultType, key)
+                    )
+                        return [key, { ...property, ...scalarFacts(returned) }];
                     return [key, property];
                 }),
             );
@@ -5354,6 +5388,8 @@ export class UserFunctionLowerer {
             value: Value;
             returnType: DataType | undefined;
             parameterTypes: readonly (DataType | undefined)[];
+            /** Parameters the body specializes as present (`bindsPresent`). */
+            presentParameters: readonly number[];
             parameterReadOnly: readonly boolean[];
             cppName: string;
             captured: readonly (Value | undefined)[];
@@ -5451,6 +5487,9 @@ export class UserFunctionLowerer {
                         ),
                         ...(entry.parameterReadOnly[index]
                             ? { readOnly: true as const }
+                            : {}),
+                        ...(entry.presentParameters.includes(index)
+                            ? { neverNullish: true as const }
                             : {}),
                         ...(entry.parameterReadOnly[index] &&
                         entry.argumentFacts[index]?.staticNumber !== undefined
@@ -5753,20 +5792,52 @@ export class UserFunctionLowerer {
                                   recordProperties: Object.fromEntries(
                                       Object.entries(properties).map(
                                           ([key, property]) => {
-                                              if (
-                                                  !property.engineIdentity ||
+                                              const common = { ...property };
+                                              const every = (
+                                                  same: (
+                                                      other: Value,
+                                                  ) => boolean,
+                                              ): boolean =>
                                                   returnedValues.every(
-                                                      (value) =>
-                                                          value
-                                                              .recordProperties?.[
-                                                              key
-                                                          ]?.engineIdentity ===
+                                                      (value) => {
+                                                          const other =
+                                                              value
+                                                                  .recordProperties?.[
+                                                                  key
+                                                              ];
+                                                          return (
+                                                              other !==
+                                                                  undefined &&
+                                                              same(other)
+                                                          );
+                                                      },
+                                                  );
+                                              if (
+                                                  property.engineIdentity &&
+                                                  !every(
+                                                      (other) =>
+                                                          other.engineIdentity ===
                                                           property.engineIdentity,
                                                   )
                                               )
-                                                  return [key, property];
-                                              const common = { ...property };
-                                              delete common.engineIdentity;
+                                                  delete common.engineIdentity;
+                                              // A scalar every return gives
+                                              // the property is the call's.
+                                              if (
+                                                  !every(
+                                                      (other) =>
+                                                          other.staticString ===
+                                                              property.staticString &&
+                                                          other.staticNumber ===
+                                                              property.staticNumber &&
+                                                          other.staticBoolean ===
+                                                              property.staticBoolean,
+                                                  )
+                                              ) {
+                                                  delete common.staticString;
+                                                  delete common.staticNumber;
+                                                  delete common.staticBoolean;
+                                              }
                                               return [key, common];
                                           },
                                       ),

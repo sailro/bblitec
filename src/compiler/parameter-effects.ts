@@ -2362,3 +2362,52 @@ export function functionWritesThis(
     if (writes || active.size === 0) thisWriters.set(declaration, writes);
     return writes;
 }
+
+/**
+ * Whether a function tests whether one of its parameters is present: a
+ * comparison of the parameter with `null` or `undefined` in its body, or
+ * the parameter passed whole to a program function that tests its own. A
+ * caller whose argument binds it present (`bindsPresent`) answers that
+ * test in the body it specializes.
+ */
+export function parameterPresenceTested(
+    checker: ts.TypeChecker,
+    parameter: ts.ParameterDeclaration,
+    declaration: ts.SignatureDeclaration,
+    visiting = new Set<ts.ParameterDeclaration>(),
+): boolean {
+    if (visiting.has(parameter)) return false;
+    visiting.add(parameter);
+    const symbol = ts.isIdentifier(parameter.name)
+        ? declaredSymbol(checker, parameter.name)
+        : undefined;
+    const body = "body" in declaration ? declaration.body : undefined;
+    if (!symbol || !body) return false;
+    const names = (node: ts.Node): boolean => {
+        const unwrapped = ts.isExpression(node)
+            ? unwrapExpression(node)
+            : undefined;
+        return (
+            unwrapped !== undefined &&
+            ts.isIdentifier(unwrapped) &&
+            resolvedSymbol(checker, unwrapped) === symbol
+        );
+    };
+    return someAnalysisNode(body, (node) => {
+        if (!ts.isExpression(node)) return false;
+        const comparison = nullishComparison(checker, node);
+        if (comparison) return names(comparison.tested);
+        if (!ts.isCallExpression(node)) return false;
+        const callee = calledFunction(checker, node);
+        return node.arguments.some((argument, index) => {
+            const target = callee?.parameters[index];
+            return (
+                callee !== undefined &&
+                target !== undefined &&
+                !target.dotDotDotToken &&
+                names(argument) &&
+                parameterPresenceTested(checker, target, callee, visiting)
+            );
+        });
+    });
+}
