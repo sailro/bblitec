@@ -25,6 +25,7 @@ import {
     stringLiteralValues,
 } from "./type-facts.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
+import { isJsonValue } from "./json-bridge.js";
 import { booleanValue, isStringValue, type Value } from "./types.js";
 import { isShaderMaterialType } from "./shader-derivations.js";
 import { runtimeShaderVariants } from "./shader-material-views.js";
@@ -33,6 +34,7 @@ import {
     isModuleScopeFunction,
     isSuspensionPoint,
     isValueReference,
+    objectLiteralMembers,
     unwrapExpression,
     valueUse,
     writeSites,
@@ -186,6 +188,31 @@ export function compileWithRuntimeCaseSplit(
         // the runtime test forced; per outcome it may not be needed, so it
         // stands only when the split fails too.
         if (!refusesPerOutcome(error)) throw error;
+        const temporaries = hoistedTemporaries(context, tests.hoisted);
+        try {
+            return splitRefusedCall(context, call, compile, tests, error, () =>
+                temporaries.emit(),
+            );
+        } finally {
+            temporaries.release();
+        }
+    }
+}
+
+/**
+ * The split of a call whose single compilation refused with `error`
+ * (`compileWithRuntimeCaseSplit`), its hoisted positions' temporaries
+ * declared (`hoist`) where the split is kept.
+ */
+function splitRefusedCall(
+    context: CaseSplitContext,
+    call: ts.CallExpression,
+    compile: () => Value | undefined,
+    tests: SelectorTests,
+    error: unknown,
+    hoist: () => void,
+): Value | undefined {
+    {
         // Which members of the records its arguments name select, and
         // which tests stay runtime ones, is asked only of a call that
         // refused. The tests keep the order the arguments spell them in.
@@ -236,6 +263,7 @@ export function compileWithRuntimeCaseSplit(
             const split = context.probeEmission(
                 () => {
                     try {
+                        hoist();
                         return splitCall(
                             context,
                             call,
@@ -348,6 +376,7 @@ function refusesPerOutcome(error: unknown): boolean {
 type Outcome =
     | "truthy"
     | "falsy"
+    | "null"
     | "absent"
     | { readonly literal: string }
     | ConstantOutcome
@@ -371,8 +400,11 @@ interface ConstantOutcome {
 /**
  * One runtime test: the node read once, and every node spelling it. A
  * `condition` is a selection's test; a `boolean` an argument value that is a
- * boolean; a `presence` an argument value that is an object or one absence
- * (`undefined` or `null`); an `optional-boolean` a boolean or one absence;
+ * boolean; a `presence` an argument value that is an object, a number or a
+ * string, or one absence (`undefined` or `null`); a `json-presence` a
+ * parsed document's number or presence-tested value, present, null or
+ * missing whatever its type says; an `optional-boolean` a boolean or one
+ * absence;
  * a `literal` a value typed as a union of string literals (a key of a
  * constant table); a `constant` an argument value that is one of a few
  * module constants or constant rows (`selectedModuleConstants`), its
@@ -388,6 +420,7 @@ interface Selector {
         | "condition"
         | "boolean"
         | "presence"
+        | "json-presence"
         | "optional-boolean"
         | "literal"
         | "constant"
@@ -425,6 +458,8 @@ interface SelectorTests {
     /** The tests, a value's of a few module constants among them, asked once. */
     groups: () => readonly Selector[];
     records: readonly RecordArgument[];
+    /** The value positions evaluated once, in order, before the tests. */
+    hoisted: readonly ts.Expression[];
 }
 
 /** Every outcome a test of `kind` can take. */
@@ -437,6 +472,7 @@ const KIND_OUTCOMES: Readonly<
     condition: ["truthy", "falsy"],
     boolean: ["truthy", "falsy"],
     presence: ["truthy", "absent"],
+    "json-presence": ["truthy", "null", "absent"],
     "optional-boolean": ["truthy", "falsy", "absent"],
 };
 
@@ -493,6 +529,18 @@ function withOutcomes<T>(
     ];
     // A record takes every member forced in it before it stands for its name.
     const records = new Map<ts.Expression, Value>();
+    // What an override already held there (a hoisted temporary) comes back.
+    const prior = new Map<ts.Node, { value?: Value; condition?: boolean }>();
+    for (const selector of selectors)
+        for (const node of selector.nodes)
+            if (!prior.has(node)) {
+                const value = context.valueOverrides.get(node);
+                const condition = context.conditionOverrides.get(node);
+                prior.set(node, {
+                    ...(value ? { value } : {}),
+                    ...(condition === undefined ? {} : { condition }),
+                });
+            }
     selectors.forEach((selector, index) => {
         const outcome = outcomes[index];
         if (outcome === undefined) return;
@@ -535,12 +583,56 @@ function withOutcomes<T>(
     try {
         return compile();
     } finally {
-        for (const selector of selectors)
-            for (const node of selector.nodes) {
+        for (const [node, { value, condition }] of prior) {
+            if (condition === undefined)
                 context.conditionOverrides.delete(node);
-                context.valueOverrides.delete(node);
-            }
+            else context.conditionOverrides.set(node, condition);
+            if (value === undefined) context.valueOverrides.delete(node);
+            else context.valueOverrides.set(node, value);
+        }
     }
+}
+
+/**
+ * The hoisted positions of a split call read as temporaries
+ * (`hoistedPositions`): each takes a value override naming its temporary,
+ * which `emit` declares, in order, from the position's own evaluation;
+ * `release` drops the overrides.
+ */
+function hoistedTemporaries(
+    context: CaseSplitContext,
+    positions: readonly ts.Expression[],
+): { emit: () => void; release: () => void } {
+    const held = positions.map((node) => {
+        const shape = context.probeEmission(
+            () => context.compileValue(node),
+            () => false,
+        );
+        const name = context.allocateTemporaryCppName("case_argument");
+        const value: Value = { ...shape, cpp: name };
+        context.valueOverrides.set(node, value);
+        return { node, name, value };
+    });
+    return {
+        emit: () => {
+            for (const { node, name, value } of held) {
+                context.valueOverrides.delete(node);
+                try {
+                    context.emit({
+                        kind: "declaration",
+                        type: "auto&&",
+                        name,
+                        initializer: context.compileValue(node).cpp,
+                    });
+                } finally {
+                    context.valueOverrides.set(node, value);
+                }
+            }
+        },
+        release: () => {
+            for (const { node } of held) context.valueOverrides.delete(node);
+        },
+    };
 }
 
 /**
@@ -568,20 +660,30 @@ function forcedValue(
             : "variant" in outcome
               ? withShaderVariants(read(), [outcome.variant])
               : constantValue(read(), outcome);
-    // A present object is truthy and present wherever the arm reads it.
+    // A present object is truthy and present wherever the arm reads it; a
+    // present number or string is present, its truth its own.
+    const found = (present: Value): Value =>
+        presentMembers(type).every((member) => objectLikeType(member))
+            ? { ...present, truthinessCpp: "true", optionalFoundCpp: "true" }
+            : { ...present, optionalFoundCpp: "true" };
     if (selector.kind === "presence")
         return outcome === "truthy"
-            ? {
-                  ...context.dataLowerer.narrowOptional(
+            ? found(
+                  context.dataLowerer.narrowOptional(
                       read(),
                       node,
                       true,
                       selector.member?.present,
                   ),
-                  truthinessCpp: "true",
-                  optionalFoundCpp: "true",
-              }
+              )
             : absent();
+    // A parsed document's value is found in its present arm.
+    if (selector.kind === "json-presence")
+        return outcome === "truthy"
+            ? found(read())
+            : outcome === "null"
+              ? nullValue()
+              : undefinedValue();
     if (outcome === "absent") return absent();
     return {
         kind: "boolean",
@@ -676,7 +778,9 @@ function selectorKind(
     if (present.length === 0) return undefined;
     if (holdsOnly(type, ["boolean", "undefined", "null"]))
         return "optional-boolean";
-    return present.every((member) => objectLikeType(member))
+    // An object, or a number or string, present or absent.
+    return present.every((member) => objectLikeType(member)) ||
+        holdsOnly(type, ["number", "string", "undefined", "null"])
         ? "presence"
         : undefined;
 }
@@ -807,12 +911,15 @@ function selectorTests(
     onlyHeldText: boolean,
 ): SelectorTests | undefined {
     const calls: ts.CallExpression[] = [];
-    const effects = (node: ts.Node): boolean => {
-        if (ts.isFunctionLike(node)) return false;
+    const hoisted = new Set<ts.Expression>();
+    // `record` keeps the module-level calls an argument makes.
+    const effects = (node: ts.Node, record = true): boolean => {
+        if (ts.isFunctionLike(node) || hoisted.has(node as ts.Expression))
+            return false;
         if (ts.isCallExpression(node)) {
             if (!moduleLevelCallee(context.checker, node.expression))
                 return true;
-            calls.push(node);
+            if (record) calls.push(node);
         } else if (
             ts.isNewExpression(node) ||
             ts.isTaggedTemplateExpression(node) ||
@@ -820,13 +927,24 @@ function selectorTests(
             writeSites(node).length > 0
         )
             return true;
-        return ts.forEachChild(node, effects) ?? false;
+        return (
+            ts.forEachChild(node, (child) => effects(child, record)) ?? false
+        );
     };
+    // JavaScript evaluates each argument once, in order, before the call: a
+    // value position that runs code, and every one before it that makes a
+    // call, is evaluated so into a temporary the tests and arms read
+    // (`hoistedPositions`). One that writes storage could change what a
+    // later position reads, and keeps the call whole.
+    const positions = hoistedPositions(context, call, (node) =>
+        effects(node, false),
+    );
+    if (positions) for (const position of positions) hoisted.add(position);
     // What an argument does may change what a test reads, but not a
     // deferred selection's condition, which reads only bindings nothing
     // rebinds (`deferrableSelection`): only such tests split a call whose
     // arguments do more than read.
-    const effectful = call.arguments.some(effects);
+    const effectful = call.arguments.some((argument) => effects(argument));
     const unchanging = new Set<ts.Expression>();
     // Each distinct test with every place it appears.
     const groups: (Selector & { nodes: ts.Expression[] })[] = [];
@@ -891,8 +1009,17 @@ function selectorTests(
             return;
         const type = context.checker.getTypeAtLocation(node);
         const kind = selectorKind(type);
+        // A hoisted position's selections ran once, into its temporary.
+        const whole = hoisted.has(node) || !containsSelection(node);
         if (kind) {
-            if (!containsSelection(node)) addGroup(kind, node);
+            if (whole) addGroup(kind, node);
+        } else if (
+            whole &&
+            holdsOnly(context.checker.getNonNullableType(type), ["number"])
+        ) {
+            // A number a parsed document holds may be null or missing
+            // whatever its type says (`runtimeSelectors` keeps it only then).
+            addGroup("json-presence", node);
         } else if (isShaderMaterialType(type) && !containsSelection(node)) {
             // A ShaderMaterial's variant, when the run time decides it.
             addGroup("variant", node);
@@ -912,7 +1039,9 @@ function selectorTests(
         }
     };
     const visit = (node: ts.Node, held = false): void => {
-        if (ts.isFunctionLike(node)) return;
+        // A hoisted position is one read of its temporary.
+        if (ts.isFunctionLike(node) || hoisted.has(node as ts.Expression))
+            return;
         // A name whose declaration deferred its selection reads it here.
         const deferred =
             ts.isIdentifier(node) && context.bindings.deferredSelection(node);
@@ -1006,10 +1135,11 @@ function selectorTests(
         ts.forEachChild(node, (child) => collect(child, roots));
     };
     const roots = new Set<ts.Symbol>();
+    // A hoisted test is read once, from its temporary.
     for (const test of [
         ...groups
             .map((group) => group.test)
-            .filter((test) => !unchanging.has(test)),
+            .filter((test) => !unchanging.has(test) && !hoisted.has(test)),
         ...records.map((record) => record.nodes[0]!),
     ]) {
         if (context.evaluationOrder.writesStorage(test)) return undefined;
@@ -1069,7 +1199,88 @@ function selectorTests(
             return groups;
         },
         records,
+        hoisted: [...hoisted],
     };
+}
+
+/**
+ * The value positions of a call's arguments to evaluate once, in order,
+ * before its tests (`selectorTests`): each up to the last that `runs` code
+ * that runs code, or that a later one could change or see change
+ * (`operandsToPin`), positions of object and array literals taken member by
+ * member so a literal keeps its shape. Undefined where such code constructs,
+ * tags a template, suspends or writes, or a spread or computed key runs code
+ * (the call then stays whole); empty where no position runs code.
+ */
+function hoistedPositions(
+    context: CaseSplitContext,
+    call: ts.CallExpression,
+    runs: (node: ts.Node) => boolean,
+): readonly ts.Expression[] | undefined {
+    const positions: ts.Expression[] = [];
+    let whole = false;
+    const position = (node: ts.Expression): void => {
+        const value = unwrapExpression(node);
+        if (ts.isObjectLiteralExpression(value)) {
+            for (const member of objectLiteralMembers(value)) {
+                if (
+                    member.kind !== "spread" &&
+                    member.node.name &&
+                    ts.isComputedPropertyName(member.node.name) &&
+                    runs(member.node.name.expression)
+                )
+                    whole = true;
+                if (member.kind === "spread") {
+                    if (runs(member.node.expression)) whole = true;
+                } else if (
+                    member.kind === "property" ||
+                    member.kind === "shorthand"
+                )
+                    position(member.value);
+            }
+            return;
+        }
+        if (ts.isArrayLiteralExpression(value)) {
+            for (const element of value.elements)
+                if (ts.isSpreadElement(element)) {
+                    if (runs(element.expression)) whole = true;
+                } else if (!ts.isOmittedExpression(element)) position(element);
+            return;
+        }
+        if (!ts.isFunctionLike(value)) positions.push(value);
+    };
+    for (const argument of call.arguments)
+        if (ts.isSpreadElement(argument)) {
+            if (runs(argument.expression)) whole = true;
+        } else position(argument);
+    if (whole) return undefined;
+    let last = positions.length - 1;
+    while (last >= 0 && !runs(positions[last]!)) last--;
+    if (last < 0) return [];
+    const ordered = positions.slice(0, last + 1);
+    // Only calls run ahead: a construction, a tagged template, a suspension
+    // or a write keeps the call whole.
+    if (
+        ordered.some(
+            (node) =>
+                runs(node) &&
+                someAnalysisNode(
+                    node,
+                    (inner) =>
+                        ts.isNewExpression(inner) ||
+                        ts.isTaggedTemplateExpression(inner) ||
+                        isSuspensionPoint(inner, { yield: true }) ||
+                        writeSites(inner).length > 0,
+                    { functions: "skip" },
+                ),
+        )
+    )
+        return undefined;
+    // A position left in place is read after those evaluated ahead: one
+    // that touches what a later one writes, or writes what it touches, is
+    // evaluated ahead too, in its order (`operandsToPin`).
+    const pinned = context.evaluationOrder.operandsToPin(ordered);
+    return ordered.filter((node, index) => runs(node) || pinned[index]);
 }
 
 /**
@@ -1238,6 +1449,20 @@ function runtimeSelectors(
                 ...group,
                 outcomes: variants.map((variant) => ({ variant })),
             });
+            continue;
+        }
+        // A parsed document's value is present, null or missing at run time
+        // whatever its type says; another value is no such test.
+        if (
+            group.kind === "json-presence" ||
+            (group.kind === "presence" && !group.member && isJsonValue(value))
+        ) {
+            if (isJsonValue(value))
+                variable.push({
+                    ...group,
+                    kind: "json-presence",
+                    outcomes: KIND_OUTCOMES["json-presence"],
+                });
             continue;
         }
         if (group.kind === "constant") {
@@ -1553,12 +1778,31 @@ function splitCall(
                             .join(" && "),
                 };
             }
-            if (selector.kind !== "optional-boolean" && !selector.member)
+            if (selector.kind === "json-presence") {
+                // Present is neither null nor undefined; null next; the
+                // last arm is the missing value.
+                const value = selectorValue(context, selector);
+                if (!isJsonValue(value)) return undefined;
+                const name = context.allocateTemporaryCppName("case_value");
+                context.emit({
+                    kind: "declaration",
+                    type: "const auto&",
+                    name,
+                    initializer: value.cpp,
+                });
                 return {
-                    truth: pin(
-                        context.conditions.compileCondition(selector.test),
-                    ),
+                    truth: pin(`!${name}.is_null() && !${name}.is_undefined()`),
+                    presence: pin(`${name}.is_null()`),
                 };
+            }
+            if (selector.kind !== "optional-boolean" && !selector.member) {
+                // A hoisted test reads its temporary, evaluated once.
+                const hoisted = context.valueOverrides.get(selector.test);
+                const truth = hoisted
+                    ? context.dataLowerer.truthinessCondition(hoisted)
+                    : context.conditions.compileCondition(selector.test);
+                return truth === undefined ? undefined : { truth: pin(truth) };
+            }
             const value = selectorValue(context, selector);
             if (!value) return undefined;
             if (selector.kind !== "optional-boolean") {

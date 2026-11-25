@@ -230,7 +230,31 @@ export function runApplicationFunction(
     label: string,
 ): ExecutedResult & { readonly parse: (text: string) => unknown } {
     const closure = new ExecutedClosure(context, target, label);
-    const program = closure.program();
+    // The first pinned function the run uses, and the first module-scope
+    // write it makes, which a catch in the run cannot hide: the run then
+    // describes no run.
+    let pinnedUse: string | undefined;
+    let moduleWrite: string | undefined;
+    const program = closure.program(
+        (name) => {
+            pinnedUse ??= name;
+        },
+        (where) => {
+            moduleWrite ??= where;
+        },
+    );
+    const refuseEffect = (): never | undefined =>
+        pinnedUse !== undefined
+            ? context.fail(
+                  target,
+                  `${label} uses pinned '${pinnedUse}', which generation does not run; only the ${[...pinnedTags].join(", ")} tag executes with it.`,
+              )
+            : moduleWrite !== undefined
+              ? context.fail(
+                    target,
+                    `${label} writes a module-scope binding at ${moduleWrite}, so one execution would not describe every call.`,
+                )
+              : undefined;
     const realm = vm.createContext(
         Object.fromEntries(GENERATION_HOST_GLOBALS),
         {
@@ -309,6 +333,7 @@ export function runApplicationFunction(
             {
                 pinned: program.bindings.pinned,
                 opaque: program.bindings.opaque,
+                written: program.bindings.written,
                 enclosing: Object.fromEntries(
                     Object.entries(program.bindings.enclosing).map(
                         ([name, value]) => [name, inRealm(value)],
@@ -333,11 +358,13 @@ export function runApplicationFunction(
         }
         result = settledResult(realm, result);
     } catch (error: unknown) {
+        refuseEffect();
         return context.fail(
             target,
             `${label} threw at generation: ${errorMessage(error)}`,
         );
     }
+    refuseEffect();
     if (unpackaged !== undefined)
         return context.fail(
             target,
@@ -352,21 +379,42 @@ export function runApplicationFunction(
 
 /**
  * `runApplicationFunction`'s result as plain data, which it must be: the
- * value generation carries.
+ * value generation carries. With `keys`, the value a read takes through the
+ * result's plain records and arrays, as JavaScript reads it, so only that
+ * value must be plain: its siblings (a function a record also holds) are
+ * never read. Undefined where a key reaches no own data member or a step
+ * holds no object.
  */
 export function executeApplicationFunction(
     context: ExecutedFunctionContext,
     target: ExecutedTarget,
     args: readonly (ExecutedArgument | undefined)[],
     label: string,
+    keys: readonly string[] = [],
 ): unknown {
     const run = runApplicationFunction(context, target, args, label);
-    const value = plainCopy(run.value, (held) => run.isPlain(held));
+    const isPlain = (held: unknown): boolean => run.isPlain(held);
+    let read: unknown = run.value;
+    for (const key of keys) {
+        if (read === null || typeof read !== "object") return undefined;
+        if (!isPlain(read))
+            return context.fail(
+                target,
+                `${label} returned a value whose '${keys.join(".")}' is not ` +
+                    "read through plain data, which generation cannot carry.",
+            );
+        read = Object.getOwnPropertyDescriptor(read, key)?.value;
+        if (read === undefined) return undefined;
+    }
+    const value = plainCopy(read, isPlain);
     if (value === notPlain) {
         return context.fail(
             target,
-            `${label} returned a value that is not plain data, which ` +
-                "generation cannot carry.",
+            keys.length > 0
+                ? `${label} returned a value whose '${keys.join(".")}' is ` +
+                      "not plain data, which generation cannot carry."
+                : `${label} returned a value that is not plain data, which ` +
+                      "generation cannot carry.",
         );
     }
     return value;
@@ -566,6 +614,14 @@ class ExecutedClosure {
     /** @unjournaled Scratch of one execution's analysis, discarded with it. */
     private readonly opaquePinned = new Set<string>();
     /** @unjournaled Scratch of one execution's analysis, discarded with it. */
+    private readonly heldPinned = new Set<string>();
+    /**
+     * @unjournaled Scratch of one execution's analysis, discarded with it:
+     * the expressions writing module-scope state, each run after reporting
+     * where it writes (`program`'s `written`), which refuses the run.
+     */
+    private readonly guardedWrites = new Set<ts.Node>();
+    /** @unjournaled Scratch of one execution's analysis, discarded with it. */
     private readonly queue: Array<{ root: ts.Node; file: ts.SourceFile }> = [];
     /**
      * @unjournaled Scratch of one execution's analysis, discarded with it:
@@ -581,12 +637,16 @@ class ExecutedClosure {
         this.symbols = new CompilerSymbols(context.checker);
     }
 
-    public program(): {
+    public program(
+        used: (name: string) => void,
+        written: (where: string) => void,
+    ): {
         javascript: string;
         bindings: {
             pinned: Record<string, unknown>;
             opaque: Record<string, unknown>;
             enclosing: Record<string, ExecutedArgument>;
+            written: (where: string) => void;
         };
     } {
         const targetFile = this.target.getSourceFile();
@@ -617,7 +677,9 @@ class ExecutedClosure {
                         this.context.pinnedStandIn?.(source.name) ??
                         (this.opaquePinned.has(source.name)
                             ? opaqueValue(source.name)
-                            : pinnedExport(source.name));
+                            : this.heldPinned.has(source.name)
+                              ? unusedPinned(source.name, used)
+                              : pinnedExport(source.name));
                     prologue.push(
                         `const ${local} = __bblBindings.pinned[${JSON.stringify(source.name)}];`,
                     );
@@ -690,7 +752,7 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
                 source,
                 `${targetFile.fileName}.executed.ts`,
             ),
-            bindings: { pinned, opaque, enclosing },
+            bindings: { pinned, opaque, enclosing, written },
         };
     }
 
@@ -848,12 +910,14 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
                                 : {}),
                         },
                     )
-                ) {
-                    this.context.fail(
-                        node,
-                        `${this.label} writes a module-scope binding, so one execution would not describe every call.`,
+                )
+                    // A write in a function the run only holds is never
+                    // made: each runs behind a guard (`guardedWrites`).
+                    this.guardedWrites.add(
+                        ts.isForOfStatement(node) || ts.isForInStatement(node)
+                            ? node.expression
+                            : node,
                     );
-                }
                 const varying = this.varyingRead(node);
                 if (varying) {
                     this.context.fail(
@@ -1038,14 +1102,20 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
         if (part.imports.has(identifier.text)) return;
         const pinned = this.symbols.babylonImportName(identifier);
         if (pinned !== undefined) {
-            if (
-                this.context.model &&
+            const pinnedFunction =
                 !pinnedTags.has(pinned) &&
                 aliasTarget(this.context.checker, symbol).declarations?.some(
                     ts.isFunctionDeclaration,
-                )
-            )
+                ) === true;
+            if (this.context.model && pinnedFunction)
                 this.opaquePinned.add(pinned);
+            else if (
+                pinnedFunction &&
+                this.context.pinnedStandIn?.(pinned) === undefined
+            )
+                // A run may hold the pin's function (a record's callback)
+                // without calling it; a use refuses the run (`unusedPinned`).
+                this.heldPinned.add(pinned);
             else if (
                 !pinnedTags.has(pinned) &&
                 this.context.pinnedStandIn?.(pinned) === undefined
@@ -1125,26 +1195,72 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
         );
     }
 
-    /** A range of `file` as it runs: each deployment constant as its literal. */
+    /**
+     * A range of `file` as it runs: each deployment constant as its literal,
+     * each guarded write (`guardedWrites`) reporting where it writes first.
+     */
     private sourceText(
         file: ts.SourceFile,
         start: number,
         end: number,
     ): string {
-        const folds = [...this.deployed]
-            .filter(
-                ([node]) =>
-                    node.getSourceFile() === file &&
-                    node.getStart(file) >= start &&
-                    node.end <= end,
-            )
-            .sort(([left], [right]) => left.pos - right.pos);
+        const within = (node: ts.Node): boolean =>
+            node.getSourceFile() === file &&
+            node.getStart(file) >= start &&
+            node.end <= end;
+        // Edits by position; at one position, a guard's closing comes first,
+        // then the openings, outer first, then a literal's replacement.
+        const edits: Array<{
+            from: number;
+            to: number;
+            text: string;
+            rank: number;
+            order: number;
+        }> = [];
+        for (const [node, value] of this.deployed)
+            if (within(node))
+                edits.push({
+                    from: node.getStart(file),
+                    to: node.end,
+                    text: `(${JSON.stringify(value)})`,
+                    rank: 2,
+                    order: 0,
+                });
+        for (const node of this.guardedWrites) {
+            if (!within(node)) continue;
+            const from = node.getStart(file);
+            const { line, character } =
+                file.getLineAndCharacterOfPosition(from);
+            const where = `${file.fileName}:${line + 1}:${character + 1}`;
+            edits.push(
+                {
+                    from,
+                    to: from,
+                    text: `(__bblBindings.written(${JSON.stringify(where)}), `,
+                    rank: 1,
+                    order: -node.end,
+                },
+                // An inner guard (the later start) closes first.
+                {
+                    from: node.end,
+                    to: node.end,
+                    text: ")",
+                    rank: 0,
+                    order: -from,
+                },
+            );
+        }
+        edits.sort(
+            (left, right) =>
+                left.from - right.from ||
+                left.rank - right.rank ||
+                left.order - right.order,
+        );
         let text = "";
         let at = start;
-        for (const [node, value] of folds) {
-            const from = node.getStart(file);
-            text += `${file.text.slice(at, from)}(${JSON.stringify(value)})`;
-            at = node.end;
+        for (const edit of edits) {
+            text += file.text.slice(at, edit.from) + edit.text;
+            at = edit.to;
         }
         return text + file.text.slice(at, end);
     }
@@ -1173,6 +1289,33 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
             `${this.label} is a ${syntaxKindName(target.kind)}, which generation does not execute alone.`,
         );
     }
+}
+
+/**
+ * A pinned function a generation run holds without running: passing,
+ * storing and comparing it run as in JavaScript; any other use (a call, a
+ * member read) reports `name` to `used` and throws.
+ */
+function unusedPinned(name: string, used: (name: string) => void): unknown {
+    const refuse = (): never => {
+        used(name);
+        throw new Error(
+            `it uses pinned '${name}', which generation does not run`,
+        );
+    };
+    return new Proxy(function pinned() {}, {
+        get: refuse,
+        set: refuse,
+        has: refuse,
+        deleteProperty: refuse,
+        defineProperty: refuse,
+        ownKeys: refuse,
+        getOwnPropertyDescriptor: refuse,
+        getPrototypeOf: refuse,
+        setPrototypeOf: refuse,
+        apply: refuse,
+        construct: refuse,
+    });
 }
 
 /**

@@ -496,6 +496,14 @@ export function isAbsentValue(value: Value): boolean {
 }
 
 /**
+ * Whether generation has proven a value present where its storage could
+ * hold an absence (a parsed document's member): a case split's arm found it.
+ */
+export function provenPresent(value: Value): boolean {
+    return value.optionalFoundCpp === "true";
+}
+
+/**
  * A value that cannot be absent: an element the host holds, whatever storage
  * it was kept in, or a value with no presence to test that is not `null`.
  */

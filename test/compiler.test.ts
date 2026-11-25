@@ -13837,8 +13837,9 @@ test("lowers numeric template substitutions in retained UI cssText", () => {
         async function main(): Promise<void> {
             await createEngine({});
             const hit = document.createElement("div");
-            let right = 12;
-            let width = 180;
+            // Run-time numbers: a never-written literal folds into the text.
+            let right = Number(JSON.parse("12"));
+            let width = Number(JSON.parse("180"));
             hit.style.cssText =
                 \`position:fixed;right:\${right}px;width:\${width}px;\` +
                 "cursor:crosshair";
