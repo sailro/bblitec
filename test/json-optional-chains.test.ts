@@ -84,3 +84,28 @@ test("an optional method call on a document member is undefined when the member 
         source,
     );
 });
+
+test("JSON.stringify of a missing any- or unknown-typed document member is undefined", (t) => {
+    // A string sink reads the result as String() does; a defined member
+    // still serializes to its text.
+    const source = `
+        const doc = JSON.parse('{"a":1,"n":null,"list":[1,2]}');
+        if (JSON.stringify(doc.missing) !== undefined) throw new Error("any member");
+        const read: unknown = (JSON.parse("{}") as Record<string, unknown>).x;
+        if (JSON.stringify(read) !== undefined) throw new Error("unknown member");
+        if (JSON.stringify(doc.n) !== "null" || JSON.stringify(doc.a) !== "1") throw new Error("defined members");
+        const text: string = JSON.stringify(doc);
+        if (text.length !== 29 || JSON.parse(JSON.stringify(doc.list)).length !== 2) throw new Error("text " + text);
+        const saved = new Map<string, string>();
+        saved.set("k", JSON.stringify(doc, null, 2));
+        if (saved.get("k")!.split("\\n").length !== 8) throw new Error("indented " + saved.get("k"));
+        if ("t:" + JSON.stringify(doc.missing) !== "t:undefined" || \`t:\${JSON.stringify(doc.list)}\` !== "t:[1,2]")
+            throw new Error("templates");
+    `;
+    return runSelfCheckingProgram(
+        t,
+        "json-optional-chains/stringify-undefined-members",
+        source,
+        { expectedOutput: "" },
+    );
+});
