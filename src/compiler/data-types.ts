@@ -49,6 +49,7 @@ import {
     isUndefinedDataType,
     isOpaqueReference,
     isNativeStructuralView,
+    documentHoldsItself,
     isScalarDataType,
     sharesStorageKind,
     tracedEdgeCondition,
@@ -12832,34 +12833,35 @@ export class DataTypeRegistry {
      * Whether values of `type` hold a native object (a handle, an event
      * target or another native carrier, `isNativeStructuralView`), in place
      * or through their containers and record fields: no document has a form
-     * for one.
+     * for one. `native` narrows which leaves count.
      */
     public holdsNativeHandle(
         type: DataType,
         seen: Set<string> = new Set(),
+        native: (leaf: DataType) => boolean = isNativeStructuralView,
     ): boolean {
-        if (isNativeStructuralView(type)) return true;
+        if (native(type)) return true;
         switch (type.kind) {
             case "optional":
             case "tagged":
-                return this.holdsNativeHandle(type.inner, seen);
+                return this.holdsNativeHandle(type.inner, seen, native);
             case "vector":
             case "set":
-                return this.holdsNativeHandle(type.element, seen);
+                return this.holdsNativeHandle(type.element, seen, native);
             case "map":
                 return (
-                    this.holdsNativeHandle(type.key, seen) ||
-                    this.holdsNativeHandle(type.value, seen)
+                    this.holdsNativeHandle(type.key, seen, native) ||
+                    this.holdsNativeHandle(type.value, seen, native)
                 );
             case "union":
                 return type.members.some((member) =>
-                    this.holdsNativeHandle(member, seen),
+                    this.holdsNativeHandle(member, seen, native),
                 );
             case "struct":
                 if (seen.has(type.name)) return false;
                 seen.add(type.name);
                 return (this.structsByName.get(type.name)?.fields ?? []).some(
-                    (field) => this.holdsNativeHandle(field.type, seen),
+                    (field) => this.holdsNativeHandle(field.type, seen, native),
                 );
             default:
                 return false;
@@ -12869,13 +12871,22 @@ export class DataTypeRegistry {
     /**
      * Whether a document holds records of struct `type` boxed, by reference:
      * a class's instances, and records holding a native handle
-     * (`holdsNativeHandle`), which no document has a form for. A document
-     * read as one is the record it holds, asserted (`assertedInstance`).
+     * (`holdsNativeHandle`) no document has a form for. A Blob is not one: a
+     * document holds it as itself (`documentHoldsItself`), so a record of
+     * Blobs is a document after a structured clone. A document read as a
+     * boxed record is the record it holds, asserted (`assertedInstance`).
      */
     public documentHoldsBoxed(type: DataType<"struct">): boolean {
         return (
             this.isClassStruct(type.name) ||
-            (this.isReferenceStruct(type.name) && this.holdsNativeHandle(type))
+            (this.isReferenceStruct(type.name) &&
+                this.holdsNativeHandle(
+                    type,
+                    new Set(),
+                    (leaf) =>
+                        isNativeStructuralView(leaf) &&
+                        !documentHoldsItself(leaf),
+                ))
         );
     }
 

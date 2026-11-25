@@ -23,6 +23,7 @@
 // Included only by a scene that reaches JSON (`jsonReached`), so the
 // plain-data header every scene includes carries no parser for it.
 
+#include <bblite/js_blob.hpp>
 #include <bblite/js_data.hpp>
 #include <bblite/js_structured_clone.hpp>
 
@@ -1303,6 +1304,16 @@ template <typename T>
     const std::string name(key);
     return value.has(name) ? json_value(value.at(name)) : JsonValue{};
 }
+/** A Blob held in a dynamic value, viewed dynamically: `size` and `type`, no own keys. */
+[[nodiscard]] inline JsonValue json_value_property(const Blob& blob, std::string_view key) {
+    if (key == "size")
+        return JsonValue::from_number(static_cast<double>(blob.size()));
+    if (key == "type")
+        return JsonValue::from_string(blob.type());
+    return {};
+}
+[[nodiscard]] inline bbl::js::Array<std::string> json_value_keys(const Blob&) { return {}; }
+
 template <typename T>
 [[nodiscard]] bbl::js::Array<std::string> json_value_keys(const Map<std::string, T>& value) {
     return map_keys(value);
@@ -2018,8 +2029,8 @@ template <typename Visitor> bool for_json_clone_view(Visitor&& visitor) {
 
 /**
  * A dynamic document clones as the JavaScript value it holds, aliases and
- * cycles kept, a typed array it holds as itself included; it is received as
- * an owned document. A function throws DataCloneError, as does a Map, Set,
+ * cycles kept, a typed array or a Blob it holds as itself included; it is
+ * received as an owned document. A function throws DataCloneError, as does a Map, Set,
  * Date, ArrayBuffer or DataView received into one.
  */
 template <> struct CloneCodec<JsonValue> {
@@ -2064,6 +2075,8 @@ template <> struct CloneCodec<JsonValue> {
                 throw pal::DataCloneError("This document view has no structured-clone codec.");
             return *view;
         }
+        if (value.instance_of<Blob>())
+            return clone_write(writer, value.asserted_instance<Blob>());
         const auto [id, fresh] = writer.remember(value.reference_identity());
         if (!fresh)
             return id;
@@ -2098,6 +2111,8 @@ template <> struct CloneCodec<JsonValue> {
             if (value)
                 return *value;
         }
+        if (std::holds_alternative<pal::CloneBlob>(node))
+            return JsonValue::from_native(clone_read<Blob>(reader, id));
         if (const auto* recalled = reader.recalled<JsonValue>(id))
             return *recalled;
         if (const auto* array = std::get_if<pal::CloneArray>(&node)) {

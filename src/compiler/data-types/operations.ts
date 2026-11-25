@@ -165,6 +165,15 @@ export function isNativeStructuralView(type: DataType | undefined): boolean {
     );
 }
 
+/**
+ * Whether a dynamic document holds a value of this kind as itself, and reads
+ * it back as one (a Blob a store read back): js_json.hpp's native box and
+ * structured clone carry it.
+ */
+export function documentHoldsItself(type: DataType): boolean {
+    return type.kind === "blob";
+}
+
 /** Whether native copies of this kind share storage (`sharesStorage`). */
 export function sharesStorageKind(type: DataType): boolean {
     return kinds[type.kind].sharesStorage === true;

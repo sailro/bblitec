@@ -573,8 +573,8 @@ const opaqueSink = {
 };
 
 /**
- * An opaque kind a dynamic value can also hold boxed (a Blob a store read
- * back): its instance, asserted as `instanceof` narrowed it.
+ * An opaque kind a dynamic value holds as itself (`documentHoldsItself`):
+ * its instance, asserted as `instanceof` narrowed it.
  */
 const boxedOpaqueSink = {
     expression: opaqueSink.expression,
