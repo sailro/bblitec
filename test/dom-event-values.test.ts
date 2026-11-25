@@ -270,6 +270,30 @@ test("owned DOM events retain payload, routing, identity and listener cleanup", 
         terminals[1]!();
         if (ends !== 2 || released !== -1 || dragging)
             throw new Error("optional event through a recursive pair");
+        // The pair's terminal is one function object: the one a listener
+        // pushes is the one each listener's pair removes by identity.
+        let holding = false;
+        let removals = 0;
+        const held: Array<() => void> = [];
+        const removeHeld = (terminal: () => void): void => {
+            removals++;
+            const at = held.indexOf(terminal);
+            if (at >= 0) held.splice(at, 1);
+        };
+        const endHold = (release?: number): void => {
+            if (!holding) return;
+            holding = false;
+            removeHeld(holdTerminal);
+        };
+        const holdTerminal = (): void => endHold();
+        handle.addEventListener("pointerdown", () => { holding = true; held.push(holdTerminal); });
+        handle.addEventListener("pointercancel", (event) => endHold(event.clientX));
+        handle.dispatchEvent(new PointerEvent("pointerdown"));
+        handle.dispatchEvent(new PointerEvent("pointercancel", {clientX:21}));
+        handle.dispatchEvent(new PointerEvent("pointerdown"));
+        held[0]!();
+        if (removals !== 2 || held.length !== 0 || holding)
+            throw new Error("recursive pair terminal identity " + removals + " " + held.length);
         globalThis.close();
     `);
     writeFileSync(join(directory, "program.hpp"), result.cpp);

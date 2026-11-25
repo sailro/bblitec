@@ -5940,7 +5940,17 @@ export class UserFunctionLowerer {
             else
                 context.emit({
                     kind: "expression",
-                    code: `${entry.cppName} = ${closure};`,
+                    // Every materialization of a named function whose closure
+                    // names its function object is that object: the group's
+                    // cell carries the identity every other read of the
+                    // declaration carries (`callbackIdentity`), not a fresh
+                    // one per group.
+                    code: context.hasCallbackIdentity(
+                        entry.declaration,
+                        undefined,
+                    )
+                        ? `${entry.cppName} = {${context.callbackIdentity(entry.declaration, undefined)}u, ${closure}};`
+                        : `${entry.cppName} = ${closure};`,
                 });
         } finally {
             context.bindings.popScope();
