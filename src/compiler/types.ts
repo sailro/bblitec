@@ -3061,6 +3061,12 @@ export interface ValueFields {
      */
     optionalFoundCpp?: string;
     /**
+     * Set on a value no run makes `null` or `undefined`, whatever its
+     * storage could hold: `x ?? fallback` with a fallback that is never
+     * nullish. A test of it against either is constant.
+     */
+    neverNullish?: true;
+    /**
      * Whether the value was read from a slot that exists: a key `Map.get`
      * found, the owner an optional chain reached, the element `pop()` or
      * `shift()` removed, an index within the array. The value's own absence

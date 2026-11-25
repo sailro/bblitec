@@ -2206,10 +2206,15 @@ export class DeclarationLowerer {
                         ...(sharedDataBinding
                             ? { sharedStorageCpp: cppName }
                             : {}),
-                        // A const names the bag it was bound to for good.
+                        // A const names the bag it was bound to for good,
+                        // and a value no run makes nullish stays one.
                         ...(narrowed.ownedQuery &&
                         variableKind(declaration) === "const"
                             ? { ownedQuery: true as const }
+                            : {}),
+                        ...(narrowed.neverNullish &&
+                        variableKind(declaration) === "const"
+                            ? { neverNullish: true as const }
                             : {}),
                         ...(orderedText
                             ? {

@@ -5371,6 +5371,24 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         };
     }
 
+    /**
+     * Whether an expression's value is never `null` or `undefined`: a
+     * number, string or boolean generation knows, or a value carrying that
+     * fact (`neverNullish`). Its evaluation is probed, not kept.
+     */
+    private neverNullishExpression(expression: ts.Expression): boolean {
+        const value = this.context.probeEmission(() =>
+            unlessRefused(() => this.context.compileValue(expression)),
+        );
+        return (
+            value !== undefined &&
+            (value.neverNullish === true ||
+                value.staticNumber !== undefined ||
+                value.staticString !== undefined ||
+                value.staticBoolean !== undefined)
+        );
+    }
+
     public compileNullishCoalesce(
         expression: ts.BinaryExpression,
         sink?: DataType,
@@ -5456,10 +5474,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 type,
                 `(${value.cpp}.is_null() || ${value.cpp}.is_undefined())`,
             );
-            return this.leafValue(
-                `(${value.cpp}.is_null() || ${value.cpp}.is_undefined() ? ${fallback} : ${value.cpp})`,
-                type,
-            );
+            return {
+                ...this.leafValue(
+                    `(${value.cpp}.is_null() || ${value.cpp}.is_undefined() ? ${fallback} : ${value.cpp})`,
+                    type,
+                ),
+                ...(this.neverNullishExpression(expression.right)
+                    ? { neverNullish: true as const }
+                    : {}),
+            };
         }
         if (left.kind === "record" || left.kind === "tuple") {
             return left;
@@ -21202,6 +21225,25 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     "json-null");
         const typeOf = (side: ts.Expression): ts.Type =>
             this.context.checker.getTypeAtLocation(side);
+        // A value no run makes nullish is neither `null` nor `undefined`: a
+        // binding holding one, or a `??` whose fallback is one.
+        const tested = isNullish(right)
+            ? left
+            : isNullish(left)
+              ? right
+              : undefined;
+        if (tested && ts.isIdentifier(tested)) {
+            if (this.context.bindings.lookupOptional(tested)?.neverNullish)
+                return negated ? "true" : "false";
+        } else if (
+            tested &&
+            ts.isBinaryExpression(tested) &&
+            tested.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken &&
+            this.neverNullishExpression(tested.right)
+        ) {
+            this.context.emitDiscardedValue(this.context.compileValue(tested));
+            return negated ? "true" : "false";
+        }
         // A void operand compares as `undefined` once its completion is
         // proven.
         if (
