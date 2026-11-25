@@ -1,6 +1,7 @@
 import {
     booleanValue,
     commonResourceValue,
+    isBooleanValue,
     isStringValue,
     optionalPresentCpp,
     scalarFacts,
@@ -6050,10 +6051,7 @@ export class UserFunctionLowerer {
                 cpp: `bbl::js::number_from_string(${argument.cpp})`,
                 dataType: number,
             };
-        if (
-            argument.kind === "boolean" ||
-            argument.dataType?.kind === "boolean"
-        )
+        if (isBooleanValue(argument))
             return {
                 kind: "number",
                 cpp: `(${argument.cpp} ? 1.0 : 0.0)`,

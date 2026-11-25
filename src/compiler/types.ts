@@ -2402,6 +2402,11 @@ export function isStringValue(value: Value): boolean {
     );
 }
 
+/** A boolean as the program sees it: a boolean value or one stored as boolean data. */
+export function isBooleanValue(value: Value): boolean {
+    return value.kind === "boolean" || value.dataType?.kind === "boolean";
+}
+
 /** A boolean-kinded value; a literal `true`/`false` spelling is static. */
 export function booleanValue(cpp: string): Value {
     const known = knownCondition(cpp);

@@ -74,6 +74,15 @@ interface Held {
 const ABSENT: Held = { constants: [], absent: true, selected: false };
 const NO_OVERRIDES: ReadonlyMap<string, boolean | string> = new Map();
 
+/** One constant, held as it is. */
+function oneRow(base: ts.Expression): Held {
+    return {
+        constants: [{ base, overrides: NO_OVERRIDES }],
+        absent: false,
+        selected: false,
+    };
+}
+
 class HeldConstants {
     /** @unjournaled The nodes being read, for one query. */
     private readonly active = new Set<ts.Node>();
@@ -121,12 +130,7 @@ class HeldConstants {
             const symbol = resolvedSymbol(checker, node);
             const declaration =
                 symbol?.valueDeclaration ?? symbol?.declarations?.[0];
-            if (isModuleConstDeclaration(declaration))
-                return {
-                    constants: [{ base: node, overrides: NO_OVERRIDES }],
-                    absent: false,
-                    selected: false,
-                };
+            if (isModuleConstDeclaration(declaration)) return oneRow(node);
             if (
                 declaration &&
                 ts.isVariableDeclaration(declaration) &&
@@ -227,11 +231,7 @@ class HeldConstants {
         if (first?.kind !== "spread")
             return rest.some((member) => member.kind === "spread")
                 ? undefined
-                : {
-                      constants: [{ base: literal, overrides: NO_OVERRIDES }],
-                      absent: false,
-                      selected: false,
-                  };
+                : oneRow(literal);
         const spread = this.held(first.node.expression, local);
         if (!spread || spread.absent) return undefined;
         let rows = spread.constants;

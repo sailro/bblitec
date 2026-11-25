@@ -6,6 +6,7 @@ import { EmissionMap } from "./emission-transaction.js";
 import {
     declaredInDefaultLibrary,
     declaredInDomLibrary,
+    libraryInterfaceType,
     resolvedSymbol,
 } from "./symbols.js";
 import { nullability, inheritsFrom } from "./type-facts.js";
@@ -45,18 +46,8 @@ export function nativeWindowMember(
 ): ts.Symbol | undefined {
     const direct = resolvedSymbol(checker, node);
     if (declaredInDefaultLibrary(direct)) return direct;
-    const windowSymbol = checker.resolveName(
-        "Window",
-        undefined,
-        ts.SymbolFlags.Type,
-        false,
-    );
-    const member =
-        windowSymbol &&
-        checker.getPropertyOfType(
-            checker.getDeclaredTypeOfSymbol(windowSymbol),
-            node.name.text,
-        );
+    const window = libraryInterfaceType(checker, "Window");
+    const member = window && checker.getPropertyOfType(window, node.name.text);
     return declaredInDefaultLibrary(member) ? member : undefined;
 }
 

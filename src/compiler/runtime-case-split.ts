@@ -26,7 +26,12 @@ import {
 } from "./type-facts.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { isJsonValue } from "./json-bridge.js";
-import { booleanValue, isStringValue, type Value } from "./types.js";
+import {
+    booleanValue,
+    isBooleanValue,
+    isStringValue,
+    type Value,
+} from "./types.js";
 import { isShaderMaterialType } from "./shader-derivations.js";
 import { runtimeShaderVariants } from "./shader-material-views.js";
 import {
@@ -218,93 +223,84 @@ function splitRefusedCall(
     error: unknown,
     hoist: () => void,
 ): Value | undefined {
-    {
-        // Which members of the records its arguments name select, and
-        // which tests stay runtime ones, is asked only of a call that
-        // refused. The tests keep the order the arguments spell them in.
-        const runtime = runtimeSelectors(
-            context,
-            [
-                ...tests.groups(),
-                ...tests.records.flatMap((record) =>
-                    recordMemberSelectors(context, record),
-                ),
-            ].sort((left, right) => left.nodes[0]!.pos - right.nodes[0]!.pos),
+    // Which members of the records its arguments name select, and
+    // which tests stay runtime ones, is asked only of a call that
+    // refused. The tests keep the order the arguments spell them in.
+    const runtime = runtimeSelectors(
+        context,
+        [
+            ...tests.groups(),
+            ...tests.records.flatMap((record) =>
+                recordMemberSelectors(context, record),
+            ),
+        ].sort((left, right) => left.nodes[0]!.pos - right.nodes[0]!.pos),
+    );
+    if (runtime === undefined) throw error;
+    if (runtime.variable.length > MAX_CANDIDATE_SELECTORS)
+        throw beyondSplit(
+            error,
+            runtime.variable,
+            `at most ${MAX_CANDIDATE_SELECTORS} run-time tests; it reads ${runtime.variable.length}`,
         );
-        if (runtime === undefined) throw error;
-        if (runtime.variable.length > MAX_CANDIDATE_SELECTORS)
-            throw beyondSplit(
-                error,
-                runtime.variable,
-                `at most ${MAX_CANDIDATE_SELECTORS} run-time tests; it reads ${runtime.variable.length}`,
-            );
-        const depended = dependedSelectors(context, runtime, compile);
-        if (depended === undefined) throw error;
-        let selectors = depended;
-        for (;;) {
-            const arms = selectors.reduce(
-                (product, selector) => product * selector.outcomes.length,
-                1,
-            );
-            if (arms === 0) {
-                const chosen = selectors;
-                context.sceneManifest.shaderDerivations.refuseWithoutCreations(
-                    () => {
-                        throw beyondSplit(
-                            error,
-                            chosen,
-                            "the shader variants the program creates, and it creates none",
-                        );
-                    },
-                );
-            }
-            if (arms > MAX_ARMS)
-                throw beyondSplit(
-                    error,
-                    selectors,
-                    `run-time tests in at most ${MAX_ARMS} arms; its tests make ${arms}`,
-                );
-            let armRefusal: CompileError | undefined;
-            const chosen = selectors;
-            const split = context.probeEmission(
+    const depended = dependedSelectors(context, runtime, compile);
+    if (depended === undefined) throw error;
+    let selectors = depended;
+    for (;;) {
+        const chosen = selectors;
+        const arms = chosen.reduce(
+            (product, selector) => product * selector.outcomes.length,
+            1,
+        );
+        if (arms === 0) {
+            context.sceneManifest.shaderDerivations.refuseWithoutCreations(
                 () => {
-                    try {
-                        hoist();
-                        return splitCall(
-                            context,
-                            call,
-                            runtime.fixed,
-                            chosen,
-                            compile,
-                        );
-                    } catch (inner) {
-                        // An arm's own storage demand restarts generation
-                        // with it satisfied, after which the split can
-                        // succeed.
-                        if (inner instanceof CompileError) {
-                            armRefusal = inner;
-                            return undefined;
-                        }
-                        throw inner;
-                    }
+                    throw beyondSplit(
+                        error,
+                        chosen,
+                        "the shader variants the program creates, and it creates none",
+                    );
                 },
-                (result) => result !== undefined,
-            );
-            if (split) return split;
-            // A test that matters only inside an arm joins the split.
-            const joined = armDependedSelectors(
-                context,
-                runtime,
-                chosen,
-                compile,
-            );
-            if (joined.length === 0)
-                throw armRefused(error, armRefusal, chosen);
-            selectors = runtime.variable.filter(
-                (candidate) =>
-                    chosen.includes(candidate) || joined.includes(candidate),
             );
         }
+        if (arms > MAX_ARMS)
+            throw beyondSplit(
+                error,
+                chosen,
+                `run-time tests in at most ${MAX_ARMS} arms; its tests make ${arms}`,
+            );
+        let armRefusal: CompileError | undefined;
+        const split = context.probeEmission(
+            () => {
+                try {
+                    hoist();
+                    return splitCall(
+                        context,
+                        call,
+                        runtime.fixed,
+                        chosen,
+                        compile,
+                    );
+                } catch (inner) {
+                    // An arm's own storage demand restarts generation
+                    // with it satisfied, after which the split can
+                    // succeed.
+                    if (inner instanceof CompileError) {
+                        armRefusal = inner;
+                        return undefined;
+                    }
+                    throw inner;
+                }
+            },
+            (result) => result !== undefined,
+        );
+        if (split) return split;
+        // A test that matters only inside an arm joins the split.
+        const joined = armDependedSelectors(context, runtime, chosen, compile);
+        if (joined.length === 0) throw armRefused(error, armRefusal, chosen);
+        selectors = runtime.variable.filter(
+            (candidate) =>
+                chosen.includes(candidate) || joined.includes(candidate),
+        );
     }
 }
 
@@ -917,11 +913,10 @@ function selectorTests(
     onlyHeldText: boolean,
 ): SelectorTests | undefined {
     const calls: ts.CallExpression[] = [];
-    const hoisted = new Set<ts.Expression>();
+    const hoisted = new Set<ts.Node>();
     // `record` keeps the module-level calls an argument makes.
     const effects = (node: ts.Node, record = true): boolean => {
-        if (ts.isFunctionLike(node) || hoisted.has(node as ts.Expression))
-            return false;
+        if (ts.isFunctionLike(node) || hoisted.has(node)) return false;
         if (ts.isCallExpression(node)) {
             if (!moduleLevelCallee(context.checker, node.expression))
                 return true;
@@ -1046,8 +1041,7 @@ function selectorTests(
     };
     const visit = (node: ts.Node, held = false): void => {
         // A hoisted position is one read of its temporary.
-        if (ts.isFunctionLike(node) || hoisted.has(node as ts.Expression))
-            return;
+        if (ts.isFunctionLike(node) || hoisted.has(node)) return;
         // A name whose declaration deferred its selection reads it here.
         const deferred =
             ts.isIdentifier(node) && context.bindings.deferredSelection(node);
@@ -1205,7 +1199,7 @@ function selectorTests(
             return groups;
         },
         records,
-        hoisted: [...hoisted],
+        hoisted: [...hoisted].filter(ts.isExpression),
     };
 }
 
@@ -1592,7 +1586,7 @@ function constantSelector(
         );
         if (
             !stored ||
-            !(literalStorage(stored) || booleanStorage(stored)) ||
+            !(literalStorage(stored) || isBooleanValue(stored)) ||
             outcomes.some((outcome) => text(outcome, key) === undefined)
         )
             continue;
@@ -1624,11 +1618,6 @@ function sameScalars(left: Value, right: Value): boolean {
                 scalar(left, key) === scalar(right, key),
         )
     );
-}
-
-/** A boolean member's storage, which a constant test reads as it is. */
-function booleanStorage(value: Value): boolean {
-    return value.kind === "boolean" || value.dataType?.kind === "boolean";
 }
 
 /** A literal test's storage, which its arms compare: a string or a native enum. */
@@ -1763,7 +1752,7 @@ function splitCall(
                     reads.some(
                         ({ read }) =>
                             !read ||
-                            !(literalStorage(read) || booleanStorage(read)),
+                            !(literalStorage(read) || isBooleanValue(read)),
                     )
                 )
                     return undefined;

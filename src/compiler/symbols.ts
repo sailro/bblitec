@@ -141,6 +141,20 @@ export function pinnedInterfaceType(
     return type;
 }
 
+/** The global type `name` declares (`Window`), or undefined where no declaration names it. */
+export function libraryInterfaceType(
+    checker: ts.TypeChecker,
+    name: string,
+): ts.Type | undefined {
+    const symbol = checker.resolveName(
+        name,
+        undefined,
+        ts.SymbolFlags.Type,
+        false,
+    );
+    return symbol && checker.getDeclaredTypeOfSymbol(symbol);
+}
+
 /** See {@link DeclarationOrigin}. */
 export function declarationOrigin(declaration: ts.Node): DeclarationOrigin {
     const file = declaration.getSourceFile();

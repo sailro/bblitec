@@ -72,7 +72,7 @@ import ts from "typescript";
 import {
     absenceOf,
     knownCondition,
-    provenPresent,
+    valueProvenPresent,
     knownOwnKeys,
     staticBooleanOf,
     staticKeyOf,
@@ -6059,7 +6059,7 @@ class Compiler implements LoweringServices {
                 (lane.length === 0 &&
                     isJsonValue(current) &&
                     (numberTyped ||
-                        (presentNumberTyped && provenPresent(current))))
+                        (presentNumberTyped && valueProvenPresent(current))))
             ) {
                 const known = current.staticNumber;
                 if (

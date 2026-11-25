@@ -10,7 +10,11 @@ import {
     optionalOptionMember,
     optionalOptionValue,
 } from "./option-helpers.js";
-import { declaredInDomLibrary, resolvedSymbol } from "./symbols.js";
+import {
+    declaredInDomLibrary,
+    libraryInterfaceType,
+    resolvedSymbol,
+} from "./symbols.js";
 import { optionalPresentCpp, type Value } from "./types.js";
 import { compileWindowMemberCall, isWindowReceiver } from "./window-members.js";
 import { requireWindowHost } from "./window-events.js";
@@ -59,18 +63,8 @@ function idleWindowFunctionSymbol(
         !declaredInDomLibrary(symbol)
     )
         return undefined;
-    const window = checker.resolveName(
-        "Window",
-        undefined,
-        ts.SymbolFlags.Type,
-        false,
-    );
-    return window
-        ? checker.getPropertyOfType(
-              checker.getDeclaredTypeOfSymbol(window),
-              symbol.name,
-          )
-        : undefined;
+    const window = libraryInterfaceType(checker, "Window");
+    return window && checker.getPropertyOfType(window, symbol.name);
 }
 
 /** The `timeout` member of IdleRequestOptions, as `double` milliseconds (0 when absent). */

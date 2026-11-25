@@ -69,6 +69,7 @@ import {
     declarationOrigin,
     GLOBAL_OBJECT_NAMES,
     isTopLevelWindow,
+    libraryInterfaceType,
 } from "./symbols.js";
 import { searchParamsMutators } from "./search-params.js";
 import { foldMathCall, mathMemberCall } from "./math-intrinsics.js";
@@ -2571,19 +2572,9 @@ export class BrowserErasure {
         global: ts.Symbol | undefined;
     } {
         const checker = this.context.checker;
-        const window = checker.resolveName(
-            "Window",
-            undefined,
-            ts.SymbolFlags.Type,
-            false,
-        );
+        const window = libraryInterfaceType(checker, "Window");
         return {
-            member:
-                window &&
-                checker.getPropertyOfType(
-                    checker.getDeclaredTypeOfSymbol(window),
-                    name,
-                ),
+            member: window && checker.getPropertyOfType(window, name),
             global: checker.resolveName(
                 name,
                 undefined,
@@ -2672,21 +2663,19 @@ export class BrowserErasure {
 
     /** The types the global object is declared with: `Window` and `typeof globalThis`. */
     private globalTypes(): readonly ts.Type[] {
+        if (this.globalObjectTypes) return this.globalObjectTypes;
         const checker = this.context.checker;
-        return (this.globalObjectTypes ??= (
-            [
-                ["Window", ts.SymbolFlags.Type],
-                ["globalThis", ts.SymbolFlags.Value],
-            ] as const
-        ).flatMap(([name, meaning]) => {
-            const symbol = checker.resolveName(name, undefined, meaning, false);
-            if (!symbol) return [];
-            return [
-                meaning === ts.SymbolFlags.Type
-                    ? checker.getDeclaredTypeOfSymbol(symbol)
-                    : checker.getTypeOfSymbol(symbol),
-            ];
-        }));
+        const window = libraryInterfaceType(checker, "Window");
+        const global = checker.resolveName(
+            "globalThis",
+            undefined,
+            ts.SymbolFlags.Value,
+            false,
+        );
+        return (this.globalObjectTypes = [
+            ...(window ? [window] : []),
+            ...(global ? [checker.getTypeOfSymbol(global)] : []),
+        ]);
     }
 
     /** @unjournaled A fact of the checked program, kept across replays. */

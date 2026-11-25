@@ -26,6 +26,7 @@ import { undeclaredMembersObservable } from "./record-observations.js";
 import type { LoweringServices } from "./lowering-services.js";
 import {
     booleanValue,
+    isBooleanValue,
     scalarFacts,
     staticStringValue,
     type Value,
@@ -576,8 +577,6 @@ function compileObjectIs(
         value.kind === "number" || value.dataType?.kind === "number";
     const textual = (value: Value): boolean =>
         value.kind === "string" || value.dataType?.kind === "string";
-    const boolean = (value: Value): boolean =>
-        value.kind === "boolean" || value.dataType?.kind === "boolean";
     if (numeric(left) && numeric(right)) {
         context.reachJsData();
         return booleanValue(`bbl::js::same_value(${left.cpp}, ${right.cpp})`);
@@ -587,7 +586,7 @@ function compileObjectIs(
             `(${stringCpp(context, left, argumentAt(call, 0))} == ${stringCpp(context, right, argumentAt(call, 1))})`,
         );
     }
-    if (boolean(left) && boolean(right)) {
+    if (isBooleanValue(left) && isBooleanValue(right)) {
         return booleanValue(`(${left.cpp} == ${right.cpp})`);
     }
     // JsonValue already retains erased object identity and distinguishes
@@ -600,7 +599,7 @@ function compileObjectIs(
             return `bbl::js::JsonValue::from_number(${value.cpp})`;
         if (textual(value))
             return `bbl::js::JsonValue::from_string(${stringCpp(context, value, node)})`;
-        if (boolean(value))
+        if (isBooleanValue(value))
             return `bbl::js::JsonValue::from_boolean(${value.cpp})`;
         // A nullable scalar (`number | null`) of one absent value is its
         // present value's, or that absent value.

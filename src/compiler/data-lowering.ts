@@ -48,10 +48,12 @@ import { refuseUnreadable } from "./unreadable-values.js";
 import {
     absenceOf,
     absenceOfNull,
+    heldHandle,
     holdsUnreadable,
     knownAbsent,
     knownCondition,
     knownOwnKeys,
+    neverNullish,
     staticKeyOf,
     undefinedValue,
     valueDataType,
@@ -85,6 +87,7 @@ import {
     libraryStaticMember,
     arrayMemberName,
     isSymbolPropertyKey,
+    libraryInterfaceType,
 } from "./symbols.js";
 import {
     compileCollectionIterable,
@@ -365,7 +368,6 @@ import {
 } from "./class-members.js";
 import { isPlainJsonRecord } from "./json-record-views.js";
 
-/** A source a struct local cannot hold in place: JSON, or a native object. */
 /** The DOM interface of each native platform object value. */
 const platformObjectInterfaces: Partial<Record<Value["kind"], string>> = {
     worker: "Worker",
@@ -374,16 +376,7 @@ const platformObjectInterfaces: Partial<Record<Value["kind"], string>> = {
     "offscreen-canvas": "OffscreenCanvas",
 };
 
-/** The native handle a value holds: its present handle storage, or its handle kind. */
-function heldNativeHandle(value: Value): DataType<"handle"> | undefined {
-    const stored = presentDataType(value.dataType);
-    return stored?.kind === "handle"
-        ? stored
-        : isHandleKind(value.kind)
-          ? { kind: "handle", handle: value.kind }
-          : undefined;
-}
-
+/** A source a struct local cannot hold in place: JSON, or a native object. */
 function outsideStructStorage(value: Value | undefined): boolean {
     return (
         isJsonValue(value) ||
@@ -5371,22 +5364,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         };
     }
 
-    /**
-     * Whether an expression's value is never `null` or `undefined`: a
-     * number, string or boolean generation knows, or a value carrying that
-     * fact (`neverNullish`). Its evaluation is probed, not kept.
-     */
+    /** Whether an expression's value is never nullish (`neverNullish`); its evaluation is probed, not kept. */
     private neverNullishExpression(expression: ts.Expression): boolean {
         const value = this.context.probeEmission(() =>
             unlessRefused(() => this.context.compileValue(expression)),
         );
-        return (
-            value !== undefined &&
-            (value.neverNullish === true ||
-                value.staticNumber !== undefined ||
-                value.staticString !== undefined ||
-                value.staticBoolean !== undefined)
-        );
+        return value !== undefined && neverNullish(value);
     }
 
     public compileNullishCoalesce(
@@ -10002,7 +9985,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             !present.ownedEngine &&
             isEngineScopedHandleKind(present.handle)
         )
-            return this.compileEngineHandleSearch(call, owner, element, method);
+            return this.compileEngineHandleSearch(
+                call,
+                owner,
+                element,
+                present,
+                method,
+            );
         const unownedHandle = (type: DataType): boolean =>
             type.kind === "handle"
                 ? !type.ownedEngine && isEngineScopedHandleKind(type.handle)
@@ -10178,7 +10167,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         });
     }
 
-    /** A raw homogeneous resource array can compare only within its proved engine. */
     /**
      * A search of an array of engine-less handles, present or optional: the
      * needle is found only among handles of the engine the array's are
@@ -10188,14 +10176,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         call: ts.CallExpression,
         owner: Value,
         element: DataType,
+        handle: DataType<"handle">,
         method: "indexOf" | "includes" | "lastIndexOf",
     ): Value {
-        const handle = presentDataType(element);
-        if (handle?.kind !== "handle")
-            return this.context.fail(
-                call,
-                "Array resource identity requires represented engine owners.",
-            );
         const optional = element.kind === "optional";
         const facts = owner.staticElementsOwner ?? owner;
         const receiver = this.context.bindings.pinValueToTemporary(
@@ -13439,7 +13422,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const written =
             presentDataType(typed)?.kind === "handle"
                 ? typed
-                : ((value && heldNativeHandle(value)) ?? typed);
+                : ((value && heldHandle(value)) ?? typed);
         // A local array of erased elements holds the handles written to it
         // as a dynamic binding holds its elements (its array or source
         // storage refines to them).
@@ -13980,7 +13963,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
 
     /** An erased local retains a represented native owner in its existing handle storage. */
     private requireNativeHandleBinding(value: Value, node: ts.Node): void {
-        const nativeHandle = heldNativeHandle(value);
+        const nativeHandle = heldHandle(value);
         if (!nativeHandle) return;
         const declaration = this.assignedBinding(node);
         if (
@@ -17065,21 +17048,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     `Membership of a ${platformInterface} takes a generation-known string key.`,
                 );
             if (operator !== "in") return "false";
-            const symbol = this.context.checker.resolveName(
+            const type = libraryInterfaceType(
+                this.context.checker,
                 platformInterface,
-                undefined,
-                ts.SymbolFlags.Type,
-                false,
             );
-            if (!symbol)
+            if (!type)
                 return this.context.fail(
                     ownerNode,
                     `The ${platformInterface} interface has no library declaration.`,
                 );
             return String(
-                this.context.checker
-                    .getDeclaredTypeOfSymbol(symbol)
-                    .getProperty(key.staticString) !== undefined ||
+                type.getProperty(key.staticString) !== undefined ||
                     Object.hasOwn(Object.prototype, key.staticString),
             );
         }
@@ -18387,8 +18366,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 )
             )
                 continue;
-            const owner = this.dataTypeAt(write.owner);
-            const record = owner?.kind === "optional" ? owner.inner : owner;
+            const record = presentDataType(this.dataTypeAt(write.owner));
             if (record?.kind === "struct")
                 this.context.dataTypes.noteUnplacedKeyWrite(
                     record.name,
@@ -21225,15 +21203,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     "json-null");
         const typeOf = (side: ts.Expression): ts.Type =>
             this.context.checker.getTypeAtLocation(side);
-        // A value no run makes nullish is neither `null` nor `undefined`: a
-        // binding holding one, or a `??` whose fallback is one.
+        // A value never nullish (`neverNullish`) is neither `null` nor
+        // `undefined`: a binding holding one, or a `??` whose fallback is one.
         const tested = isNullish(right)
             ? left
             : isNullish(left)
               ? right
               : undefined;
         if (tested && ts.isIdentifier(tested)) {
-            if (this.context.bindings.lookupOptional(tested)?.neverNullish)
+            const binding = this.context.bindings.lookupOptional(tested);
+            if (binding && neverNullish(binding))
                 return negated ? "true" : "false";
         } else if (
             tested &&

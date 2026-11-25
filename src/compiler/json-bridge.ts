@@ -30,7 +30,12 @@ import {
 } from "./type-facts.js";
 
 import type { DataType, DataTypeRegistry } from "./data-types.js";
-import { optionalPresentCpp, optionalValueCpp, type Value } from "./types.js";
+import {
+    isBooleanValue,
+    optionalPresentCpp,
+    optionalValueCpp,
+    type Value,
+} from "./types.js";
 
 /** The narrow slice of the expression context this bridge needs. */
 interface JsonBridgeContext extends Pick<
@@ -125,8 +130,7 @@ export function compileJsonPropertyKey(
         return value.cpp;
     if (value.kind === "number" || value.dataType?.kind === "number")
         return `bbl::js::number_to_string(${context.castNumber(value, "double")})`;
-    if (value.kind === "boolean" || value.dataType?.kind === "boolean")
-        return `(${value.cpp} ? "true" : "false")`;
+    if (isBooleanValue(value)) return `(${value.cpp} ? "true" : "false")`;
     if (value.kind === "json-null")
         return context.cppString(absenceOfNull(value));
     if (isJsonValue(value)) return `${value.cpp}.to_string()`;
@@ -688,7 +692,7 @@ export function compileJsonStrictComparison(
     if (value.kind === "number" || value.dataType?.kind === "number") {
         return `${documentCpp}.strict_equals(${context.compileNumber(other, "double")})`;
     }
-    if (value.kind === "boolean" || value.dataType?.kind === "boolean") {
+    if (isBooleanValue(value)) {
         return `${documentCpp}.strict_equals(${context.conditions.compileCondition(other)})`;
     }
     if (value.kind === "string" || value.dataType?.kind === "string") {
