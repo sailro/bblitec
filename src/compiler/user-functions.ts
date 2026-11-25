@@ -89,7 +89,10 @@ import {
 } from "./data-types.js";
 import { holdsEngineObject } from "./document-read-closure.js";
 import type { Value } from "./types.js";
-import { isEngineScopedHandleKind } from "./data-types/handles.js";
+import {
+    isEngineScopedHandleKind,
+    isRuntimeIdentityHandleKind,
+} from "./data-types/handles.js";
 import { dataTypeKey } from "./data-types/operations.js";
 import { nativeStructuralViewType } from "./native-owner-carrier.js";
 import {
@@ -4598,11 +4601,24 @@ export class UserFunctionLowerer {
                             kind: "handle",
                             handle: "scene-node",
                         } as const;
-                    // A handle storing its engine, or naming a run-time
-                    // identity, is one runtime value of every frame.
-                    return mapped &&
-                        mapped.kind !== "function" &&
-                        !context.dataTypes.carriesEngineBoundHandle(mapped)
+                    // A recursion hands its parameter other values at run
+                    // time: a handle storing its engine, or naming a run-time
+                    // identity, is one runtime value of every frame. A body
+                    // no call re-enters specializes on each caller's handles
+                    // (a material an API reads at generation), run-time
+                    // identities aside.
+                    const inner =
+                        mapped?.kind === "optional" ? mapped.inner : mapped;
+                    const compileTime =
+                        mapped !== undefined &&
+                        (recursive
+                            ? context.dataTypes.carriesEngineBoundHandle(mapped)
+                            : context.dataTypes.carriesHandle(mapped) &&
+                              !(
+                                  inner?.kind === "handle" &&
+                                  isRuntimeIdentityHandleKind(inner.handle)
+                              ));
+                    return mapped && mapped.kind !== "function" && !compileTime
                         ? mapped
                         : undefined;
                 },
