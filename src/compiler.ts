@@ -6460,25 +6460,20 @@ class Compiler implements LoweringServices {
             symbol,
         );
         // A write in a loop may come before the read in a later round, and
-        // one in another function whenever that function runs.
-        for (const write of writes) {
-            const where =
-                ts.findAncestor(write.node, ts.isFunctionLike) !== unit
-                    ? "in another function"
-                    : ts.findAncestor(
-                            write.node,
-                            (node) =>
-                                node === unit ||
-                                ts.isIterationStatement(node, false),
-                        ) !== unit
-                      ? "in a loop"
-                      : undefined;
-            if (where)
-                this.fail(
-                    write.node,
-                    `The text '${read.text}' holds where it is read as static text is written ${where}, which generation does not replay.`,
-                );
-        }
+        // one in another function whenever that function runs: the text is
+        // the run's.
+        if (
+            writes.some(
+                (write) =>
+                    ts.findAncestor(
+                        write.node,
+                        (node) =>
+                            ts.isFunctionLike(node) ||
+                            ts.isIterationStatement(node, false),
+                    ) !== unit,
+            )
+        )
+            return undefined;
         let held = text(declaration.initializer);
         for (const write of [...writes]
             .filter((site) => site.node.getEnd() <= read.getStart())
