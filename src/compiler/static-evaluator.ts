@@ -75,6 +75,7 @@ import {
     libraryGlobal,
     type LibraryGlobal,
     calledDeclaration,
+    calledFunction,
     namedMember,
     type MemberReader,
     libraryStaticMember,
@@ -98,7 +99,6 @@ import {
 } from "./option-helpers.js";
 import {
     aliasedMutationScan,
-    resolveFunctionDeclaration,
     type AliasedMutationScan,
 } from "./user-functions.js";
 import { heldReferenceBases, keptArguments } from "./kept-values.js";
@@ -110,6 +110,7 @@ import {
     holdsOnly,
     isAnyTyped,
     isNullable,
+    nullability,
     stringPlusOperands,
     typeCanCarryReference,
     valueKindOf,
@@ -132,7 +133,6 @@ import {
     argumentAt,
     isMemberAccess,
     referenceBases,
-    soleReturnedExpression,
     isTypeAssertion,
     wrappersUnder,
     writeSites,
@@ -144,6 +144,8 @@ import {
     regularExpressionParts,
     jsonScalarLiteral,
     notJson,
+    variableKind,
+    type FunctionWithBody,
 } from "./syntax.js";
 import {
     JS_BITWISE_FUNCTIONS,
@@ -159,6 +161,18 @@ import {
     mathMemberCall,
 } from "./math-intrinsics.js";
 import { knownAbsent, knownCondition } from "./values/model.js";
+
+/**
+ * What a local function's call returns, read at generation without running
+ * it (`StaticEvaluator.returnedExpression`): the returned expression, read
+ * `within` the scope binding the callee's parameters, and the callee's own
+ * `const` names with the initializers that stand for them.
+ */
+export interface ReturnedExpression {
+    readonly returned: ts.Expression;
+    readonly within: <T>(read: () => T) => T;
+    readonly aliases: ReadonlyMap<ts.Symbol, ts.Expression>;
+}
 
 /** Whether a symbol names a module constant (`isModuleConstDeclaration`). */
 function isModuleConstant(symbol: ts.Symbol): boolean {
@@ -477,6 +491,15 @@ export class StaticEvaluator {
         ) => Value | undefined,
         /** The storages already tagged to tell `null` from `undefined`. */
         private readonly absenceTags: ReadonlySet<ts.Declaration>,
+        /**
+         * `Compiler.bindReturnedParameters`: a scope binding `callee`'s
+         * parameters to `values`, `call`'s arguments, for reads within it.
+         */
+        private readonly bindParameters: (
+            callee: FunctionWithBody,
+            call: ts.CallExpression,
+            values: readonly Value[],
+        ) => ReturnedExpression["within"],
     ) {}
 
     /**
@@ -2035,9 +2058,103 @@ export class StaticEvaluator {
     }
 
     /**
-     * The literal a module-scope function returns directly. Read-only scalar
-     * arguments substitute their known values; other entries retain their
-     * source bindings and are evaluated by the consuming native lowering.
+     * What a call of a local function generation cannot run returns, read
+     * without running it: `values` evaluates its arguments once (undefined
+     * declines them), and the body is read `within` a scope binding the
+     * callee's parameters to those values. Its body is `return`s, `if`
+     * statements whose pure conditions generation knows over those bindings
+     * (a known-false one skipped, a known-true one entered), and `const`
+     * declarations, whose initializers stand for their names (`aliases`). A
+     * parameter the callee writes, a rest parameter, a default an argument
+     * may leave in use, or a spread argument keeps the call unspelled.
+     */
+    public returnedExpression(
+        call: ts.CallExpression,
+        values: (callee: FunctionWithBody) => readonly Value[] | undefined,
+    ): ReturnedExpression | undefined {
+        if (call.questionDotToken) return undefined;
+        const callee = calledFunction(this.checker, call);
+        const body = callee?.body;
+        if (
+            !callee ||
+            !body ||
+            callee.getSourceFile().isDeclarationFile ||
+            call.arguments.length !== callee.parameters.length ||
+            call.arguments.some(ts.isSpreadElement) ||
+            !callee.parameters.every(
+                (parameter, index) =>
+                    ts.isIdentifier(parameter.name) &&
+                    !parameter.dotDotDotToken &&
+                    (!parameter.initializer ||
+                        !nullability(
+                            this.checker.getTypeAtLocation(
+                                call.arguments[index]!,
+                            ),
+                        ).undefined) &&
+                    parameterIsReadOnly(this.checker, callee, parameter.name),
+            )
+        )
+            return undefined;
+        const bound = values(callee);
+        if (!bound) return undefined;
+        const within = this.bindParameters(callee, call, bound);
+        if (!ts.isBlock(body))
+            return { returned: body, within, aliases: new Map() };
+        const aliases = new Map<ts.Symbol, ts.Expression>();
+        // The expression the statements return, or "none" when they fall
+        // through; undefined where generation cannot tell.
+        const returned = (
+            statements: readonly ts.Statement[],
+        ): ts.Expression | "none" | undefined => {
+            for (const statement of statements) {
+                if (ts.isReturnStatement(statement))
+                    return statement.expression ?? undefined;
+                if (ts.isVariableStatement(statement)) {
+                    if (variableKind(statement.declarationList) !== "const")
+                        return undefined;
+                    for (const declaration of statement.declarationList
+                        .declarations) {
+                        const symbol = ts.isIdentifier(declaration.name)
+                            ? this.resolveSymbol(declaration.name)
+                            : undefined;
+                        if (!symbol || !declaration.initializer)
+                            return undefined;
+                        aliases.set(symbol, declaration.initializer);
+                    }
+                    continue;
+                }
+                if (
+                    !ts.isIfStatement(statement) ||
+                    !this.evaluationOrder.isPureExpression(statement.expression)
+                )
+                    return undefined;
+                const known = within(
+                    () => this.resolveValue(statement.expression).staticBoolean,
+                );
+                if (known === undefined) return undefined;
+                const branch = known
+                    ? statement.thenStatement
+                    : statement.elseStatement;
+                if (!branch) continue;
+                const inner = returned(
+                    ts.isBlock(branch) ? branch.statements : [branch],
+                );
+                if (inner !== "none") return inner;
+            }
+            return "none";
+        };
+        const found = returned(body.statements);
+        return found === undefined || found === "none"
+            ? undefined
+            : { returned: found, within, aliases };
+    }
+
+    /**
+     * The literal a call of a module-scope function returns
+     * (`returnedExpression`), as syntax standing for the call: read-only
+     * scalar arguments substitute their known values and the callee's own
+     * `const` names their initializers; other entries retain their source
+     * bindings and are evaluated by the consuming native lowering.
      *
      * The returned expression replaces the call at the use site, which is
      * exactly what the call evaluates: no remaining parameters or locals, and
@@ -2051,76 +2168,64 @@ export class StaticEvaluator {
         resolving: ReadonlySet<ts.Symbol>,
         proof?: InitializerProof,
     ): ts.Expression | undefined {
-        if (call.questionDotToken) {
-            return undefined;
-        }
         const callee = this.unwrap(call.expression);
         const symbol = ts.isIdentifier(callee)
             ? this.resolveSymbol(callee)
             : undefined;
-        if (!ts.isIdentifier(callee) || !symbol || resolving.has(symbol)) {
-            return undefined;
-        }
-        const declaration = resolveFunctionDeclaration(
-            this.checker,
-            callee,
-            (node, message) => this.fail(node, message),
-        );
-        if (
-            !declaration?.body ||
-            declaration.parameters.length !== call.arguments.length ||
-            functionKind(declaration) !== "plain" ||
-            declaration.getSourceFile().isDeclarationFile ||
-            !isModuleScopeFunction(declaration)
-        ) {
-            return undefined;
-        }
-        const returned = soleReturnedExpression(declaration.body);
-        if (!returned || readsInvocationContext(returned)) {
-            return undefined;
-        }
+        if (!symbol || resolving.has(symbol)) return undefined;
         const substitutions = new Map<ts.Symbol, ts.Expression>();
-        for (const [index, parameter] of declaration.parameters.entries()) {
-            const argument = call.arguments[index]!;
+        const site = this.returnedExpression(call, (declaration) => {
             if (
-                !ts.isIdentifier(parameter.name) ||
-                parameter.initializer ||
-                parameter.dotDotDotToken ||
-                ts.isSpreadElement(argument) ||
-                !parameterIsReadOnly(
-                    this.checker,
-                    declaration,
-                    parameter.name,
-                ) ||
-                this.evaluationOrder.writesStorage(argument) ||
-                this.evaluationOrder.hasModuleEffects(argument)
+                functionKind(declaration) !== "plain" ||
+                !isModuleScopeFunction(declaration)
             )
                 return undefined;
-            const value = this.resolveValue(argument);
-            const scalar = value.parameterBinding
-                ? undefined
-                : (value.staticString ??
-                  value.staticBoolean ??
-                  value.staticNumber);
-            const binding = this.resolveSymbol(parameter.name);
-            if (
-                !binding ||
-                scalar === undefined ||
-                (typeof scalar === "number" && !Number.isFinite(scalar))
-            )
-                return undefined;
-            const file = ts.createSourceFile(
-                `${argument.getSourceFile().fileName}.scalar-literal.ts`,
-                `(${Object.is(scalar, -0) ? "-0" : JSON.stringify(scalar)});`,
-                ts.ScriptTarget.ESNext,
-                true,
-            );
-            const statement = file.statements[0];
-            if (!statement || !ts.isExpressionStatement(statement))
-                return undefined;
-            substitutions.set(binding, this.unwrap(statement.expression));
-        }
-        const transformed = ts.transform(returned, [
+            const values: Value[] = [];
+            for (const [index, parameter] of declaration.parameters.entries()) {
+                const argument = call.arguments[index]!;
+                if (
+                    this.evaluationOrder.writesStorage(argument) ||
+                    this.evaluationOrder.hasModuleEffects(argument)
+                )
+                    return undefined;
+                const value = this.resolveValue(argument);
+                const scalar = value.parameterBinding
+                    ? undefined
+                    : (value.staticString ??
+                      value.staticBoolean ??
+                      value.staticNumber);
+                const binding = this.resolveSymbol(
+                    parameter.name as ts.Identifier,
+                );
+                if (
+                    !binding ||
+                    scalar === undefined ||
+                    (typeof scalar === "number" && !Number.isFinite(scalar))
+                )
+                    return undefined;
+                const file = ts.createSourceFile(
+                    `${argument.getSourceFile().fileName}.scalar-literal.ts`,
+                    `(${Object.is(scalar, -0) ? "-0" : JSON.stringify(scalar)});`,
+                    ts.ScriptTarget.ESNext,
+                    true,
+                );
+                const statement = file.statements[0];
+                if (!statement || !ts.isExpressionStatement(statement))
+                    return undefined;
+                substitutions.set(binding, this.unwrap(statement.expression));
+                values.push(value);
+            }
+            return values;
+        });
+        if (
+            !site ||
+            readsInvocationContext(site.returned) ||
+            [...site.aliases.values()].some(readsInvocationContext)
+        )
+            return undefined;
+        for (const [alias, initializer] of site.aliases)
+            substitutions.set(alias, initializer);
+        const transformed = ts.transform(site.returned, [
             (context) => {
                 const visit: ts.Visitor = (node) => {
                     if (ts.isShorthandPropertyAssignment(node)) {
@@ -2130,7 +2235,11 @@ export class StaticEvaluator {
                             const property =
                                 ts.factory.createPropertyAssignment(
                                     node.name,
-                                    value,
+                                    ts.visitNode(
+                                        value,
+                                        visit,
+                                        ts.isExpression,
+                                    )!,
                                 );
                             ts.setOriginalNode(property, node);
                             writable(property).parent = node.parent;
@@ -2140,7 +2249,9 @@ export class StaticEvaluator {
                     if (ts.isIdentifier(node)) {
                         const binding = this.resolveSymbol(node);
                         const value = binding && substitutions.get(binding);
-                        if (value) return value;
+                        // A `const` initializer reads the parameters and
+                        // earlier names it stands over.
+                        if (value) return ts.visitNode(value, visit);
                     }
                     const updated = ts.visitEachChild(node, visit, context);
                     if (updated !== node)

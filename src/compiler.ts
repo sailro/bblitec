@@ -318,12 +318,12 @@ import {
     isVoid,
     unionMembers,
     valueKindOf,
-    nullability,
     typeAdmitsData,
 } from "./compiler/type-facts.js";
 import {
     retainedStaticText,
     StaticEvaluator,
+    type ReturnedExpression,
 } from "./compiler/static-evaluator.js";
 import { StatementLowerer } from "./compiler/statements.js";
 import { HandleCollections } from "./compiler/handle-collections.js";
@@ -380,6 +380,7 @@ import {
     unwrapExpression,
     notJson,
     type SupportedFunction,
+    type FunctionWithBody,
 } from "./compiler/syntax.js";
 import {
     CompileError,
@@ -1085,18 +1086,6 @@ interface ShaderSourceHole {
 type UnreadLanes = ReadonlyMap<number, ReadonlyArray<readonly string[]>>;
 
 /**
- * What a local function's call returns, read at generation without running
- * it (`Compiler.returnedExpression`): the returned expression, read
- * `within` the scope binding the callee's parameters, and the callee's own
- * `const` names with the initializers that stand for them.
- */
-interface ReturnedExpression {
-    readonly returned: ts.Expression;
-    readonly within: <T>(read: () => T) => T;
-    readonly aliases: ReadonlyMap<ts.Symbol, ts.Expression>;
-}
-
-/**
  * One fold of a shader stage's text (`compileShaderSource`): which run, the
  * holes found so far, and whether a builder ran over an argument with holes.
  */
@@ -1546,6 +1535,8 @@ class Compiler implements LoweringServices {
                 ),
             (value, name, node) => this.structNumber(value, name, node),
             this.absenceTags,
+            (callee, call, values) =>
+                this.bindReturnedParameters(callee, call, values),
         );
     }
 
@@ -4477,58 +4468,39 @@ class Compiler implements LoweringServices {
     }
 
     /**
-     * What a call of a local function generation cannot run returns, read
-     * without running it: its arguments are evaluated once, here, and read
-     * `within` a scope binding the callee's parameters to them. Its body is
-     * `return`s, `if` statements whose pure conditions generation knows
-     * over those bindings (a known-false one skipped, a known-true one entered),
-     * and `const` declarations, whose initializers stand for their names
-     * (`aliases`). A parameter the callee writes, a rest parameter, a
-     * default an argument may leave in use, or a spread argument keeps the
-     * call unspelled.
+     * What a call of a local function generation cannot run returns
+     * (`StaticEvaluator.returnedExpression`), each argument evaluated once
+     * here: a list generation reads as one, otherwise its value.
      */
     private returnedExpression(
         call: ts.CallExpression,
     ): ReturnedExpression | undefined {
-        if (call.questionDotToken) return undefined;
-        const callee = calledFunction(this.checker, call);
-        const body = callee?.body;
-        if (
-            !callee ||
-            !body ||
-            callee.getSourceFile().isDeclarationFile ||
-            call.arguments.length !== callee.parameters.length ||
-            call.arguments.some(ts.isSpreadElement) ||
-            !callee.parameters.every(
-                (parameter, index) =>
-                    ts.isIdentifier(parameter.name) &&
-                    !parameter.dotDotDotToken &&
-                    (!parameter.initializer ||
-                        !nullability(
-                            this.checker.getTypeAtLocation(
-                                call.arguments[index]!,
+        return this.evaluator.returnedExpression(call, () =>
+            call.arguments.map((argument) =>
+                this.bindings.pinValueToTemporary(
+                    this.probeEmission(() =>
+                        unlessRefused(() => ({
+                            kind: "tuple" as const,
+                            cpp: "",
+                            tupleElements: this.staticListItems(argument).map(
+                                (item) => this.staticListItemValue(item),
                             ),
-                        ).undefined) &&
-                    parameterIsReadOnly(this.checker, callee, parameter.name),
-            )
-        )
-            return undefined;
-        const values = call.arguments.map((argument) =>
-            this.bindings.pinValueToTemporary(
-                this.probeEmission(() =>
-                    unlessRefused(() => ({
-                        kind: "tuple" as const,
-                        cpp: "",
-                        tupleElements: this.staticListItems(argument).map(
-                            (item) => this.staticListItemValue(item),
-                        ),
-                    })),
-                ) ?? this.compileValue(argument),
-                "list_argument",
-                argument,
+                        })),
+                    ) ?? this.compileValue(argument),
+                    "list_argument",
+                    argument,
+                ),
             ),
         );
-        const within = <T>(read: () => T): T => {
+    }
+
+    /** A scope binding `callee`'s parameters to `values`, `call`'s arguments, for reads `within` it. */
+    private bindReturnedParameters(
+        callee: FunctionWithBody,
+        call: ts.CallExpression,
+        values: readonly Value[],
+    ): ReturnedExpression["within"] {
+        return <T>(read: () => T): T => {
             this.bindings.pushScope(this.allocateUserFunctionPrefix());
             try {
                 callee.parameters.forEach((parameter, index) =>
@@ -4543,55 +4515,6 @@ class Compiler implements LoweringServices {
                 this.bindings.popScope();
             }
         };
-        if (!ts.isBlock(body))
-            return { returned: body, within, aliases: new Map() };
-        const aliases = new Map<ts.Symbol, ts.Expression>();
-        // The expression the statements return, or "none" when they fall
-        // through; undefined where generation cannot tell.
-        const returned = (
-            statements: readonly ts.Statement[],
-        ): ts.Expression | "none" | undefined => {
-            for (const statement of statements) {
-                if (ts.isReturnStatement(statement))
-                    return statement.expression ?? undefined;
-                if (ts.isVariableStatement(statement)) {
-                    if (variableKind(statement.declarationList) !== "const")
-                        return undefined;
-                    for (const declaration of statement.declarationList
-                        .declarations) {
-                        const symbol = ts.isIdentifier(declaration.name)
-                            ? this.symbols.valueSymbol(declaration.name)
-                            : undefined;
-                        if (!symbol || !declaration.initializer)
-                            return undefined;
-                        aliases.set(symbol, declaration.initializer);
-                    }
-                    continue;
-                }
-                if (
-                    !ts.isIfStatement(statement) ||
-                    !this.evaluationOrder.isPureExpression(statement.expression)
-                )
-                    return undefined;
-                const known = within(
-                    () => this.compileValue(statement.expression).staticBoolean,
-                );
-                if (known === undefined) return undefined;
-                const branch = known
-                    ? statement.thenStatement
-                    : statement.elseStatement;
-                if (!branch) continue;
-                const inner = returned(
-                    ts.isBlock(branch) ? branch.statements : [branch],
-                );
-                if (inner !== "none") return inner;
-            }
-            return "none";
-        };
-        const found = returned(body.statements);
-        return found === undefined || found === "none"
-            ? undefined
-            : { returned: found, within, aliases };
     }
 
     /** The strings a list generation cannot spell holds (`staticListItems`). */
