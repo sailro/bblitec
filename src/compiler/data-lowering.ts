@@ -5365,10 +5365,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
 
     /** Whether an expression's value is never nullish (`neverNullish`); its evaluation is probed, not kept. */
     private neverNullishExpression(expression: ts.Expression): boolean {
-        const value = this.context.probeEmission(() =>
-            unlessRefused(() => this.context.compileValue(expression)),
+        return this.context.probeEmission(
+            () => {
+                const value = unlessRefused(() =>
+                    this.context.compileValue(expression),
+                );
+                return value !== undefined && neverNullish(value);
+            },
+            () => false,
         );
-        return value !== undefined && neverNullish(value);
     }
 
     public compileNullishCoalesce(
@@ -21392,7 +21397,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             });
             if (known !== undefined) return known;
         }
-        if (loose && !isNullish(left) && !isNullish(right)) return undefined;
+        if (loose && !isNullish(left) && !isNullish(right)) {
+            // Two operands each `null` or `undefined` are loosely equal
+            // (IsLooseEqual, steps 2 and 3), once both are evaluated.
+            const nullish = (side: ts.Expression): boolean =>
+                holdsOnly(typeOf(side), ["null", "undefined"]);
+            if (!nullish(left) || !nullish(right)) return undefined;
+            this.context.emitDiscardedValue(this.context.compileValue(left));
+            this.context.emitDiscardedValue(this.context.compileValue(right));
+            return negated ? "false" : "true";
+        }
         if (
             !loose &&
             (ts.isCallExpression(left) || ts.isCallExpression(right))

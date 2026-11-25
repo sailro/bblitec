@@ -24,6 +24,7 @@ import {
     absenceKind,
     holdsOnly,
     isVoid,
+    nullability,
     PRIMITIVE_KINDS,
     signatureParameterTypes,
     type Nullability,
@@ -302,6 +303,17 @@ function compileStringify(
         dataType,
         argument,
     );
+    // A document value the program types as possibly undefined serializes
+    // to `undefined` where it is (`bbl::js::json_stringify_value`).
+    if (
+        isJsonValue(represented) &&
+        nullability(context.checker.getTypeAtLocation(argument)).undefined
+    )
+        return jsonValue(
+            indent > 0
+                ? `bbl::js::json_stringify_value(${value}, ${indent})`
+                : `bbl::js::json_stringify_value(${value})`,
+        );
     // A closed Record is written by its own helper, keys in its union's order.
     const writer = indent > 0 ? `writer(${indent})` : "writer";
     return {

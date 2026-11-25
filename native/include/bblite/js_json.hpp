@@ -1753,6 +1753,13 @@ inline void json_write(JsonWriter& writer, const JsonValue& value) {
     writer.end_object();
 }
 
+/** `JSON.stringify(value)`: `undefined` for an undefined or callable value, its text otherwise. */
+[[nodiscard]] inline JsonValue json_stringify_value(const JsonValue& value, int indent = 0) {
+    if (value.is_undefined() || value.is_callable())
+        return {};
+    return json_value(indent > 0 ? json_stringify(value, indent) : json_stringify(value));
+}
+
 class JsonValueParser {
     struct Frame {
         bool object;

@@ -1474,8 +1474,9 @@ export function propertyWrites(
  * tools.resize = r; tools.move = m`), as JavaScript creates a key at its
  * first write. A write that is a statement of the declaration's own
  * statement list runs after the ones before it; any other (in a condition,
- * a loop or a callback) may run or not, in another order (`maybe`). A key
- * only the run time names is no creation's (`writePlacedOnDeclaration`).
+ * a loop or a callback) may run or not, in another order (`maybe`). Each
+ * is `later` than the creation. A key only the run time names is no
+ * creation's (`writePlacedOnDeclaration`).
  */
 export function keysWrittenOnDeclaration(
     checker: ts.TypeChecker,
@@ -1547,7 +1548,9 @@ function writtenDeclarationKeys(
                 continue;
             if (write.key !== undefined)
                 keys.push(
-                    runs ? { key: write.key } : { key: write.key, maybe: true },
+                    runs
+                        ? { key: write.key, later: true }
+                        : { key: write.key, maybe: true, later: true },
                 );
         }
     }
