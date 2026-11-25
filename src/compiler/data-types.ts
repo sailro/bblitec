@@ -161,8 +161,8 @@ import {
 } from "./record-components.js";
 import ts from "typescript";
 import {
-    AbsenceTagStorageRequired,
     requireDeclarationAbsenceTag,
+    requireRecordSlotAbsenceTag,
 } from "./absence-tag-storage.js";
 import { classFieldPresenceSource } from "./class-field-presence-storage.js";
 import { createHash } from "node:crypto";
@@ -2139,6 +2139,23 @@ export class DataTypeRegistry {
             };
         if (this.slotPresentCpp(type, "slot") === undefined) return type;
         return { kind: "tagged", inner: type };
+    }
+
+    /**
+     * A record field's storage: one layout stores the property once, tagged
+     * when a program tells its absent values apart through any member
+     * declaring it ({@link absenceTaggedStorage}).
+     */
+    private fieldAbsenceTaggedStorage(
+        declarations: readonly ts.Declaration[],
+        type: DataType,
+    ): DataType {
+        return this.absenceTaggedStorage(
+            declarations.find((declaration) =>
+                this.storage.absenceTags.has(declaration),
+            ),
+            type,
+        );
     }
 
     /**
@@ -8251,16 +8268,18 @@ export class DataTypeRegistry {
             const optional = memberProperties.some(
                 (member) => (member.flags & ts.SymbolFlags.Optional) !== 0,
             );
-            const stored = markIdentityFunctions(
-                this.markStoredObjectReferences(first),
+            const declarations = memberProperties.flatMap(
+                (member) => member.declarations ?? [],
+            );
+            const stored = this.fieldAbsenceTaggedStorage(
+                declarations,
+                markIdentityFunctions(this.markStoredObjectReferences(first)),
             );
             fields.push({
                 sourceName: property.name,
                 name: sanitizeIdentifier(property.name),
                 type: stored,
-                declarations: memberProperties.flatMap(
-                    (member) => member.declarations ?? [],
-                ),
+                declarations,
                 ...(optional ? { optionalProperty: true } : {}),
                 ...(optional && stored.kind !== "optional"
                     ? { defaultWhenMissing: true }
@@ -10133,13 +10152,8 @@ export class DataTypeRegistry {
                         : growable,
                 ),
             );
-            // One layout stores the property once: tagged when a program
-            // tells its absent values apart through any member declaring it.
-            const taggedDeclaration = declarations.find((declaration) =>
-                this.storage.absenceTags.has(declaration),
-            );
-            const mapped = this.absenceTaggedStorage(
-                taggedDeclaration,
+            const mapped = this.fieldAbsenceTaggedStorage(
+                declarations,
                 untagged,
             );
             // A property one member declares as an accessor and another as
@@ -10586,17 +10600,12 @@ export class DataTypeRegistry {
         if (presence === "ambiguous")
             this.ambiguousPresenceRead(structName, field, node);
         // A field holding null beside absence, whose presence is read, keeps
-        // the two apart in tagged storage: a library-declared field too (an
-        // init dictionary's `relatedTarget`), the record's storage being the
-        // program's.
+        // the two apart in tagged storage.
         if (presence === "nullable" && !field.accessorReceiver)
-            for (const declaration of field.declarations ?? [])
-                if (
-                    (ts.isPropertySignature(declaration) ||
-                        ts.isPropertyDeclaration(declaration)) &&
-                    !this.storage.absenceTags.has(declaration)
-                )
-                    throw new AbsenceTagStorageRequired(declaration);
+            requireRecordSlotAbsenceTag(
+                this.storage.absenceTags,
+                field.declarations ?? [],
+            );
         if (arms || presence !== "own")
             this.presenceReads.set(`${structName}.${field.sourceName}`, {
                 structName,

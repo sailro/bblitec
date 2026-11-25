@@ -1766,6 +1766,20 @@ function compileKnownDataMethod(
             slotHoldsOnlyNull(
                 lowerer.context.dataTypes.resolveTypeParameter(yieldedType),
             );
+        // A tagged yield keeps null and undefined apart; completion reads
+        // as its undefined state, as a missing Map slot does.
+        const value =
+            resultValueType.kind === "optional" &&
+            resultValueType.inner.kind === "tagged"
+                ? lowerer.storedCallResult(
+                      `${result}.value.value_or(${lowerer.context.dataTypes.cppType(resultValueType.inner)}{})`,
+                      resultValueType.inner,
+                      "iterator_yield",
+                  )
+                : {
+                      ...lowerer.leafValue(resultValueCpp, resultValueType),
+                      ...(nullYield ? { slotFoundCpp: `!${result}.done` } : {}),
+                  };
         return {
             kind: "record",
             cpp: "",
@@ -1774,11 +1788,7 @@ function compileKnownDataMethod(
                     ...lowerer.leafValue(`${result}.done`, { kind: "boolean" }),
                     nativeCaptures,
                 },
-                value: {
-                    ...lowerer.leafValue(resultValueCpp, resultValueType),
-                    ...(nullYield ? { slotFoundCpp: `!${result}.done` } : {}),
-                    nativeCaptures,
-                },
+                value: { ...value, nativeCaptures },
             },
         };
     }

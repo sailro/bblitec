@@ -150,8 +150,7 @@ export function requireAbsenceTag(
 ): void {
     // A record slot names the declarations its layout stores, which may be
     // another type's than the one the reading expression is checked as.
-    for (const declaration of value?.slotDeclarations ?? [])
-        requireDeclarationAbsenceTag(tagged, declaration);
+    requireRecordSlotAbsenceTag(tagged, value?.slotDeclarations ?? []);
     requireDeclarationAbsenceTag(
         tagged,
         absenceTagDeclaration(checker, expression),
@@ -208,6 +207,25 @@ export function storedSignatureParameter(
     return signatures.length === 1
         ? signatures[0]!.getDeclaration()?.parameters[index]
         : undefined;
+}
+
+/**
+ * Demands tagged storage for a record slot stored for `declarations`: the
+ * record's layout is the program's storage, a library-declared property
+ * included (an `IteratorResult`'s `value`, an init dictionary's
+ * `relatedTarget`).
+ */
+export function requireRecordSlotAbsenceTag(
+    tagged: ReadonlySet<ts.Declaration>,
+    declarations: readonly ts.Declaration[],
+): void {
+    for (const declaration of declarations)
+        if (
+            (ts.isPropertySignature(declaration) ||
+                ts.isPropertyDeclaration(declaration)) &&
+            !tagged.has(declaration)
+        )
+            throw new AbsenceTagStorageRequired(declaration);
 }
 
 /** {@link requireAbsenceTag} for a storage named by its declaration. */
