@@ -1985,6 +1985,11 @@ export class BrowserErasure {
         expression: ts.Expression,
     ): Value["browserValue"] | undefined {
         const unwrapped = this.context.unwrap(expression);
+        if (
+            ts.isPropertyAccessExpression(unwrapped) &&
+            this.context.libraryGlobal(unwrapped.expression) === "console"
+        )
+            return { kind: "console-method" };
         const accessor = hostAccessorValue(this.context, unwrapped);
         if (accessor)
             return accessor.staticNumber === undefined

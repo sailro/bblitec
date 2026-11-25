@@ -2745,6 +2745,7 @@ export class ExpressionLowerer {
             case "undefined":
                 return undefinedValue();
             case "dom-rect":
+            case "console-method":
             case "object":
             case "search-params":
                 return value;
@@ -4877,9 +4878,13 @@ export class ExpressionLowerer {
         if (executedGltf) {
             return executedGltf;
         }
-        // A function read from browser state (`log = console.error`) is
-        // called as a browser call: its arguments run, the call erases.
-        if (this.context.bindings.lookupOptional(callee)?.kind === "browser")
+        // A console method read as a value (`log = console.error`) is
+        // called as a console call: its arguments run, the call erases. Any
+        // other browser function keeps its own call lowering.
+        if (
+            this.context.bindings.lookupOptional(callee)?.browserValue?.kind ===
+            "console-method"
+        )
             return this.compileBrowserValue(call);
         const userFunction = compileWithRuntimeCaseSplit(
             this.context,

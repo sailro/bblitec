@@ -3450,6 +3450,8 @@ export interface ValueFields {
         | { readonly kind: "null" }
         | { readonly kind: "undefined" }
         | { readonly kind: "dom-rect" }
+        /** A console method read as a value (`log = console.error`): a call through it reports. */
+        | { readonly kind: "console-method" }
         | {
               readonly kind: "object";
               readonly primaryCanvas?: true;
