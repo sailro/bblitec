@@ -186,7 +186,7 @@ export function regexpGroupsType(
  * `new RegExp` of literal text, or a `const` bound to one.
  */
 function staticRegExpSource(
-    context: Pick<LoweringServices, "symbols" | "unwrap">,
+    context: Pick<LoweringServices, "checker" | "unwrap">,
     expression: ts.Expression,
     depth = 0,
 ): { pattern: string; flags: string } | undefined {
@@ -217,7 +217,7 @@ function staticRegExpSource(
  * source of the expression that produced it.
  */
 export function regexpCaptureFacts(
-    context: Pick<LoweringServices, "symbols" | "unwrap">,
+    context: Pick<LoweringServices, "checker" | "unwrap">,
     value: Value,
     expression: ts.Expression,
 ): Value {

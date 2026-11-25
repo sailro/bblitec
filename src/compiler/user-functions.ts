@@ -83,7 +83,6 @@ import {
     dataTypesEqual,
     isNativeStructuralView,
     isHandleKind,
-    isPinnedHandleType,
     isTypedArrayType,
     type DataType,
     type DataTypeRegistry,
@@ -4779,13 +4778,11 @@ export class UserFunctionLowerer {
                     this.checker,
                     context.program,
                     this.checker.getTypeAtLocation(expression),
-                    isPinnedHandleType,
                 ) &&
                 !holdsEngineObject(
                     this.checker,
                     context.program,
                     parameter.type,
-                    isPinnedHandleType,
                 )
             ) {
                 if (argument.dataType)

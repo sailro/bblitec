@@ -604,65 +604,30 @@ template <typename T> struct CloneShape {
             return std::holds_alternative<pal::CloneObject>(node);
     }
 };
-template <> struct CloneShape<Undefined> {
+/** The shape of a value whose node is one `Node` alternative. */
+template <typename Node> struct CloneShapeIs {
+    static bool holds(const pal::CloneNode& node) { return std::holds_alternative<Node>(node); }
+};
+/** The shape of a view of one element kind. */
+template <pal::CloneViewKind Kind> struct CloneViewShape {
     static bool holds(const pal::CloneNode& node) {
-        return std::holds_alternative<pal::CloneUndefined>(node);
+        const auto* view = std::get_if<pal::CloneView>(&node);
+        return view && view->kind == Kind;
     }
 };
-template <> struct CloneShape<Null> {
-    static bool holds(const pal::CloneNode& node) {
-        return std::holds_alternative<pal::CloneNull>(node);
-    }
-};
-template <typename T> struct CloneShape<Array<T>> {
-    static bool holds(const pal::CloneNode& node) {
-        return std::holds_alternative<pal::CloneArray>(node);
-    }
-};
+template <> struct CloneShape<Undefined> : CloneShapeIs<pal::CloneUndefined> {};
+template <> struct CloneShape<Null> : CloneShapeIs<pal::CloneNull> {};
+template <typename T> struct CloneShape<Array<T>> : CloneShapeIs<pal::CloneArray> {};
 template <std::size_t N> struct CloneShape<Tuple<N>> : CloneShape<Array<double>> {};
-template <typename K, typename V> struct CloneShape<Map<K, V>> {
-    static bool holds(const pal::CloneNode& node) {
-        return std::holds_alternative<pal::CloneMap>(node);
-    }
-};
-template <typename K, typename V> struct CloneShape<Dictionary<K, V>> {
-    static bool holds(const pal::CloneNode& node) {
-        return std::holds_alternative<pal::CloneObject>(node);
-    }
-};
-template <typename T> struct CloneShape<Set<T>> {
-    static bool holds(const pal::CloneNode& node) {
-        return std::holds_alternative<pal::CloneSet>(node);
-    }
-};
-template <> struct CloneShape<Date> {
-    static bool holds(const pal::CloneNode& node) {
-        return std::holds_alternative<pal::CloneDate>(node);
-    }
-};
-template <> struct CloneShape<ArrayBuffer> {
-    static bool holds(const pal::CloneNode& node) {
-        return std::holds_alternative<pal::CloneBuffer>(node);
-    }
-};
-template <typename T> struct CloneShape<TypedArray<T>> {
-    static bool holds(const pal::CloneNode& node) {
-        const auto* view = std::get_if<pal::CloneView>(&node);
-        return view && view->kind == CloneElement<T>::kind;
-    }
-};
-template <> struct CloneShape<U8Array> {
-    static bool holds(const pal::CloneNode& node) {
-        const auto* view = std::get_if<pal::CloneView>(&node);
-        return view && view->kind == pal::CloneViewKind::uint8;
-    }
-};
-template <> struct CloneShape<DataView> {
-    static bool holds(const pal::CloneNode& node) {
-        const auto* view = std::get_if<pal::CloneView>(&node);
-        return view && view->kind == pal::CloneViewKind::data_view;
-    }
-};
+template <typename K, typename V> struct CloneShape<Map<K, V>> : CloneShapeIs<pal::CloneMap> {};
+template <typename K, typename V>
+struct CloneShape<Dictionary<K, V>> : CloneShapeIs<pal::CloneObject> {};
+template <typename T> struct CloneShape<Set<T>> : CloneShapeIs<pal::CloneSet> {};
+template <> struct CloneShape<Date> : CloneShapeIs<pal::CloneDate> {};
+template <> struct CloneShape<ArrayBuffer> : CloneShapeIs<pal::CloneBuffer> {};
+template <typename T> struct CloneShape<TypedArray<T>> : CloneViewShape<CloneElement<T>::kind> {};
+template <> struct CloneShape<U8Array> : CloneViewShape<pal::CloneViewKind::uint8> {};
+template <> struct CloneShape<DataView> : CloneViewShape<pal::CloneViewKind::data_view> {};
 template <typename T> struct CloneShape<Ref<T>> : CloneShape<T> {};
 
 /** A union clones as its present member and is received as the member its node holds. */

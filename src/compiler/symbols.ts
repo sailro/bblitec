@@ -17,6 +17,7 @@ import {
     writeSites,
     isMemberAccess,
     type MemberAccess,
+    isConstDeclaration,
 } from "./syntax.js";
 import { someAnalysisNode } from "./analysis-walk.js";
 import {
@@ -470,6 +471,23 @@ export function resolvedSymbol(
         ts.isPropertyAccessExpression(node) ? node.name : node,
     );
     return symbol && aliasTarget(checker, symbol);
+}
+
+/**
+ * The initializer of the `const` binding an expression reads, past the
+ * wrappers around it ({@link isConstDeclaration}).
+ */
+export function constInitializerOf(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): ts.Expression | undefined {
+    const root = unwrapExpression(expression);
+    const declaration = ts.isIdentifier(root)
+        ? resolvedSymbol(checker, root)?.valueDeclaration
+        : undefined;
+    return isConstDeclaration(declaration)
+        ? declaration.initializer
+        : undefined;
 }
 
 /**

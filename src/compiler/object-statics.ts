@@ -18,10 +18,12 @@ import {
     outermostWrapper,
     statementsBeside,
     unwrapExpression,
-    variableKind,
     writeSites,
+    isConstDeclaration,
+    isMemberAccess,
+    writeSiteOf,
 } from "./syntax.js";
-import { forEachAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
+import { identifiersByName, someAnalysisNode } from "./analysis-walk.js";
 import { undeclaredMembersObservable } from "./record-observations.js";
 import type { LoweringServices } from "./lowering-services.js";
 import {
@@ -1408,26 +1410,31 @@ function literalDeclaration(
     checker: ts.TypeChecker,
     literal: ts.ObjectLiteralExpression,
 ):
-    | { binding: ts.Symbol; statement: ts.VariableStatement; scope: ts.Node }
+    | {
+          binding: ts.Symbol;
+          name: ts.Identifier;
+          statement: ts.VariableStatement;
+          scope: ts.Node;
+      }
     | undefined {
     const initializer = outermostWrapper(literal);
     const declaration = initializer.parent;
-    const list = declaration.parent;
-    const statement = list?.parent;
-    const scope = statement?.parent;
     if (
-        !ts.isVariableDeclaration(declaration) ||
+        !isConstDeclaration(declaration) ||
         declaration.initializer !== initializer ||
-        !ts.isIdentifier(declaration.name) ||
-        !ts.isVariableDeclarationList(list) ||
-        list.declarations.length !== 1 ||
-        variableKind(list) !== "const" ||
-        !ts.isVariableStatement(statement) ||
-        !scope
+        declaration.parent.declarations.length !== 1
     )
         return undefined;
+    const statement = declaration.parent.parent;
     const binding = resolvedSymbol(checker, declaration.name);
-    return binding ? { binding, statement, scope } : undefined;
+    return binding
+        ? {
+              binding,
+              name: declaration.name,
+              statement,
+              scope: statement.parent,
+          }
+        : undefined;
 }
 
 /**
@@ -1474,12 +1481,60 @@ export function keysWrittenOnDeclaration(
     checker: ts.TypeChecker,
     literal: ts.ObjectLiteralExpression,
 ): readonly CreatedKeys[] {
+    let known = declarationKeys.get(checker);
+    if (!known) {
+        known = new WeakMap();
+        declarationKeys.set(checker, known);
+    }
+    let keys = known.get(literal);
+    if (!keys) {
+        keys = writtenDeclarationKeys(checker, literal);
+        known.set(literal, keys);
+    }
+    return keys;
+}
+
+/**
+ * @unjournaled `keysWrittenOnDeclaration` answers, by checker: a function
+ * of the checked program.
+ */
+const declarationKeys = new WeakMap<
+    ts.TypeChecker,
+    WeakMap<ts.ObjectLiteralExpression, readonly CreatedKeys[]>
+>();
+
+function writtenDeclarationKeys(
+    checker: ts.TypeChecker,
+    literal: ts.ObjectLiteralExpression,
+): readonly CreatedKeys[] {
     const declared = literalDeclaration(checker, literal);
     if (!declared) return [];
-    const { binding, statement, scope } = declared;
+    const { binding, name, statement, scope } = declared;
+    // The writes of a member through a reference after the declaration.
+    const writes = new Set<ts.Node>();
+    for (const reference of identifiersByName(statement.getSourceFile()).get(
+        name.text,
+    ) ?? []) {
+        if (
+            reference.pos < statement.end ||
+            reference.end > scope.end ||
+            resolvedSymbol(checker, reference) !== binding
+        )
+            continue;
+        const owner = outermostWrapper(reference);
+        const access = owner.parent;
+        const site =
+            isMemberAccess(access) && access.expression === owner
+                ? writeSiteOf(access)
+                : undefined;
+        if (site) writes.add(site.node);
+    }
     const keys: CreatedKeys[] = [];
-    forEachAnalysisNode(scope, (node) => {
-        if (node.pos < statement.end) return;
+    // In preorder, as JavaScript runs them: an enclosing write first.
+    const ordered = [...writes].sort(
+        (first, second) => first.pos - second.pos || second.end - first.end,
+    );
+    for (const node of ordered) {
         const written = outermostWrapper(node);
         const runs =
             ts.isExpressionStatement(written.parent) &&
@@ -1495,7 +1550,7 @@ export function keysWrittenOnDeclaration(
                     runs ? { key: write.key } : { key: write.key, maybe: true },
                 );
         }
-    });
+    }
     return keys;
 }
 

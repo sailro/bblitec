@@ -241,7 +241,6 @@ import {
     type DataType,
     type TypedArrayKind,
     callMember,
-    isPinnedHandleType,
     isUiElementHandleType,
     soleArrayArmIndex,
     slotHoldsOwnPresence,
@@ -14304,12 +14303,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const type = checker.getTypeAtLocation(access);
         if (
             checker.getNonNullableType(type) !== type ||
-            !holdsEngineObject(
-                checker,
-                this.context.program,
-                type,
-                isPinnedHandleType,
-            )
+            !holdsEngineObject(checker, this.context.program, type)
         )
             return read;
         const stored = this.context.dataTypes.fromStoredTsType(type, access);

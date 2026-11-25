@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { isPinnedHandleType } from "./data-types/handles.js";
 import { programObservations } from "./program-observations.js";
 import { isPlainRecord, isRecordUnion } from "./record-components.js";
 import { declaredIn } from "./symbols.js";
@@ -70,9 +71,6 @@ function heldRecordTypes(
         .flatMap((index) => below(index.type));
 }
 
-/** Whether a type is an engine object's, which no document has a form for. */
-export type EngineObjectTest = (type: ts.Type) => boolean;
-
 /**
  * @unjournaled `holdsEngineObject` answers, by program and record type: a
  * function of the checked program.
@@ -81,7 +79,7 @@ const engineHolders: ProgramAnswers<boolean> = new WeakMap();
 
 /**
  * Whether values of the program's record type `record` hold an engine object
- * (`isEngineObject`) in a property, in place or through the arrays, tuples,
+ * (`isPinnedHandleType`) in a property, in place or through the arrays, tuples,
  * dictionaries and records it holds. No document has a form for one: such a
  * record stays a native object, which a document holds by reference.
  */
@@ -89,7 +87,6 @@ export function holdsEngineObject(
     checker: ts.TypeChecker,
     program: ts.Program,
     record: ts.Type,
-    isEngineObject: EngineObjectTest,
 ): boolean {
     return answered(engineHolders, program, record, () => {
         const seen = new Set<ts.Type>();
@@ -102,7 +99,9 @@ export function holdsEngineObject(
             )
                 return false;
             seen.add(present);
-            if ([present, ...intersectedParts(present)].some(isEngineObject))
+            if (
+                [present, ...intersectedParts(present)].some(isPinnedHandleType)
+            )
                 return true;
             if (present.isUnion())
                 return unionMembers(present).some((member) =>
@@ -269,11 +268,10 @@ export function documentReadClosure(
     checker: ts.TypeChecker,
     program: ts.Program,
     record: ts.Type,
-    isEngineObject: EngineObjectTest,
 ): readonly ts.Type[] {
     return answered(closures, program, record, () => {
         const native = (held: ts.Type): boolean =>
-            holdsEngineObject(checker, program, held, isEngineObject);
+            holdsEngineObject(checker, program, held);
         const closure = new Set(
             heldDocuments(checker, program, record, native),
         );

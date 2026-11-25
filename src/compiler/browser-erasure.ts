@@ -45,6 +45,7 @@ import {
     ANY_KEY,
     optionalChainReceivers,
     unwrapExpression,
+    isConstDeclaration,
 } from "./syntax.js";
 import { promiseExecutor } from "./promise-executor.js";
 import { isNativeBrowserFileExpression } from "./browser-file.js";
@@ -70,6 +71,7 @@ import {
     GLOBAL_OBJECT_NAMES,
     isTopLevelWindow,
     libraryInterfaceType,
+    constInitializerOf,
 } from "./symbols.js";
 import { searchParamsMutators } from "./search-params.js";
 import { foldMathCall, mathMemberCall } from "./math-intrinsics.js";
@@ -248,6 +250,8 @@ interface GivenOperand {
     readonly operand: ts.Expression;
     global?: boolean;
     type?: ts.Type;
+    /** The variable the value is given to, if any (`givenVariable`). */
+    given?: { readonly variable: ts.Symbol | undefined };
 }
 
 export function isAbsentWindowMember(name: string): boolean {
@@ -524,18 +528,11 @@ function lookupText(context: PrimaryCanvasContext, argument: ts.Expression) {
  * declaration alone: the program scan above runs outside any scope.
  */
 export function constInitializer(
-    context: Pick<LoweringServices, "symbols" | "unwrap">,
+    context: Pick<LoweringServices, "checker" | "unwrap">,
     identifier: ts.Identifier,
 ): ts.Expression | undefined {
-    const declaration =
-        context.symbols.valueSymbol(identifier)?.valueDeclaration;
-    return declaration &&
-        ts.isVariableDeclaration(declaration) &&
-        ts.isVariableDeclarationList(declaration.parent) &&
-        variableKind(declaration.parent) === "const" &&
-        declaration.initializer
-        ? context.unwrap(declaration.initializer)
-        : undefined;
+    const initializer = constInitializerOf(context.checker, identifier);
+    return initializer && context.unwrap(initializer);
 }
 
 /**
@@ -2772,11 +2769,8 @@ export class BrowserErasure {
                 !(isMemberAccess(parent) && parent.expression === top) &&
                 !(
                     this.isGlobalObject(top, settledOperand) &&
-                    ts.isVariableDeclaration(parent) &&
-                    parent.initializer === top &&
-                    ts.isIdentifier(parent.name) &&
-                    ts.isVariableDeclarationList(parent.parent) &&
-                    variableKind(parent.parent) === "const"
+                    isConstDeclaration(parent) &&
+                    parent.initializer === top
                 )
             )
                 given.push({
@@ -2838,12 +2832,21 @@ export class BrowserErasure {
         let escapes = false;
         // A carrier or a binding makes the values of its type or the reads
         // of its variable bear the global object in turn: collect until no
-        // value adds one.
+        // value adds one. A value bears it for good once it does (carriers
+        // and bindings only grow), and adds all it adds then.
+        let pending = given;
         for (let added = true; added && !escapes;) {
             added = false;
-            for (const { value, type } of given) {
-                if (!bears(value)) continue;
-                const variable = this.givenVariable(value);
+            const waiting: typeof given = [];
+            for (const entry of pending) {
+                const { value, type } = entry;
+                if (!bears(value)) {
+                    waiting.push(entry);
+                    continue;
+                }
+                const facts = this.givenOperand(value);
+                facts.given ??= { variable: this.givenVariable(value) };
+                const variable = facts.given.variable;
                 if (variable) {
                     if (!bindings.has(variable)) {
                         bindings.add(variable);
@@ -2868,6 +2871,7 @@ export class BrowserErasure {
                         added = true;
                     }
             }
+            pending = waiting;
         }
         return { escapes, carriers, bindings };
     }
@@ -3071,7 +3075,7 @@ export class BrowserErasure {
         if (global !== undefined) return GLOBAL_OBJECT_NAMES.has(global);
         if (!ts.isIdentifier(unwrapped)) return false;
         const initializer = constInitializer(
-            { symbols: this.context.symbols, unwrap },
+            { checker: this.context.checker, unwrap },
             unwrapped,
         );
         return (

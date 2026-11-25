@@ -4,7 +4,11 @@ import {
     exportedUnderAnotherName,
 } from "./binding-references.js";
 import { bindingRebinds } from "./binding-rebinds.js";
-import { declaredSymbol, resolvedSymbol } from "./symbols.js";
+import {
+    constInitializerOf,
+    declaredSymbol,
+    resolvedSymbol,
+} from "./symbols.js";
 import {
     argumentForParameter,
     directCallOf,
@@ -217,24 +221,6 @@ function throughParameter<T>(
     }
 }
 
-/** The initializer of the `const` binding an expression reads. */
-function constInitializer(
-    checker: ts.TypeChecker,
-    expression: ts.Expression,
-): ts.Expression | undefined {
-    const root = unwrapExpression(expression);
-    const declaration = ts.isIdentifier(root)
-        ? resolvedSymbol(checker, root)?.valueDeclaration
-        : undefined;
-    return declaration &&
-        ts.isVariableDeclaration(declaration) &&
-        ts.isIdentifier(declaration.name) &&
-        ts.isVariableDeclarationList(declaration.parent) &&
-        variableKind(declaration.parent) === "const"
-        ? declaration.initializer
-        : undefined;
-}
-
 /**
  * The static types of the objects an expression of an open type (or of the
  * `{}` a test leaves of one) evaluates to: a parameter of a function the
@@ -263,7 +249,7 @@ export function heldTypes(
             ),
     );
     if (through) return through.answer;
-    const initializer = constInitializer(checker, object);
+    const initializer = constInitializerOf(checker, object);
     if (initializer && !active.has(initializer)) {
         active.add(initializer);
         try {

@@ -917,6 +917,19 @@ const UiElementRecord& ui_traversable(Engine& engine, UiElementHandle node) {
     return record;
 }
 
+/** The SVG root an SVG element draws in: itself for a root; none for an HTML element. */
+std::optional<UiElementHandle> ui_svg_root(const Engine& engine, UiElementHandle element) {
+    for (auto cursor = element; cursor.value < engine.ui_elements.size();) {
+        const auto& record = handle_at(engine.ui_elements, cursor);
+        if (!record.svg_namespace)
+            return std::nullopt;
+        if (record.tag == "svg")
+            return cursor;
+        cursor = record.parent;
+    }
+    return std::nullopt;
+}
+
 } // namespace
 
 js::Nullable<UiElementHandle> ui_tree_element(Engine& engine, UiElementHandle node,
@@ -1125,14 +1138,12 @@ UiContentBox ui_get_content_box(Engine& engine, UiElementHandle element) {
 }
 
 js::Nullable<js::DomMatrixHandle> ui_svg_screen_ctm(Engine& engine, UiElementHandle element) {
-    auto root = element;
-    while (root.value != invalid_handle && ui_element(engine, root).tag != "svg")
-        root = ui_element(engine, root).parent;
-    if (root.value == invalid_handle || !ui_is_connected(engine, root))
+    const auto root = ui_svg_root(engine, element);
+    if (!root || !ui_is_connected(engine, *root))
         return std::nullopt;
     // A shape draws in its root's user space: SVG children carry no transform.
-    const UiContentBox box = ui_get_content_box(engine, root);
-    const auto viewport = pal::ui_svg_viewport(pal::ui_svg_view_box(ui_element(engine, root)),
+    const UiContentBox box = ui_get_content_box(engine, *root);
+    const auto viewport = pal::ui_svg_viewport(pal::ui_svg_view_box(ui_element(engine, *root)),
                                                box.width, box.height, 1.0);
     return js::make_ref<js::DomMatrix>(js::DomMatrix{viewport.scale, 0, 0, viewport.scale,
                                                      box.left + viewport.x, box.top + viewport.y});
@@ -2907,19 +2918,6 @@ bool ui_focusable(Engine& engine, UiElementHandle element) {
         cursor = record.markup_owner.value != invalid_handle ? record.markup_owner : record.parent;
     }
     return false;
-}
-
-/** The SVG root an SVG element draws in: itself for a root; none for an HTML element. */
-std::optional<UiElementHandle> ui_svg_focus_root(const Engine& engine, UiElementHandle element) {
-    for (auto cursor = element; cursor.value < engine.ui_elements.size();) {
-        const auto& record = handle_at(engine.ui_elements, cursor);
-        if (!record.svg_namespace)
-            return std::nullopt;
-        if (record.tag == "svg")
-            return cursor;
-        cursor = record.parent;
-    }
-    return std::nullopt;
 }
 
 /** An SVG root and its descendants, in tree order. */
@@ -8199,7 +8197,7 @@ struct UiRmlRuntime {
         const auto focused = ui_active_element(engine);
         if (focused.value == invalid_handle || !context)
             return std::nullopt;
-        const auto root = ui_svg_focus_root(engine, focused);
+        const auto root = ui_svg_root(engine, focused);
         if (!root || *root == focused || root->value >= projected_elements.size() ||
             handle_at(projected_elements, *root).element != context->GetFocusElement())
             return std::nullopt;
@@ -8214,7 +8212,7 @@ struct UiRmlRuntime {
     UiElementHandle svg_focus_target([[maybe_unused]] Rml::Element& element, UiElementHandle root) {
 #if BBLITE_UI_INLINE_SVG
         auto* svg = dynamic_cast<UiSvgRootElement*>(&element);
-        if (!svg || !ui_svg_focus_root(engine, root))
+        if (!svg || !ui_svg_root(engine, root))
             return root;
         if (tab_direction != 0)
             return ui_svg_next_tab_stop(engine, root, std::nullopt, tab_direction).value_or(root);
@@ -8229,9 +8227,8 @@ struct UiRmlRuntime {
             return root;
         }
         const auto focused = ui_active_element(engine);
-        return focused.value != invalid_handle && ui_svg_focus_root(engine, focused) == root
-                   ? focused
-                   : root;
+        return focused.value != invalid_handle && ui_svg_root(engine, focused) == root ? focused
+                                                                                       : root;
 #else
         return root;
 #endif
@@ -8244,7 +8241,7 @@ struct UiRmlRuntime {
     bool svg_tab(int direction) {
         const auto focused = ui_active_element(engine);
         const auto root =
-            focused.value == invalid_handle ? std::nullopt : ui_svg_focus_root(engine, focused);
+            focused.value == invalid_handle ? std::nullopt : ui_svg_root(engine, focused);
         if (!root)
             return false;
         const auto next = ui_svg_next_tab_stop(engine, *root, focused, direction);
@@ -8312,9 +8309,8 @@ struct UiRmlRuntime {
             return false;
         // A shape has no RmlUi element: its SVG root's holds focus for it, matching neither
         // focus state itself.
-        const auto svg_root = focused.value < projected_elements.size()
-                                  ? ui_svg_focus_root(engine, focused)
-                                  : std::nullopt;
+        const auto svg_root =
+            focused.value < projected_elements.size() ? ui_svg_root(engine, focused) : std::nullopt;
         const auto holder = svg_root.value_or(focused);
         if (focused.value < projected_elements.size()) {
             if (auto* element = handle_at(projected_elements, holder).element;
@@ -8331,7 +8327,7 @@ struct UiRmlRuntime {
         // A shape's focus states select its SVG rules: both roots redraw.
         for (const auto shape : {projected_focused, focused})
             if (const auto root = shape.value < projected_elements.size()
-                                      ? ui_svg_focus_root(engine, shape)
+                                      ? ui_svg_root(engine, shape)
                                       : std::nullopt)
                 if (auto* raw = handle_at(projected_elements, *root).element)
                     sync_svg_element(*root, *raw, false);

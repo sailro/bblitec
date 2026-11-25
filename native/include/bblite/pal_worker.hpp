@@ -91,13 +91,66 @@ inline void wake(const Address& address) {
 }
 } // namespace worker_detail
 
-/** Parent-realm object. Its callback state is never captured by the worker thread. */
-class Worker {
+/** A realm-owned target of `message` and `messageerror` events: a Worker or a MessagePort. */
+class MessageEventTarget {
 public:
     using MessageCallback = js::Callback<void(const WorkerMessage&)>;
+    void set_message_handler(MessageCallback callback) {
+        require_owner();
+        message_listeners_.set_handler(std::move(callback));
+    }
+    void add_message_listener(MessageCallback callback, bool once = false) {
+        require_owner();
+        message_listeners_.add(std::move(callback), once);
+    }
+    void remove_message_listener(const MessageCallback& callback) {
+        require_owner();
+        message_listeners_.remove(callback.identity());
+    }
+    /** Kept as the handler; a native message decodes at its typed read, so none fires. */
+    void set_messageerror_handler(MessageCallback callback) {
+        require_owner();
+        messageerror_listeners_.set_handler(std::move(callback));
+    }
+    void add_messageerror_listener(MessageCallback callback, bool once = false) {
+        require_owner();
+        messageerror_listeners_.add(std::move(callback), once);
+    }
+    void remove_messageerror_listener(const MessageCallback& callback) {
+        require_owner();
+        messageerror_listeners_.remove(callback.identity());
+    }
+    void gc_trace(const js::TraceVisitor& visitor) const {
+        visitor(message_listeners_);
+        visitor(messageerror_listeners_);
+    }
+
+protected:
+    /** `crossed`: the error a use from another realm's thread throws. */
+    explicit MessageEventTarget(const char* crossed)
+        : crossed_(crossed), owner_(std::this_thread::get_id()) {}
+    void require_owner() const {
+        if (owner_ != std::this_thread::get_id())
+            throw std::logic_error(crossed_);
+    }
+    void dispatch_message(EventLoop& loop, SerializedMessage value) {
+        auto event = std::make_shared<WorkerMessageEvent>(std::move(value));
+        dispatch_platform_event(loop, message_listeners_, event);
+    }
+
+private:
+    const char* crossed_;
+    std::thread::id owner_;
+    PlatformEventListeners<void(const WorkerMessage&)> message_listeners_;
+    PlatformEventListeners<void(const WorkerMessage&)> messageerror_listeners_;
+};
+
+/** Parent-realm object. Its callback state is never captured by the worker thread. */
+class Worker : public MessageEventTarget {
+public:
     using ErrorCallback = js::Callback<void(WorkerErrorEvent&)>;
     explicit Worker(std::shared_ptr<EventLoop::Inbox> inbox)
-        : inbox_(std::move(inbox)), owner_(std::this_thread::get_id()) {}
+        : MessageEventTarget("Worker object crossed realm ownership."), inbox_(std::move(inbox)) {}
     ~Worker() {
         terminate();
         if (thread_.joinable())
@@ -108,61 +161,32 @@ public:
         worker_detail::post({inbox_, 0}, std::move(message));
     }
     void terminate() { inbox_->terminate(); }
-    void add_message_listener(MessageCallback callback, bool once = false) {
-        require_owner();
-        message_listeners_.add(std::move(callback), once);
-    }
-    void remove_message_listener(const MessageCallback& callback) {
-        require_owner();
-        message_listeners_.remove(callback.identity());
-    }
     void add_error_listener(ErrorCallback callback, bool once = false) {
         require_owner();
         error_listeners_.add(std::move(callback), once);
     }
-    void set_message_handler(MessageCallback callback) {
-        require_owner();
-        message_listeners_.set_handler(std::move(callback));
-    }
     void set_error_handler(ErrorCallback callback) {
         require_owner();
         error_listeners_.set_handler(std::move(callback));
-    }
-    /** Kept as the handler; a native message decodes at its typed read, so none fires. */
-    void set_messageerror_handler(MessageCallback callback) {
-        require_owner();
-        messageerror_listeners_.set_handler(std::move(callback));
     }
     void remove_error_listener(const ErrorCallback& callback) {
         require_owner();
         error_listeners_.remove(callback.identity());
     }
     void gc_trace(const js::TraceVisitor& visitor) const {
-        visitor(message_listeners_);
+        MessageEventTarget::gc_trace(visitor);
         visitor(error_listeners_);
-        visitor(messageerror_listeners_);
     }
 
 private:
     friend class WorkerRealm;
-    void require_owner() const {
-        if (owner_ != std::this_thread::get_id())
-            throw std::logic_error("Worker object crossed realm ownership.");
-    }
-    void message(EventLoop& loop, SerializedMessage value) {
-        auto event = std::make_shared<WorkerMessageEvent>(std::move(value));
-        dispatch_platform_event(loop, message_listeners_, event);
-    }
     bool error(EventLoop& loop, WorkerErrorEvent& event) {
         dispatch_platform_event(loop, error_listeners_, event);
         return event.default_prevented;
     }
     std::shared_ptr<EventLoop::Inbox> inbox_;
-    std::thread::id owner_;
     std::thread thread_;
-    PlatformEventListeners<void(const WorkerMessage&)> message_listeners_;
     PlatformEventListeners<void(WorkerErrorEvent&)> error_listeners_;
-    PlatformEventListeners<void(const WorkerMessage&)> messageerror_listeners_;
 };
 
 struct TransferredPort final : TransferredResource {
@@ -178,12 +202,11 @@ struct TransferredPort final : TransferredResource {
  * of this realm. `close()` disentangles both ends without an event. A
  * `messageerror` never fires: a native message decodes at its typed read.
  */
-class MessagePort final : public Transferable {
+class MessagePort final : public Transferable, public MessageEventTarget {
 public:
-    using MessageCallback = Worker::MessageCallback;
     MessagePort(std::shared_ptr<worker_detail::PortPair> pair, std::size_t side)
-        : pair_(std::move(pair)), side_(side), owner_(std::this_thread::get_id()) {}
-    ~MessagePort() override = default;
+        : MessageEventTarget("MessagePort object crossed realm ownership."), pair_(std::move(pair)),
+          side_(side) {}
     static std::shared_ptr<MessagePort> create(std::shared_ptr<worker_detail::PortPair> pair,
                                                std::size_t side) {
         auto port = js::make_gc_shared<MessagePort>(std::move(pair), side);
@@ -219,30 +242,10 @@ public:
     }
     void start();
     void close();
+    /** Setting `onmessage` enables the queue, as `start()` does. */
     void set_message_handler(MessageCallback callback) {
-        require_owner();
-        message_listeners_.set_handler(std::move(callback));
+        MessageEventTarget::set_message_handler(std::move(callback));
         start();
-    }
-    void set_messageerror_handler(MessageCallback callback) {
-        require_owner();
-        messageerror_listeners_.set_handler(std::move(callback));
-    }
-    void add_message_listener(MessageCallback callback, bool once = false) {
-        require_owner();
-        message_listeners_.add(std::move(callback), once);
-    }
-    void remove_message_listener(const MessageCallback& callback) {
-        require_owner();
-        message_listeners_.remove(callback.identity());
-    }
-    void add_messageerror_listener(MessageCallback callback, bool once = false) {
-        require_owner();
-        messageerror_listeners_.add(std::move(callback), once);
-    }
-    void remove_messageerror_listener(const MessageCallback& callback) {
-        require_owner();
-        messageerror_listeners_.remove(callback.identity());
     }
     std::unique_ptr<TransferredResource> transfer() override {
         require_owner();
@@ -257,17 +260,9 @@ public:
         release();
         return payload;
     }
-    void gc_trace(const js::TraceVisitor& visitor) const {
-        visitor(message_listeners_);
-        visitor(messageerror_listeners_);
-    }
 
 private:
     friend class WorkerRealm;
-    void require_owner() const {
-        if (owner_ != std::this_thread::get_id())
-            throw std::logic_error("MessagePort object crossed realm ownership.");
-    }
     void release();
     void dispatch_next(EventLoop& loop) {
         if (!pair_)
@@ -281,17 +276,13 @@ private:
             message = std::move(queue.front());
             queue.pop_front();
         }
-        auto event = std::make_shared<WorkerMessageEvent>(std::move(*message));
-        dispatch_platform_event(loop, message_listeners_, event);
+        dispatch_message(loop, std::move(*message));
     }
     std::weak_ptr<MessagePort> self_;
     std::shared_ptr<worker_detail::PortPair> pair_;
     std::size_t side_;
-    std::thread::id owner_;
     /** The realm's registration while the queue is enabled. */
     std::uint64_t id_ = 0;
-    PlatformEventListeners<void(const WorkerMessage&)> message_listeners_;
-    PlatformEventListeners<void(const WorkerMessage&)> messageerror_listeners_;
 };
 
 /** `new MessageChannel()`: two entangled ports of the current realm. */
@@ -555,7 +546,7 @@ private:
         if (worker->inbox_->terminated())
             return;
         if (auto* message = std::get_if<SerializedMessage>(&packet->contents))
-            worker->message(loop_, std::move(*message));
+            worker->dispatch_message(loop_, std::move(*message));
         else if (auto* error = std::get_if<WorkerErrorEvent>(&packet->contents)) {
             if (!worker->error(loop_, *error)) {
                 if (parent_)

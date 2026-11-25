@@ -216,6 +216,11 @@ export interface ProgramObservations {
     readonly definitions: ReadonlyMap<string, readonly MemberDefinition[]>;
     readonly keyedDefinitions: readonly MemberDefinition[];
     readonly typeAssertions: readonly (ts.AsExpression | ts.TypeAssertion)[];
+    /**
+     * The assertions, and the declarations with an initializer, whose type
+     * node names a keyed collection (`collectionViews`), in source order.
+     */
+    readonly collectionSites: readonly CollectionSite[];
     readonly guardedTypes: readonly ts.TypeNode[];
     /**
      * The first site that gives an object a prototype no literal or
@@ -229,6 +234,44 @@ export interface ProgramObservations {
      * gives its first argument other inherited members.
      */
     readonly prototypeSetters: readonly ts.CallExpression[];
+}
+
+/** A site whose type node names a keyed collection (`collectionSites`). */
+type CollectionSite =
+    | ts.AsExpression
+    | ts.TypeAssertion
+    | ((
+          | ts.VariableDeclaration
+          | ts.ParameterDeclaration
+          | ts.PropertyDeclaration
+      ) & {
+          readonly type: ts.TypeNode;
+          readonly initializer: ts.Expression;
+      });
+
+/** Whether a type node names a keyed collection (`Map`, `ReadonlySet`, ...). */
+function namesCollection(type: ts.TypeNode | undefined): boolean {
+    return (
+        type !== undefined &&
+        ts.isTypeReferenceNode(type) &&
+        KEYED_COLLECTIONS.has(
+            (ts.isIdentifier(type.typeName)
+                ? type.typeName
+                : type.typeName.right
+            ).text,
+        )
+    );
+}
+
+/** Whether a node is a {@link CollectionSite}: syntax only, nothing typed. */
+function isCollectionSite(node: ts.Node): node is CollectionSite {
+    return isTypeAssertion(node)
+        ? namesCollection(node.type)
+        : (ts.isVariableDeclaration(node) ||
+              ts.isParameter(node) ||
+              ts.isPropertyDeclaration(node)) &&
+              node.initializer !== undefined &&
+              namesCollection(node.type);
 }
 
 /** @unjournaled A pure function of the checked program, kept across replays. */
@@ -451,6 +494,7 @@ function observe(program: ts.Program): ProgramObservations {
         }
     };
     const typeAssertions: (ts.AsExpression | ts.TypeAssertion)[] = [];
+    const collectionSites: CollectionSite[] = [];
     const guardedTypes: ts.TypeNode[] = [];
     let foreignPrototype: ts.Node | undefined;
     const prototypeSetters: ts.CallExpression[] = [];
@@ -681,6 +725,8 @@ function observe(program: ts.Program): ProgramObservations {
             : yieldsNewArray(checker, unwrapped);
     };
     const visit = (node: ts.Node): void => {
+        // `collectionViews` types each site when first asked.
+        if (isCollectionSite(node)) collectionSites.push(node);
         if (ts.isCallExpression(node) || ts.isNewExpression(node))
             node.arguments?.forEach(hand);
         else if (ts.isReturnStatement(node)) hand(node.expression);
@@ -1105,6 +1151,7 @@ function observe(program: ts.Program): ProgramObservations {
         definitions,
         keyedDefinitions,
         typeAssertions,
+        collectionSites,
         guardedTypes,
         foreignPrototype,
         prototypeSetters,
@@ -1158,15 +1205,6 @@ export function collectionViews(
     if (known) return known;
     const checker = program.getTypeChecker();
     const found = new Map<ts.Type, CollectionView[]>();
-    const namesCollection = (type: ts.TypeNode | undefined): boolean =>
-        type !== undefined &&
-        ts.isTypeReferenceNode(type) &&
-        KEYED_COLLECTIONS.has(
-            (ts.isIdentifier(type.typeName)
-                ? type.typeName
-                : type.typeName.right
-            ).text,
-        );
     const view = (
         site: ts.Node,
         typeNode: ts.TypeNode,
@@ -1185,25 +1223,10 @@ export function collectionViews(
         else if (!list.some((implementation) => implementation.own === own))
             list.push({ own, site });
     };
-    for (const source of program.getSourceFiles())
-        if (!source.isDeclarationFile)
-            forEachAnalysisNode(
-                source,
-                (node) => {
-                    if (isTypeAssertion(node) && namesCollection(node.type))
-                        view(node, node.type, assertedOperand(checker, node));
-                    else if (
-                        (ts.isVariableDeclaration(node) ||
-                            ts.isParameter(node) ||
-                            ts.isPropertyDeclaration(node)) &&
-                        node.initializer &&
-                        node.type &&
-                        namesCollection(node.type)
-                    )
-                        view(node, node.type, node.initializer);
-                },
-                { types: "skip" },
-            );
+    for (const site of programObservations(program).collectionSites)
+        if (isTypeAssertion(site))
+            view(site, site.type, assertedOperand(checker, site));
+        else view(site, site.type, site.initializer);
     views.set(program, found);
     return found;
 }
