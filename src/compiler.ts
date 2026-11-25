@@ -282,7 +282,10 @@ import {
 } from "./compiler/namespace-declarations.js";
 import { emitBigIntCompoundAssignment } from "./compiler/bigint-values.js";
 import { compileSpriteAtlasRecord } from "./compiler/sprite-atlas-record.js";
-import { createCompilerProgram } from "./compiler/program.js";
+import {
+    createCompilerProgram,
+    isProgramSourceFile,
+} from "./compiler/program.js";
 import {
     ModuleActivationRequired,
     ModuleNamespaces,
@@ -307,6 +310,7 @@ import {
     libraryStaticMember,
     nullishComparison,
     isLibraryStatic,
+    missingPinnedExport,
 } from "./compiler/symbols.js";
 import {
     isNullable,
@@ -1546,6 +1550,7 @@ class Compiler implements LoweringServices {
         this.registerNativeBinding("bbl_audio_session");
         if (this.options.workers)
             this.reachFeature("platform:workers", this.sourceFile);
+        this.refuseMissingPinnedExports();
         this.dataTypes.registerRecordFacts(this.program.getSourceFiles());
         this.collectSourceCppNames();
         this.collectStaticConstants();
@@ -13082,6 +13087,19 @@ class Compiler implements LoweringServices {
                   ]
                 : body,
         });
+    }
+
+    /** Refuses, at the import, a pinned name the package does not export. */
+    private refuseMissingPinnedExports(): void {
+        for (const file of this.program.getSourceFiles()) {
+            if (!isProgramSourceFile(file)) continue;
+            const missing = missingPinnedExport(this.checker, file);
+            if (missing)
+                this.fail(
+                    missing.node,
+                    `'${missing.specifier}' does not export '${missing.name}': the pinned package declares no such name.`,
+                );
+        }
     }
 
     public fail(

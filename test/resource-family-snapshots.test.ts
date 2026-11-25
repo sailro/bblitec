@@ -4,7 +4,7 @@ import { compileSource } from "../src/compiler.js";
 
 function materialSource(body: string): string {
     return `
-        import {createEngine,createStandardMaterial,createPbrMaterial,type StandardMaterial} from '@babylonjs/lite';
+        import {createEngine,createStandardMaterial,createPbrMaterial,type StandardMaterialProps} from '@babylonjs/lite';
         async function main(){
             const engine=await createEngine({});
             const first=createStandardMaterial(),second=createStandardMaterial();
@@ -29,10 +29,10 @@ test("nested material arrays retain common family facts through guarded reads", 
 });
 
 for (const [name, body] of Object.entries({
-    element: `const alias=rig.materials; alias[0]=replacement as unknown as StandardMaterial; rig.materials[0]!.uvOffset=[3,4];`,
-    replacement: `rig.materials=[replacement as unknown as StandardMaterial]; rig.materials[0]!.uvOffset=[3,4];`,
-    escaped: `function mutate(values:StandardMaterial[]){values[0]=replacement as unknown as StandardMaterial;} mutate(rig.materials); rig.materials[0]!.uvOffset=[3,4];`,
-    index: `function choose(){rig.materials[0]=replacement as unknown as StandardMaterial;return 0;} rig.materials[choose()]!.uvOffset=[3,4];`,
+    element: `const alias=rig.materials; alias[0]=replacement as unknown as StandardMaterialProps; rig.materials[0]!.uvOffset=[3,4];`,
+    replacement: `rig.materials=[replacement as unknown as StandardMaterialProps]; rig.materials[0]!.uvOffset=[3,4];`,
+    escaped: `function mutate(values:StandardMaterialProps[]){values[0]=replacement as unknown as StandardMaterialProps;} mutate(rig.materials); rig.materials[0]!.uvOffset=[3,4];`,
+    index: `function choose(){rig.materials[0]=replacement as unknown as StandardMaterialProps;return 0;} rig.materials[choose()]!.uvOffset=[3,4];`,
 }))
     test(`nested material array facts expire after ${name} mutation`, () => {
         assert.throws(

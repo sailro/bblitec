@@ -996,6 +996,43 @@ test("supports aliased Babylon Lite imports", () => {
     assert.match(result.cpp, /\.clear_color =/);
 });
 
+test("refuses imports of names the pinned package does not export", () => {
+    for (const [statement, name] of [
+        [
+            `import { createEngine, type Engine as LiteEngine } from "babylon-lite";`,
+            "Engine",
+        ],
+        [
+            `import { createEngine, createEngineSoon } from "@babylonjs/lite";`,
+            "createEngineSoon",
+        ],
+        [
+            `import { createEngine, missingHelper as helper } from "babylon-lite";`,
+            "missingHelper",
+        ],
+        [`export { NoSuchType } from "babylon-lite";`, "NoSuchType"],
+    ] as const)
+        assert.throws(
+            () =>
+                compileSource(`
+                    ${statement}
+                    let api: { read: (engine: number) => number } | null = null;
+                    api ??= { read: (engine) => engine };
+                `),
+            (error: unknown) =>
+                error instanceof Error &&
+                error.message.includes(
+                    `does not export '${name}': the pinned package declares no such name.`,
+                ) &&
+                error.message.startsWith("input.ts:2:"),
+        );
+    // A subpath's module, not the entry's typings, says what it exports.
+    compileSource(`
+        import { installPbrTracking } from "babylon-lite/material/tracking/pbr-tracking";
+        void installPbrTracking;
+    `);
+});
+
 test("resolves pinned Babylon types independently of cwd", () => {
     const previous = process.cwd();
     const temporary = mkdtempSync(join(tmpdir(), "bblitec-compiler-"));
@@ -4767,10 +4804,10 @@ test("evaluates animation factories once when projecting a class record into typ
             createAnimationManager, createBox, createEngine,
             createPropertyAnimationClip, createPropertyAnimationGroup,
             stopAnimation,
-            type AnimationManager, type Mesh, type PropertyAnimationGroup,
+            type AnimationGroup, type AnimationManager, type Mesh,
         } from "@babylonjs/lite";
         class Controller {
-            private groups: Record<"jump" | "rest", PropertyAnimationGroup>;
+            private groups: Record<"jump" | "rest", AnimationGroup>;
             constructor(manager: AnimationManager, target: Mesh) {
                 const clip = createPropertyAnimationClip("move", [{
                     path: "position.x",
@@ -10952,22 +10989,20 @@ test("material stores through an effectful owner evaluate it once", () => {
     // its owner for the setter: every statement names the owner, so an
     // index with effects is read once ahead of them.
     const result = compileSource(`
-        import { createEngine, createStandardMaterial, type StandardMaterial } from "@babylonjs/lite";
+        import { createEngine, createStandardMaterial } from "@babylonjs/lite";
 
         async function main() {
             const engine = await createEngine({});
             const first = createStandardMaterial();
             const second = createStandardMaterial();
             const third = createStandardMaterial();
-            interface Holder { mat: StandardMaterial }
-            const holders: Holder[] = [{ mat: first }, { mat: second }, { mat: third }];
-            let h = 0;
-            holders[h++]!.mat.uvOffset = [5, 6];
-            let d = 0;
-            holders[d++]!.mat.diffuseColor = [0, 0, 1];
-            let u = 0;
-            holders[u++]!.mat.uvScale = [2, 2];
             const rig = { materials: [first, second, third] };
+            let h = 0;
+            rig.materials[h++]!.uvOffset = [5, 6];
+            let d = 0;
+            rig.materials[d++]!.diffuseColor = [0, 0, 1];
+            let u = 0;
+            rig.materials[u++]!.uvScale = [2, 2];
             let r = 0;
             rig.materials[r++]!.uvOffset = [r, r];
             let s = 0;
@@ -22038,16 +22073,16 @@ test("shares mutable class fields across retained callbacks", () => {
 
 test("retains mutable containers in records returned by factories", () => {
     const result = compileSource(`
-        import { createEngine, type Engine } from "@babylonjs/lite";
+        import { createEngine, type EngineContext } from "@babylonjs/lite";
 
         interface Store {
-            readonly engine: Engine;
+            readonly engine: EngineContext;
             _state: {
                 values: Map<number, string>;
             };
         }
 
-        function createStore(engine: Engine): Store {
+        function createStore(engine: EngineContext): Store {
             return {
                 engine,
                 _state: {
@@ -22074,18 +22109,14 @@ test("retains mutable containers in records returned by factories", () => {
         void main();
     `);
 
-    const storage = result.cpp.match(
-        /auto (\w+) = bbl::js::make_gc_shared<bblscene::(\w+)>\(bbl::js::make_ref<bblscene::\2Data>\(bblscene::\2Data\{bbl::js::Map<double, std::string>\{\}\}\)\);/,
-    );
-    assert.ok(storage);
+    // The record keeps the engine and its state record: both calls reach
+    // the one map the factory created.
     assert.match(
         result.cpp,
-        new RegExp(`\\(\\*${storage[1]}\\)->values\\.set\\(`),
+        /bblscene::StoreData\{bbl::StoredEngine\{v_engine\}, bbl::js::make_ref<bblscene::(\w+)Data>\(bblscene::\1Data\{bbl::js::Map<double, std::string>\{\}\}\)\}/,
     );
-    assert.match(
-        result.cpp,
-        new RegExp(`\\(\\*${storage[1]}\\)->values\\.get\\(`),
-    );
+    assert.match(result.cpp, /store->_state->values\.set\(/);
+    assert.match(result.cpp, /store->_state->values\.get\(/);
     assert.doesNotMatch(
         result.cpp,
         /bbl::js::Map<double, std::string>\{\}\.(?:set|get)\(/,
@@ -23680,13 +23711,12 @@ test("refuses the multi-material CSG mesh builder by name", () => {
     assert.throws(
         () =>
             compileSource(
-                csgScene(
-                    [
-                        '    const meshes = createMeshesFromCsg(engine, csgSubtract(createCsgFromMesh(createBox(engine, 2)), createCsgFromMesh(createSphere(engine, { diameter: 1 }))), [createStandardMaterial()], "carved");',
-                        "    addToScene(scene, meshes[0]);",
-                    ],
-                    ["createMeshesFromCsg"],
-                ),
+                // A subpath exports the sibling the entry does not.
+                `import { createMeshesFromCsg } from "babylon-lite/mesh/csg.js";
+${csgScene([
+    '    const meshes = createMeshesFromCsg(engine, csgSubtract(createCsgFromMesh(createBox(engine, 2)), createCsgFromMesh(createSphere(engine, { diameter: 1 }))), [createStandardMaterial()], "carved");',
+    "    addToScene(scene, meshes[0]);",
+])}`,
                 { fileName: "input.ts" },
             ),
         (error: unknown) =>

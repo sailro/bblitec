@@ -95,10 +95,10 @@ assert(state.range_updates->scenes.size()==2);
 
 test("material tracking installs after its module hop and re-reads tracked colors", (t) => {
     const compiled = compileSource(`
-        import {createEngine,createStandardMaterial,createPbrMaterial,enableMaterialTracking,type PbrMaterial} from "@babylonjs/lite";
-        const entries:{mat:PbrMaterial;base:number}[]=[];
+        import {createEngine,createStandardMaterial,createPbrMaterial,enableMaterialTracking,type PbrMaterialProps} from "@babylonjs/lite";
+        const entries:{mat:PbrMaterialProps;base:number}[]=[];
         async function main(){
-            await createEngine({});
+            await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
             const from=entries.length;
             entries.push({mat:createPbrMaterial({}),base:1});
             void Promise.all(entries.slice(from).map((entry)=>enableMaterialTracking(entry.mat as never)));

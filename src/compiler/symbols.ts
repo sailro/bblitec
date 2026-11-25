@@ -304,6 +304,62 @@ export function isBabylonModule(specifier: string): boolean {
 }
 
 /**
+ * The first name a file imports or re-exports by name from the pinned
+ * package's entry that the entry does not export. TypeScript binds such a
+ * name to an error type, which no storage decision may read as the
+ * program's. A subpath has no typings of its own (it resolves to the
+ * entry's), so only its module's code says what it exports.
+ */
+export function missingPinnedExport(
+    checker: ts.TypeChecker,
+    file: ts.SourceFile,
+):
+    | {
+          readonly node: ts.ImportSpecifier | ts.ExportSpecifier;
+          readonly name: string;
+          readonly specifier: string;
+      }
+    | undefined {
+    for (const statement of file.statements) {
+        if (
+            !ts.isImportDeclaration(statement) &&
+            !ts.isExportDeclaration(statement)
+        )
+            continue;
+        const module = statement.moduleSpecifier;
+        if (
+            !module ||
+            !ts.isStringLiteral(module) ||
+            !(babylonPackages as readonly string[]).includes(module.text)
+        )
+            continue;
+        const bindings = ts.isImportDeclaration(statement)
+            ? statement.importClause?.namedBindings
+            : statement.exportClause;
+        if (
+            !bindings ||
+            ts.isNamespaceImport(bindings) ||
+            ts.isNamespaceExport(bindings)
+        )
+            continue;
+        const moduleSymbol = checker.getSymbolAtLocation(module);
+        const exported = new Set(
+            moduleSymbol
+                ? checker
+                      .getExportsOfModule(moduleSymbol)
+                      .map(({ name }) => name)
+                : [],
+        );
+        for (const node of bindings.elements) {
+            const name = specifierSourceName(node);
+            if (!exported.has(name))
+                return { node, name, specifier: module.text };
+        }
+    }
+    return undefined;
+}
+
+/**
  * The package a scene loads the physics solver's WASM module from.
  *
  * The pin takes that module as a parameter (`createHavokWorld(scene, hknp)`)
