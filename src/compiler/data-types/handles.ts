@@ -198,6 +198,15 @@ export function isWindowHandleKind(kind: HandleKind): boolean {
 }
 
 /**
+ * Messaging objects (`MessagePort`, `MessageChannel`): the worker runtime
+ * declares them, as their messages are tasks of a realm's event loop, so
+ * storage holding one needs the application realm.
+ */
+export function isWorkerHandleKind(kind: HandleKind): boolean {
+    return kind === "message-port" || kind === "message-channel";
+}
+
+/**
  * Platform input state the native input model answers though the DOM
  * declares it (a gamepad, its buttons, a Touch): never browser-only, and a
  * function parameter keeps it as its handle.
@@ -235,6 +244,22 @@ export function isInputSnapshotList(type: DataType | undefined): boolean {
  */
 export function storesOneHandle(kind: HandleKind): boolean {
     return kind !== "texture";
+}
+
+/**
+ * Whether a data type lists handles that wrap values of other kinds and
+ * cannot give them back: a transfer list's entry (`Transferable`) holds a
+ * MessagePort, an OffscreenCanvas or a fresh wrapper of an ArrayBuffer, which
+ * neither compares with the buffer nor reads as it. A binding annotated so
+ * keeps its initializer's own elements, as under an unrepresented annotation;
+ * a transfer list sink converts them.
+ */
+export function listsWrappedValues(type: DataType | undefined): boolean {
+    return (
+        type?.kind === "vector" &&
+        type.element.kind === "handle" &&
+        type.element.handle === "transferable"
+    );
 }
 
 /** The node value kinds a `scene-node` handle slot holds. */

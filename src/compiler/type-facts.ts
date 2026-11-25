@@ -407,7 +407,9 @@ function shortCircuits(
  * - a type that admits only `undefined` is `undefined`, only `null` is
  *   `null`, both is "either" unless the storage knows its absent state is
  *   `undefined` (`undefinedOnly`: a function stored in a slot whose
- *   signature admits `null` too returns none); an optional chain that can short-circuit (a `?.`
+ *   signature admits `null` too returns none) and what it holds has no
+ *   absent state of its own (an iterator's completion around a yielded
+ *   tagged, optional or dynamic value is not); an optional chain that can short-circuit (a `?.`
  *   receiver that may be nullish) admits `undefined`, and so does one whose
  *   type names neither: it is absent only where a receiver's storage is;
  * - a type that names neither leaves the representation to say: a
@@ -457,7 +459,8 @@ export function absenceKind(
         absent.null &&
         absent.undefined &&
         value.dataType?.kind === "optional" &&
-        value.dataType.undefinedOnly
+        value.dataType.undefinedOnly &&
+        !["optional", "tagged", "json"].includes(value.dataType.inner.kind)
     )
         return "undefined";
     return (

@@ -44,6 +44,7 @@ import {
 import { isDeterministicRandomRead } from "./deterministic-random.js";
 import {
     demandedStorageType,
+    initializerListStorage,
     heldClassInstanceType,
     requireOneObject,
     type DynamicBindingStorage,
@@ -3943,6 +3944,17 @@ export class DeclarationLowerer {
         let annotated = rebound
             ? this.context.dataTypes.fromStoredTsType(declaredType, typeSite)
             : this.context.dataTypes.fromTsType(declaredType, typeSite);
+        // A list of handles that wrap their values holds its initializer's
+        // own elements, where it has some.
+        if (
+            initializerListStorage(
+                this.context,
+                declaration,
+                annotated,
+                this.context.unwrap(declaration.initializer),
+            )
+        )
+            annotated = undefined;
         if (!annotated && rebound)
             annotated = this.context.dataTypes.storedDynamicRecordType(
                 declaredType,

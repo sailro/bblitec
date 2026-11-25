@@ -9,6 +9,7 @@ import {
     isEngineScopedHandleKind,
     isRuntimeIdentityHandleKind,
     isWindowHandleKind,
+    isWorkerHandleKind,
 } from "./data-types/handles.js";
 import { pinnedHandleKind } from "./data-types/pinned-handles.js";
 import {
@@ -1589,6 +1590,7 @@ export class DataTypeRegistry {
     @journaled private accessor emittedJsonType = false;
     @journaled private accessor emittedFileType = false;
     @journaled private accessor emittedWindowType = false;
+    @journaled private accessor emittedWorkerType = false;
     @journaled private accessor emittedResponseType = false;
     /** The web platform headers whose storage was rendered (`webPlatformHeaders`). */
     @journaled
@@ -12440,18 +12442,41 @@ export class DataTypeRegistry {
                     ...this.emittedWebPlatformHeaders,
                     header,
                 ];
-        if (this.isWindowType(dataType)) this.emittedWindowType = true;
+        if (dataType.kind === "handle") {
+            if (isWindowHandleKind(dataType.handle))
+                this.emittedWindowType = true;
+            if (isWorkerHandleKind(dataType.handle))
+                this.emittedWorkerType = true;
+        }
         return dataTypeCppType(dataType, this.cppContext);
     }
 
-    private isWindowType(type: DataType): boolean {
-        return type.kind === "handle" && isWindowHandleKind(type.handle);
+    /** Whether rendered storage holds a handle `holds` admits, a named record's field included. */
+    private usesHandleStorage(
+        emitted: boolean,
+        holds: (kind: HandleKind) => boolean,
+    ): boolean {
+        return (
+            emitted ||
+            this.usesNamedKind(
+                "handle",
+                (type) => type.kind === "handle" && holds(type.handle),
+            )
+        );
     }
 
     public usesWindowStorage(): boolean {
-        return (
-            this.emittedWindowType ||
-            this.usesNamedKind("handle", (type) => this.isWindowType(type))
+        return this.usesHandleStorage(
+            this.emittedWindowType,
+            isWindowHandleKind,
+        );
+    }
+
+    /** Whether rendered storage holds a messaging object (`isWorkerHandleKind`). */
+    public usesWorkerStorage(): boolean {
+        return this.usesHandleStorage(
+            this.emittedWorkerType,
+            isWorkerHandleKind,
         );
     }
 

@@ -13098,6 +13098,9 @@ class Compiler implements LoweringServices {
                 ? [{ name: this.presentationHostCpp, type: "bbl::Engine" }]
                 : []),
         ]).map(renderNativeEmission);
+        // The worker runtime declares the messaging objects storage holds.
+        if (!this.options.workers && this.dataTypes.usesWorkerStorage())
+            throw new ApplicationRealmRequired();
         return renderMainCpp({
             source: this.options.fileName,
             ...(this.options.workers
