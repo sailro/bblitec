@@ -4005,7 +4005,8 @@ export class UserFunctionLowerer {
     /**
      * Whether a body tests the presence of `parameter`, held in `storage`,
      * which an argument that binds it present answers in a specialized
-     * body: optional storage, and a test of it in the body.
+     * body: a parameter a call may leave absent (optional storage, or a
+     * default), and a test of it in the body.
      */
     private presenceTested(
         parameter: ts.ParameterDeclaration,
@@ -4013,7 +4014,8 @@ export class UserFunctionLowerer {
         storage: DataType | undefined,
     ): boolean {
         return (
-            storage?.kind === "optional" &&
+            (storage?.kind === "optional" ||
+                parameter.initializer !== undefined) &&
             parameterPresenceTested(this.checker, parameter, declaration)
         );
     }
