@@ -8,12 +8,29 @@ import type { LoweringServices } from "./lowering-services.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import {
     declaredSymbol,
+    declaredInDefaultLibrary,
     libraryGlobal,
     calledDeclaration,
     calledFunction,
     memberAccessors,
+    resolvedSymbol,
+    staticAccessKey,
+    staticPropertyKey,
+    valueSymbolOf,
 } from "./symbols.js";
-import { isSupportedFunction } from "./syntax.js";
+import {
+    bindingElementKey,
+    classBaseExpression,
+    functionOfDeclaration,
+    isSupportedFunction,
+} from "./syntax.js";
+import {
+    dispatchedClassMembers,
+    isStaticMember,
+    localClassOfSymbol,
+    protocolClassMembers,
+    runTimeKeyMayRunClassCode,
+} from "./class-members.js";
 
 /** AST nodes, checker types and symbols are immutable compiler inputs. */
 function isCompilerInput(value: object): boolean {
@@ -27,6 +44,40 @@ function isCompilerInput(value: object): boolean {
         ("getFlags" in value && typeof value.getFlags === "function")
     );
 }
+
+/** A parsed or factory syntax node. */
+function isSyntaxNode(value: unknown): value is ts.Node {
+    return (
+        typeof value === "object" &&
+        value !== null &&
+        "kind" in value &&
+        typeof value.kind === "number" &&
+        "getSourceFile" in value
+    );
+}
+
+/** An own data property, read without running an accessor. */
+function ownData(value: object, name: string): unknown {
+    const descriptor = Object.getOwnPropertyDescriptor(value, name);
+    return descriptor && "value" in descriptor ? descriptor.value : undefined;
+}
+
+/** What a key reads code with: the program the code is in. */
+export type SpecializationReads = Pick<LoweringServices, "checker" | "program">;
+
+/**
+ * The fields through which a value shares generation state with another:
+ * the aggregates the scope-wide searches of a lowering match a binding by
+ * (its holder, its collection facts, its callback's owner).
+ */
+const sharedStateFields = [
+    "tupleElements",
+    "staticElements",
+    "staticElementsOwner",
+    "collectionCardinality",
+    "callbackRecordOwner",
+    "recordProperties",
+] as const;
 
 export interface FunctionEmissionScope {
     readonly lexical: object;
@@ -58,8 +109,26 @@ export class FunctionSpecializations<T> {
         return id;
     }
 
-    key(scope: FunctionEmissionScope, values: readonly unknown[]): string {
+    /**
+     * A captured scope chain (`recordScopes`) holds only the bindings the
+     * code that runs in it reads ({@link scopeBindings}): an owner's own
+     * methods, getters and setters, and, beside a callback, its
+     * declaration. Each scope keeps its place and its identity in the
+     * key. An unread binding that shares state with what the key holds is
+     * added at the end, so the alias topology the scope-wide searches of
+     * a lowering see stays in the key.
+     */
+    key(
+        scope: FunctionEmissionScope,
+        values: readonly unknown[],
+        reads: SpecializationReads,
+    ): string {
         const seen = new Map<object, number>();
+        const cpps = new Set<string>();
+        const scopes = new Map<
+            Map<unknown, unknown>,
+            { readonly id: number; readonly included: Set<unknown> }
+        >();
         const tokens = [
             `${this.identity(scope.lexical)}:${scope.emission}:${scope.block}:${scope.continuation}:`,
         ];
@@ -102,6 +171,77 @@ export class FunctionSpecializations<T> {
                 );
             if (node) node.properties = properties;
             return properties;
+        };
+        const projectScopes = (
+            chain: readonly unknown[],
+            code: readonly ts.Node[],
+        ): void => {
+            const read = scopeBindings(reads, code);
+            // Code whose reads the walk cannot name keeps its whole scope.
+            if (!read) {
+                encode(chain);
+                return;
+            }
+            tokens.push("scopes:[");
+            for (let index = 0; index < chain.length; index++) {
+                if (index) tokens.push(",");
+                const bindings = chain[index];
+                if (!(bindings instanceof Map)) {
+                    encode(bindings);
+                    continue;
+                }
+                let entry = scopes.get(bindings);
+                if (!entry) {
+                    entry = { id: scopes.size, included: new Set() };
+                    scopes.set(bindings, entry);
+                }
+                tokens.push(`scope:${entry.id}:[`);
+                let first = true;
+                for (const symbol of read) {
+                    if (!bindings.has(symbol)) continue;
+                    if (!first) tokens.push(",");
+                    first = false;
+                    entry.included.add(symbol);
+                    encode(symbol);
+                    tokens.push("=");
+                    encode(bindings.get(symbol));
+                }
+                tokens.push("]");
+            }
+            tokens.push("]");
+        };
+        const held = (value: unknown): boolean =>
+            typeof value === "object" && value !== null && seen.has(value);
+        const sharesValueState = (value: unknown): boolean => {
+            if (typeof value !== "object" || value === null) return false;
+            if (seen.has(value)) return true;
+            const cpp = ownData(value, "cpp");
+            if (typeof cpp === "string" && cpps.has(cpp)) return true;
+            // An engine in scope is an implicit resource context.
+            const dataType = ownData(value, "dataType");
+            if (
+                ownData(value, "kind") === "engine" ||
+                (typeof dataType === "object" &&
+                    dataType !== null &&
+                    ownData(dataType, "handle") === "engine")
+            )
+                return true;
+            return sharedStateFields.some((name) => held(ownData(value, name)));
+        };
+        const sharesState = (binding: unknown): boolean => {
+            if (typeof binding !== "object" || binding === null) return false;
+            if (seen.has(binding)) return true;
+            const value = ownData(binding, "value");
+            if (sharesValueState(value)) return true;
+            const members =
+                typeof value === "object" && value !== null
+                    ? ownData(value, "recordProperties")
+                    : undefined;
+            return (
+                typeof members === "object" &&
+                members !== null &&
+                Object.values(members).some(sharesValueState)
+            );
         };
         const encode = (value: unknown): void => {
             if (value === null) {
@@ -206,6 +346,8 @@ export class FunctionSpecializations<T> {
                 return;
             }
             const properties = propertySchema(value);
+            const cpp = ownData(value, "cpp");
+            if (typeof cpp === "string" && cpp !== "") cpps.add(cpp);
             tokens.push("{");
             for (let index = 0; index < properties.length; index++) {
                 const { name, key } = properties[index]!;
@@ -215,7 +357,13 @@ export class FunctionSpecializations<T> {
                     value,
                     name,
                 )!;
-                if ("value" in descriptor) encode(descriptor.value);
+                if (
+                    name === "recordScopes" &&
+                    "value" in descriptor &&
+                    Array.isArray(descriptor.value)
+                )
+                    projectScopes(descriptor.value, ownCode(value));
+                else if ("value" in descriptor) encode(descriptor.value);
                 else {
                     tokens.push("accessor:");
                     // eslint-disable-next-line @typescript-eslint/unbound-method -- Snapshot accessor identities without invoking them.
@@ -225,9 +373,33 @@ export class FunctionSpecializations<T> {
                     encode(descriptor.set);
                 }
             }
+            // A callback runs its declaration in its owner's scopes.
+            const declaration = ownData(value, "callbackDeclaration");
+            const owner = ownData(value, "callbackRecordOwner");
+            const chain =
+                typeof owner === "object" && owner !== null
+                    ? ownData(owner, "recordScopes")
+                    : undefined;
+            if (isSyntaxNode(declaration) && Array.isArray(chain)) {
+                tokens.push(",callbackScopes:");
+                projectScopes(chain, [declaration]);
+            }
             tokens.push("}");
         };
         encode(values);
+        for (let grew = true; grew;) {
+            grew = false;
+            for (const [bindings, { id, included }] of scopes)
+                for (const [symbol, binding] of bindings) {
+                    if (included.has(symbol) || !sharesState(binding)) continue;
+                    included.add(symbol);
+                    grew = true;
+                    tokens.push(`alias:${id}:`);
+                    encode(symbol);
+                    tokens.push("=");
+                    encode(binding);
+                }
+        }
         return tokens.join("");
     }
 
@@ -244,92 +416,247 @@ export class FunctionSpecializations<T> {
     }
 }
 
-/** Read lexical dependencies of the body and the source helpers it calls. */
-const dependencyCache = new WeakMap<
+/**
+ * What code reads, through the code it runs: each name it reads or writes,
+ * first reference first, keyed by its declared symbol, and the code walked.
+ * The walk follows the functions a name refers to (a callback named), the
+ * calls the code makes, a constructed class's construction code (its
+ * constructor and field initializers, its base's too), the accessors and
+ * class members a member access or an object pattern may run
+ * ({@link dispatchedClassMembers}: an override, or a class read through an
+ * interface or `any`) and the class members the language calls itself
+ * ({@link protocolClassMembers}). `unfollowed` is the first place where
+ * code may run that no name declares: a key only the run time knows on a
+ * receiver that may hold class code, a construction of a class no name
+ * declares, `eval`, `Reflect` or `with`.
+ */
+interface CodeReads {
+    readonly names: ReadonlyMap<ts.Symbol, ts.Identifier>;
+    /** The symbols scope bindings are kept under ({@link valueSymbolOf}). */
+    readonly bindings: ReadonlySet<ts.Symbol>;
+    readonly code: ReadonlySet<ts.Node>;
+    readonly unfollowed: ts.Node | undefined;
+}
+
+/** @unjournaled Derived from the program alone, per code root. */
+const codeReadsCache = new WeakMap<
     ts.TypeChecker,
-    WeakMap<ts.FunctionLikeDeclaration, readonly ts.Identifier[]>
+    WeakMap<ts.Node, CodeReads>
 >();
 
-function dependencyIdentifiers(
-    checker: ts.TypeChecker,
-    root: ts.FunctionLikeDeclaration,
-): readonly ts.Identifier[] {
-    let cache = dependencyCache.get(checker);
+function codeReads(reads: SpecializationReads, root: ts.Node): CodeReads {
+    const { checker, program } = reads;
+    let cache = codeReadsCache.get(checker);
     if (!cache) {
         cache = new WeakMap();
-        dependencyCache.set(checker, cache);
+        codeReadsCache.set(checker, cache);
     }
     const cached = cache.get(root);
     if (cached) return cached;
-    const functions = new Set<ts.FunctionLikeDeclaration>();
-    const identifiers = new Map<ts.Symbol, ts.Identifier>();
-    const visitFunction = (fn: ts.FunctionLikeDeclaration): void => {
-        if (
-            functions.has(fn) ||
-            !fn.body ||
-            fn.getSourceFile().isDeclarationFile
-        )
-            return;
-        functions.add(fn);
+    const names = new Map<ts.Symbol, ts.Identifier>();
+    const bindings = new Set<ts.Symbol>();
+    const code = new Set<ts.Node>();
+    let unfollowed: ts.Node | undefined;
+    const pending: ts.Node[] = [
+        root,
+        ...protocolClassMembers(checker, program),
+    ];
+    const follow = (node: ts.Node | undefined): void => {
+        if (node && !code.has(node)) pending.push(node);
+    };
+    const construct = (declaration: ts.ClassLikeDeclaration): void => {
+        if (code.has(declaration)) return;
+        code.add(declaration);
+        for (const member of declaration.members)
+            if (
+                ts.isConstructorDeclaration(member) ||
+                (ts.isPropertyDeclaration(member) && !isStaticMember(member))
+            )
+                follow(member);
+        const base = classBaseExpression(declaration);
+        if (base) {
+            follow(base);
+            const extended = localClassOfSymbol(
+                resolvedSymbol(checker, base.expression),
+            );
+            if (extended) construct(extended);
+        }
+    };
+    const name = (identifier: ts.Identifier): void => {
+        const symbol = declaredSymbol(checker, identifier);
+        if (!symbol || names.has(symbol)) return;
+        names.set(symbol, identifier);
+        bindings.add(symbol);
+        const binding = valueSymbolOf(checker, identifier);
+        if (binding) bindings.add(binding);
+    };
+    const dispatch = (
+        key: string | undefined,
+        receiver: ts.Node,
+        at: ts.Node,
+    ): void => {
+        const type = checker.getTypeAtLocation(receiver);
+        if (key !== undefined)
+            for (const member of dispatchedClassMembers(
+                checker,
+                program,
+                key,
+                type,
+            ))
+                follow(member);
+        else if (runTimeKeyMayRunClassCode(checker, program, type))
+            unfollowed ??= at;
+    };
+    for (let next = pending.pop(); next; next = pending.pop()) {
+        if (code.has(next) || next.getSourceFile().isDeclarationFile) continue;
+        code.add(next);
         forEachAnalysisNode(
-            fn.body,
+            next,
             (node) => {
                 if (ts.isIdentifier(node)) {
-                    const symbol = declaredSymbol(checker, node);
-                    if (symbol && !identifiers.has(symbol))
-                        identifiers.set(symbol, node);
+                    name(node);
+                    const target = resolvedSymbol(checker, node);
+                    const declaration = target?.valueDeclaration;
+                    follow(declaration && functionOfDeclaration(declaration));
+                    if (
+                        (node.text === "eval" || node.text === "Reflect") &&
+                        declaredInDefaultLibrary(target)
+                    )
+                        unfollowed ??= node;
+                    return;
                 }
-                if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
+                if (ts.isWithStatement(node)) unfollowed ??= node;
+                if (
+                    ts.isCallExpression(node) ||
+                    ts.isNewExpression(node) ||
+                    ts.isTaggedTemplateExpression(node)
+                ) {
                     const called = ts.isNewExpression(node)
                         ? calledDeclaration(checker, node)
                         : calledFunction(checker, node);
-                    if (
-                        isSupportedFunction(called) ||
-                        (called && ts.isConstructorDeclaration(called))
-                    )
-                        visitFunction(called);
+                    if (isSupportedFunction(called)) follow(called);
+                    if (ts.isNewExpression(node)) {
+                        const constructed = localClassOfSymbol(
+                            resolvedSymbol(checker, node.expression),
+                        );
+                        if (constructed) construct(constructed);
+                        else if (!called?.getSourceFile().isDeclarationFile)
+                            unfollowed ??= node;
+                    }
                 }
                 if (
                     ts.isPropertyAccessExpression(node) ||
                     ts.isElementAccessExpression(node)
-                )
+                ) {
                     for (const accessor of memberAccessors(
                         checker,
                         node,
                         "either",
                     ))
-                        visitFunction(accessor);
+                        follow(accessor);
+                    // A namespace member reads its module's binding.
+                    if (ts.isPropertyAccessExpression(node))
+                        if (ts.isIdentifier(node.name)) name(node.name);
+                    dispatch(
+                        staticAccessKey(checker, node),
+                        node.expression,
+                        node,
+                    );
+                }
+                if (
+                    ts.isBindingElement(node) &&
+                    ts.isObjectBindingPattern(node.parent)
+                )
+                    dispatch(bindingElementKey(node), node.parent, node);
+                if (
+                    ts.isBinaryExpression(node) &&
+                    node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                    ts.isObjectLiteralExpression(node.left)
+                )
+                    for (const property of node.left.properties)
+                        dispatch(
+                            property.name &&
+                                staticPropertyKey(checker, property.name),
+                            node.right,
+                            property,
+                        );
             },
             { types: "skip", names: "references" },
         );
-    };
-    visitFunction(root);
-    const inside = (declaration: ts.Declaration): boolean =>
-        [...functions].some(
-            (fn) =>
-                fn.getSourceFile() === declaration.getSourceFile() &&
-                fn.pos <= declaration.pos &&
-                fn.end >= declaration.end,
-        );
-    const result = [...identifiers].flatMap(([symbol, identifier]) =>
-        symbol.declarations?.some(inside) ? [] : [identifier],
-    );
+    }
+    const result = { names, bindings, code, unfollowed };
     cache.set(root, result);
     return result;
+}
+
+/** Read lexical dependencies of the body and the code it runs ({@link codeReads}). */
+function dependencyIdentifiers(
+    reads: SpecializationReads,
+    root: ts.FunctionLikeDeclaration,
+): readonly ts.Identifier[] {
+    const { names, code } = codeReads(reads, root);
+    const contains = (outer: ts.Node, inner: ts.Node): boolean =>
+        outer.getSourceFile() === inner.getSourceFile() &&
+        outer.pos <= inner.pos &&
+        outer.end >= inner.end;
+    // A local of code the root is nested in is the root's free variable.
+    const inside = (declaration: ts.Declaration): boolean =>
+        [...code].some(
+            (walked) =>
+                contains(walked, declaration) &&
+                (walked === root || !contains(walked, root)),
+        );
+    return [...names].flatMap(([symbol, identifier]) =>
+        symbol.declarations?.some(inside) ? [] : [identifier],
+    );
+}
+
+/**
+ * The bindings a captured scope chain holds for code that runs in it: the
+ * names it reads or writes, its own locals included (a callback created
+ * inside its own invocation closes over them). Undefined when the walk
+ * met code it cannot name ({@link CodeReads.unfollowed}): that code may
+ * read any binding, so its scope is kept whole.
+ */
+function scopeBindings(
+    reads: SpecializationReads,
+    roots: readonly ts.Node[],
+): ReadonlySet<ts.Symbol> | undefined {
+    if (roots.length === 1) {
+        const only = codeReads(reads, roots[0]!);
+        return only.unfollowed ? undefined : only.bindings;
+    }
+    const union = new Set<ts.Symbol>();
+    for (const root of roots) {
+        const { bindings, unfollowed } = codeReads(reads, root);
+        if (unfollowed) return undefined;
+        for (const symbol of bindings) union.add(symbol);
+    }
+    return union;
+}
+
+/** The methods, getters and setters a record runs in its own scopes. */
+function ownCode(value: object): ts.Node[] {
+    return ["recordMethods", "recordGetters", "recordSetters"].flatMap(
+        (name) => {
+            const members = ownData(value, name);
+            return typeof members === "object" && members !== null
+                ? Object.values(members).filter(isSyntaxNode)
+                : [];
+        },
+    );
 }
 
 export function functionDependencies(
     context: Pick<
         LoweringServices,
-        "checker" | "bindings" | "platformDocumentHidden"
+        "checker" | "program" | "bindings" | "platformDocumentHidden"
     >,
     roots: readonly ts.FunctionLikeDeclaration[],
 ): unknown[] {
     return [
         ...new Set(
-            roots.flatMap((root) =>
-                dependencyIdentifiers(context.checker, root),
-            ),
+            roots.flatMap((root) => dependencyIdentifiers(context, root)),
         ),
     ].flatMap((identifier): unknown[] => {
         const value = context.bindings.lookupOptional(identifier);

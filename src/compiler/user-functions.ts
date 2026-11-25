@@ -3108,6 +3108,7 @@ export class UserFunctionLowerer {
                             ? context.activeThis()
                             : undefined,
                     ],
+                    context,
                 );
                 let facts = this.scalarResults.get(ir.declaration, key);
                 if (!facts) {
@@ -5063,22 +5064,26 @@ export class UserFunctionLowerer {
             (callSiteEffects && !reuseCallSite) ||
             (sharedBody && activeSurvey() !== undefined)
                 ? undefined
-                : this.emittedRecursiveGroups.key(scope, [
-                      context.dataTypes.captureTypeArguments(),
-                      rootEntry.captured,
-                      rootEntry.presentParameters,
-                      reuseCallSite ? rootEntry.argumentFacts : undefined,
-                      reuseCallSite,
-                      declarations.some((declaration) =>
-                          this.readsReceiver(declaration),
-                      )
-                          ? context.activeThis()
-                          : undefined,
-                      functionDependencies(context, declarations),
-                      // A body calling a method whose recursive group is being
-                      // emitted calls that group, which the next group is not.
-                      context.classLowerer.activeRecursion(),
-                  ]);
+                : this.emittedRecursiveGroups.key(
+                      scope,
+                      [
+                          context.dataTypes.captureTypeArguments(),
+                          rootEntry.captured,
+                          rootEntry.presentParameters,
+                          reuseCallSite ? rootEntry.argumentFacts : undefined,
+                          reuseCallSite,
+                          declarations.some((declaration) =>
+                              this.readsReceiver(declaration),
+                          )
+                              ? context.activeThis()
+                              : undefined,
+                          functionDependencies(context, declarations),
+                          // A body calling a method whose recursive group is being
+                          // emitted calls that group, which the next group is not.
+                          context.classLowerer.activeRecursion(),
+                      ],
+                      context,
+                  );
         // A survey's probe calls the body an earlier probe lowered on the
         // same storage, with the same inputs, as the specialization it
         // emitted, beginning its statements again.

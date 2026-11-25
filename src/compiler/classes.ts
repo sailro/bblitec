@@ -2827,6 +2827,7 @@ export class ClassLowerer {
                 receiverClasses ?? instance,
                 functionDependencies(this.context, [method]),
             ],
+            this.context,
         );
         const receiverCpp = receiverClasses ? instance.cpp : undefined;
         const previous = this.emittedRecursiveMethods.get(
