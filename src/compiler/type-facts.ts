@@ -121,6 +121,47 @@ export const PRIMITIVE_KINDS: readonly ValueKind[] = [
     "undefined",
 ];
 
+/**
+ * Whether a value of `type` may be `data`, plain data a generation run
+ * holds: a primitive of a kind a member of the type is; an object where a
+ * member is no primitive and each element, or each member it declares (by
+ * name or index signature), may hold what the data holds there. An open
+ * type admits any.
+ */
+export function typeAdmitsData(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+    data: unknown,
+): boolean {
+    const kind = data === null ? "null" : typeof data;
+    return unionMembers(type).some((member) => {
+        const memberKind = valueKindOf(member);
+        if (memberKind === "unknown") return true;
+        if (typeof data !== "object" || data === null)
+            return memberKind === kind;
+        if (PRIMITIVE_KINDS.includes(memberKind)) return false;
+        if (Array.isArray(data)) {
+            const element = arrayElementType(checker, member);
+            return (
+                element === undefined ||
+                data.every((item: unknown) =>
+                    typeAdmitsData(checker, element, item),
+                )
+            );
+        }
+        return Object.entries(data).every(([key, value]) => {
+            const property = member.getProperty(key);
+            const declared = property
+                ? checker.getTypeOfSymbol(property)
+                : stringIndexType(checker, member);
+            return (
+                declared === undefined ||
+                typeAdmitsData(checker, declared, value)
+            );
+        });
+    });
+}
+
 /** The kinds of value no callee shares: each copies into it. */
 const SCALAR_KINDS: readonly ValueKind[] = [...PRIMITIVE_KINDS, "void"];
 

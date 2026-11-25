@@ -508,7 +508,7 @@ export interface LoweringServices {
     settledCallInitializer(
         identifier: ts.Identifier,
     ): ts.CallExpression | undefined;
-    settledAwaitData(declaration: ts.VariableDeclaration): Value | undefined;
+    generationRead(expression: ts.Expression): Value | undefined;
     /**
      * The numbers or booleans (`scalar`) an expression reads when the
      * documents the package serves are the ones generation holds, spelled.

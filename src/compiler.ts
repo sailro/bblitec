@@ -319,6 +319,7 @@ import {
     unionMembers,
     valueKindOf,
     nullability,
+    typeAdmitsData,
 } from "./compiler/type-facts.js";
 import {
     retainedStaticText,
@@ -337,7 +338,9 @@ import {
     type CallbackInvocationOptions,
 } from "./compiler/user-functions.js";
 import {
+    bindingSubtreeIntact,
     callArgumentIsReadOnly,
+    isEffectFunction,
     parameterIsReadOnly,
     parameterWrittenSlots,
     readsIntactParameterObject,
@@ -6754,22 +6757,35 @@ class Compiler implements LoweringServices {
                 keys.unshift(key);
                 root = this.unwrap(root.expression);
             }
-            // A local `const` naming a module constant, or a member of
-            // what another one holds, reads through to it.
+            // A member of the literal a read-only parameter is handed is
+            // the expression that literal holds there.
+            if (ts.isObjectLiteralExpression(root) && keys.length > 0) {
+                const literal = root;
+                // A key a spread may supply leaves the read to the run time.
+                const member = unlessRefused(() =>
+                    this.objectProperty(literal, keys[0]!),
+                );
+                if (!member) return undefined;
+                keys.shift();
+                root = this.unwrap(member);
+                continue;
+            }
             if (!ts.isIdentifier(root) || this.moduleConstantDeclaration(root))
                 break;
+            // A local `const` naming a module constant, or a member of what
+            // another binding holds, reads that one; an inlined call's
+            // read-only parameter reads its argument.
             const aliased = constInitializer(this, root);
-            const next = aliased && this.unwrap(aliased);
-            if (
-                !next ||
-                !(
-                    ts.isIdentifier(next) ||
-                    ts.isPropertyAccessExpression(next) ||
-                    ts.isElementAccessExpression(next)
-                )
-            )
-                break;
-            root = next;
+            const next =
+                aliased &&
+                (ts.isIdentifier(aliased) ||
+                    ts.isPropertyAccessExpression(aliased))
+                    ? aliased
+                    : this.userFunctions.inlinedArgument(root, (name) =>
+                          this.bindings.scopeOf(name),
+                      );
+            if (!next) break;
+            root = this.unwrap(next);
         }
         const constant = ts.isIdentifier(root)
             ? this.moduleConstantDeclaration(root)
@@ -6778,8 +6794,7 @@ class Compiler implements LoweringServices {
         // a call read in place is folded away, so it may write nothing.
         const held =
             !constant && ts.isIdentifier(root)
-                ? (this.settledCallInitializer(root) ??
-                  this.fieldSettledCall(root, keys))
+                ? this.settledCallInitializer(root, keys)
                 : undefined;
         const call =
             held ??
@@ -6793,31 +6808,6 @@ class Compiler implements LoweringServices {
             held: held !== undefined,
             keys,
         };
-    }
-
-    /**
-     * The helper call a local `const` holds where something writes through
-     * its object but not the member a read takes (`executedPath`): running
-     * the call again gives that member (`rerunCallInitializer`), since no
-     * write in the program replaces it (`recordFieldIsWritten`).
-     */
-    private fieldSettledCall(
-        identifier: ts.Identifier,
-        keys: readonly string[],
-    ): ts.CallExpression | undefined {
-        const [key] = keys;
-        const initializer =
-            key === undefined
-                ? undefined
-                : this.rerunCallInitializer(identifier);
-        return initializer &&
-            !recordFieldIsWritten(
-                this,
-                this.checker.getTypeAtLocation(identifier),
-                key!,
-            )
-            ? initializer.call
-            : undefined;
     }
 
     /** What the run of an `executedPath` holds at its keys, if it runs. */
@@ -7527,34 +7517,44 @@ class Compiler implements LoweringServices {
     }
 
     /**
-     * The helper call a local `const` holds the result of
+     * The helper call a `const` holds the result of
      * (`const sources = stageSources(lit)`), when evaluating it at a later
-     * read gives what the binding holds there: a run there is the
-     * declaration's (`rerunCallInitializer`) and nothing writes through the
-     * binding.
+     * read of its member at `keys` gives what the binding holds there: a
+     * run there is the declaration's (`rerunCallInitializer`) and no write
+     * the program can make reaches that member -- for a function's own
+     * `const`, nor anything it holds (`bindingSubtreeIntact`); for a module
+     * one, the binding at all.
      */
     public settledCallInitializer(
         identifier: ts.Identifier,
+        keys: readonly string[] = [],
     ): ts.CallExpression | undefined {
         const initializer = this.rerunCallInitializer(identifier);
-        return initializer && this.unwrittenConst(initializer.declaration)
-            ? initializer.call
-            : undefined;
+        if (!initializer) return undefined;
+        const { declaration } = initializer;
+        const unwritten = ts.findAncestor(declaration.parent, isEffectFunction)
+            ? bindingSubtreeIntact(this.checker, declaration, keys)
+            : this.unwrittenConst(declaration);
+        return unwritten ? initializer.call : undefined;
     }
 
     /**
-     * The plain data `const x = await f()` holds when generation runs the
-     * call (`settledCallInitializer`): it folds, every fetch it makes reads a
-     * packaged file (a build input the native fetch reads alike), and
-     * nothing writes through `x`. Undefined otherwise: `x` stays a run-time
-     * value.
+     * The value a member read of `const x = await f()` holds where
+     * generation runs the call and it settles to plain data reading only
+     * packaged files (`executedPath`), and no write the program can make
+     * reaches the member read (`settledCallInitializer`). The binding's
+     * run-time storage answers every other read.
      */
-    public settledAwaitData(
-        declaration: ts.VariableDeclaration,
-    ): Value | undefined {
+    public generationRead(expression: ts.Expression): Value | undefined {
+        const path = this.executedPath(expression);
+        const declaration =
+            path?.held && path.call
+                ? ts.findAncestor(path.call, ts.isVariableDeclaration)
+                : undefined;
         if (
-            !ts.isIdentifier(declaration.name) ||
-            !declaration.initializer ||
+            !path ||
+            path.keys.length === 0 ||
+            !declaration?.initializer ||
             !ts.isAwaitExpression(
                 this.evaluator.unwrap(declaration.initializer, {
                     await: false,
@@ -7562,16 +7562,16 @@ class Compiler implements LoweringServices {
             )
         )
             return undefined;
-        const call = this.settledCallInitializer(declaration.name);
-        const data = call && this.executedCall(call);
-        return data === undefined || data === null
+        const data = this.executedPathValue(path);
+        // Data of a kind the read does not type stays the run time's to read.
+        return data === undefined ||
+            !typeAdmitsData(
+                this.checker,
+                this.checker.getTypeAtLocation(expression),
+                data,
+            )
             ? undefined
-            : jsonToValue(
-                  this,
-                  executedConstantJsonPolicy,
-                  data,
-                  declaration.name,
-              );
+            : jsonToValue(this, executedConstantJsonPolicy, data, expression);
     }
 
     public resolveStaticExpression(

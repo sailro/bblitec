@@ -60,6 +60,7 @@ import {
     runsBeforeFirstSuspension,
     functionOfDeclaration,
     isMemberAccess,
+    keysMayMatch,
     mutatingCallTarget,
     referenceBases,
     variableKind,
@@ -363,7 +364,7 @@ function summarize(
             analyzable: true,
             deferred: functionKind(fn) !== "plain",
             // A rest parameter holds each argument as an element.
-            uses: new EffectWalker(checker, fn).run(symbol, {
+            uses: new EffectWalker(checker, fn).run(binding, symbol, {
                 at: isRestBinding(binding) ? [ANY_KEY] : [],
                 from: [],
                 derived: false,
@@ -421,9 +422,12 @@ class EffectWalker {
     }
 
     public run(
+        binding: ts.Identifier,
         parameter: ts.Symbol,
         holds: Projection,
     ): readonly ParameterUse[] {
+        // A local binding's own name, in the body, is no use of it.
+        this.aliasNames.add(binding);
         this.aliases.set(parameter, [holds]);
         // Each round can only add projections, bounded in length and number.
         for (let round = 0; round < 16; round++) {
@@ -2410,4 +2414,145 @@ export function parameterPresenceTested(
             );
         });
     });
+}
+
+type ArgumentEffect = "intact" | "returned" | "changed";
+
+/** Per key path into the parameter (its `JSON` text), the answers so far. */
+const argumentEffectMemos = new Map<string, PredicateMemo<ArgumentEffect>>();
+
+/**
+ * What a function does, at any time, to the object at key path `at` of
+ * a parameter binding (the binding's own object when empty): `intact` --
+ * no write, deletion, rebinding, store, escape or storing method reaches
+ * it, and every program callee it is handed to leaves it intact or returns
+ * it (the uses of that result are this binding's derived uses);
+ * `returned` -- the same, except the function's own return may be the
+ * object; `changed` otherwise. A use of another member of the parameter
+ * does not reach the object; a use of a record holding it does, at the
+ * rest of its path. Unlike `parameterLeftIntact`, a deferred use counts as
+ * any other: what a later run does is what this asks.
+ */
+function parameterArgumentEffect(
+    checker: ts.TypeChecker,
+    fn: EffectFunction,
+    binding: ts.Identifier,
+    at: KeyPath = [],
+): ArgumentEffect {
+    const key = JSON.stringify(at);
+    let memo = argumentEffectMemos.get(key);
+    if (!memo)
+        argumentEffectMemos.set(key, (memo = new PredicateMemo("intact")));
+    return memo.answer(checker, binding, () => {
+        const effects = parameterEffects(checker, fn, binding);
+        if (!effects.analyzable) return "changed";
+        let returned = false;
+        for (const use of effects.uses) {
+            const object =
+                use.kind === "write" ? use.path.slice(0, -1) : use.path;
+            const length = Math.min(object.length, at.length);
+            // A use of another member leaves this object as it is.
+            if (
+                !object
+                    .slice(0, length)
+                    .every((part, index) => keysMayMatch(part, at[index]!))
+            )
+                continue;
+            // The path from the used object down to this one.
+            const below = at.slice(object.length);
+            switch (use.kind) {
+                case "returned":
+                    if (use.derived || use.nested) return "changed";
+                    returned = true;
+                    break;
+                case "identity":
+                case "enumerated":
+                case "called":
+                    break;
+                case "method":
+                    if (
+                        !readOnlyDataMethods.has(use.method) ||
+                        storingDataMethods.has(use.method)
+                    )
+                        return "changed";
+                    break;
+                case "argument":
+                    if (
+                        use.spread ||
+                        ts.isNewExpression(use.call) ||
+                        callArgumentEffect(checker, use.call, use.index, [
+                            ...use.at,
+                            ...below,
+                        ]) === "changed"
+                    )
+                        return "changed";
+                    break;
+                default:
+                    return "changed";
+            }
+        }
+        return returned ? "returned" : "intact";
+    });
+}
+
+/**
+ * What a call does, at any time, to the object at key path `at` of the
+ * argument at `index` (`parameterArgumentEffect`): a default-library
+ * callee only reading and keeping none leaves it intact; any callee the
+ * program does not hold changes it.
+ */
+export function callArgumentEffect(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression,
+    index: number,
+    at: KeyPath = [],
+): ArgumentEffect {
+    const target = callTarget(checker, call);
+    if (target.kind === "library")
+        return libraryArgumentEffect(checker, call, index) === "reads" &&
+            keptArguments(checker, call).length === 0
+            ? "intact"
+            : "changed";
+    if (target.kind !== "bodies") return "changed";
+    let returned = false;
+    const agree = everyArgumentBody(
+        call,
+        target,
+        index,
+        (bodyChecker, body, binding) => {
+            const effect = parameterArgumentEffect(
+                bodyChecker,
+                body,
+                binding,
+                at,
+            );
+            if (effect === "returned") returned = true;
+            return effect !== "changed";
+        },
+    );
+    return !agree ? "changed" : returned ? "returned" : "intact";
+}
+
+/**
+ * Whether no write the program can make reaches the member at key path `at`
+ * of the object a function's local `const` holds, nor what that member
+ * holds: the function and every callee it hands the object to leave it
+ * intact at any time (`parameterArgumentEffect`), and the function does not
+ * return it to a caller that could write it.
+ */
+export function bindingSubtreeIntact(
+    checker: ts.TypeChecker,
+    declaration: ts.VariableDeclaration,
+    at: KeyPath,
+): boolean {
+    const fn = ts.findAncestor(declaration.parent, isEffectFunction);
+    if (
+        !fn ||
+        !ts.isIdentifier(declaration.name) ||
+        variableKind(declaration) !== "const"
+    )
+        return false;
+    return (
+        parameterArgumentEffect(checker, fn, declaration.name, at) === "intact"
+    );
 }

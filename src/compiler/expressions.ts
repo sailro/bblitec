@@ -385,6 +385,7 @@ export interface ExpressionContext
             | "resolveStaticExpression"
             | "constantNameValue"
             | "canvasSizeValue"
+            | "generationRead"
             | "propertyAccess"
             | "registerClassInstance"
             | "classOf"
@@ -1142,6 +1143,10 @@ export class ExpressionLowerer {
                 unwrapped,
             );
             if (namespaceMember) return this.compileValue(namespaceMember);
+            // A settled `const x = await f()` member no write reaches reads
+            // its generation data; the run-time storage answers otherwise.
+            const generation = this.context.generationRead(unwrapped);
+            if (generation) return generation;
             if (
                 unwrapped.name.text === "url" &&
                 ts.isMetaProperty(unwrapped.expression) &&

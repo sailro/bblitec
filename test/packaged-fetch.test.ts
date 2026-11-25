@@ -176,6 +176,181 @@ test("an awaited loader of a packaged document binds the data generation reads, 
     runPackagedProgram(t, directory, result);
 });
 
+/**
+ * A config an awaited loader binds from a packaged document, handed around
+ * by `program` (statements over `config`, with `helpers` beside them):
+ * compiled once into shader text, which reads the document's `wood` values
+ * only when no write the program can make reaches them, and once natively,
+ * where `program` throws unless JavaScript's values hold. Each `written`
+ * program, and `program` itself unless it `folds`, writes `config.wood`
+ * the way `program` hands it on: its shader text stays a run-time value.
+ */
+function settledConfigCase(
+    t: test.TestContext,
+    name: string,
+    helpers: string,
+    program: string,
+    written: readonly string[],
+    folds = true,
+): void {
+    const directory = resolve(`artifacts/${name}`);
+    const publicDir = join(directory, "public");
+    mkdirSync(publicDir, { recursive: true });
+    writeFileSync(
+        join(publicDir, "config.json"),
+        JSON.stringify({ wood: { drift: 0.17, width: 1.5 } }),
+    );
+    const loader = `
+        interface Config {
+            wood: { drift: number; width: number };
+            herd: { file: string; bounds: { min: number; max: number } };
+            recipe: { scale: number };
+            rows: { x: number }[];
+        }
+        const DEFAULTS: Config = {
+            wood: { drift: 0.1, width: 1 },
+            herd: { file: "herd.glb", bounds: { min: 1, max: 5 } },
+            recipe: { scale: 2 },
+            rows: [{ x: 1 }, { x: 2 }],
+        };
+        async function loadConfig(name: string): Promise<Config> {
+            try {
+                const response = await fetch(\`\${location.origin}/\${name}\`);
+                if (!response.ok) return DEFAULTS;
+                const parsed = (await response.json()) as unknown;
+                if (parsed === null || typeof parsed !== "object") return DEFAULTS;
+                return { ...DEFAULTS, wood: { ...DEFAULTS.wood, ...(parsed as Partial<Config>).wood } };
+            } catch {
+                return DEFAULTS;
+            }
+        }
+        const text = (value: number): string => (Number.isInteger(value) ? value.toFixed(1) : String(value));
+        ${helpers}
+    `;
+    const options = {
+        fileName: join(directory, "entry.ts"),
+        publicDir,
+        siteUrl: "https://assets.example/",
+    };
+    const shader = (uses: string): string => `
+        import { createEngine, createSceneContext, createShaderMaterial, wgsl } from "babylon-lite";
+        ${loader}
+        async function build(): Promise<void> {
+            const canvas = document.createElement("canvas");
+            document.body.appendChild(canvas);
+            const engine = await createEngine(canvas);
+            createSceneContext(engine);
+            const config = await loadConfig("config.json");
+            ${uses}
+            createShaderMaterial({
+                name: "wood",
+                vertexSource: wgsl\`\${\`@vertex fn mainVertex() -> @builtin(position) vec4<f32> { return vec4<f32>(\${text(config.wood.width)}, 0.0, 0.0, 1.0); }\`}\`,
+                fragmentSource: wgsl\`\${\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(\${text(1 - config.wood.drift)}, 0.0, 0.0, 1.0); }\`}\`,
+                attributes: ["position"],
+            });
+        }
+        void build();
+    `;
+    for (const uses of folds ? written : [program, ...written])
+        assert.throws(
+            () => compileSource(shader(uses), options),
+            /Builder 'text' cannot run at generation/,
+        );
+    if (folds) {
+        const sources = JSON.stringify(
+            compileSource(shader(program), options).manifest,
+        );
+        assert.match(sources, /vec4<f32>\(1\.5, 0\.0/);
+        assert.match(sources, /vec4<f32>\(0\.83, 0\.0/);
+    }
+    const result = compileSource(
+        `${loader}
+        void (async () => {
+            const config = await loadConfig("config.json");
+            ${program}
+            globalThis.close();
+        })();
+    `,
+        options,
+    );
+    runPackagedProgram(t, directory, result);
+}
+
+test("a config subtree nothing writes reads its generation data beside written siblings", (t) =>
+    settledConfigCase(
+        t,
+        "settled-config-subtrees",
+        `
+        function widen(wood: Config["wood"]): void { wood.width += 1; }
+        function moveHerd(herd: Config["herd"]): void { herd.bounds.min = 0; }
+        function scaled(deps: { config: Config; scale: number }): number { return deps.config.wood.width * deps.scale; }
+        `,
+        `
+        config.herd.bounds.max = 9;
+        moveHerd(config.herd);
+        const herd = config.herd;
+        herd.file = "other.glb";
+        config.rows.push({ x: 3 });
+        if (scaled({ config, scale: 2 }) !== 3 || config.herd.bounds.min !== 0 || config.herd.bounds.max !== 9 || config.rows.length !== 3)
+            throw new Error("subtrees " + scaled({ config, scale: 2 }) + " " + JSON.stringify(config));
+        `,
+        [
+            "config.wood.width = 2;",
+            "const wood = config.wood; wood.drift = 0.5;",
+            "widen(config.wood);",
+            "Object.assign(config.wood, { width: 3 });",
+            "config.wood = { drift: 0, width: 4 };",
+            "const deps = { config }; deps.config.wood.width = 5;",
+        ],
+    ));
+
+// The base folded the document's value where the program had written
+// another through a literal argument or a library container: each reads
+// back what JavaScript reads.
+for (const [hole, helpers, write] of [
+    [
+        "literal-argument",
+        'function widen(holder: { opts: Config["wood"] }): void { holder.opts.width = 2; }',
+        "widen({ opts: config.wood });",
+    ],
+    [
+        "returning-call",
+        'function woodOf(config: Config): Config["wood"] { return config.wood; }',
+        "woodOf(config).width = 2;",
+    ],
+    [
+        "library-container",
+        "",
+        'const kept = new Map<string, Config["wood"]>(); kept.set("w", config.wood); kept.get("w")!.width = 2;',
+    ],
+    ["library-writer", "", "Object.assign(config.wood, { width: 2 });"],
+] as const)
+    test(`a config member written through a ${hole.replace("-", " ")} reads back the written value`, (t) =>
+        settledConfigCase(
+            t,
+            `settled-config-${hole}`,
+            helpers,
+            `${write}
+            if (config.wood.width !== 2 || config.wood.drift !== 0.17) throw new Error("${hole} " + JSON.stringify(config.wood));`,
+            [],
+            false,
+        ));
+
+test("a config handed to a callee that only reads it, or returns a member of it, stays generation data", (t) =>
+    settledConfigCase(
+        t,
+        "settled-config-hand-offs",
+        `
+        function widthOf(config: Config): number { return config.wood.width; }
+        function woodOf(config: Config): Config["wood"] { return config.wood; }
+        function widen(wood: Config["wood"]): void { wood.width += 1; }
+        `,
+        `
+        if (widthOf(config) !== 1.5 || woodOf(config).drift !== 0.17) throw new Error("hand-offs " + widthOf(config) + " " + woodOf(config).drift);
+        `,
+        ["widen(config.wood);", "widen(woodOf(config));"],
+    ));
+
 test("a member the bound data holds and its declared type does not is dropped only where no value of the type is observed", (t) => {
     const directory = resolve("artifacts/packaged-config-members");
     const publicDir = join(directory, "public");
@@ -733,10 +908,10 @@ test("a packaged URL read from a config merged over its defaults keeps the packa
 });
 
 test("a number the packaged document and its defaults read alike composes a shader from the merged config", () => {
-    // The loader can return the defaults (a failed fetch, a throw), so a
-    // number folds only where the document gives the default's value; a
-    // document value of another kind, or a write replacing the member once
-    // the config is built, leaves it a run-time read.
+    // A packaged document's fetch reads alike at run time, so a number
+    // folds to the merged document's value; a document value of another
+    // kind, or a write replacing the member once the config is built,
+    // leaves it a run-time read.
     const compile = (scale: string, after = ""): CompileResult => {
         const directory = resolve(
             `artifacts/packaged-fetch-config-shader-${scale.replaceAll('"', "q")}${after ? "-written" : ""}`,
@@ -793,6 +968,14 @@ void main();
     };
     // A write that runs only while the member holds another value, and one
     // through an assertion on another record, leave the member as built.
+    assert.deepEqual(
+        compile("3").manifest.customShaderPrograms.map((program) =>
+            /position \* ([0-9.]+) \* ([0-9.]+), 1\.0\)/
+                .exec(program.vertexSource)
+                ?.slice(1),
+        ),
+        [["3.00", "0.25"]],
+    );
     for (const after of [
         "",
         "const repair = (value: unknown): void => { const record = value as Record<string, unknown>; for (const key of Object.keys(record)) { const child = record[key]; if (typeof child === 'number') { if (!Number.isFinite(child)) record[key] = 0; continue; } } }; repair(config.look);",
@@ -808,7 +991,6 @@ void main();
             after,
         );
     for (const [scale, after] of [
-        ["3", ""],
         ['"2.5"', ""],
         [
             "2.5",
