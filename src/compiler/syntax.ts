@@ -2883,14 +2883,7 @@ export function runsBeforeFirstSuspension(
     body: ts.Node,
     node: ts.Node,
 ): boolean {
-    let first: ts.Node | undefined;
-    const visit = (child: ts.Node): void => {
-        if (first !== undefined || ts.isFunctionLike(child)) return;
-        if (isSuspensionPoint(child)) first = child;
-        else ts.forEachChild(child, visit);
-    };
-    ts.forEachChild(body, visit);
-    const suspension: ts.Node | undefined = first;
+    const suspension = firstSuspension(body);
     if (suspension !== undefined) {
         const awaited = ts.isAwaitExpression(suspension)
             ? suspension.expression
@@ -2902,9 +2895,39 @@ export function runsBeforeFirstSuspension(
         if (!operand && suspension.getStart() <= node.getStart()) return false;
     }
     for (let at = node.parent; at && at !== body; at = at.parent)
-        if (ts.isIterationStatement(at, false) && containsSuspension(at))
+        if (ts.isIterationStatement(at, false) && loopSuspends(at))
             return false;
     return true;
+}
+
+/** @unjournaled Parsed syntax is immutable: a body's first suspension point, or null, kept. */
+const firstSuspensions = new WeakMap<ts.Node, ts.Node | null>();
+
+/** The first suspension point, in source order, of the activation running `body`. */
+function firstSuspension(body: ts.Node): ts.Node | undefined {
+    let known = firstSuspensions.get(body);
+    if (known === undefined) {
+        let first: ts.Node | undefined;
+        const visit = (child: ts.Node): void => {
+            if (first !== undefined || ts.isFunctionLike(child)) return;
+            if (isSuspensionPoint(child)) first = child;
+            else ts.forEachChild(child, visit);
+        };
+        ts.forEachChild(body, visit);
+        firstSuspensions.set(body, (known = first ?? null));
+    }
+    return known ?? undefined;
+}
+
+/** @unjournaled Parsed syntax is immutable: whether a loop suspends, kept. */
+const suspendingLoops = new WeakMap<ts.IterationStatement, boolean>();
+
+/** {@link containsSuspension} of a loop, kept per loop. */
+function loopSuspends(loop: ts.IterationStatement): boolean {
+    let known = suspendingLoops.get(loop);
+    if (known === undefined)
+        suspendingLoops.set(loop, (known = containsSuspension(loop)));
+    return known;
 }
 
 /** @unjournaled Parsed syntax is immutable: a queried node's fingerprint, kept. */

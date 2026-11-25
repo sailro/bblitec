@@ -4,6 +4,7 @@ import { forEachAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
 import { isOpaqueEngineObject, pinnedSourceHandleKind } from "./data-types.js";
 import type { EvaluationOrder } from "./evaluation-order.js";
 import { callOnlyReadsArgument } from "./parameter-effects.js";
+import { lengthPreservingArrayMethods } from "./receiver-methods.js";
 import {
     nullability,
     arrayElementType,
@@ -310,14 +311,14 @@ function indexKeyObservations(
     const observations = programObservations(program);
     const typeOf = (node: ts.Node): ts.Type => checker.getTypeAtLocation(node);
     const wide = (type: ts.Type): boolean => viewsAnyRecord(checker, type);
-    const escapes: ts.Type[] = [];
+    const escapes = new Set<ts.Type>();
     const flows: { from: ts.Type; into: ts.Type }[] = [];
     const flowing = new Map<ts.Type, Set<ts.Type>>();
     // A value that escapes takes every record it leads to along: code that
     // views it as any record can walk into what it holds.
     const escapeReached = (type: ts.Type): void => {
         for (const reached of reachedTypes(checker, type))
-            if (!wide(reached)) escapes.push(reached);
+            if (!wide(reached)) escapes.add(reached);
     };
     // A value handed on is seen as its slot's type there too, member by
     // member: an interface's record given to an alias-typed slot takes the
@@ -400,7 +401,6 @@ function indexKeyObservations(
     // its parameter may receive whatever its declared type admits; a
     // reflective definition's value is not followed and admits anything.
     let unbounded = false;
-    // A reflective definition's value is not followed: it may be one.
     const definedFunction = (
         definition: Exclude<MemberDefinition, { via: "reflect" }>,
     ): ts.Node | undefined => {
@@ -449,7 +449,8 @@ function indexKeyObservations(
                 if (types === undefined) unbounded = true;
                 else
                     for (const parameter of types)
-                        escapes.push(...reachedTypes(checker, parameter));
+                        for (const reached of reachedTypes(checker, parameter))
+                            escapes.add(reached);
     }
     // A rest's keys are a key view; a spread's land in the literal.
     for (const { from, into } of observations.copies) {
@@ -469,7 +470,7 @@ function indexKeyObservations(
     }
     return {
         views: [...observations.keyViews].filter((view) => !wide(view)),
-        escapes,
+        escapes: [...escapes],
         flows,
         unbounded,
     };
@@ -2327,7 +2328,7 @@ function newArrayExpression(
         : undefined;
     if (
         method &&
-        ["fill", "copyWithin", "reverse", "sort"].includes(method.name) &&
+        lengthPreservingArrayMethods.has(method.name) &&
         checker.isArrayLikeType(checker.getTypeAtLocation(method.expression))
     )
         return newArrayExpression(checker, method.expression);

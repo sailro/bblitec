@@ -1,6 +1,7 @@
 import ts from "typescript";
 import { forEachAnalysisNode, identifiersByName } from "./analysis-walk.js";
 import { forEachReturn } from "./loop-control.js";
+import { lengthPreservingArrayMethods } from "./receiver-methods.js";
 import {
     declaredInDefaultLibrary,
     declaredSymbol,
@@ -175,17 +176,7 @@ function onlyPropertyReads(
     checker: ts.TypeChecker,
     declaration: ConstDeclaration,
 ): boolean {
-    const symbol = declaredSymbol(checker, declaration.name);
-    const references =
-        identifiersByName(declaration.getSourceFile()).get(
-            declaration.name.text,
-        ) ?? [];
-    return references.every((reference) => {
-        if (
-            reference === declaration.name ||
-            valueSymbolOf(checker, reference) !== symbol
-        )
-            return true;
+    return otherReferences(checker, declaration).every((reference) => {
         const read = reference.parent;
         return (
             ts.isPropertyAccessExpression(read) &&
@@ -199,13 +190,22 @@ function onlyPropertyReads(
     });
 }
 
-/** Array methods whose result is the array they are called on. */
-const SELF_RETURNING_ARRAY_METHODS: ReadonlySet<string> = new Set([
-    "copyWithin",
-    "fill",
-    "reverse",
-    "sort",
-]);
+/** The references to a `const` local's binding but its declaration's name. */
+function otherReferences(
+    checker: ts.TypeChecker,
+    declaration: ConstDeclaration,
+): ts.Identifier[] {
+    const symbol = declaredSymbol(checker, declaration.name);
+    return (
+        identifiersByName(declaration.getSourceFile()).get(
+            declaration.name.text,
+        ) ?? []
+    ).filter(
+        (reference) =>
+            reference !== declaration.name &&
+            valueSymbolOf(checker, reference) === symbol,
+    );
+}
 
 /**
  * Whether `read` names an unexported `const` local holding a new array
@@ -224,18 +224,8 @@ export function arrayHeldOnlyByItsLocal(
     if (!declaration || !yieldsNewArray(checker, declaration.initializer))
         return false;
     const owner = ts.findAncestor(declaration.parent, ts.isFunctionLike);
-    const symbol = declaredSymbol(checker, declaration.name);
-    const references =
-        identifiersByName(declaration.getSourceFile()).get(
-            declaration.name.text,
-        ) ?? [];
-    return references.every((reference) => {
-        if (
-            reference === declaration.name ||
-            reference === lent ||
-            valueSymbolOf(checker, reference) !== symbol
-        )
-            return true;
+    return otherReferences(checker, declaration).every((reference) => {
+        if (reference === lent) return true;
         if (ts.findAncestor(reference.parent, ts.isFunctionLike) !== owner)
             return false;
         const use = reference.parent;
@@ -255,7 +245,7 @@ export function arrayHeldOnlyByItsLocal(
         if (
             !ts.isCallExpression(call) ||
             call.expression !== use ||
-            !SELF_RETURNING_ARRAY_METHODS.has(use.name.text)
+            !lengthPreservingArrayMethods.has(use.name.text)
         )
             return true;
         // A method returning the array: its result is dropped, or read in
@@ -268,7 +258,7 @@ export function arrayHeldOnlyByItsLocal(
                 !(
                     ts.isCallExpression(result.parent) &&
                     result.parent.expression === result &&
-                    SELF_RETURNING_ARRAY_METHODS.has(result.name.text)
+                    lengthPreservingArrayMethods.has(result.name.text)
                 ))
         );
     });

@@ -14,7 +14,11 @@ import {
 import { bindingIsOnlyCalledDirectly } from "./binding-rebinds.js";
 import { bindingReferences } from "./binding-references.js";
 import { onlyDirectCalls } from "./written-holders.js";
-import { forEachAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
+import {
+    forEachAnalysisNode,
+    identifiersByName,
+    someAnalysisNode,
+} from "./analysis-walk.js";
 import { engineBodies, isEngineDeclaration } from "./engine-bodies.js";
 import {
     callbackTakesReceiver,
@@ -64,6 +68,7 @@ import {
     mutatingCallTarget,
     referenceBases,
     variableKind,
+    type FunctionWithBody,
 } from "./syntax.js";
 import {
     BIGINT_ARRAY_KINDS,
@@ -1262,13 +1267,19 @@ function forwardedCall(
     const shape = ts.isCallExpression(call)
         ? forwardedCallShape(checker, call)
         : undefined;
-    const value = shape && unwrapExpression(shape.target);
-    const declaration =
-        value && ts.isIdentifier(value)
-            ? resolvedSymbol(checker, value)?.valueDeclaration
-            : undefined;
-    const fn = declaration && functionOfDeclaration(declaration);
+    const fn = shape && namedFunction(checker, unwrapExpression(shape.target));
     return shape && fn ? { fn, shape } : undefined;
+}
+
+/** The function an identifier's binding declares ({@link functionOfDeclaration}). */
+function namedFunction(
+    checker: ts.TypeChecker,
+    value: ts.Expression,
+): Exclude<FunctionWithBody, ts.MethodDeclaration> | undefined {
+    const declaration = ts.isIdentifier(value)
+        ? resolvedSymbol(checker, value)?.valueDeclaration
+        : undefined;
+    return declaration && functionOfDeclaration(declaration);
 }
 
 /** What a forwarded call does to its argument at `index`: what the function does to it. */
@@ -1320,6 +1331,18 @@ function libraryOnlyReads(
         libraryArgumentEffect(checker, call, index) === "reads" &&
         !isStoringDataCall(call, checker) &&
         !callResultHoldsArguments(checker, call)
+    );
+}
+
+/** A library call that only reads the argument at `index` and keeps no argument past it. */
+function libraryCallLeavesIntact(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression,
+    index: number,
+): boolean {
+    return (
+        libraryArgumentEffect(checker, call, index) === "reads" &&
+        keptArguments(checker, call).length === 0
     );
 }
 
@@ -1395,6 +1418,21 @@ class PredicateMemo<T> {
         }
         bindings.set(binding, result);
         return result;
+    }
+}
+
+/** One {@link PredicateMemo} per key, each assuming `assumed`. */
+class KeyedPredicateMemo<T> {
+    /** @unjournaled Pure functions of the checked source, kept across replays. */
+    private readonly memos = new Map<string, PredicateMemo<T>>();
+
+    public constructor(private readonly assumed: T) {}
+
+    public for(key: string): PredicateMemo<T> {
+        let memo = this.memos.get(key);
+        if (!memo)
+            this.memos.set(key, (memo = new PredicateMemo(this.assumed)));
+        return memo;
     }
 }
 
@@ -1527,9 +1565,7 @@ function useLeavesIntact(checker: ts.TypeChecker, use: ParameterUse): boolean {
                       parameterLeftIntact,
                   )
                 : target.kind === "library" &&
-                      libraryArgumentEffect(checker, use.call, use.index) ===
-                          "reads" &&
-                      keptArguments(checker, use.call).length === 0;
+                      libraryCallLeavesIntact(checker, use.call, use.index);
         }
         default:
             return true;
@@ -2060,7 +2096,7 @@ const READING_ARRAY_METHODS: ReadonlySet<string> = new Set([
 
 const onlyReadMemo = new PredicateMemo(true);
 /** `onlyRead` of one property of the parameter's record, by property name. */
-const onlyReadPropertyMemos = new Map<string, PredicateMemo<boolean>>();
+const onlyReadPropertyMemos = new KeyedPredicateMemo(true);
 
 /**
  * Whether a call only reads the object a parameter binding holds -- or,
@@ -2083,16 +2119,10 @@ function onlyRead(
     binding: ts.Identifier,
     property?: string,
 ): boolean {
-    let memo = onlyReadMemo;
-    if (property !== undefined) {
-        const known = onlyReadPropertyMemos.get(property);
-        if (known) memo = known;
-        else
-            onlyReadPropertyMemos.set(
-                property,
-                (memo = new PredicateMemo(true)),
-            );
-    }
+    const memo =
+        property === undefined
+            ? onlyReadMemo
+            : onlyReadPropertyMemos.for(property);
     return memo.answer(checker, binding, () => {
         const effects = parameterEffects(checker, fn, binding);
         const kind = functionKind(fn);
@@ -2423,14 +2453,9 @@ function literalMemberFunction(
     initializer: ts.Expression,
 ): ts.SignatureDeclaration | undefined {
     const value = unwrapExpression(initializer);
-    if (ts.isArrowFunction(value) || ts.isFunctionExpression(value))
-        return value;
-    const declaration = ts.isIdentifier(value)
-        ? resolvedSymbol(checker, value)?.valueDeclaration
-        : undefined;
-    return declaration && ts.isFunctionDeclaration(declaration)
-        ? declaration
-        : undefined;
+    return ts.isArrowFunction(value) || ts.isFunctionExpression(value)
+        ? value
+        : namedFunction(checker, value);
 }
 
 /**
@@ -2444,48 +2469,78 @@ export function parameterPresenceTested(
     checker: ts.TypeChecker,
     parameter: ts.ParameterDeclaration,
     declaration: ts.SignatureDeclaration,
+): boolean {
+    let known = presenceTests.get(checker);
+    if (!known) presenceTests.set(checker, (known = new WeakMap()));
+    let answer = known.get(parameter);
+    if (answer === undefined) {
+        answer = presenceTestReached(checker, parameter, declaration, known);
+        known.set(parameter, answer);
+    }
+    return answer;
+}
+
+/**
+ * @unjournaled Pure functions of the checked source, kept across replays:
+ * per checker, `parameterPresenceTested`'s answers.
+ */
+const presenceTests = new WeakMap<
+    ts.TypeChecker,
+    WeakMap<ts.ParameterDeclaration, boolean>
+>();
+
+/**
+ * {@link parameterPresenceTested} from each reference to the parameter in
+ * its function's body: a reached parameter in `visiting` adds nothing, and
+ * one in `known` its answer.
+ */
+function presenceTestReached(
+    checker: ts.TypeChecker,
+    parameter: ts.ParameterDeclaration,
+    declaration: ts.SignatureDeclaration,
+    known: WeakMap<ts.ParameterDeclaration, boolean>,
     visiting = new Set<ts.ParameterDeclaration>(),
 ): boolean {
+    const answer = known.get(parameter);
+    if (answer !== undefined) return answer;
     if (visiting.has(parameter)) return false;
     visiting.add(parameter);
-    const symbol = ts.isIdentifier(parameter.name)
-        ? declaredSymbol(checker, parameter.name)
-        : undefined;
+    const name = parameter.name;
+    if (!ts.isIdentifier(name)) return false;
+    const symbol = declaredSymbol(checker, name);
     const body = "body" in declaration ? declaration.body : undefined;
     if (!symbol || !body) return false;
-    const names = (node: ts.Node): boolean => {
-        const unwrapped = ts.isExpression(node)
-            ? unwrapExpression(node)
-            : undefined;
-        return (
-            unwrapped !== undefined &&
-            ts.isIdentifier(unwrapped) &&
-            resolvedSymbol(checker, unwrapped) === symbol
-        );
-    };
-    return someAnalysisNode(body, (node) => {
-        if (!ts.isExpression(node)) return false;
-        const comparison = nullishComparison(checker, node);
-        if (comparison) return names(comparison.tested);
-        if (!ts.isCallExpression(node)) return false;
-        const callee = calledFunction(checker, node);
-        return node.arguments.some((argument, index) => {
+    return (identifiersByName(body.getSourceFile()).get(name.text) ?? []).some(
+        (reference) => {
+            if (
+                reference.pos < body.pos ||
+                reference.end > body.end ||
+                resolvedSymbol(checker, reference) !== symbol
+            )
+                return false;
+            const operand = outermostWrapper(reference);
+            const site = operand.parent;
+            if (ts.isBinaryExpression(site))
+                return nullishComparison(checker, site)?.tested === operand;
+            if (!ts.isCallExpression(site)) return false;
+            const index = site.arguments.indexOf(operand);
+            const callee =
+                index >= 0 ? calledFunction(checker, site) : undefined;
             const target = callee?.parameters[index];
             return (
                 callee !== undefined &&
                 target !== undefined &&
                 !target.dotDotDotToken &&
-                names(argument) &&
-                parameterPresenceTested(checker, target, callee, visiting)
+                presenceTestReached(checker, target, callee, known, visiting)
             );
-        });
-    });
+        },
+    );
 }
 
 type ArgumentEffect = "intact" | "returned" | "changed";
 
 /** Per key path into the parameter (its `JSON` text), the answers so far. */
-const argumentEffectMemos = new Map<string, PredicateMemo<ArgumentEffect>>();
+const argumentEffectMemos = new KeyedPredicateMemo<ArgumentEffect>("intact");
 
 /**
  * What a function does, at any time, to the object at key path `at` of
@@ -2505,10 +2560,7 @@ function parameterArgumentEffect(
     binding: ts.Identifier,
     at: KeyPath = [],
 ): ArgumentEffect {
-    const key = JSON.stringify(at);
-    let memo = argumentEffectMemos.get(key);
-    if (!memo)
-        argumentEffectMemos.set(key, (memo = new PredicateMemo("intact")));
+    const memo = argumentEffectMemos.for(JSON.stringify(at));
     return memo.answer(checker, binding, () => {
         const effects = parameterEffects(checker, fn, binding);
         if (!effects.analyzable) return "changed";
@@ -2538,17 +2590,6 @@ function parameterArgumentEffect(
                     if (use.derived || use.nested) return "changed";
                     returned = true;
                     break;
-                case "identity":
-                case "enumerated":
-                case "called":
-                    break;
-                case "method":
-                    if (
-                        !readOnlyDataMethods.has(use.method) ||
-                        storingDataMethods.has(use.method)
-                    )
-                        return "changed";
-                    break;
                 case "argument":
                     if (
                         use.spread ||
@@ -2561,7 +2602,7 @@ function parameterArgumentEffect(
                         return "changed";
                     break;
                 default:
-                    return "changed";
+                    if (!useLeavesIntact(checker, use)) return "changed";
             }
         }
         return returned ? "returned" : "intact";
@@ -2582,8 +2623,7 @@ export function callArgumentEffect(
 ): ArgumentEffect {
     const target = callTarget(checker, call);
     if (target.kind === "library")
-        return libraryArgumentEffect(checker, call, index) === "reads" &&
-            keptArguments(checker, call).length === 0
+        return libraryCallLeavesIntact(checker, call, index)
             ? "intact"
             : "changed";
     if (target.kind !== "bodies") return "changed";

@@ -46,7 +46,7 @@ export const mutatingArrayMethods: ReadonlySet<string> = new EmissionSet([
     "sort",
 ]);
 
-/** Array methods that change the receiver in place and keep its length. */
+/** Array methods that change the receiver in place, keep its length and return it. */
 export const lengthPreservingArrayMethods: ReadonlySet<string> =
     new EmissionSet(
         [...mutatingArrayMethods].filter(
