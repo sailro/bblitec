@@ -3576,7 +3576,8 @@ test("defaults an absent nullable array element before nullish coalescing", () =
 test("a record or an element kept as an object is selected by the record's presence", () => {
     // `list ?? root` under `object | null`: a record and an element, each
     // stored as the document value the name keeps for its identity (the
-    // identities themselves run in `language-constructs.test.ts`).
+    // identities themselves run in `language-constructs.test.ts`). A call
+    // binding `root` present reads its element without a presence test.
     const result = compileSource(`
         import { createEngine } from "@babylonjs/lite";
         const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
@@ -3602,7 +3603,7 @@ test("a record or an element kept as an object is selected by the record's prese
     `);
     assert.match(
         result.cpp,
-        /_area = \(v_fn\d+_list\.is_null\(\) \|\| v_fn\d+_list\.is_undefined\(\) \? \(v_fn\d+_root\.has_value\(\) \? bbl::js::json_value\(bbl::dom_target_value\(/,
+        /_area = \(v_fn\d+_list\.is_null\(\) \|\| v_fn\d+_list\.is_undefined\(\) \? bbl::js::json_value\(bbl::dom_target_value\(/,
     );
 });
 
