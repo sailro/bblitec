@@ -1110,8 +1110,14 @@ export class StatementLowerer {
             return;
         }
         if (ts.isVariableStatement(statement)) {
+            this.loweredTerminators.delete(statement);
             for (const declaration of statement.declarationList.declarations) {
                 context.declarations.emitVariableDeclaration(declaration);
+                // An initializer that always throws ends the flow here.
+                if (context.declarations.completesAbruptly(declaration)) {
+                    this.loweredTerminators.add(statement);
+                    return;
+                }
             }
             return;
         }

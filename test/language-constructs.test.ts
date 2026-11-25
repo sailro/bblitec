@@ -18096,6 +18096,38 @@ check(
 `,
 );
 
+check(
+    "a-declaration-initialized-by-a-call-that-always-throws-throws-there",
+    `
+    interface Shape { kind: string; size: number }
+    function need(x: Shape | undefined, check: (s: Shape) => boolean): Shape {
+        if (!x || !check(x)) throw new Error("need");
+        return x;
+    }
+    function pick<T extends { kind: string }>(x: T | undefined, kind: string): T {
+        if (!x || x.kind !== kind) throw new Error("pick " + kind);
+        return x;
+    }
+    let after = 0, caught = "";
+    try {
+        const shape = need(undefined, (s) => s.kind === "box");
+        after += shape.size;
+    } catch (error) {
+        caught = error instanceof Error ? error.message : "other";
+    }
+    if (caught !== "need" || after !== 0) throw new Error("checked helper " + caught);
+    try {
+        let first = 1, shape = pick<Shape>(undefined, "box"), last = 2;
+        after += shape.size + first + last;
+    } catch (error) {
+        caught = error instanceof Error ? error.message : "other";
+    }
+    if (caught !== "pick box" || after !== 0) throw new Error("generic helper " + caught);
+    const valid = need({ kind: "box", size: 3 }, (s) => s.kind === "box");
+    if (valid.size !== 3 || pick<Shape>(valid, "box") !== valid) throw new Error("valid configuration");
+`,
+);
+
 test("a void-typed result without a proven undefined completion refuses", () => {
     assert.throws(
         () =>

@@ -49,7 +49,12 @@ import {
     requireOneObject,
     type DynamicBindingStorage,
 } from "./dynamic-binding-storage.js";
-import { EmissionMap, EmissionSet, writable } from "./emission-transaction.js";
+import {
+    EmissionMap,
+    EmissionSet,
+    EmissionWeakSet,
+    writable,
+} from "./emission-transaction.js";
 import { hasDynamicObjectSpread, isJsonValue } from "./json-bridge.js";
 import { emitReachableStatements, finalReturn } from "./loop-control.js";
 import { moduleConstantIsWritten } from "./module-container-writes.js";
@@ -349,7 +354,28 @@ function objectMutationCandidate(node: ts.Node): boolean {
 }
 
 export class DeclarationLowerer {
+    /**
+     * Declarations whose initializer never completes normally (a call whose
+     * every path throws): the initializer runs, and nothing after it does.
+     */
+    private readonly abruptDeclarations =
+        new EmissionWeakSet<ts.VariableDeclaration>();
+
     constructor(private readonly context: DeclarationContext) {}
+
+    /** Whether the last lowering of `declaration` ended in its initializer. */
+    public completesAbruptly(declaration: ts.VariableDeclaration): boolean {
+        return this.abruptDeclarations.has(declaration);
+    }
+
+    /** Runs an initializer that never completes normally in place of a binding. */
+    private emitAbruptInitializer(
+        declaration: ts.VariableDeclaration,
+        value: Value,
+    ): void {
+        this.context.emitDiscardedValue(value);
+        this.abruptDeclarations.add(declaration);
+    }
 
     /**
      * Whether a read of `expression` may be `null` or `undefined`: its
@@ -670,7 +696,7 @@ export class DeclarationLowerer {
             ? this.context.compileValue(declaration.initializer)
             : undefinedValue();
         if (value.kind === "void" && value.abruptCompletion) {
-            this.context.emitDiscardedValue(value);
+            this.emitAbruptInitializer(declaration, value);
             return;
         }
         this.emitLexicalInitialization(cppName, type, value, initializer);
@@ -1203,6 +1229,7 @@ export class DeclarationLowerer {
     }
 
     public emitVariableDeclaration(declaration: ts.VariableDeclaration): void {
+        this.abruptDeclarations.delete(declaration);
         if (
             (ts.getCombinedModifierFlags(declaration) &
                 ts.ModifierFlags.Ambient) !==
@@ -1802,6 +1829,10 @@ export class DeclarationLowerer {
                 );
             }
             this.context.bindings.defineVariable(declaration.name, value);
+            return;
+        }
+        if (value.kind === "void" && value.abruptCompletion) {
+            this.emitAbruptInitializer(declaration, value);
             return;
         }
         if (value.kind === "void") {
