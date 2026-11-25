@@ -4512,17 +4512,20 @@ export class UserFunctionLowerer {
                         declaration === root.declaration && !recursive
                             ? rootArguments[index]
                             : undefined;
+                    // A default initializer tests its parameter too.
                     if (
-                        mapped?.kind === "optional" &&
+                        (mapped?.kind === "optional" ||
+                            parameter.initializer !== undefined) &&
                         presentArgument &&
                         bindsPresent(presentArgument) &&
-                        parameterPresenceTested(
-                            this.checker,
-                            parameter,
-                            declaration,
-                        )
+                        (parameter.initializer !== undefined ||
+                            parameterPresenceTested(
+                                this.checker,
+                                parameter,
+                                declaration,
+                            ))
                     ) {
-                        mapped = mapped.inner;
+                        if (mapped?.kind === "optional") mapped = mapped.inner;
                         presentParameters.push(index);
                     }
                     const supplied =
@@ -4886,13 +4889,22 @@ export class UserFunctionLowerer {
                 (argument.tupleElements ||
                     argument.staticElementsOwner?.staticElements ||
                     argument.staticElements);
+            // A run-time document is the body's argument, not a value it
+            // captures: its parameter holds the document.
             if (
-                (((argument?.kind === "record" &&
+                argument?.kind !== "record" &&
+                argument?.dataType?.kind === "json" &&
+                rootEntry.parameterTypes[index]?.kind !== "json"
+            ) {
+                rootEntry.parameterTypes[index] = { kind: "json" };
+                return;
+            }
+            if (
+                (argument?.kind === "record" &&
                     !(
                         recursive &&
                         rootEntry.parameterTypes[index]?.kind === "struct"
-                    )) ||
-                    argument?.dataType?.kind === "json") &&
+                    ) &&
                     rootEntry.parameterTypes[index]?.kind !== "json") ||
                 tupleFacts ||
                 (argument &&
@@ -9000,6 +9012,8 @@ export class UserFunctionLowerer {
         optionalArgument = false,
     ): Value {
         const initializer = parameter.declaration.initializer;
+        // A value no run makes nullish never takes the default.
+        if (initializer && argument?.neverNullish) return argument;
         if (!initializer)
             return (
                 (argument &&
