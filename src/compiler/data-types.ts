@@ -10008,12 +10008,14 @@ export class DataTypeRegistry {
             const empty = (value: (typeof values)[number]): boolean =>
                 valued.length > 0 && nullish(value);
             // A shape typing it only as a dynamic value (`unknown`) holds it
-            // as one, as the shapes after it do.
+            // as one where another shape stores it typed, as the shapes
+            // after it do; alone, it leaves the layout unstored.
             const first = valued[0] ?? values.find(storing);
             const mappedValue =
                 first &&
                 (first.mapped ??
-                    (holdsOnly(first.type, ["unknown"])
+                    (holdsOnly(first.type, ["unknown"]) &&
+                    values.some((value) => value.mapped !== undefined)
                         ? this.withDynamicJsonTypes(
                               true,
                               () =>
