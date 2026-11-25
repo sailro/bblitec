@@ -3063,7 +3063,7 @@
       "entry": "corpus/babylon-lite/lab/lite/src/demos/platformer.ts",
       "reference": {
         "source": "reference/platformer/babylon-lite-golden.png",
-        "sha256": "031fbeb32baa42e6a977bd95a0b6644e043727761130e573add601d8dcce7fc6"
+        "sha256": "3fd9c3371129ce87f59dd97dd124bfbe0402b0743a6cec579049af9742e943f4"
       },
       "files": [
         {
