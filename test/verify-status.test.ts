@@ -22,6 +22,7 @@ import {
     verifyStatus,
 } from "../src/verify-status.js";
 import { scenes } from "../src/scene-registry.js";
+import { computeBuildStamp } from "../src/build-stamp.js";
 
 const table = [
     "| Scene | Preview | SDL_GPU | Dawn | Coverage |",
@@ -341,6 +342,53 @@ test("verifyStatus returns the wobble-exempt cells with their newest values inst
             `${statusPath}:1 scene2 Dawn foreground: published pixel-perfect, measured 0.000`,
             `${statusPath}:2 scene3 Dawn foreground: published 0.000, measured 0.001`,
         ]);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("a report measured on another build of its scene's tree is not this build's measurement", () => {
+    const root = mkdtempSync(join(tmpdir(), "bblite-status-stale-"));
+    try {
+        const statusPath = join(root, "status.md");
+        writeFileSync(
+            statusPath,
+            '| 3 | <img src="images/scenes/scene3.png" alt="Scene 3" width="160"> | pixel‑perfect | pixel‑perfect | Fog Boxes |',
+        );
+        const generatedRoot = join(root, "generated");
+        mkdirSync(join(generatedRoot, "scene3"), { recursive: true });
+        writeFileSync(
+            join(generatedRoot, "scene3", "main.cpp"),
+            "int main() { return 0; }\n",
+        );
+        const current = computeBuildStamp(join(generatedRoot, "scene3")).stamp;
+        const parityRoot = join(root, "parity");
+        mkdirSync(join(parityRoot, "scene3"), { recursive: true });
+        const report = (generatedStamp: string) =>
+            writeFileSync(
+                join(parityRoot, "scene3", "report-differential.json"),
+                JSON.stringify({
+                    tool: "parity",
+                    backend: "both",
+                    generatedStamp,
+                    goldenVersusSdlGpu: { fullMad: 0, foregroundMad: 0 },
+                    goldenVersusDawn: { fullMad: 0, foregroundMad: 0 },
+                    sdlGpuVersusDawn: { mad: 0 },
+                }),
+            );
+        const verify = () =>
+            verifyStatus({
+                statusPath,
+                parityRoot,
+                canvasRoot: join(root, "canvas"),
+                generatedRoot,
+            }).problems;
+        report("0".repeat(64));
+        assert.deepEqual(verify(), [
+            `${statusPath}:1 scene3: measured another build of ${join(generatedRoot, "scene3")} (report 000000000000, tree ${current.slice(0, 12)}); run 'npm run scene -- parity scene3' before verifying.`,
+        ]);
+        report(current);
+        assert.deepEqual(verify(), []);
     } finally {
         rmSync(root, { recursive: true, force: true });
     }

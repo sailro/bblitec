@@ -47,6 +47,7 @@ import {
     parityReportPath,
 } from "./tooling/artifacts.js";
 import { readReport } from "./tooling/reports.js";
+import { computeBuildStamp } from "./build-stamp.js";
 
 interface PublishedRow {
     sceneId: string;
@@ -288,7 +289,9 @@ export function coverageProblems(
 function measured(
     parityRoot: string,
     sceneId: string,
-): { values: number[]; source: string } | undefined {
+):
+    | { values: number[]; source: string; stamps: (string | undefined)[] }
+    | undefined {
     const directory = resolve(parityRoot, sceneId);
     const differentialPath = parityReportPath(directory, "differential");
     const gpuPath = parityReportPath(directory, "gpu");
@@ -310,6 +313,7 @@ function measured(
         if (differential === undefined) return undefined;
         return {
             source: differentialPath,
+            stamps: [differential.generatedStamp],
             values: [
                 differential.goldenVersusSdlGpu.fullMad,
                 differential.goldenVersusSdlGpu.foregroundMad,
@@ -328,6 +332,7 @@ function measured(
     }
     return {
         source: `${gpuPath} + ${dawnPath}`,
+        stamps: [gpu.generatedStamp, dawn.generatedStamp],
         values: [gpu.full.mad, gpu.region.mad, dawn.full.mad, dawn.region.mad],
     };
 }
@@ -346,6 +351,11 @@ export function canvasProblems(
     statusPath = "docs/status.md",
     /** Receives the wobbling cells, which are printed rather than compared. */
     exempt: string[] = [],
+    /** Why a report measured another build than the current one, if it did. */
+    staleness: (
+        sceneId: string,
+        stamps: readonly (string | undefined)[],
+    ) => string | undefined = () => undefined,
 ): string[] {
     const problems: string[] = [];
     for (const row of rows) {
@@ -357,6 +367,13 @@ export function canvasProblems(
         if (report === undefined) {
             problems.push(
                 `${statusPath}:${row.line} ${row.sceneId} canvas-only: no canvas report at ${reportPath}; run 'scene -- parity ${row.sceneId}' before verifying.`,
+            );
+            continue;
+        }
+        const stale = staleness(row.sceneId, [report.generatedStamp]);
+        if (stale !== undefined) {
+            problems.push(
+                `${statusPath}:${row.line} ${row.sceneId} canvas-only: ${stale}`,
             );
             continue;
         }
@@ -400,6 +417,13 @@ interface VerifyStatusOptions {
     parityRoot?: string;
     /** The canvas lane root (`artifacts/parity-canvas`). */
     canvasRoot?: string;
+    /**
+     * The generated trees the reports measured (`generated`): a report
+     * whose build stamp is not its tree's current one measured another
+     * build, so its values are not this build's. Defaults to `generated`
+     * with the default report roots; unchecked otherwise.
+     */
+    generatedRoot?: string;
 }
 
 interface StatusVerdict {
@@ -417,6 +441,28 @@ export function verifyStatus(options: VerifyStatusOptions = {}): StatusVerdict {
     const canvasRoot = options.canvasRoot ?? artifactDirectory("parity-canvas");
     const problems: string[] = [];
     const exempt: string[] = [];
+    const generatedRoot =
+        options.generatedRoot ??
+        (options.parityRoot === undefined ? resolve("generated") : undefined);
+    const currentStamps = new Map<string, string | undefined>();
+    const staleness = (
+        sceneId: string,
+        stamps: readonly (string | undefined)[],
+    ): string | undefined => {
+        if (generatedRoot === undefined) return undefined;
+        const tree = resolve(generatedRoot, sceneId);
+        if (!currentStamps.has(sceneId))
+            currentStamps.set(
+                sceneId,
+                existsSync(tree) ? computeBuildStamp(tree).stamp : undefined,
+            );
+        const current = currentStamps.get(sceneId);
+        if (current === undefined) return undefined;
+        const index = stamps.findIndex((stamp) => stamp !== current);
+        if (index < 0) return undefined;
+        const stale = stamps[index]?.slice(0, 12) ?? "unstamped";
+        return `measured another build of ${tree} (report ${stale}, tree ${current.slice(0, 12)}); run 'npm run scene -- parity ${sceneId}' before verifying.`;
+    };
     const rows = parsePublishedRows(readFileSync(statusPath, "utf8"));
     if (rows.length === 0) {
         problems.push(
@@ -427,7 +473,9 @@ export function verifyStatus(options: VerifyStatusOptions = {}): StatusVerdict {
     problems.push(...outOfOrderRows(rows, statusPath));
     problems.push(...coverageProblems(rows, statusPath));
     problems.push(...spellingProblems(rows, statusPath));
-    problems.push(...canvasProblems(rows, canvasRoot, statusPath, exempt));
+    problems.push(
+        ...canvasProblems(rows, canvasRoot, statusPath, exempt, staleness),
+    );
     const columns = [
         "SDL_GPU full",
         "SDL_GPU foreground",
@@ -440,6 +488,11 @@ export function verifyStatus(options: VerifyStatusOptions = {}): StatusVerdict {
             problems.push(
                 `${statusPath}:${row.line} ${row.sceneId}: no parity report; run 'npm run scene -- parity all' before verifying.`,
             );
+            continue;
+        }
+        const stale = staleness(row.sceneId, result.stamps);
+        if (stale !== undefined) {
+            problems.push(`${statusPath}:${row.line} ${row.sceneId}: ${stale}`);
             continue;
         }
         const [sdlFull, sdlForeground, dawnFull, dawnForeground] =
