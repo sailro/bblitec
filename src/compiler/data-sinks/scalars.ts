@@ -573,8 +573,8 @@ const opaqueSink = {
 };
 
 /**
- * An opaque kind a dynamic value can also hold boxed (a Blob a store read
- * back): its instance, asserted as `instanceof` narrowed it.
+ * An opaque kind a dynamic value holds as itself (`documentHoldsItself`):
+ * its instance, asserted as `instanceof` narrowed it.
  */
 const boxedOpaqueSink = {
     expression: opaqueSink.expression,
@@ -631,6 +631,8 @@ export const scalarsSinks: DataSinkOperations<
     | "image-bitmap"
     | "offscreen-canvas-2d"
     | "dom-rect"
+    | "dom-matrix"
+    | "dom-point"
     | "gpu-adapter"
     | "gpu"
     | "gpu-adapter-info"
@@ -762,6 +764,8 @@ export const scalarsSinks: DataSinkOperations<
     "image-bitmap": opaqueSink,
     "offscreen-canvas-2d": opaqueSink,
     "dom-rect": opaqueSink,
+    "dom-matrix": opaqueSink,
+    "dom-point": opaqueSink,
     gpu: sameKindSink("gpu"),
     file: opaqueSink,
     blob: boxedOpaqueSink,

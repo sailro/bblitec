@@ -457,3 +457,258 @@ ${FRAGMENT_HEAD}
     for (const [text, refusal] of positions)
         assert.throws(() => compileSource(holeScene(text)), refusal, text);
 });
+
+/**
+ * A seeded surface: a lane helper tests a tone for presence and hands it to
+ * a nested prelude helper formatting it with toFixed; the prelude reaches
+ * the stage through the record the lane returns, a `const` read of its
+ * member and a `let` a flag rewrites. The record also holds a function the
+ * surface calls once its material exists, which generation cannot carry.
+ * `tone` and `glow` are the expressions the scene passes.
+ */
+function seededScene(tone: string, glow: string): string {
+    return `
+    import { createEngine, createShaderMaterial, wgsl, type ShaderMaterial } from "babylon-lite";
+    const BODY = "@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(ccTone(0.5)); }";
+    function seedPrelude(amplitude: number | null): string {
+        if (amplitude === null) return "fn ccTone(s: f32) -> f32 { return s; }";
+        return \`fn ccTone(s: f32) -> f32 {
+    return s * (1.0 + \${amplitude.toFixed(4)} * 2.0);
+}\`;
+    }
+    interface LaneSources { seedPrelude: string; fade: { bind: (material: ShaderMaterial) => void } }
+    const NO_FADE = { bind: (material: ShaderMaterial) => {} };
+    function laneSources(seedTone: number | undefined): LaneSources {
+        if (seedTone === undefined) return { seedPrelude: seedPrelude(null), fade: NO_FADE };
+        return { seedPrelude: seedPrelude(seedTone), fade: NO_FADE };
+    }
+    interface SurfaceOptions { seedTone?: number; glow?: boolean }
+    function createSurface(opts: SurfaceOptions): ShaderMaterial {
+        const seedTone = opts.seedTone;
+        const lane = laneSources(seedTone);
+        const prelude = lane.seedPrelude;
+        let fragmentSource = \`\${prelude}\\n\${BODY}\`;
+        if (opts.glow === true) fragmentSource = \`// glow\\n\${fragmentSource}\`;
+        const material = createShaderMaterial({
+            name: "seeded",
+            vertexSource: wgsl\`${VERTEX}\`,
+            fragmentSource: wgsl\`\${fragmentSource}\`,
+            attributes: ["position", "uv"],
+            uniforms: ["worldViewProjection"],
+        });
+        lane.fade.bind(material);
+        return material;
+    }
+    async function main() {
+        await createEngine({});
+        const parsed = JSON.parse("[0.123456, null]") as (number | null)[];
+        createSurface({ seedTone: ${tone}, glow: ${glow} });
+    }
+    main();
+`;
+}
+
+/** A native run of `compiled` recording its uniform initializations, checked against `expected`. */
+function recordedUniformsProgram(
+    cpp: string,
+    compiled: string,
+    expected: readonly number[],
+): string {
+    return `${cpp}
+#include <utility>
+#include <vector>
+namespace bbl {
+std::vector<std::pair<std::uint32_t, float>> initialized_uniforms;
+void recorded_initialize_shader_uniform_values(Engine& engine, MaterialHandle material, std::uint32_t offset, std::uint32_t count, const float* values) {
+    for (std::uint32_t index = 0; index < count; ++index) initialized_uniforms.emplace_back(offset + index, values[index]);
+    initialize_shader_uniform_values(engine, material, offset, count, values);
+}
+}
+#define initialize_shader_uniform_values recorded_initialize_shader_uniform_values
+#define main generated_main
+${compiled}
+#undef main
+#undef initialize_shader_uniform_values
+int main() {
+    assert(generated_main() == 0);
+    const std::vector<std::pair<std::uint32_t, float>> expected{${expected
+        .map((value, offset) => `{${offset}u, ${value.toPrecision(9)}f}`)
+        .join(", ")}};
+    assert(bbl::initialized_uniforms == expected);
+}
+`;
+}
+
+test("a run-time number a nested helper formats behind a presence test reaches the stage through a let a run-time flag rewrites, from a uniform", (t) => {
+    // The flag is a call in the argument: evaluated once, before the call
+    // splits on it.
+    const { compiled, cpp } = compileShaderMaterialFixture(
+        seededScene("Number(parsed[0])", 'JSON.parse("true") === true'),
+    );
+    const fragments = compiled.manifest.customShaderPrograms.map(
+        ({ fragmentSource, uniforms }) => ({ fragmentSource, uniforms }),
+    );
+    assert.equal(fragments.length, 2);
+    for (const { fragmentSource, uniforms } of fragments) {
+        assert.deepEqual(uniforms, [
+            "worldViewProjection",
+            "bblDynamicFragment0:f32",
+        ]);
+        assert.match(
+            fragmentSource,
+            /return s \* \(1\.0 \+ shaderUniforms\.bblDynamicFragment0 \* 2\.0\);/,
+        );
+    }
+    assert.deepEqual(
+        fragments
+            .map(({ fragmentSource }) => fragmentSource.startsWith("// glow"))
+            .sort(),
+        [false, true],
+    );
+    // The tone's Number(...) and the flag's JSON.parse(...), each once.
+    assert.equal(
+        (compiled.cpp.match(/auto&& \w*case_argument_\d+ =/g) ?? []).length,
+        2,
+    );
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native compiler required.");
+        return;
+    }
+    runGeneratedProgram(
+        native,
+        "shader-source-uniforms/seeded-flag",
+        recordedUniformsProgram(cpp, compiled.cpp, [
+            Math.fround(Number((0.123456).toFixed(4))),
+        ]),
+        { expectedOutput: "" },
+    );
+});
+
+test("an optional run-time number a lane tests for presence splits the stage into a lifted and a plain arm, the run taking JavaScript's", (t) => {
+    const { compiled, cpp } = compileShaderMaterialFixture(
+        seededScene(
+            "parsed[1] === null ? undefined : Number(parsed[1])",
+            "false",
+        ),
+    );
+    const fragments = compiled.manifest.customShaderPrograms.map(
+        ({ fragmentSource, uniforms }) => ({ fragmentSource, uniforms }),
+    );
+    assert.equal(fragments.length, 2);
+    const lifted = fragments.find(({ uniforms }) => uniforms.length > 1);
+    const plain = fragments.find(({ uniforms }) => uniforms.length === 1);
+    assert.match(
+        lifted?.fragmentSource ?? "",
+        /shaderUniforms\.bblDynamicFragment0/,
+    );
+    assert.match(
+        plain?.fragmentSource ?? "",
+        /fn ccTone\(s: f32\) -> f32 \{ return s; \}/,
+    );
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native compiler required.");
+        return;
+    }
+    // The parsed tone is null: the run takes the plain arm, no uniform.
+    runGeneratedProgram(
+        native,
+        "shader-source-uniforms/seeded-absent",
+        recordedUniformsProgram(cpp, compiled.cpp, []),
+        { expectedOutput: "" },
+    );
+});
+
+/** The distinct fragment texts a seeded scene compiles, split into its lifted and plain ones. */
+function seededFragments(compiled: ReturnType<typeof compileSource>): {
+    lifted: string[];
+    plain: string[];
+} {
+    const texts = [
+        ...new Set(
+            compiled.manifest.customShaderPrograms.map(
+                ({ fragmentSource }) => fragmentSource,
+            ),
+        ),
+    ];
+    return {
+        lifted: texts.filter((text) =>
+            /shaderUniforms\.bblDynamicFragment0/.test(text),
+        ),
+        plain: texts.filter((text) =>
+            /fn ccTone\(s: f32\) -> f32 \{ return s; \}/.test(text),
+        ),
+    };
+}
+
+test("a parsed document's number a lane tests for presence splits on present, null and missing, the run taking JavaScript's arm", (t) => {
+    // `parsed[0]!` says number; the document could hold null or nothing.
+    const { compiled, cpp } = compileShaderMaterialFixture(
+        seededScene("parsed[0]!", "false"),
+    );
+    const { lifted, plain } = seededFragments(compiled);
+    assert.equal(lifted.length, 1);
+    assert.equal(plain.length, 1);
+    assert.match(compiled.cpp, /\.is_null\(\)/);
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native compiler required.");
+        return;
+    }
+    // The document holds 0.123456 there: the present arm, its uniform.
+    runGeneratedProgram(
+        native,
+        "shader-source-uniforms/seeded-json-present",
+        recordedUniformsProgram(cpp, compiled.cpp, [
+            Math.fround(Number((0.123456).toFixed(4))),
+        ]),
+        { expectedOutput: "" },
+    );
+});
+
+test("a coalesced document number a lane tests for presence lifts without a presence split, as JavaScript reads it", (t) => {
+    // `parsed[1] ?? 0.25` is never nullish: the lane's presence test is
+    // decided, and only the lifted text is compiled.
+    const { compiled, cpp } = compileShaderMaterialFixture(
+        seededScene("parsed[1] ?? 0.25", "false"),
+    );
+    const { lifted, plain } = seededFragments(compiled);
+    assert.equal(lifted.length, 1);
+    assert.equal(plain.length, 0);
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native compiler required.");
+        return;
+    }
+    // The document holds null there, so JavaScript passes 0.25.
+    runGeneratedProgram(
+        native,
+        "shader-source-uniforms/seeded-coalesced",
+        recordedUniformsProgram(cpp, compiled.cpp, [
+            Math.fround(Number((0.25).toFixed(4))),
+        ]),
+        { expectedOutput: "" },
+    );
+});
+
+test("a parsed document's null a lane tests for presence takes the plain arm, as JavaScript does", (t) => {
+    const { compiled, cpp } = compileShaderMaterialFixture(
+        seededScene("parsed[1] ?? undefined", "false"),
+    );
+    const { lifted, plain } = seededFragments(compiled);
+    assert.equal(lifted.length, 1);
+    assert.equal(plain.length, 1);
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native compiler required.");
+        return;
+    }
+    // The document holds null there, which `??` makes missing: no uniform.
+    runGeneratedProgram(
+        native,
+        "shader-source-uniforms/seeded-json-null",
+        recordedUniformsProgram(cpp, compiled.cpp, []),
+        { expectedOutput: "" },
+    );
+});

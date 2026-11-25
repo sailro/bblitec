@@ -52,6 +52,10 @@ export const NAVIGATOR_GET_GAMEPADS = "Navigator.getGamepads";
 /** Random bits from the host's entropy source (`expressions.ts`). */
 export const CRYPTO_GET_RANDOM_VALUES = "Crypto.getRandomValues";
 
+/** The display's hit test of the page it lays out (`platform-calls.ts`). */
+export const DOCUMENT_ELEMENT_FROM_POINT =
+    "DocumentOrShadowRoot.elementFromPoint";
+
 const LOWERED_CALLS: ReadonlySet<string> = new Set([
     ...windowFunction(MESSAGE_BOX_FUNCTIONS),
     ...windowFunction(IDLE_FUNCTIONS),
@@ -61,6 +65,7 @@ const LOWERED_CALLS: ReadonlySet<string> = new Set([
     CANVAS_CAPTURE_STREAM,
     NAVIGATOR_GET_GAMEPADS,
     CRYPTO_GET_RANDOM_VALUES,
+    DOCUMENT_ELEMENT_FROM_POINT,
 ]);
 
 const LOWERED_READS: ReadonlySet<string> = new Set(

@@ -141,12 +141,17 @@ message class, function and cascades, the storage demands the last pass met, the
 statements slowest to lower; no tree) and `api/report.html` (referenced pinned declarations). A survey lowers every
 function of the program's own sources ([survey invariants](architecture.md#lowering-invariants));
 `bblitec <entry> --survey <census.json>` rewrites the census as it goes (`complete: false`), and `--survey-passes <n>` caps
-the passes: one attempts every statement. Each pass reports on stderr the seconds and statement lowerings of its entry,
-module roots, function roots and statement roots, and the seconds its probes kept and rolled back. Group by shared
+the passes: one attempts every statement. `--survey-entry-only` lowers no roots: the census lists the refusals the
+entry's own lowering reaches, the ones a compile of that entry meets. Each pass reports on stderr the seconds and statement lowerings of its entry,
+module roots, function roots and statement roots, and the seconds its probes kept and rolled back. An ordinary
+compile reports on stderr each lowering attempt a replay ends (`Compile attempt <n>`: what restarted it, where, and
+the seconds so far). `--converge-storage <passes>` first runs up to that many survey passes of the entry's own lowering
+(no roots), taking each storage demand where a statement meets it, then lowers strictly with that storage: a large
+entry restarts once per pass instead of once per demand. Group by shared
 capability and probe source shapes before implementing. The
 compiler's `--coverage <coverage.json>` (with `--out` or `--survey`) records statement-level retained, refused and
-rolled-back lowering; it does not prove native support. A survey rewrites it every ten minutes (`complete: false` until it
-ends).
+rolled-back lowering; it does not prove native support. A survey, and an ordinary compile between its attempts, rewrite it every ten minutes
+(`complete: false` until it ends).
 
 ### Required files
 

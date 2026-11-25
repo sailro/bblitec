@@ -162,6 +162,8 @@ import {
     createsFormControls,
     isUiMetadataAttribute,
     parseAuthoredMarkup,
+    parseAuthoredSvgMarkup,
+    svgContentDocument,
     type UiAuthoredMarkupNode,
 } from "./ui-authored-markup.js";
 import {
@@ -173,6 +175,7 @@ import {
     writeSites,
     writeSiteOf,
     accessKey,
+    isMemberAccess,
 } from "./syntax.js";
 import { stringConcatPart } from "./expressions.js";
 import { isJsonValue } from "./json-bridge.js";
@@ -428,6 +431,88 @@ interface UiReflectedAttribute {
     /** The elements declaring the attribute, when not every HTML element does. */
     tags?: readonly string[];
 }
+/** The document methods that find retained elements (`isNativeHostUiLookup`). */
+const DOCUMENT_LOOKUPS: ReadonlySet<string> = new Set([
+    "getElementById",
+    "querySelector",
+    "querySelectorAll",
+]);
+
+/**
+ * @unjournaled The calls of a helper body `isNativeUiHelperCall` asks
+ * about (`helperUiCalls`), by checker: derived from the checked program
+ * alone, so every compile of it shares them.
+ */
+const helperUiCallsByBody = new WeakMap<
+    ts.TypeChecker,
+    WeakMap<ts.Node, readonly ts.CallExpression[]>
+>();
+
+/**
+ * The calls in `body`, in walk order, that may make it a native UI
+ * helper: one whose callee names a document lookup or `createElement`, or
+ * one whose callee an unwrap sees through. The callee of any other call is
+ * a name or a member access with another name, which answers no.
+ */
+function helperUiCalls(
+    checker: ts.TypeChecker,
+    body: ts.Node,
+): readonly ts.CallExpression[] {
+    let known = helperUiCallsByBody.get(checker);
+    if (!known) helperUiCallsByBody.set(checker, (known = new WeakMap()));
+    const kept = known.get(body);
+    if (kept) return kept;
+    const calls: ts.CallExpression[] = [];
+    const visit = (node: ts.Node): void => {
+        if (ts.isCallExpression(node)) {
+            const callee = node.expression;
+            const name = isMemberAccess(callee)
+                ? namedMember(checker, callee)?.name
+                : undefined;
+            if (
+                !(ts.isIdentifier(callee) || isMemberAccess(callee)) ||
+                (name !== undefined &&
+                    (DOCUMENT_LOOKUPS.has(name) || name === "createElement"))
+            )
+                calls.push(node);
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(body);
+    known.set(body, calls);
+    return calls;
+}
+
+/**
+ * Attributes of form-control markup generation decides from their literal
+ * value: selector classes and ids, styles, control types, links and hiding.
+ */
+const GENERATION_ATTRIBUTES: ReadonlySet<string> = new Set([
+    "class",
+    "id",
+    "style",
+    "type",
+    "href",
+    "target",
+    "rel",
+    "hidden",
+]);
+
+/**
+ * The template operand an SVG image's href is when it is one runtime value,
+ * which selects among the packaged images its candidates name.
+ */
+function uiImageSourceHole(
+    node: UiAuthoredMarkupNode & { kind: "element" },
+    attribute: { readonly name: string; readonly value: string },
+): number | undefined {
+    const hole =
+        node.svg && node.tag === "image" && attribute.name === "href"
+            ? /^__BBLITE_UI_MARKUP_(\d+)__$/.exec(attribute.value)
+            : null;
+    return hole ? Number(hole[1]) : undefined;
+}
+
 /** Elements whose `value` property is their form value. */
 const UI_FORM_VALUE_TAGS = ["textarea", "input", "select", "option", "output"];
 
@@ -2361,9 +2446,9 @@ export class UiProjection {
 
     /**
      * Reached hints with no rendering semantics in the retained projection:
-     * `will-change`/`touch-action`/`user-select` describe browser scrolling,
-     * selection, and compositor behaviour the native input path does not
-     * have, and `image-rendering` is superseded by the sampling intent the
+     * `will-change`/`touch-action`/`user-select` and proximity
+     * `scroll-snap-*` describe browser scrolling, selection, and compositor
+     * behaviour the native input path does not have, and `image-rendering` is superseded by the sampling intent the
      * retained canvas commands already carry per blit.
      */
     private static readonly PRESENTATION_KEYWORDS: ReadonlyMap<
@@ -2406,6 +2491,20 @@ export class UiProjection {
         // Sparse auto-placement; `dense` packing is not represented.
         ["grid-auto-flow", ["row", "column"]],
         ["justify-self", ["auto", "start", "end", "center", "stretch"]],
+        // Proximity snapping is optional in CSS: native scrolling ends where
+        // it lands. A mandatory snap position is a layout contract.
+        [
+            "scroll-snap-type",
+            [
+                "none",
+                "x proximity",
+                "y proximity",
+                "block proximity",
+                "inline proximity",
+                "both proximity",
+            ],
+        ],
+        ["scroll-snap-align", ["none", "start", "end", "center"]],
     ]);
 
     private static readonly INERT_UI_STYLE_PROPERTIES = new EmissionSet<string>(
@@ -2417,11 +2516,30 @@ export class UiProjection {
             "image-rendering",
             "list-style",
             "list-style-type",
+            "scroll-snap-align",
+            "scroll-snap-type",
             "touch-action",
             "user-select",
             "will-change",
         ],
     );
+
+    /**
+     * Whether strict admission passes `property: value` as an inert hint:
+     * deferred mode then has nothing to defer for it.
+     */
+    public static admitsInertHint(
+        property: string,
+        value: string | undefined,
+    ): boolean {
+        if (!UiProjection.INERT_UI_STYLE_PROPERTIES.has(property)) return false;
+        const keywords = UiProjection.PRESENTATION_KEYWORDS.get(property);
+        return (
+            !keywords ||
+            (value !== undefined &&
+                keywords.includes(value.trim().toLowerCase()))
+        );
+    }
 
     /**
      * Reached properties the projection accepts WITHOUT a native rendering:
@@ -4000,7 +4118,7 @@ export class UiProjection {
     /**
      * One keyframe's declarations, lowered as a rule's, each a property RmlUi
      * keys: its animations interpolate numbers, lengths, colours, transforms,
-     * decorators and filters and swap keywords (ElementAnimation), never the
+     * decorators, filters and box shadows and swap keywords (ElementAnimation), never the
      * strings and lists below or the PAL's private declarations.
      */
     private lowerUiKeyframeDeclarations(
@@ -4032,7 +4150,7 @@ export class UiProjection {
         return this.uiStyleRefusal(
             site,
             property,
-            `a keyframe's '${property}' is not keyed: RmlUi animations interpolate numbers, lengths, colours, transforms, decorators and filters and swap keywords`,
+            `a keyframe's '${property}' is not keyed: RmlUi animations interpolate numbers, lengths, colours, transforms, decorators, filters and box shadows and swap keywords`,
         );
     }
 
@@ -4047,7 +4165,6 @@ export class UiProjection {
         "font-family",
         "font-effect",
         "cursor",
-        "box-shadow",
         "aspect-ratio",
         "border-image",
         ...UI_BORDER_IMAGE_LONGHANDS,
@@ -4739,9 +4856,11 @@ export class UiProjection {
                     const property = UiProjection.cssPropertyName(
                         declaration.slice(0, colon).trim(),
                     );
+                    const value = declaration.slice(colon + 1).trim();
+                    if (UiProjection.admitsInertHint(property, value)) return;
                     const capability = deferredUiStyleCapability(
                         property,
-                        declaration.slice(colon + 1).trim(),
+                        value,
                     );
                     if (capability) capabilities.add(capability);
                 },
@@ -4812,7 +4931,13 @@ export class UiProjection {
                                   this.uiMarkupParts(node.right, domains),
                                   UiProjection.UI_MARKUP_ALTERNATIVES + 1,
                               )
-                            : [form.source]),
+                            : isDomReceiver(
+                                    this.context,
+                                    node.left.expression,
+                                    "SVGElement",
+                                )
+                              ? [svgContentDocument(form.source)]
+                              : [form.source]),
                     );
                 } catch (error) {
                     if (!(error instanceof CompileError)) throw error;
@@ -5426,34 +5551,51 @@ export class UiProjection {
     }
 
     /**
-     * Markup creating form controls, parsed into its element tree: a static
-     * string, or a flat template whose runtime operands are text (escaped, as
-     * in projected markup), each a hole the tree's text holds.
+     * Markup creating form controls, or any markup an SVG element receives,
+     * parsed into its element tree: a static string, or a flat template whose
+     * runtime operands are text (escaped, as in projected markup), each a hole
+     * the tree's text or an attribute value holds. An attribute generation
+     * decides ({@link GENERATION_ATTRIBUTES}) takes none.
      */
-    private uiAuthoredMarkup(expression: ts.Expression):
+    private uiAuthoredMarkup(
+        expression: ts.Expression,
+        svgReceiver: boolean,
+    ):
         | {
               nodes: UiAuthoredMarkupNode[];
               substitutions: readonly ts.Expression[];
           }
         | undefined {
-        const form = this.uiMarkupForm(expression, new Map());
-        if (form.kind === "structured") return undefined;
-        this.prefetchUiMarkup();
-        if (!createsFormControls(form.source)) return undefined;
         const fail = (message: string): never =>
             this.context.fail(expression, `Native UI innerHTML ${message}`);
-        const nodes = parseAuthoredMarkup(form.source, fail);
+        const form = this.uiMarkupForm(expression, new Map());
+        if (form.kind === "structured") {
+            if (svgReceiver)
+                fail(
+                    "on an SVG element requires a static string or a flat template.",
+                );
+            return undefined;
+        }
+        this.prefetchUiMarkup();
+        if (!svgReceiver && !createsFormControls(form.source)) return undefined;
+        const nodes = svgReceiver
+            ? parseAuthoredSvgMarkup(form.source, fail)
+            : parseAuthoredMarkup(form.source, fail);
         const holed = (node: UiAuthoredMarkupNode): boolean =>
             node.kind === "element" &&
             (node.tag.includes("__BBLITE_UI_MARKUP_") ||
                 node.attributes.some(
                     (attribute) =>
                         /__BBLITE_UI_MARKUP_\d+__/i.test(attribute.name) ||
-                        attribute.value.includes("__BBLITE_UI_MARKUP_"),
+                        (GENERATION_ATTRIBUTES.has(attribute.name) &&
+                            attribute.value.includes("__BBLITE_UI_MARKUP_") &&
+                            uiImageSourceHole(node, attribute) === undefined),
                 ) ||
                 node.children.some(holed));
         if (nodes.some(holed))
-            fail("with form controls takes runtime text only in text.");
+            fail(
+                `${svgReceiver ? "on an SVG element" : "with form controls"} takes runtime text in text and attribute values, not in tag or attribute names or ${[...GENERATION_ATTRIBUTES].join(", ")}.`,
+            );
         return {
             nodes,
             substitutions: form.kind === "flat" ? form.substitutions : [],
@@ -5461,9 +5603,10 @@ export class UiProjection {
     }
 
     /**
-     * Builds static form-control markup as the retained elements createElement
-     * would create, so its controls own value, checkedness, selectedness and
-     * listeners. Each element is complete before it joins its parent.
+     * Builds static form-control or SVG markup as the retained elements
+     * createElement or createElementNS would create, so its controls own
+     * value, checkedness, selectedness and listeners, and its shapes draw as
+     * retained SVG. Each element is complete before it joins its parent.
      */
     private emitUiAuthoredMarkup(
         receiver: Value,
@@ -5474,17 +5617,38 @@ export class UiProjection {
         }: NonNullable<ReturnType<UiProjection["uiAuthoredMarkup"]>>,
         site: ts.Expression,
     ): void {
+        // An SVG image's runtime href selects among packaged candidates.
+        const imageSources = new Set<number>();
+        const findImageSources = (node: UiAuthoredMarkupNode): void => {
+            if (node.kind !== "element") return;
+            for (const attribute of node.attributes) {
+                const hole = uiImageSourceHole(node, attribute);
+                if (hole !== undefined) imageSources.add(hole);
+            }
+            node.children.forEach(findImageSources);
+        };
+        nodes.forEach(findImageSources);
         // The template's operands run before the assignment, in order.
-        const texts = substitutions.map((substitution) =>
-            this.uiTemplateValueCpp(
-                this.context.bindings.pinValueToTemporary(
-                    this.context.compileValue(substitution),
-                    "markup_text",
-                    substitution,
-                ),
-                substitution,
-                "Native UI innerHTML",
-            ),
+        const texts = substitutions.map((substitution, index) =>
+            imageSources.has(index)
+                ? this.context.bindings.pinValueToTemporary(
+                      {
+                          kind: "string",
+                          cpp: this.runtimeUiImageSource(substitution),
+                          dataType: { kind: "string" },
+                      },
+                      "markup_image",
+                      substitution,
+                  ).cpp
+                : this.uiTemplateValueCpp(
+                      this.context.bindings.pinValueToTemporary(
+                          this.context.compileValue(substitution),
+                          "markup_text",
+                          substitution,
+                      ),
+                      substitution,
+                      "Native UI innerHTML",
+                  ),
         );
         const textCpp = (value: string): string => {
             if (!value.includes("__BBLITE_UI_MARKUP_"))
@@ -5527,8 +5691,11 @@ export class UiProjection {
                 kind: "declaration",
                 type: "const auto",
                 name,
-                initializer: `bbl::ui_create_element(${engine}, ${this.context.cppString(node.tag)})`,
+                initializer: `bbl::ui_create_${node.svg ? "svg_" : ""}element(${engine}, ${this.context.cppString(node.tag)})`,
             });
+            if (node.svg) this.context.reachFeature("ui:inline-svg", site);
+            if (node.svg && node.tag === "image")
+                this.context.reachFeature("ui:svg-image", site);
             const element: Value = {
                 kind: "ui-element",
                 cpp: name,
@@ -5556,6 +5723,13 @@ export class UiProjection {
                     attribute.value,
                     site,
                 );
+                if (
+                    node.svg &&
+                    node.tag === "image" &&
+                    attribute.name === "href" &&
+                    !value.includes("__BBLITE_UI_MARKUP_")
+                )
+                    this.registerImageSource(value);
                 if (attribute.name === "class" || attribute.name === "id")
                     this.recordUiStaticAttribute(
                         element,
@@ -5564,7 +5738,7 @@ export class UiProjection {
                         value,
                     );
                 emit(
-                    `bbl::ui_set_attribute(${engine}, ${name}, ${this.context.cppString(attribute.name)}, ${this.context.cppString(value)})`,
+                    `bbl::ui_set_attribute(${engine}, ${name}, ${this.context.cppString(attribute.name)}, ${textCpp(value)})`,
                 );
             }
             const [text] = node.children;
@@ -6753,7 +6927,10 @@ export class UiProjection {
                 "markup_receiver",
                 receiver,
             );
-            const authored = this.uiAuthoredMarkup(right);
+            const authored = this.uiAuthoredMarkup(
+                right,
+                isDomReceiver(this.context, receiver, "SVGElement"),
+            );
             if (authored) {
                 this.emitUiAuthoredMarkup(pinned, engine, authored, right);
                 return;
@@ -6889,6 +7066,7 @@ export class UiProjection {
         const capability =
             !important &&
             this.context.options.deferredCapabilities &&
+            !UiProjection.admitsInertHint(nativeProperty, knownString) &&
             deferredUiStyleCapability(nativeProperty, knownString);
         if (
             capability &&
@@ -7217,11 +7395,7 @@ export class UiProjection {
         );
         if (
             !callee ||
-            !(
-                callee.name === "getElementById" ||
-                callee.name === "querySelector" ||
-                callee.name === "querySelectorAll"
-            ) ||
+            !DOCUMENT_LOOKUPS.has(callee.name) ||
             !isDocumentReceiver(this.context, callee.expression) ||
             call.arguments.length !== 1
         ) {
@@ -7286,37 +7460,26 @@ export class UiProjection {
         ) {
             return false;
         }
-        let reached = false;
-        const visit = (node: ts.Node): void => {
-            if (reached) return;
-            if (ts.isCallExpression(node)) {
-                if (this.isNativeHostUiLookup(node)) {
-                    reached = true;
-                    return;
-                }
+        return helperUiCalls(this.context.checker, declaration.body).some(
+            (node) => {
+                if (this.isNativeHostUiLookup(node)) return true;
                 if (
-                    isLibraryStatic(
+                    !isLibraryStatic(
                         this.context.checker,
                         this.context.unwrap(node.expression),
                         "document",
                         "createElement",
                     )
-                ) {
-                    const tag = node.arguments[0];
-                    if (
-                        tag &&
-                        ts.isStringLiteralLike(tag) &&
-                        tag.text.toLowerCase() !== "canvas"
-                    ) {
-                        reached = true;
-                        return;
-                    }
-                }
-            }
-            ts.forEachChild(node, visit);
-        };
-        visit(declaration.body);
-        return reached;
+                )
+                    return false;
+                const tag = node.arguments[0];
+                return (
+                    tag !== undefined &&
+                    ts.isStringLiteralLike(tag) &&
+                    tag.text.toLowerCase() !== "canvas"
+                );
+            },
+        );
     }
 
     public compileHostUi(startup?: (fileName: string) => string[]): string[] {

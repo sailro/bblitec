@@ -43,8 +43,9 @@ import {
     variableKind,
     isMemberAccess,
     ANY_KEY,
-    writeSites,
     optionalChainReceivers,
+    unwrapExpression,
+    isConstDeclaration,
 } from "./syntax.js";
 import { promiseExecutor } from "./promise-executor.js";
 import { isNativeBrowserFileExpression } from "./browser-file.js";
@@ -69,6 +70,8 @@ import {
     declarationOrigin,
     GLOBAL_OBJECT_NAMES,
     isTopLevelWindow,
+    libraryInterfaceType,
+    constInitializerOf,
 } from "./symbols.js";
 import { searchParamsMutators } from "./search-params.js";
 import { foldMathCall, mathMemberCall } from "./math-intrinsics.js";
@@ -93,7 +96,16 @@ import {
     isVoid,
     callSignatures,
     holdsOnly,
+    inheritsFrom,
+    isEmptyObjectType,
+    unionMembers,
 } from "./type-facts.js";
+import {
+    programObservations,
+    type MemberDefinition,
+} from "./program-observations.js";
+import { openHolder, writtenHolders } from "./written-holders.js";
+import { constObjectLiteral } from "./fresh-records.js";
 
 /**
  * The global `parseFloat`, in either of the two spellings a scene writes.
@@ -153,6 +165,8 @@ const NATIVE_DOM_BRIDGE_KINDS = new EmissionSet<Value["kind"]>([
     "worker-media-query",
     "worker-mutation-observer",
     "offscreen-canvas",
+    "message-port",
+    "message-channel",
 ]);
 
 /** DOM-declared classes with native runtime values (`web-platform.ts`). */
@@ -208,6 +222,38 @@ const STORAGE_TYPES: ReadonlySet<string> = new Set([
     "IDBCursorWithValue",
 ]);
 
+/**
+ * An expression past its wrappers and awaits, recording nothing: the flow
+ * scan reads values the program may never lower, which the evaluator's
+ * unwrap would count as awaits the program suspends at.
+ */
+function settledOperand(expression: ts.Expression): ts.Expression {
+    return unwrapExpression(expression, { await: true });
+}
+
+/**
+ * Where the program lets values that may be the global object go: whether
+ * one is given as an open type, and the types such values have.
+ */
+interface GlobalObjectFlows {
+    readonly escapes: boolean;
+    readonly carriers: ReadonlySet<ts.Type>;
+    /** The variables given such a value: their reads are such values. */
+    readonly bindings: ReadonlySet<ts.Symbol>;
+}
+
+/**
+ * What a given value's operand is, whichever flows are asked
+ * (`globalObjectFlows`): computed when first read.
+ */
+interface GivenOperand {
+    readonly operand: ts.Expression;
+    global?: boolean;
+    type?: ts.Type;
+    /** The variable the value is given to, if any (`givenVariable`). */
+    given?: { readonly variable: ts.Symbol | undefined };
+}
+
 export function isAbsentWindowMember(name: string): boolean {
     return ABSENT_GLOBAL_MEMBERS.has(name);
 }
@@ -247,6 +293,7 @@ interface BrowserErasureContext extends Pick<
     | "sourceFiles"
     | "sourceFile"
     | "symbols"
+    | "program"
 > {}
 
 /**
@@ -481,18 +528,11 @@ function lookupText(context: PrimaryCanvasContext, argument: ts.Expression) {
  * declaration alone: the program scan above runs outside any scope.
  */
 export function constInitializer(
-    context: Pick<LoweringServices, "symbols" | "unwrap">,
+    context: Pick<LoweringServices, "checker" | "unwrap">,
     identifier: ts.Identifier,
 ): ts.Expression | undefined {
-    const declaration =
-        context.symbols.valueSymbol(identifier)?.valueDeclaration;
-    return declaration &&
-        ts.isVariableDeclaration(declaration) &&
-        ts.isVariableDeclarationList(declaration.parent) &&
-        variableKind(declaration.parent) === "const" &&
-        declaration.initializer
-        ? context.unwrap(declaration.initializer)
-        : undefined;
+    const initializer = constInitializerOf(context.checker, identifier);
+    return initializer && context.unwrap(initializer);
 }
 
 /**
@@ -1759,12 +1799,20 @@ export class BrowserErasure {
             // getComputedStyle(element) views the element's computed style.
             const computed = computedStyleElement(this.context, unwrapped);
             if (computed) return owner(computed);
-            if (isOperandSelection(unwrapped)) {
-                // Any yielded operand is the owner: all must bridge one kind.
-                const owners = valueOperands(
-                    unwrapped,
-                    this.context.unwrap,
-                ).map(owner);
+            // Any yielded operand is the owner, and any element of an array
+            // literal (`[...list].find(...)`): all must bridge one kind.
+            const operands = isOperandSelection(unwrapped)
+                ? valueOperands(unwrapped, this.context.unwrap)
+                : ts.isArrayLiteralExpression(unwrapped) &&
+                    unwrapped.elements.length > 0
+                  ? unwrapped.elements.map((element) =>
+                        ts.isSpreadElement(element)
+                            ? element.expression
+                            : element,
+                    )
+                  : undefined;
+            if (operands) {
+                const owners = operands.map(owner);
                 return owners.every((each) => each?.kind === owners[0]?.kind)
                     ? owners[0]
                     : undefined;
@@ -1937,6 +1985,11 @@ export class BrowserErasure {
         expression: ts.Expression,
     ): Value["browserValue"] | undefined {
         const unwrapped = this.context.unwrap(expression);
+        if (
+            ts.isPropertyAccessExpression(unwrapped) &&
+            this.context.libraryGlobal(unwrapped.expression) === "console"
+        )
+            return { kind: "console-method" };
         const accessor = hostAccessorValue(this.context, unwrapped);
         if (accessor)
             return accessor.staticNumber === undefined
@@ -2521,19 +2574,9 @@ export class BrowserErasure {
         global: ts.Symbol | undefined;
     } {
         const checker = this.context.checker;
-        const window = checker.resolveName(
-            "Window",
-            undefined,
-            ts.SymbolFlags.Type,
-            false,
-        );
+        const window = libraryInterfaceType(checker, "Window");
         return {
-            member:
-                window &&
-                checker.getPropertyOfType(
-                    checker.getDeclaredTypeOfSymbol(window),
-                    name,
-                ),
+            member: window && checker.getPropertyOfType(window, name),
             global: checker.resolveName(
                 name,
                 undefined,
@@ -2587,22 +2630,28 @@ export class BrowserErasure {
     private globalWrites: ReadonlySet<string> | undefined;
 
     /**
-     * The global object's members some program write sets, by name;
-     * {@link ANY_KEY} for a computed key or a reflective writer
-     * (`Object.assign(window, ...)`, `Object.defineProperty(globalThis, ...)`).
+     * The global object's members some program definition sets, by name;
+     * {@link ANY_KEY} for a key only the run time knows, a whole-object
+     * definition (`Object.assign(window, ...)`) or a prototype change.
      */
     private programGlobalWrites(): ReadonlySet<string> {
         if (this.globalWrites) return this.globalWrites;
-        const sites = this.globalWriteSites();
-        // Every write first: deciding a branch below may itself ask which
-        // members the program writes, and then reads this superset.
-        this.globalWrites = new Set(sites.map(({ name }) => name));
+        // Every write first, through every flow: deciding a branch below may
+        // itself ask which members the program writes, and then reads this
+        // superset.
+        this.globalWrites = new Set(
+            this.globalWriteSites(this.lazyGlobalObjectFlows(() => true)).map(
+                ({ name }) => name,
+            ),
+        );
         // Out of any helper's frame: a condition is decided for every call.
         const frames = this.helperBodies.splice(0);
         try {
+            const runs = (node: ts.Node): boolean =>
+                !this.inRuledOutBranch(node);
             this.globalWrites = new Set(
-                sites
-                    .filter(({ node }) => !this.inRuledOutBranch(node))
+                this.globalWriteSites(this.lazyGlobalObjectFlows(runs))
+                    .filter(({ node }) => runs(node))
                     .map(({ name }) => name),
             );
         } finally {
@@ -2614,100 +2663,377 @@ export class BrowserErasure {
     /** @unjournaled A fact of the checked program, kept across replays. */
     private globalObjectTypes: readonly ts.Type[] | undefined;
 
+    /** The types the global object is declared with: `Window` and `typeof globalThis`. */
+    private globalTypes(): readonly ts.Type[] {
+        if (this.globalObjectTypes) return this.globalObjectTypes;
+        const checker = this.context.checker;
+        const window = libraryInterfaceType(checker, "Window");
+        const global = checker.resolveName(
+            "globalThis",
+            undefined,
+            ts.SymbolFlags.Value,
+            false,
+        );
+        return (this.globalObjectTypes = [
+            ...(window ? [window] : []),
+            ...(global ? [checker.getTypeOfSymbol(global)] : []),
+        ]);
+    }
+
+    /** @unjournaled A fact of the checked program, kept across replays. */
+    private globalObjectBases: ReadonlySet<ts.Type> | undefined;
+
+    /** The types the global object's types inherit from, themselves included (`inheritsFrom`). */
+    private globalBases(): ReadonlySet<ts.Type> {
+        if (this.globalObjectBases) return this.globalObjectBases;
+        const bases = new Set<ts.Type>();
+        for (const global of this.globalTypes())
+            inheritsFrom(global, (base) => {
+                bases.add(base);
+                return false;
+            });
+        return (this.globalObjectBases = bases);
+    }
+
     /**
-     * Whether a write receiver may be the global object: the global object
-     * as written, or any value its type admits it into (an alias, a
-     * parameter, a call's result, `any`), except a fresh literal.
+     * How a value of type `type` may be the global object: `closed` where a
+     * member is a type the global object's types are assignable to
+     * (`Window`, `EventTarget`), `open` where one admits every object
+     * (`unknown`, `any`, `object`, `{}`, `Object`, an index signature of
+     * `unknown` or `any`, a type parameter its constraint leaves open).
      */
-    private mayHoldGlobalObject(expression: ts.Expression): boolean {
-        if (this.isGlobalObject(expression)) return true;
-        const unwrapped = this.context.unwrap(expression);
+    private globalAdmission(type: ts.Type): {
+        closed: boolean;
+        open: boolean;
+    } {
+        const checker = this.context.checker;
+        const globals = this.globalTypes();
+        const admission = { closed: false, open: false };
+        for (const member of unionMembers(type)) {
+            if ((member.flags & ts.TypeFlags.TypeParameter) !== 0) {
+                const constraint = checker.getBaseConstraintOfType(member);
+                const bound =
+                    constraint && constraint !== member
+                        ? this.globalAdmission(constraint)
+                        : { closed: false, open: true };
+                admission.closed ||= bound.closed;
+                admission.open ||= bound.open;
+            } else if (
+                openHolder(member) ||
+                isEmptyObjectType(checker, member) ||
+                libraryName(member) === "Object" ||
+                checker
+                    .getIndexInfosOfType(member)
+                    .some(
+                        (info) =>
+                            (info.type.flags &
+                                (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !==
+                            0,
+                    )
+            )
+                admission.open = true;
+            else if (
+                globals.some((global) =>
+                    checker.isTypeAssignableTo(global, member),
+                )
+            )
+                admission.closed = true;
+        }
+        return admission;
+    }
+
+    /** @unjournaled A fact of the checked program, kept across replays. */
+    private givenValues:
+        | readonly { readonly value: ts.Expression; readonly type: ts.Type }[]
+        | undefined;
+
+    /**
+     * Each value given where a type is declared for it, and each assertion
+     * whose value is not only read a member of, with the type it is given
+     * as (`programObservations`).
+     */
+    private givenObjectValues(): readonly {
+        readonly value: ts.Expression;
+        readonly type: ts.Type;
+    }[] {
+        if (this.givenValues) return this.givenValues;
+        const { program, checker } = this.context;
+        const observed = programObservations(program);
+        const given: { value: ts.Expression; type: ts.Type }[] = [];
+        for (const value of observed.handed) {
+            const type = checker.getContextualType(value);
+            if (type) given.push({ value, type });
+        }
+        for (const assertion of observed.typeAssertions) {
+            // A `const` view of the global object is it under the name its
+            // uses are given by (`isGlobalObject`).
+            const top = outermostWrapper(assertion);
+            const parent = top.parent;
+            if (
+                top === assertion &&
+                !(isMemberAccess(parent) && parent.expression === top) &&
+                !(
+                    this.isGlobalObject(top, settledOperand) &&
+                    isConstDeclaration(parent) &&
+                    parent.initializer === top
+                )
+            )
+                given.push({
+                    value: assertion,
+                    type: checker.getTypeAtLocation(assertion),
+                });
+        }
+        return (this.givenValues = given);
+    }
+
+    /** @unjournaled Facts of the checked program, kept across replays. */
+    private readonly givenOperands = new Map<ts.Expression, GivenOperand>();
+
+    /** A given value's {@link GivenOperand}: each round of a flow reads it. */
+    private givenOperand(value: ts.Expression): GivenOperand {
+        let given = this.givenOperands.get(value);
+        if (!given) {
+            given = { operand: settledOperand(value) };
+            this.givenOperands.set(value, given);
+        }
+        return given;
+    }
+
+    /** {@link globalObjectFlows} of the values given where `runs`, computed when first asked. */
+    private lazyGlobalObjectFlows(
+        runs: (node: ts.Node) => boolean,
+    ): () => GlobalObjectFlows {
+        let flows: GlobalObjectFlows | undefined;
+        return () => (flows ??= this.globalObjectFlows(runs));
+    }
+
+    /**
+     * Where values that may be the global object go, of the values given
+     * (`givenObjectValues`) where `runs`. Such a value is the global
+     * object, or one of a carrier type: a type the global object is declared
+     * with (`Window` and its bases, `EventTarget` among them), or one such a
+     * value is given as (`install(window as unknown as Host)`). It escapes
+     * where it is given as an open type. Until one does, an object of an
+     * open type is never the global object: it holds only what the program
+     * gives it.
+     */
+    private globalObjectFlows(
+        runs: (node: ts.Node) => boolean,
+    ): GlobalObjectFlows {
+        const checker = this.context.checker;
+        const given = this.givenObjectValues().filter(({ value }) =>
+            runs(value),
+        );
+        const carriers = new Set<ts.Type>();
+        const bindings = new Set<ts.Symbol>();
+        const bears = (value: ts.Expression): boolean => {
+            const facts = this.givenOperand(value);
+            facts.global ??= this.isGlobalObject(facts.operand, settledOperand);
+            if (facts.global || this.boundVariable(facts.operand, bindings))
+                return true;
+            facts.type ??= checker.getTypeAtLocation(facts.operand);
+            return this.carries(facts.type, carriers);
+        };
+        let escapes = false;
+        // A carrier or a binding makes the values of its type or the reads
+        // of its variable bear the global object in turn: collect until no
+        // value adds one. A value bears it for good once it does (carriers
+        // and bindings only grow), and adds all it adds then.
+        let pending = given;
+        for (let added = true; added && !escapes;) {
+            added = false;
+            const waiting: typeof given = [];
+            for (const entry of pending) {
+                const { value, type } = entry;
+                if (!bears(value)) {
+                    waiting.push(entry);
+                    continue;
+                }
+                const facts = this.givenOperand(value);
+                facts.given ??= { variable: this.givenVariable(value) };
+                const variable = facts.given.variable;
+                if (variable) {
+                    if (!bindings.has(variable)) {
+                        bindings.add(variable);
+                        added = true;
+                    }
+                    continue;
+                }
+                if (this.globalAdmission(type).open) {
+                    escapes = true;
+                    break;
+                }
+                // Only an object type holds it: no value has type `never`.
+                for (const member of unionMembers(type))
+                    if (
+                        (member.flags &
+                            (ts.TypeFlags.Object |
+                                ts.TypeFlags.Intersection)) !==
+                            0 &&
+                        !carriers.has(member)
+                    ) {
+                        carriers.add(member);
+                        added = true;
+                    }
+            }
+            pending = waiting;
+        }
+        return { escapes, carriers, bindings };
+    }
+
+    /**
+     * The variable a value is given to: the identifier a declaration binds
+     * with it, or an assignment's `=` writes it to.
+     */
+    private givenVariable(value: ts.Expression): ts.Symbol | undefined {
+        const outer = outermostWrapper(value);
+        const parent = outer.parent;
+        const name =
+            ts.isVariableDeclaration(parent) && parent.initializer === outer
+                ? parent.name
+                : ts.isBinaryExpression(parent) &&
+                    parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                    parent.right === outer
+                  ? settledOperand(parent.left)
+                  : undefined;
+        return name && ts.isIdentifier(name)
+            ? this.context.symbols.valueSymbol(name)
+            : undefined;
+    }
+
+    /** Whether `value` reads one of `bindings`. */
+    private boundVariable(
+        value: ts.Expression,
+        bindings: ReadonlySet<ts.Symbol>,
+    ): boolean {
+        const read = this.context.unwrap(value);
+        if (bindings.size === 0 || !ts.isIdentifier(read)) return false;
+        const symbol = this.context.symbols.valueSymbol(read);
+        return symbol !== undefined && bindings.has(symbol);
+    }
+
+    /**
+     * Whether a member of `type` is a type the global object is declared
+     * with (`Window` and its bases) or one of `carriers`, or intersects one.
+     */
+    private carries(type: ts.Type, carriers: ReadonlySet<ts.Type>): boolean {
+        const carrier = (part: ts.Type): boolean =>
+            carriers.has(part) || this.globalBases().has(part);
+        return unionMembers(type).some(
+            (member) =>
+                carrier(member) ||
+                (member.isIntersection() && member.types.some(carrier)),
+        );
+    }
+
+    /** Whether an object of static type `type` may be the global object. */
+    private mayBeGlobalObject(
+        type: ts.Type,
+        flows: () => GlobalObjectFlows,
+    ): boolean {
+        const admission = this.globalAdmission(type);
+        if (admission.closed) return true;
+        const { escapes, carriers } = flows();
+        return (admission.open && escapes) || this.carries(type, carriers);
+    }
+
+    /**
+     * The global object members a definition through `object` may give it:
+     * `named`, else each name the key can be (`writtenHolders`), else
+     * {@link ANY_KEY}; none where no object it can reach is the global
+     * object. A fresh literal is not.
+     */
+    private globalMembersDefined(
+        object: ts.Expression,
+        named: string | undefined,
+        key: ts.Expression | undefined,
+        flows: () => GlobalObjectFlows,
+    ): readonly string[] {
+        const { program, checker } = this.context;
+        const unwrapped = this.context.unwrap(object);
         if (
             ts.isObjectLiteralExpression(unwrapped) ||
             ts.isArrayLiteralExpression(unwrapped) ||
             ts.isNewExpression(unwrapped) ||
-            ts.isFunctionLike(unwrapped)
+            ts.isFunctionLike(unwrapped) ||
+            constObjectLiteral(checker, unwrapped)
         )
-            return false;
-        const checker = this.context.checker;
-        const receiver = checker.getTypeAtLocation(unwrapped);
-        if (
-            (receiver.flags &
-                (ts.TypeFlags.Any |
-                    ts.TypeFlags.Unknown |
-                    ts.TypeFlags.TypeParameter)) !==
-            0
+            return [];
+        const global =
+            this.isGlobalObject(object) ||
+            this.boundVariable(object, flows().bindings);
+        return (
+            writtenHolders(program, checker, object, key) ?? [
+                { type: checker.getTypeAtLocation(object) },
+            ]
         )
-            return true;
-        this.globalObjectTypes ??= (
-            [
-                ["Window", ts.SymbolFlags.Type],
-                ["globalThis", ts.SymbolFlags.Value],
-            ] as const
-        ).flatMap(([name, meaning]) => {
-            const symbol = checker.resolveName(name, undefined, meaning, false);
-            if (!symbol) return [];
-            return [
-                meaning === ts.SymbolFlags.Type
-                    ? checker.getDeclaredTypeOfSymbol(symbol)
-                    : checker.getTypeOfSymbol(symbol),
-            ];
-        });
-        return this.globalObjectTypes.some((global) =>
-            checker.isTypeAssignableTo(global, receiver),
-        );
+            .filter(({ type }) => global || this.mayBeGlobalObject(type, flows))
+            .map(({ property }) =>
+                // A prototype write gives the object every member.
+                named === "__proto__"
+                    ? ANY_KEY
+                    : (named ?? property ?? ANY_KEY),
+            );
     }
 
     /**
-     * The member a write names: a property, a string literal key, none for
-     * a numeric key (no program global is an index), else {@link ANY_KEY}.
+     * Each program definition that may give the global object a member, by
+     * the member's name (`programObservations`): member writes other than
+     * deletions, which remove one, the reflective definitions, and prototype
+     * changes. A numeric key names none: no program global is an index.
      */
-    private writtenMemberName(
-        access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
-    ): string | undefined {
-        if (ts.isPropertyAccessExpression(access)) return access.name.text;
-        const key = this.context.unwrap(access.argumentExpression);
-        if (ts.isStringLiteralLike(key)) return key.text;
-        return holdsOnly(this.context.checker.getTypeAtLocation(key), [
-            "number",
-        ])
-            ? undefined
-            : ANY_KEY;
-    }
-
-    /**
-     * Each program write of a global object member: its name and its node.
-     * A write through any receiver that may hold the global object counts.
-     */
-    private globalWriteSites(): { name: string; node: ts.Node }[] {
+    private globalWriteSites(
+        flows: () => GlobalObjectFlows,
+    ): { name: string; node: ts.Node }[] {
+        const { program, checker } = this.context;
+        const observed = programObservations(program);
         const sites: { name: string; node: ts.Node }[] = [];
-        for (const source of this.context.sourceFiles())
-            forEachAnalysisNode(source, (node) => {
-                for (const { target } of writeSites(node)) {
-                    const access = this.context.unwrap(target);
-                    if (!isMemberAccess(access)) continue;
-                    const name = this.writtenMemberName(access);
-                    if (
-                        name !== undefined &&
-                        this.mayHoldGlobalObject(access.expression)
-                    )
-                        sites.push({ name, node });
-                }
-                const callee = ts.isCallExpression(node)
-                    ? this.context.unwrap(node.expression)
-                    : undefined;
-                if (
-                    ts.isCallExpression(node) &&
-                    callee &&
-                    isMemberAccess(callee) &&
-                    ["Object", "Reflect"].includes(
-                        this.context.libraryGlobal(callee.expression) ?? "",
-                    ) &&
-                    node.arguments[0] !== undefined &&
-                    this.mayHoldGlobalObject(node.arguments[0])
-                )
-                    sites.push({ name: ANY_KEY, node });
-            });
+        const visit = (
+            definition: MemberDefinition,
+            named: string | undefined,
+        ): void => {
+            const object =
+                definition.via === "write"
+                    ? definition.kind === "delete"
+                        ? undefined
+                        : definition.node.expression
+                    : definition.via === "reflect"
+                      ? definition.node.arguments[0]
+                      : undefined;
+            if (!object || ts.isSpreadElement(object)) return;
+            const key =
+                named !== undefined
+                    ? undefined
+                    : definition.via === "write"
+                      ? definition.key
+                      : definition.via === "reflect" &&
+                          definition.method !== "assign"
+                        ? definition.node.arguments[1]
+                        : undefined;
+            if (key && holdsOnly(checker.getTypeAtLocation(key), ["number"]))
+                return;
+            for (const name of this.globalMembersDefined(
+                object,
+                named,
+                key,
+                flows,
+            ))
+                sites.push({ name, node: definition.node });
+        };
+        for (const [name, definitions] of observed.definitions)
+            for (const definition of definitions) visit(definition, name);
+        for (const definition of observed.keyedDefinitions)
+            visit(definition, undefined);
+        for (const call of observed.prototypeSetters) {
+            const object = call.arguments[0];
+            if (
+                object &&
+                !ts.isSpreadElement(object) &&
+                this.globalMembersDefined(object, ANY_KEY, undefined, flows)
+                    .length > 0
+            )
+                sites.push({ name: ANY_KEY, node: call });
+        }
         return sites;
     }
 
@@ -2740,15 +3066,27 @@ export class BrowserErasure {
      * The global object: the library's `window`, `self` or `globalThis`,
      * seen through type assertions and `const` aliases, which is how a
      * program types a member the library does not declare
-     * (`const w = window as unknown as PickerWindow`).
+     * (`const w = window as unknown as PickerWindow`). `unwrap` sees
+     * through the wrappers, the evaluator's own unless a scan asks for one
+     * that records nothing.
      */
-    private isGlobalObject(expression: ts.Expression): boolean {
-        const unwrapped = this.context.unwrap(expression);
+    private isGlobalObject(
+        expression: ts.Expression,
+        unwrap: (expression: ts.Expression) => ts.Expression = this.context
+            .unwrap,
+    ): boolean {
+        const unwrapped = unwrap(expression);
         const global = this.context.libraryGlobal(unwrapped);
         if (global !== undefined) return GLOBAL_OBJECT_NAMES.has(global);
         if (!ts.isIdentifier(unwrapped)) return false;
-        const initializer = constInitializer(this.context, unwrapped);
-        return initializer !== undefined && this.isGlobalObject(initializer);
+        const initializer = constInitializer(
+            { checker: this.context.checker, unwrap },
+            unwrapped,
+        );
+        return (
+            initializer !== undefined &&
+            this.isGlobalObject(initializer, unwrap)
+        );
     }
 
     private browserTruthy(

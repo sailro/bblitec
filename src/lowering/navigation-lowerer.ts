@@ -55,6 +55,7 @@ import {
 } from "./context.js";
 import {
     navigationBuildPlanDeclarations,
+    NAV_MESH_ARM_REFUSALS,
     type NavigationBuildArm,
 } from "./navigation-build-plan.js";
 import { navigationDebugGeometryDefinition } from "./navigation-library.js";
@@ -65,7 +66,7 @@ import {
 } from "./navigation-source-queries.js";
 import { pinnedHeader } from "./pinned-header.js";
 import { pinnedOptionFallback } from "./pinned-option-defaults.js";
-import { doubleLiteral } from "../cpp-literals.js";
+import { doubleLiteral, stringLiteral } from "../cpp-literals.js";
 import { featureMacroInclude } from "../feature-macros.js";
 
 const NAVIGATION_MODULE = "src/navigation/navigation.ts";
@@ -292,16 +293,56 @@ function numericObject(
     return defaults;
 }
 
+/**
+ * `_createNavMeshFromMerged`'s dispatch over the arms reached: the one arm
+ * generation proved, or, where it could not, the pin's own test,
+ * `maxObstacles` first and `tileSize` second, an arm not lowered throwing
+ * its refusal.
+ */
+function navigationArmDispatch(arms: readonly NavigationBuildArm[]): string {
+    const tileCache = `bbl::pal::navigation_create_tile_cache_nav_mesh(
+        plugin, merged, tile_cache_nav_mesh_build(merged, params),
+        navigation_query_defaults);`;
+    const solo = `bbl::pal::navigation_create_solo_nav_mesh(
+        plugin, merged, solo_nav_mesh_build(merged, params),
+        navigation_query_defaults);`;
+    if (arms.length === 1)
+        return `    // The pin dispatches on maxObstacles here; generation already did,
+    // and the arm it proved is the one emitted -- so a scene that builds a
+    // cache carries no solo call, and one that does not carries neither
+    // the tile-cache call nor the obstacle surface behind it.
+    ${arms[0] === "tileCache" ? tileCache : solo}`;
+    const refuse = (message: string): string =>
+        `throw std::runtime_error(${stringLiteral(message)});`;
+    return `    if (params.max_obstacles.value_or(0.0) > 0.0) {
+        if (params.tile_size.has_value() && *params.tile_size == 0.0)
+            ${refuse(NAV_MESH_ARM_REFUSALS.zeroTiles)}
+        if (!params.off_mesh_connections.empty())
+            ${refuse(NAV_MESH_ARM_REFUSALS.connections)}
+        ${tileCache}
+        return;
+    }
+    if (params.tile_size.value_or(0.0) > 0.0)
+        ${refuse(NAV_MESH_ARM_REFUSALS.tiled)}
+    ${solo}`;
+}
+
 export class NavigationLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
     /**
-     * @param tileCache Whether a reached `createNavMesh` asked for
-     * obstacles. Generation decided the build arm; this is that decision
-     * arriving, so the emitted source carries one call and one surface
-     * rather than a run-time test of a fact already settled.
+     * @param arms The build arms reached builds take. Generation decided
+     * each it could: one arm emits one call and one surface, not a
+     * run-time test of a settled fact; both keep the pin's own test.
+     * @param sceneMeshes Whether a scene renderer owns meshes: only then
+     * does `createNavMesh` (which takes an engine's meshes) lower, with
+     * the world composition `renderer_plan.hpp` carries.
      */
-    public lowerNavigation(tileCache: boolean): LoweredSource {
+    public lowerNavigation(
+        arms: readonly NavigationBuildArm[],
+        sceneMeshes: boolean,
+    ): LoweredSource {
+        const tileCache = arms.includes("tileCache");
         const modulePath = NAVIGATION_MODULE;
         const symbolName = "createNavMesh";
 
@@ -643,7 +684,6 @@ void update_nav_mesh_obstacles(bbl::pal::NavigationHandle plugin) {
 `
             : "";
 
-        const arm: NavigationBuildArm = tileCache ? "tileCache" : "solo";
         return {
             modulePath,
             symbolName,
@@ -661,15 +701,19 @@ void update_nav_mesh_obstacles(bbl::pal::NavigationHandle plugin) {
                 ],
                 `
 bbl::pal::NavigationHandle create_navigation_plugin();
-void create_nav_mesh(
+${
+    sceneMeshes
+        ? `void create_nav_mesh(
     Engine& engine,
     bbl::pal::NavigationHandle plugin,
     const std::vector<MeshHandle>& meshes,
     const bbl::pal::NavMeshBuildParams& params);
-${obstacleDeclarations}
+`
+        : ""
+}${obstacleDeclarations}
 ${navigationSourceQueryDeclarations}
 ${navigationQueryDefaultsDeclaration()}
-${navigationBuildPlanDeclarations([arm])}
+${navigationBuildPlanDeclarations(arms)}
 bbl::pal::NavDebugGeometry create_debug_nav_mesh_geometry(
     bbl::pal::NavigationHandle plugin);
 struct NavRaycastResult {
@@ -711,11 +755,15 @@ Vec3d get_agent_position(
 #include <${featureMacroInclude("BBLITE_HAS_NAV_CROWD")}>
 #include <bblite/upstream/navigation.hpp>
 #include <bblite/mesh_cpu_streams.hpp>
-// The merge composes each caster's own world through the one emitted
+${
+    sceneMeshes
+        ? `// The merge composes each caster's own world through the one emitted
 // composition every consumer reads, so a mesh that gained a transform-node
 // parent follows it here too.
 #include <bblite/upstream/renderer_plan.hpp>
-
+`
+        : ""
+}
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -731,19 +779,7 @@ bbl::pal::NavigationHandle create_navigation_plugin() {
 
 static void create_nav_mesh_from_merged(bbl::pal::NavigationHandle plugin,
     const bbl::pal::NavMeshGeometry& merged, const bbl::pal::NavMeshBuildParams& params) {
-    // The pin dispatches on maxObstacles here; generation already did,
-    // and the arm it proved is the one emitted -- so a scene that builds a
-    // cache carries no solo call, and one that does not carries neither
-    // the tile-cache call nor the obstacle surface behind it.
-    ${
-        tileCache
-            ? `bbl::pal::navigation_create_tile_cache_nav_mesh(
-        plugin, merged, tile_cache_nav_mesh_build(merged, params),
-        navigation_query_defaults);`
-            : `bbl::pal::navigation_create_solo_nav_mesh(
-        plugin, merged, solo_nav_mesh_build(merged, params),
-        navigation_query_defaults);`
-    }
+${navigationArmDispatch(arms)}
 }
 
 ${navigationSourceQueryDefinitions(this.context)}
@@ -755,7 +791,9 @@ void create_nav_mesh_from_sources(bbl::pal::NavigationHandle plugin,
     create_nav_mesh_from_merged(plugin, merged, params);
 }
 
-${navigationMeshMergeDefinition(this.context)}
+${
+    sceneMeshes
+        ? `${navigationMeshMergeDefinition(this.context)}
 void create_nav_mesh(
     Engine& engine,
     bbl::pal::NavigationHandle plugin,
@@ -764,7 +802,9 @@ void create_nav_mesh(
     const auto merged = merge_nav_meshes(engine, meshes);
     create_nav_mesh_from_merged(plugin, merged, params);
 }
-
+`
+        : ""
+}
 /** A double the port carries, at the float width the seam takes. */
 bbl::pal::NavVec3 nav_vec3(Vec3d value) {
     return bbl::pal::NavVec3{

@@ -269,3 +269,37 @@ export const options = { size: scaled("size", 1024), bias: scaled("bias", 0.001)
         [false, false, false],
     );
 });
+
+test("a compile's attempts share their program's subclass index and evaluation-order analysis", () => {
+    const frontend = createCompilerProgram(
+        "class Base {} class Derived extends Base {} class Leaf extends Derived {}",
+        resolve("program-caches.ts"),
+    );
+    const base = frontend.sourceFile.statements.find(ts.isClassDeclaration)!;
+    // Each attempt makes its own hierarchy: the program's index is walked once.
+    const first = new ClassHierarchy(frontend.checker, frontend.program);
+    const second = new ClassHierarchy(frontend.checker, frontend.program);
+    assert.equal(first.subclasses(base), second.subclasses(base));
+    assert.deepEqual(
+        second
+            .concreteClasses(base)
+            .map((declaration) => declaration.name?.text),
+        ["Base", "Derived", "Leaf"],
+    );
+    // One analysis per checker and engine resolver.
+    const engine = () => {
+        throw new Error("no engine call in this program");
+    };
+    const order = EvaluationOrder.ofProgram(frontend.checker, first, engine);
+    assert.equal(
+        EvaluationOrder.ofProgram(frontend.checker, second, engine),
+        order,
+    );
+    const otherEngine = () => {
+        throw new Error("no engine call in this program");
+    };
+    assert.notEqual(
+        EvaluationOrder.ofProgram(frontend.checker, first, otherEngine),
+        order,
+    );
+});

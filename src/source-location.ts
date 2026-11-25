@@ -36,6 +36,12 @@ export function sourceLocation(node: ts.Node): SourceLocation {
     };
 }
 
+/** `node` as `file:line`. */
+export function nodeSite(node: ts.Node): string {
+    const location = sourceLocation(node);
+    return `${location.file.fileName}:${location.line}`;
+}
+
 let kindNames: Map<number, string> | undefined;
 
 /**

@@ -1939,8 +1939,43 @@ export function objectProperty(
     object: ts.ObjectLiteralExpression | readonly ts.ObjectLiteralElementLike[],
     name: string,
 ): ts.Expression | undefined {
-    const writer = lastWriter(objectLiteralMembers(object), name);
+    const index = "properties" in object ? literalWriters(object) : undefined;
+    const writer = index
+        ? index.get(name)
+        : lastWriter(objectLiteralMembers(object), name);
     return writer === "unknown" ? undefined : writer?.value;
+}
+
+/**
+ * @unjournaled A pure function of the parsed literal: the member writing
+ * each key of a literal with no spread and no run-time key, where the last
+ * one writing a key decides it (`lastWriter`); null for any other literal.
+ */
+const literalWriterIndexes = new WeakMap<
+    ts.ObjectLiteralExpression,
+    ReadonlyMap<string, ObjectMember> | null
+>();
+
+function literalWriters(
+    literal: ts.ObjectLiteralExpression,
+): ReadonlyMap<string, ObjectMember> | undefined {
+    let index = literalWriterIndexes.get(literal);
+    if (index === undefined) {
+        const members = objectLiteralMembers(literal);
+        const writers = new Map<string, ObjectMember>();
+        for (const member of members)
+            if (member.kind !== "proto" && member.key !== undefined)
+                writers.set(member.key, member);
+        index = members.some(
+            (member) =>
+                member.kind === "spread" ||
+                (member.kind !== "proto" && member.key === undefined),
+        )
+            ? null
+            : writers;
+        literalWriterIndexes.set(literal, index);
+    }
+    return index ?? undefined;
 }
 
 /**
@@ -2836,6 +2871,63 @@ export function containsSuspension(
             containsSuspension(child, options) ? true : undefined,
         ) === true
     );
+}
+
+/**
+ * Whether `node`, in the activation running `body`, runs before that
+ * activation first suspends: no suspension point comes before it in source
+ * order (the operand an `await` evaluates comes before it), and no loop
+ * around it suspends, which would run it again after resuming.
+ */
+export function runsBeforeFirstSuspension(
+    body: ts.Node,
+    node: ts.Node,
+): boolean {
+    const suspension = firstSuspension(body);
+    if (suspension !== undefined) {
+        const awaited = ts.isAwaitExpression(suspension)
+            ? suspension.expression
+            : undefined;
+        const operand =
+            awaited !== undefined &&
+            ts.findAncestor(node, (ancestor) => ancestor === awaited) !==
+                undefined;
+        if (!operand && suspension.getStart() <= node.getStart()) return false;
+    }
+    for (let at = node.parent; at && at !== body; at = at.parent)
+        if (ts.isIterationStatement(at, false) && loopSuspends(at))
+            return false;
+    return true;
+}
+
+/** @unjournaled Parsed syntax is immutable: a body's first suspension point, or null, kept. */
+const firstSuspensions = new WeakMap<ts.Node, ts.Node | null>();
+
+/** The first suspension point, in source order, of the activation running `body`. */
+function firstSuspension(body: ts.Node): ts.Node | undefined {
+    let known = firstSuspensions.get(body);
+    if (known === undefined) {
+        let first: ts.Node | undefined;
+        const visit = (child: ts.Node): void => {
+            if (first !== undefined || ts.isFunctionLike(child)) return;
+            if (isSuspensionPoint(child)) first = child;
+            else ts.forEachChild(child, visit);
+        };
+        ts.forEachChild(body, visit);
+        firstSuspensions.set(body, (known = first ?? null));
+    }
+    return known ?? undefined;
+}
+
+/** @unjournaled Parsed syntax is immutable: whether a loop suspends, kept. */
+const suspendingLoops = new WeakMap<ts.IterationStatement, boolean>();
+
+/** {@link containsSuspension} of a loop, kept per loop. */
+function loopSuspends(loop: ts.IterationStatement): boolean {
+    let known = suspendingLoops.get(loop);
+    if (known === undefined)
+        suspendingLoops.set(loop, (known = containsSuspension(loop)));
+    return known;
 }
 
 /** @unjournaled Parsed syntax is immutable: a queried node's fingerprint, kept. */

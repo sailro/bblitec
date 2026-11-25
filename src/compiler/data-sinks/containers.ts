@@ -72,6 +72,23 @@ function expressionVector(
     return lowerer.compileVectorSink(unwrapped, dataType);
 }
 
+/**
+ * A native Map holds a dictionary's entries, never the program's own object:
+ * that object keeps its members only as the ReadonlyMap view it implements
+ * (`collectionViews`).
+ */
+function refuseOwnObjectAsMap(
+    lowerer: DataSinkHost,
+    dataType: DataType<"map">,
+    node: ts.Node,
+): void {
+    if (!dataType.dictionary)
+        lowerer.context.fail(
+            node,
+            "The program's own object is stored as a native Map only as the ReadonlyMap view it implements.",
+        );
+}
+
 function expressionMapOrSet(
     dataType: DataType<"map" | "set">,
     lowerer: DataSinkHost,
@@ -79,6 +96,7 @@ function expressionMapOrSet(
     unwrapped: ts.Expression,
 ): string {
     if (dataType.kind === "map" && ts.isObjectLiteralExpression(unwrapped)) {
+        refuseOwnObjectAsMap(lowerer, dataType, unwrapped);
         return lowerer.openRecordLiteral(unwrapped, dataType);
     }
     if (
@@ -208,9 +226,13 @@ function valueOptional(
     if (value.kind === "void") {
         // An abrupt completion (a suspended coroutine call) never yields
         // this value; its result settles through the activation.
+        // A call through a struct's function field proves its completion
+        // by requiring it of the field, whose stores then check it.
         if (
             !value.abruptCompletion &&
-            readsErasedVoid(lowerer.context, value, node)
+            readsErasedVoid(lowerer.context, value, node, {
+                requireFieldProofs: true,
+            })
         )
             lowerer.context.fail(
                 node,
@@ -660,6 +682,7 @@ function valueMap(
                   "dictionary_source",
               )
             : undefined;
+    if (value.kind === "record") refuseOwnObjectAsMap(lowerer, dataType, node);
     if (value.kind === "record" || copied) {
         // A key a conditional spread wrote is stored while it is own, in
         // creation order.

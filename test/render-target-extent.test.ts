@@ -85,6 +85,21 @@ test("render target stand-in getters retain arithmetic for each native build", (
         compileSource(`${local}\n} const target = make(canvas);`).cpp,
         /options\.resolve_surface_size = \[\]/,
     );
+    // A retained canvas (the program builds DOM) narrowed by a null check
+    // keeps the engine's ownership proof on its binding, read through a
+    // parameter as well.
+    const narrowed = local.replace(
+        `document.createElement("canvas")`,
+        `document.getElementById("renderCanvas") as HTMLCanvasElement | null;
+if (!canvas) throw new Error("canvas");
+const label = document.createElement("div");
+label.textContent = "ready";
+document.body.appendChild(label)`,
+    );
+    assert.match(
+        compileSource(`${narrowed}\n} const target = make(canvas);`).cpp,
+        /options\.resolve_surface_size = \[\]/,
+    );
 });
 
 test("render target stand-ins refuse non-surface or effectful extents", () => {

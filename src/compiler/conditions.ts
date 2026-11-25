@@ -67,6 +67,7 @@ import {
 } from "./types.js";
 import { readsErasedVoid } from "./undefined-values.js";
 import { knownCondition } from "./values/model.js";
+import { requireComparedRecordObject } from "./dynamic-binding-storage.js";
 
 /** What condition lowering reads of the compiler. */
 interface ConditionContext
@@ -83,6 +84,7 @@ interface ConditionContext
             | "cppString"
             | "dataLowerer"
             | "defaultEngine"
+            | "dynamicBindings"
             | "emit"
             | "emitDiscardedValue"
             | "enterRuntimeControlFlow"
@@ -94,6 +96,7 @@ interface ConditionContext
             | "leaveRuntimeControlFlow"
             | "libraryGlobal"
             | "options"
+            | "parameterObjects"
             | "program"
             | "reachFeature"
             | "reachJsData"
@@ -103,6 +106,7 @@ interface ConditionContext
             | "requireDefaultEngine"
             | "requireEngine"
             | "sharedClosures"
+            | "storageTakenDuringAttempt"
             | "symbols"
             | "unwrap"
             | "unwrapValue"
@@ -838,6 +842,11 @@ export class ConditionLowerer {
                             : `(${optionalPresentCpp(held)} && ${arms})`;
                     }
                     this.requirePromisesApart(unwrapped);
+                    // Where promises stay apart from their settlements,
+                    // storage of any other kind (a void call's result, an
+                    // absent optional method's) holds no promise.
+                    this.context.emitDiscardedValue(value);
+                    return "false";
                 }
                 const collection = COLLECTION_CLASSES.get(global);
                 if (collection)
@@ -1146,6 +1155,20 @@ export class ConditionLowerer {
             // Both operands were already compiled above to inspect static
             // values and string identity. Reuse them: compiling their ASTs
             // again would duplicate call-shaped numeric operands.
+            // An identity comparison of a compile-time record compares its
+            // object: the record's holder takes one.
+            if (equality) {
+                requireComparedRecordObject(
+                    this.context,
+                    leftValue,
+                    unwrapped.left,
+                );
+                requireComparedRecordObject(
+                    this.context,
+                    rightValue,
+                    unwrapped.right,
+                );
+            }
             if (!leftValue.cpp || !rightValue.cpp)
                 this.context.fail(
                     unwrapped,
@@ -1191,7 +1214,22 @@ export class ConditionLowerer {
                 this.context.reachJsData();
                 return `bbl::js::string_code_units(${text(leftValue, unwrapped.left)}) ${operator} bbl::js::string_code_units(${text(rightValue, unwrapped.right)})`;
             }
-            return `${this.context.castNumber(leftValue, "double")} ${operator} ${this.context.castNumber(rightValue, "double")}`;
+            // An operand still optional after the checker's narrowing (a
+            // read the checker types `any`) orders as ToNumber reads it:
+            // NaN for undefined, 0 for null.
+            const number = (value: Value, node: ts.Expression): string => {
+                if (
+                    value.dataType?.kind !== "optional" ||
+                    value.dataType.inner.kind !== "number"
+                )
+                    return this.context.castNumber(value, "double");
+                this.context.reachJsData();
+                return this.context.evaluator.numberFromOptional(
+                    value,
+                    unwrapExpression(node),
+                );
+            };
+            return `${number(leftValue, unwrapped.left)} ${operator} ${number(rightValue, unwrapped.right)}`;
         }
         if (
             ts.isPropertyAccessExpression(unwrapped) ||

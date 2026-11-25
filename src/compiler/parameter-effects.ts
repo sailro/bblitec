@@ -14,7 +14,11 @@ import {
 import { bindingIsOnlyCalledDirectly } from "./binding-rebinds.js";
 import { bindingReferences } from "./binding-references.js";
 import { onlyDirectCalls } from "./written-holders.js";
-import { forEachAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
+import {
+    forEachAnalysisNode,
+    identifiersByName,
+    someAnalysisNode,
+} from "./analysis-walk.js";
 import { engineBodies, isEngineDeclaration } from "./engine-bodies.js";
 import {
     callbackTakesReceiver,
@@ -36,6 +40,7 @@ import {
     resolvedSymbol,
     nullishComparison,
     calledDeclaration,
+    calledFunction,
     namedMember,
     forwardedCallShape,
     type ForwardedCallShape,
@@ -56,11 +61,14 @@ import {
     parameterForArgument,
     ownParameters,
     functionKind,
+    runsBeforeFirstSuspension,
     functionOfDeclaration,
     isMemberAccess,
+    keysMayMatch,
     mutatingCallTarget,
     referenceBases,
     variableKind,
+    type FunctionWithBody,
 } from "./syntax.js";
 import {
     BIGINT_ARRAY_KINDS,
@@ -117,6 +125,12 @@ type ParameterUse = UseBase &
               readonly kind: "method";
               readonly call: ts.CallExpression;
               readonly method: string;
+              /**
+               * The method is a function the object's member holds, which
+               * cannot reach the object as its `this`
+               * (`memberCallLeavesReceiver`): the call reaches that member.
+               */
+              readonly memberOnly: boolean;
           }
         | {
               readonly kind: "argument";
@@ -361,7 +375,7 @@ function summarize(
             analyzable: true,
             deferred: functionKind(fn) !== "plain",
             // A rest parameter holds each argument as an element.
-            uses: new EffectWalker(checker, fn).run(symbol, {
+            uses: new EffectWalker(checker, fn).run(binding, symbol, {
                 at: isRestBinding(binding) ? [ANY_KEY] : [],
                 from: [],
                 derived: false,
@@ -419,9 +433,12 @@ class EffectWalker {
     }
 
     public run(
+        binding: ts.Identifier,
         parameter: ts.Symbol,
         holds: Projection,
     ): readonly ParameterUse[] {
+        // A local binding's own name, in the body, is no use of it.
+        this.aliasNames.add(binding);
         this.aliases.set(parameter, [holds]);
         // Each round can only add projections, bounded in length and number.
         for (let round = 0; round < 16; round++) {
@@ -687,6 +704,11 @@ class EffectWalker {
             !typeCanCarryReference(this.checker.getTypeAtLocation(receiverNode))
         )
             return;
+        const memberOnly = memberCallLeavesReceiver(
+            this.checker,
+            receiverNode,
+            method,
+        );
         for (const value of receiver)
             if (value.at.length === 0)
                 this.uses.push({
@@ -694,6 +716,7 @@ class EffectWalker {
                     node: call,
                     call,
                     method,
+                    memberOnly,
                     path: value.from,
                     derived: value.derived,
                     ...scope,
@@ -731,7 +754,11 @@ class EffectWalker {
                     : callback.parameters[positions.receiver];
             if (whole) this.bindPattern(whole.name, receiver, call, scope);
         }
-        if (!SCALAR_RESULT_METHODS.has(method))
+        // The function a member holds returns what it reaches, as a called
+        // value does; another method may return its receiver.
+        if (memberOnly)
+            this.result(call, projectMember(receiver, method), scope);
+        else if (!SCALAR_RESULT_METHODS.has(method))
             this.result(call, [...receiver, ...elements], scope);
     }
 
@@ -1158,8 +1185,10 @@ export function callTarget(
         return declarationInDefaultLibrary(declaration)
             ? { kind: "library" }
             : { kind: "unknown" };
-    return isEffectFunction(declaration) && declaration.body
-        ? { kind: "bodies", checker, bodies: [declaration], engine: false }
+    // The authored function, also behind a `const` its type annotates.
+    const body = calledFunction(checker, call);
+    return isEffectFunction(body)
+        ? { kind: "bodies", checker, bodies: [body], engine: false }
         : { kind: "unknown" };
 }
 
@@ -1238,13 +1267,19 @@ function forwardedCall(
     const shape = ts.isCallExpression(call)
         ? forwardedCallShape(checker, call)
         : undefined;
-    const value = shape && unwrapExpression(shape.target);
-    const declaration =
-        value && ts.isIdentifier(value)
-            ? resolvedSymbol(checker, value)?.valueDeclaration
-            : undefined;
-    const fn = declaration && functionOfDeclaration(declaration);
+    const fn = shape && namedFunction(checker, unwrapExpression(shape.target));
     return shape && fn ? { fn, shape } : undefined;
+}
+
+/** The function an identifier's binding declares ({@link functionOfDeclaration}). */
+function namedFunction(
+    checker: ts.TypeChecker,
+    value: ts.Expression,
+): Exclude<FunctionWithBody, ts.MethodDeclaration> | undefined {
+    const declaration = ts.isIdentifier(value)
+        ? resolvedSymbol(checker, value)?.valueDeclaration
+        : undefined;
+    return declaration && functionOfDeclaration(declaration);
 }
 
 /** What a forwarded call does to its argument at `index`: what the function does to it. */
@@ -1296,6 +1331,18 @@ function libraryOnlyReads(
         libraryArgumentEffect(checker, call, index) === "reads" &&
         !isStoringDataCall(call, checker) &&
         !callResultHoldsArguments(checker, call)
+    );
+}
+
+/** A library call that only reads the argument at `index` and keeps no argument past it. */
+function libraryCallLeavesIntact(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression,
+    index: number,
+): boolean {
+    return (
+        libraryArgumentEffect(checker, call, index) === "reads" &&
+        keptArguments(checker, call).length === 0
     );
 }
 
@@ -1371,6 +1418,21 @@ class PredicateMemo<T> {
         }
         bindings.set(binding, result);
         return result;
+    }
+}
+
+/** One {@link PredicateMemo} per key, each assuming `assumed`. */
+class KeyedPredicateMemo<T> {
+    /** @unjournaled Pure functions of the checked source, kept across replays. */
+    private readonly memos = new Map<string, PredicateMemo<T>>();
+
+    public constructor(private readonly assumed: T) {}
+
+    public for(key: string): PredicateMemo<T> {
+        let memo = this.memos.get(key);
+        if (!memo)
+            this.memos.set(key, (memo = new PredicateMemo(this.assumed)));
+        return memo;
     }
 }
 
@@ -1503,9 +1565,7 @@ function useLeavesIntact(checker: ts.TypeChecker, use: ParameterUse): boolean {
                       parameterLeftIntact,
                   )
                 : target.kind === "library" &&
-                      libraryArgumentEffect(checker, use.call, use.index) ===
-                          "reads" &&
-                      keptArguments(checker, use.call).length === 0;
+                      libraryCallLeavesIntact(checker, use.call, use.index);
         }
         default:
             return true;
@@ -2035,48 +2095,92 @@ const READING_ARRAY_METHODS: ReadonlySet<string> = new Set([
 ]);
 
 const onlyReadMemo = new PredicateMemo(true);
+/** `onlyRead` of one property of the parameter's record, by property name. */
+const onlyReadPropertyMemos = new KeyedPredicateMemo(true);
 
 /**
- * Whether a call only reads the object a parameter binding holds, so a
+ * Whether a call only reads the object a parameter binding holds -- or,
+ * with `property`, the object that property of its record holds -- so a
  * copy lent for the call cannot be told apart while nothing else writes the
- * original. The call's whole run is its own (not an async function or a
- * generator), and in it the object -- for an array, the array and each
+ * original. The object is read only while the call runs: by a plain
+ * function, or by an async one before it first suspends (later its caller
+ * runs on). In that time the object -- for an array, the array and each
  * element, an object of its own -- is never written, resized, rebound,
  * compared, enumerated, called, stored, returned or captured past the
  * call, and is handed only to callees reading it the same way (program and
- * engine bodies, the library's reading functions). A copy shares the
- * objects its fields hold, so what happens to those cannot tell it apart.
+ * engine bodies, the library's reading functions); the record holding the
+ * property is only handed on to callees reading that property so. A copy
+ * shares the objects its fields hold, so what happens to those cannot tell
+ * it apart.
  */
 function onlyRead(
     checker: ts.TypeChecker,
     fn: EffectFunction,
     binding: ts.Identifier,
+    property?: string,
 ): boolean {
-    return onlyReadMemo.answer(checker, binding, () => {
+    const memo =
+        property === undefined
+            ? onlyReadMemo
+            : onlyReadPropertyMemos.for(property);
+    return memo.answer(checker, binding, () => {
         const effects = parameterEffects(checker, fn, binding);
-        if (!effects.analyzable || effects.deferred || isRestBinding(binding))
+        const kind = functionKind(fn);
+        if (
+            !effects.analyzable ||
+            (kind !== "plain" && kind !== "async") ||
+            !fn.body ||
+            isRestBinding(binding)
+        )
             return false;
-        const array = checker.isArrayLikeType(
-            checker.getNonNullableType(checker.getTypeAtLocation(binding)),
+        const holder = checker.getNonNullableType(
+            checker.getTypeAtLocation(binding),
         );
+        const lent =
+            property === undefined
+                ? holder
+                : checker.getPropertyOfType(holder, property) &&
+                  checker.getNonNullableType(
+                      checker.getTypeOfSymbolAtLocation(
+                          checker.getPropertyOfType(holder, property)!,
+                          binding,
+                      ),
+                  );
+        if (!lent) return false;
+        const array = checker.isArrayLikeType(lent);
+        const prefix: KeyPath = property === undefined ? [] : [property];
         // Whether the object at `path` is one a copy duplicates; a derived
         // use reaches the objects below it too, which a copy shares.
-        const copied = (path: KeyPath): boolean =>
-            path.length === 0 ||
-            (array &&
-                path.length === 1 &&
-                (path[0] === ANY_KEY || keyIndex(path[0]) !== undefined));
+        const copied = (path: KeyPath): boolean => {
+            if (!prefix.every((key, index) => path[index] === key))
+                return false;
+            const below = path.slice(prefix.length);
+            return (
+                below.length === 0 ||
+                (array &&
+                    below.length === 1 &&
+                    (below[0] === ANY_KEY || keyIndex(below[0]) !== undefined))
+            );
+        };
         return effects.uses.every((use) => {
             const object =
                 use.kind === "write" ? use.path.slice(0, -1) : use.path;
-            if (!copied(object)) return true;
+            // What happens to the record holding the property happens to it.
+            const record = property !== undefined && object.length === 0;
+            if (!copied(object) && !record) return true;
             if (use.nested && !use.inPlace) return false;
+            if (
+                kind === "async" &&
+                !runsBeforeFirstSuspension(fn.body!, use.node)
+            )
+                return false;
             switch (use.kind) {
                 case "method":
                     return (
+                        !record &&
                         !use.derived &&
                         array &&
-                        object.length === 0 &&
+                        object.length === prefix.length &&
                         READING_ARRAY_METHODS.has(use.method)
                     );
                 case "argument":
@@ -2084,7 +2188,11 @@ function onlyRead(
                         !use.spread &&
                         use.at.length === 0 &&
                         !use.derived &&
-                        argumentUseOnlyRead(checker, use)
+                        argumentUseOnlyRead(
+                            checker,
+                            use,
+                            record ? property : undefined,
+                        )
                     );
                 default:
                     return false;
@@ -2096,14 +2204,20 @@ function onlyRead(
 function argumentUseOnlyRead(
     checker: ts.TypeChecker,
     use: Extract<ParameterUse, { kind: "argument" }>,
+    property?: string,
 ): boolean {
     if (ts.isNewExpression(use.call)) return false;
     const target = callTarget(checker, use.call);
     if (target.kind === "library")
-        return libraryOnlyReads(checker, use.call, use.index);
+        return (
+            property === undefined &&
+            libraryOnlyReads(checker, use.call, use.index)
+        );
     return (
         target.kind === "bodies" &&
-        everyArgumentBody(use.call, target, use.index, onlyRead)
+        everyArgumentBody(use.call, target, use.index, (c, body, b) =>
+            onlyRead(c, body, b, property),
+        )
     );
 }
 
@@ -2166,11 +2280,14 @@ export function callOnlyReadsArgument(
     checker: ts.TypeChecker,
     call: ts.CallExpression,
     index: number,
+    property?: string,
 ): boolean {
     const target = callTarget(checker, call);
     return (
         target.kind === "bodies" &&
-        everyArgumentBody(call, target, index, onlyRead)
+        everyArgumentBody(call, target, index, (c, body, binding) =>
+            onlyRead(c, body, binding, property),
+        )
     );
 }
 
@@ -2294,4 +2411,261 @@ export function functionWritesThis(
     // query in progress was assumed to write nothing.
     if (writes || active.size === 0) thisWriters.set(declaration, writes);
     return writes;
+}
+
+/**
+ * Whether calling the function a record's member `method` holds, through
+ * the record, cannot reach the record as its `this`: every value an object
+ * literal declares the member with is an arrow function, which has no
+ * `this` of its own, or a function writing nothing through `this` and
+ * handing none of it on (`functionWritesThis`).
+ */
+function memberCallLeavesReceiver(
+    checker: ts.TypeChecker,
+    receiver: ts.Expression,
+    method: string,
+): boolean {
+    const declarations = checker.getPropertyOfType(
+        checker.getNonNullableType(checker.getTypeAtLocation(receiver)),
+        method,
+    )?.declarations;
+    return (
+        declarations !== undefined &&
+        declarations.length > 0 &&
+        declarations.every((declaration) => {
+            if (!ts.isObjectLiteralExpression(declaration.parent)) return false;
+            const fn = ts.isMethodDeclaration(declaration)
+                ? declaration
+                : ts.isPropertyAssignment(declaration)
+                  ? literalMemberFunction(checker, declaration.initializer)
+                  : undefined;
+            return (
+                fn !== undefined &&
+                (ts.isArrowFunction(fn) || !functionWritesThis(checker, fn))
+            );
+        })
+    );
+}
+
+/** The function an object literal's member is initialized with, if it names one. */
+function literalMemberFunction(
+    checker: ts.TypeChecker,
+    initializer: ts.Expression,
+): ts.SignatureDeclaration | undefined {
+    const value = unwrapExpression(initializer);
+    return ts.isArrowFunction(value) || ts.isFunctionExpression(value)
+        ? value
+        : namedFunction(checker, value);
+}
+
+/**
+ * Whether a function tests whether one of its parameters is present: a
+ * comparison of the parameter with `null` or `undefined` in its body, or
+ * the parameter passed whole to a program function that tests its own. A
+ * caller whose argument binds it present (`bindsPresent`) answers that
+ * test in the body it specializes.
+ */
+export function parameterPresenceTested(
+    checker: ts.TypeChecker,
+    parameter: ts.ParameterDeclaration,
+    declaration: ts.SignatureDeclaration,
+): boolean {
+    let known = presenceTests.get(checker);
+    if (!known) presenceTests.set(checker, (known = new WeakMap()));
+    let answer = known.get(parameter);
+    if (answer === undefined) {
+        answer = presenceTestReached(checker, parameter, declaration, known);
+        known.set(parameter, answer);
+    }
+    return answer;
+}
+
+/**
+ * @unjournaled Pure functions of the checked source, kept across replays:
+ * per checker, `parameterPresenceTested`'s answers.
+ */
+const presenceTests = new WeakMap<
+    ts.TypeChecker,
+    WeakMap<ts.ParameterDeclaration, boolean>
+>();
+
+/**
+ * {@link parameterPresenceTested} from each reference to the parameter in
+ * its function's body: a reached parameter in `visiting` adds nothing, and
+ * one in `known` its answer.
+ */
+function presenceTestReached(
+    checker: ts.TypeChecker,
+    parameter: ts.ParameterDeclaration,
+    declaration: ts.SignatureDeclaration,
+    known: WeakMap<ts.ParameterDeclaration, boolean>,
+    visiting = new Set<ts.ParameterDeclaration>(),
+): boolean {
+    const answer = known.get(parameter);
+    if (answer !== undefined) return answer;
+    if (visiting.has(parameter)) return false;
+    visiting.add(parameter);
+    const name = parameter.name;
+    if (!ts.isIdentifier(name)) return false;
+    const symbol = declaredSymbol(checker, name);
+    const body = "body" in declaration ? declaration.body : undefined;
+    if (!symbol || !body) return false;
+    return (identifiersByName(body.getSourceFile()).get(name.text) ?? []).some(
+        (reference) => {
+            if (
+                reference.pos < body.pos ||
+                reference.end > body.end ||
+                resolvedSymbol(checker, reference) !== symbol
+            )
+                return false;
+            const operand = outermostWrapper(reference);
+            const site = operand.parent;
+            if (ts.isBinaryExpression(site))
+                return nullishComparison(checker, site)?.tested === operand;
+            if (!ts.isCallExpression(site)) return false;
+            const index = site.arguments.indexOf(operand);
+            const callee =
+                index >= 0 ? calledFunction(checker, site) : undefined;
+            const target = callee?.parameters[index];
+            return (
+                callee !== undefined &&
+                target !== undefined &&
+                !target.dotDotDotToken &&
+                presenceTestReached(checker, target, callee, known, visiting)
+            );
+        },
+    );
+}
+
+type ArgumentEffect = "intact" | "returned" | "changed";
+
+/** Per key path into the parameter (its `JSON` text), the answers so far. */
+const argumentEffectMemos = new KeyedPredicateMemo<ArgumentEffect>("intact");
+
+/**
+ * What a function does, at any time, to the object at key path `at` of
+ * a parameter binding (the binding's own object when empty): `intact` --
+ * no write, deletion, rebinding, store, escape or storing method reaches
+ * it, and every program callee it is handed to leaves it intact or returns
+ * it (the uses of that result are this binding's derived uses);
+ * `returned` -- the same, except the function's own return may be the
+ * object; `changed` otherwise. A use of another member of the parameter
+ * does not reach the object; a use of a record holding it does, at the
+ * rest of its path. Unlike `parameterLeftIntact`, a deferred use counts as
+ * any other: what a later run does is what this asks.
+ */
+function parameterArgumentEffect(
+    checker: ts.TypeChecker,
+    fn: EffectFunction,
+    binding: ts.Identifier,
+    at: KeyPath = [],
+): ArgumentEffect {
+    const memo = argumentEffectMemos.for(JSON.stringify(at));
+    return memo.answer(checker, binding, () => {
+        const effects = parameterEffects(checker, fn, binding);
+        if (!effects.analyzable) return "changed";
+        let returned = false;
+        for (const use of effects.uses) {
+            const object =
+                use.kind === "write"
+                    ? use.path.slice(0, -1)
+                    : use.kind === "method" && use.memberOnly
+                      ? // A call of the function a member holds reaches it;
+                        // a write replacing the member is one of the object
+                        // holding it, which reaches every member.
+                        boundedKeyPath([...use.path, use.method])
+                      : use.path;
+            const length = Math.min(object.length, at.length);
+            // A use of another member leaves this object as it is.
+            if (
+                !object
+                    .slice(0, length)
+                    .every((part, index) => keysMayMatch(part, at[index]!))
+            )
+                continue;
+            // The path from the used object down to this one.
+            const below = at.slice(object.length);
+            switch (use.kind) {
+                case "returned":
+                    if (use.derived || use.nested) return "changed";
+                    returned = true;
+                    break;
+                case "argument":
+                    if (
+                        use.spread ||
+                        ts.isNewExpression(use.call) ||
+                        callArgumentEffect(checker, use.call, use.index, [
+                            ...use.at,
+                            ...below,
+                        ]) === "changed"
+                    )
+                        return "changed";
+                    break;
+                default:
+                    if (!useLeavesIntact(checker, use)) return "changed";
+            }
+        }
+        return returned ? "returned" : "intact";
+    });
+}
+
+/**
+ * What a call does, at any time, to the object at key path `at` of the
+ * argument at `index` (`parameterArgumentEffect`): a default-library
+ * callee only reading and keeping none leaves it intact; any callee the
+ * program does not hold changes it.
+ */
+export function callArgumentEffect(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression,
+    index: number,
+    at: KeyPath = [],
+): ArgumentEffect {
+    const target = callTarget(checker, call);
+    if (target.kind === "library")
+        return libraryCallLeavesIntact(checker, call, index)
+            ? "intact"
+            : "changed";
+    if (target.kind !== "bodies") return "changed";
+    let returned = false;
+    const agree = everyArgumentBody(
+        call,
+        target,
+        index,
+        (bodyChecker, body, binding) => {
+            const effect = parameterArgumentEffect(
+                bodyChecker,
+                body,
+                binding,
+                at,
+            );
+            if (effect === "returned") returned = true;
+            return effect !== "changed";
+        },
+    );
+    return !agree ? "changed" : returned ? "returned" : "intact";
+}
+
+/**
+ * Whether no write the program can make reaches the member at key path `at`
+ * of the object a function's local `const` holds, nor what that member
+ * holds: the function and every callee it hands the object to leave it
+ * intact at any time (`parameterArgumentEffect`), and the function does not
+ * return it to a caller that could write it.
+ */
+export function bindingSubtreeIntact(
+    checker: ts.TypeChecker,
+    declaration: ts.VariableDeclaration,
+    at: KeyPath,
+): boolean {
+    const fn = ts.findAncestor(declaration.parent, isEffectFunction);
+    if (
+        !fn ||
+        !ts.isIdentifier(declaration.name) ||
+        variableKind(declaration) !== "const"
+    )
+        return false;
+    return (
+        parameterArgumentEffect(checker, fn, declaration.name, at) === "intact"
+    );
 }

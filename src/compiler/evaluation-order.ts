@@ -44,6 +44,7 @@ import {
     namedMember,
     accessedPropertySymbol,
 } from "./symbols.js";
+import { collectionViews } from "./program-observations.js";
 import { doubleCpp } from "../cpp-literals.js";
 import { foldNumericBinary } from "../lowering/pinned-operators.js";
 import { numberFormatOf } from "./number-intrinsics.js";
@@ -981,6 +982,12 @@ export function handedFunctions(
 /** One analysis of the pinned program per resolver, shared by every scene. */
 const pinnedOrders = new WeakMap<EngineBodies, EvaluationOrder>();
 
+/**
+ * One analysis of a compile's program per checker and engine resolver,
+ * shared by the compile's attempts (`EvaluationOrder.ofProgram`).
+ */
+const programOrders = new WeakMap<ts.TypeChecker, EvaluationOrder>();
+
 export class EvaluationOrder {
     /** @unjournaled A cache of one unit's own accesses, from its source alone. */
     private readonly direct = new Map<Unit, DirectAccess>();
@@ -1013,6 +1020,24 @@ export class EvaluationOrder {
         /** The engine's pinned bodies, for a scene program's calls into it. */
         private readonly engine?: () => EngineBodies,
     ) {}
+
+    /**
+     * The analysis of `checker`'s program: every answer it keeps is the
+     * program's, so each attempt of a compile, which lowers the program
+     * again, reads the answers the earlier ones found.
+     */
+    public static ofProgram(
+        checker: ts.TypeChecker,
+        hierarchy: ClassHierarchy,
+        engine: () => EngineBodies,
+    ): EvaluationOrder {
+        let order = programOrders.get(checker);
+        if (order?.engine !== engine) {
+            order = new EvaluationOrder(checker, hierarchy, engine);
+            programOrders.set(checker, order);
+        }
+        return order;
+    }
 
     /** Whether a call into the engine reads its pinned bodies: an answer kept by program depends on it. */
     public get readsEngineBodies(): boolean {
@@ -2243,7 +2268,8 @@ export class EvaluationOrder {
         }
         const declaration = calledDeclaration(this.checker, call);
         if (!declaration) return undefined;
-        if (declaration.getSourceFile().isDeclarationFile) return "library";
+        if (declaration.getSourceFile().isDeclarationFile)
+            return this.callsOwnCollectionView(call) ? undefined : "library";
         const callee = unwrapExpression(call.expression);
         if (ts.isMethodDeclaration(declaration))
             return this.declarationUnits(declaration);
@@ -2256,6 +2282,28 @@ export class EvaluationOrder {
         return ts.isArrowFunction(callee) || ts.isFunctionExpression(callee)
             ? [callee]
             : undefined;
+    }
+
+    /**
+     * Whether a library collection method is called on a view the program's
+     * own object implements (`collectionViews`): the object's own member
+     * runs, a function value the analysis cannot name.
+     */
+    private callsOwnCollectionView(call: ts.CallExpression): boolean {
+        const views = collectionViews(this.hierarchy.program);
+        if (!views.size) return false;
+        const member = namedMember(
+            this.checker,
+            unwrapExpression(call.expression),
+        );
+        return (
+            member !== undefined &&
+            views.has(
+                this.checker.getNonNullableType(
+                    this.checker.getTypeAtLocation(member.expression),
+                ),
+            )
+        );
     }
 
     /** Whether an expression is the language's `Math.random`. */

@@ -17,83 +17,6 @@ template <typename Event>
     return data ? js::Nullable<std::string>{*data} : js::Nullable<std::string>{};
 }
 
-/** Constructed input events retain their payload and identity across copies and dispatches. */
-class OwnedDomEvent {
-public:
-    using Kind = DomInputEventKind;
-    struct Payload {
-        PlatformMouseEvent event;
-        Engine* owner = nullptr;
-        std::weak_ptr<const int> owner_lifetime;
-        /** A constructed KeyboardEvent's keys; `event` then carries the DOM state they share. */
-        std::optional<PlatformKeyboardEvent> keyboard{};
-    };
-    OwnedDomEvent() = default;
-    explicit OwnedDomEvent(PlatformMouseEvent event)
-        : payload_(std::make_shared<Payload>(Payload{std::move(event), nullptr, {}})),
-          dom(payload_->event.dom) {
-        if (!dom)
-            throw std::logic_error("An owned event requires DOM dispatch state.");
-        if (dom->dispatch_engine)
-            set_owner(*dom->dispatch_engine);
-    }
-    [[nodiscard]] const PlatformMouseEvent& event() const {
-        if (!payload_)
-            throw std::logic_error("The event has not been initialized.");
-        return payload_->event;
-    }
-    [[nodiscard]] const PlatformMouseEvent& mouse() const { return event().mouse_payload(); }
-    /** This event carrying a constructed KeyboardEvent's keys. */
-    [[nodiscard]] OwnedDomEvent with_keyboard(PlatformKeyboardEvent keyboard) const {
-        static_cast<void>(event());
-        keyboard.dom = dom;
-        payload_->keyboard = std::move(keyboard);
-        return *this;
-    }
-    /** The keys of a constructed KeyboardEvent, else null. */
-    [[nodiscard]] const PlatformKeyboardEvent* keyboard() const {
-        static_cast<void>(event());
-        return payload_->keyboard ? &*payload_->keyboard : nullptr;
-    }
-    [[nodiscard]] js::BorrowedEvent borrowed_event() const {
-        return js::BorrowedEvent(event()).retaining(payload_);
-    }
-    void prevent_default() const { event().prevent_default(); }
-    void stop_propagation() const { event().stop_propagation(); }
-    void stop_immediate_propagation() const { event().stop_immediate_propagation(); }
-    [[nodiscard]] bool is_default_prevented() const { return event().is_default_prevented(); }
-    [[nodiscard]] const void* identity() const { return dom.get(); }
-    [[nodiscard]] bool operator==(const OwnedDomEvent& other) const {
-        return identity() == other.identity();
-    }
-    [[nodiscard]] bool operator==(const PlatformMouseEvent& other) const {
-        return dom == other.dom;
-    }
-    [[nodiscard]] bool operator==(const js::BorrowedEvent& other) const { return dom == other.dom; }
-    void set_owner(Engine& engine) const {
-        static_cast<void>(event());
-        if (payload_->owner && (payload_->owner != &engine || payload_->owner_lifetime.expired()))
-            throw std::logic_error("Redispatch requires the event's live owning document.");
-        payload_->owner = &engine;
-        payload_->owner_lifetime = engine.lifetime.token();
-    }
-    [[nodiscard]] js::Nullable<DomEventTargetValue> target(bool current = false) const {
-        static_cast<void>(event());
-        if (!payload_->owner || (current && !dom->current_target))
-            return std::nullopt;
-        if (payload_->owner_lifetime.expired())
-            throw std::logic_error("The event's owning document has expired.");
-        return dom_target_value(*payload_->owner,
-                                current ? *dom->current_target : dom->exposed_target());
-    }
-
-private:
-    std::shared_ptr<Payload> payload_;
-
-public:
-    std::shared_ptr<DomEventState> dom;
-};
-
 /**
  * An init holding members its event's dictionary declares but the native event does not
  * represent (`unrepresented`): one present refuses, as generation refuses one it sees.
@@ -154,6 +77,13 @@ inline void read_modifier_keys(PlatformModifierKeys& keys, const js::JsonValue& 
         event.screen_y = number("screenY");
         event.movement_x = js::to_int32(number("movementX"));
         event.movement_y = js::to_int32(number("movementY"));
+        // A WheelEvent's deltas, in CSS pixels as the platform's wheel events carry them.
+        event.delta_x = number("deltaX");
+        event.delta_y = number("deltaY");
+        if (number("deltaMode") != 0)
+            throw js::NamedError(
+                "NotSupportedError",
+                "A WheelEvent deltaMode other than DOM_DELTA_PIXEL is not represented.");
         read_modifier_keys(event, options);
     }
     if (kind == OwnedDomEvent::Kind::Pointer) {

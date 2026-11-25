@@ -18,11 +18,17 @@ import {
     outermostWrapper,
     statementsBeside,
     unwrapExpression,
+    writeSites,
+    isConstDeclaration,
+    isMemberAccess,
+    writeSiteOf,
 } from "./syntax.js";
-import { someAnalysisNode } from "./analysis-walk.js";
+import { identifiersByName, someAnalysisNode } from "./analysis-walk.js";
+import { undeclaredMembersObservable } from "./record-observations.js";
 import type { LoweringServices } from "./lowering-services.js";
 import {
     booleanValue,
+    isBooleanValue,
     scalarFacts,
     staticStringValue,
     type Value,
@@ -128,11 +134,39 @@ type ObjectStaticContext = Pick<
 /** What the own-entry walks read. */
 type OwnEntryContext = Pick<
     ObjectStaticContext,
-    "checker" | "dataTypes" | "dataLowerer" | "fail"
+    "checker" | "dataTypes" | "dataLowerer" | "fail" | "program"
 >;
 
 type OwnObjectContext = OwnEntryContext &
     Pick<ObjectStaticContext, "moduleNamespaces">;
+
+/**
+ * Whether a generation-known member `key` of the value `node` copies into
+ * struct `structName` is dropped: the struct declares no such field and
+ * nothing could see a member the source's type does not declare
+ * (`undeclaredMembersObservable`). A declared key, or an observable one, is
+ * read as a field (refused where the struct lacks it).
+ */
+export function undeclaredMemberDropped(
+    context: Pick<OwnEntryContext, "checker" | "dataTypes" | "program">,
+    structName: string,
+    key: string,
+    node: ts.Node,
+): boolean {
+    return (
+        context.dataTypes.findStructField(structName, key, node) ===
+            undefined &&
+        !undeclaredMembersObservable(
+            context.program,
+            context.checker,
+            context.checker.getTypeAtLocation(
+                ts.isSpreadAssignment(node) || ts.isSpreadElement(node)
+                    ? node.expression
+                    : node,
+            ),
+        )
+    );
+}
 
 /** Raw descriptor order, with JavaScript's integer keys first. */
 export function recordPropertyKeys(owner: Value): string[] {
@@ -229,8 +263,11 @@ export function structOwnEntries(
         context.dataTypes.keyOrders.noteEnumeration(dataType.name, node);
     refuseErrorReflection(context, owner, node);
     const access = context.dataTypes.memberAccess(dataType.name);
-    const sourceFields = owner.recordOwnKeys
-        ? owner.recordOwnKeys.map((key) =>
+    const ownKeys = owner.recordOwnKeys?.filter(
+        (key) => !undeclaredMemberDropped(context, dataType.name, key, node),
+    );
+    const sourceFields = ownKeys
+        ? ownKeys.map((key) =>
               context.dataTypes.structField(
                   dataType.name,
                   key,
@@ -542,8 +579,6 @@ function compileObjectIs(
         value.kind === "number" || value.dataType?.kind === "number";
     const textual = (value: Value): boolean =>
         value.kind === "string" || value.dataType?.kind === "string";
-    const boolean = (value: Value): boolean =>
-        value.kind === "boolean" || value.dataType?.kind === "boolean";
     if (numeric(left) && numeric(right)) {
         context.reachJsData();
         return booleanValue(`bbl::js::same_value(${left.cpp}, ${right.cpp})`);
@@ -553,7 +588,7 @@ function compileObjectIs(
             `(${stringCpp(context, left, argumentAt(call, 0))} == ${stringCpp(context, right, argumentAt(call, 1))})`,
         );
     }
-    if (boolean(left) && boolean(right)) {
+    if (isBooleanValue(left) && isBooleanValue(right)) {
         return booleanValue(`(${left.cpp} == ${right.cpp})`);
     }
     // JsonValue already retains erased object identity and distinguishes
@@ -566,7 +601,7 @@ function compileObjectIs(
             return `bbl::js::JsonValue::from_number(${value.cpp})`;
         if (textual(value))
             return `bbl::js::JsonValue::from_string(${stringCpp(context, value, node)})`;
-        if (boolean(value))
+        if (isBooleanValue(value))
             return `bbl::js::JsonValue::from_boolean(${value.cpp})`;
         // A nullable scalar (`number | null`) of one absent value is its
         // present value's, or that absent value.
@@ -1368,6 +1403,196 @@ export function keysDefinedOnDeclaration(
 }
 
 /**
+ * The `const` declaration a literal initializes, alone in its list: the
+ * binding it declares, and its statement in the statement list it stands in.
+ */
+function literalDeclaration(
+    checker: ts.TypeChecker,
+    literal: ts.ObjectLiteralExpression,
+):
+    | {
+          binding: ts.Symbol;
+          name: ts.Identifier;
+          statement: ts.VariableStatement;
+          scope: ts.Node;
+      }
+    | undefined {
+    const initializer = outermostWrapper(literal);
+    const declaration = initializer.parent;
+    if (
+        !isConstDeclaration(declaration) ||
+        declaration.initializer !== initializer ||
+        declaration.parent.declarations.length !== 1
+    )
+        return undefined;
+    const statement = declaration.parent.parent;
+    const binding = resolvedSymbol(checker, declaration.name);
+    return binding
+        ? {
+              binding,
+              name: declaration.name,
+              statement,
+              scope: statement.parent,
+          }
+        : undefined;
+}
+
+/**
+ * The records a node writes a property of (`record.key = ...`,
+ * `record[key] += ...`, a destructuring leaf, `record.key++`), each
+ * with the literal key it names; no key for one only the run time names.
+ * A `delete` removes a key rather than creating one.
+ */
+export function propertyWrites(
+    node: ts.Node,
+): { owner: ts.Expression; key: string | undefined }[] {
+    return writeSites(node).flatMap(({ target, kind }) => {
+        if (kind === "delete") return [];
+        if (ts.isPropertyAccessExpression(target))
+            return [
+                {
+                    owner: unwrapExpression(target.expression),
+                    key: target.name.text,
+                },
+            ];
+        if (!ts.isElementAccessExpression(target)) return [];
+        const argument = unwrapExpression(target.argumentExpression);
+        return [
+            {
+                owner: unwrapExpression(target.expression),
+                key: ts.isStringLiteralLike(argument)
+                    ? argument.text
+                    : undefined,
+            },
+        ];
+    });
+}
+
+/**
+ * The keys the program writes on the record a literal's `const`
+ * declaration binds, after it and in source order (`const tools = {};
+ * tools.resize = r; tools.move = m`), as JavaScript creates a key at its
+ * first write. A write that is a statement of the declaration's own
+ * statement list runs after the ones before it; any other (in a condition,
+ * a loop or a callback) may run or not, in another order (`maybe`). Each
+ * is `later` than the creation. A key only the run time names is no
+ * creation's (`writePlacedOnDeclaration`).
+ */
+export function keysWrittenOnDeclaration(
+    checker: ts.TypeChecker,
+    literal: ts.ObjectLiteralExpression,
+): readonly CreatedKeys[] {
+    let known = declarationKeys.get(checker);
+    if (!known) {
+        known = new WeakMap();
+        declarationKeys.set(checker, known);
+    }
+    let keys = known.get(literal);
+    if (!keys) {
+        keys = writtenDeclarationKeys(checker, literal);
+        known.set(literal, keys);
+    }
+    return keys;
+}
+
+/**
+ * @unjournaled `keysWrittenOnDeclaration` answers, by checker: a function
+ * of the checked program.
+ */
+const declarationKeys = new WeakMap<
+    ts.TypeChecker,
+    WeakMap<ts.ObjectLiteralExpression, readonly CreatedKeys[]>
+>();
+
+function writtenDeclarationKeys(
+    checker: ts.TypeChecker,
+    literal: ts.ObjectLiteralExpression,
+): readonly CreatedKeys[] {
+    const declared = literalDeclaration(checker, literal);
+    if (!declared) return [];
+    const { binding, name, statement, scope } = declared;
+    // The writes of a member through a reference after the declaration.
+    const writes = new Set<ts.Node>();
+    for (const reference of identifiersByName(statement.getSourceFile()).get(
+        name.text,
+    ) ?? []) {
+        if (
+            reference.pos < statement.end ||
+            reference.end > scope.end ||
+            resolvedSymbol(checker, reference) !== binding
+        )
+            continue;
+        const owner = outermostWrapper(reference);
+        const access = owner.parent;
+        const site =
+            isMemberAccess(access) && access.expression === owner
+                ? writeSiteOf(access)
+                : undefined;
+        if (site) writes.add(site.node);
+    }
+    const keys: CreatedKeys[] = [];
+    // In preorder, as JavaScript runs them: an enclosing write first.
+    const ordered = [...writes].sort(
+        (first, second) => first.pos - second.pos || second.end - first.end,
+    );
+    for (const node of ordered) {
+        const written = outermostWrapper(node);
+        const runs =
+            ts.isExpressionStatement(written.parent) &&
+            written.parent.parent === scope;
+        for (const write of propertyWrites(node)) {
+            if (
+                !ts.isIdentifier(write.owner) ||
+                resolvedSymbol(checker, write.owner) !== binding
+            )
+                continue;
+            if (write.key !== undefined)
+                keys.push(
+                    runs
+                        ? { key: write.key, later: true }
+                        : { key: write.key, maybe: true, later: true },
+                );
+        }
+    }
+    return keys;
+}
+
+/**
+ * Whether a write of a literal `key` at `site` stores into a record whose
+ * creation accounts for it (`keysWrittenOnDeclaration`): through
+ * `owner`, the binding a literal's `const` declaration makes, after that
+ * declaration, within its statement list. A write through any other
+ * reference (an alias, a parameter, a property holding the record), or of
+ * a key only the run time names, adds a key no creation places.
+ */
+export function writePlacedOnDeclaration(
+    checker: ts.TypeChecker,
+    owner: ts.Expression,
+    key: string | undefined,
+    site: ts.Node,
+): boolean {
+    if (key === undefined) return false;
+    const declaration = ts.isIdentifier(owner)
+        ? resolvedSymbol(checker, owner)?.valueDeclaration
+        : undefined;
+    const initializer =
+        declaration &&
+        ts.isVariableDeclaration(declaration) &&
+        declaration.initializer
+            ? unwrapExpression(declaration.initializer)
+            : undefined;
+    const declared =
+        initializer && ts.isObjectLiteralExpression(initializer)
+            ? literalDeclaration(checker, initializer)
+            : undefined;
+    return (
+        declared !== undefined &&
+        site.pos >= declared.statement.end &&
+        ts.findAncestor(site, (node) => node === declared.scope) !== undefined
+    );
+}
+
+/**
  * A literal descriptor, whatever its target: distinct, non-computed
  * members, a value or literal accessors, and literal boolean attributes.
  */
@@ -1673,15 +1898,17 @@ function applyPropertyDefinitions(
                     definition.node,
                     `Object.${operation} does not define class instance descriptor slots.`,
                 );
+            // A `?` property's accessor slot holds whether it is own
+            // (`slotHoldsOwnPresence`); shared or tag-decided absence has
+            // no slot of its own.
             if (
-                field.optionalProperty ||
                 field.sharedAbsent ||
                 field.uncheckedProperty ||
                 field.presentForTags
             )
                 context.fail(
                     definition.node,
-                    `Object.${operation} requires an accessor property that is always own or a nonconfigurable or read-only data property that is always own.`,
+                    `Object.${operation} requires an accessor property, or a nonconfigurable or read-only data property, whose slot holds whether it is own.`,
                 );
             if (
                 !field.accessor ||
@@ -1803,8 +2030,8 @@ function applyGlobalDefinitions(
 /**
  * Property definitions on a dynamic object: each accessor becomes an own
  * enumerable accessor slot (its getter and setter stored functions), each
- * value a data property. A non-configurable data property has no dynamic
- * storage.
+ * value a data property, kept in a property slot when it is read-only or
+ * non-configurable.
  */
 function applyDocumentDefinitions(
     context: ObjectStaticContext,
@@ -1822,15 +2049,11 @@ function applyDocumentDefinitions(
             const value = definition.members.find(
                 (member) => member.name === "value",
             );
-            if (
-                !definition.configurable ||
-                !definition.writable ||
-                value?.name !== "value"
-            )
+            if (value?.name !== "value")
                 return refuse(
-                    "defines a dynamic object's data property only as writable and configurable.",
+                    "defines a dynamic object's data property only with a value.",
                 );
-            return `${target.cpp}.define_value(${key}, ${context.dataLowerer.compileForSink(value.expression, json)});`;
+            return `${target.cpp}.define_value(${key}, ${context.dataLowerer.compileForSink(value.expression, json)}, ${definition.writable}, ${definition.configurable});`;
         }
         const stored = (name: "get" | "set"): string | undefined => {
             const member = definition.members.find(

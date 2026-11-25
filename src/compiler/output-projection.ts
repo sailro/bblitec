@@ -311,6 +311,7 @@ export const featureSources: Record<Feature, string[]> = {
     // feature already brings; what the feature adds is the library behind
     // it and the half of that file the guard compiles.
     "navigation:tile-cache": [],
+    "navigation:arm-dispatch": [],
     "navigation:crowd": [],
     // The stepper is generated rather than a PAL source, so like every
     // other lowered family it brings no file of its own here.

@@ -19,7 +19,10 @@
 
 #include <array>
 #include <cstdint>
+#include <deque>
 #include <iostream>
+#include <mutex>
+#include <span>
 
 namespace bbl::pal {
 
@@ -64,15 +67,90 @@ struct Packet final : ExternalEvent {
 inline void post(const Address& address, Packet::Contents contents) {
     address.inbox->post(std::make_unique<Packet>(address.target, std::move(contents)));
 }
+/** A wake of one enabled port of the receiving realm, which takes the next message of its queue. */
+struct PortTask final : ExternalEvent {
+    explicit PortTask(std::uint64_t value) : port(value) {}
+    std::uint64_t port;
+};
+/**
+ * The state two entangled MessagePorts share across realms. A message waits
+ * in its receiving side's queue, so it moves with a transferred port; the
+ * side's receiver is the realm task queue of the port that enabled it.
+ */
+struct PortPair {
+    struct Side {
+        std::deque<SerializedMessage> queue;
+        std::optional<Address> receiver;
+    };
+    std::mutex mutex;
+    bool entangled = true;
+    std::array<Side, 2> sides;
+};
+inline void wake(const Address& address) {
+    address.inbox->post(std::make_unique<PortTask>(address.target));
+}
 } // namespace worker_detail
 
-/** Parent-realm object. Its callback state is never captured by the worker thread. */
-class Worker {
+/** A realm-owned target of `message` and `messageerror` events: a Worker or a MessagePort. */
+class MessageEventTarget {
 public:
     using MessageCallback = js::Callback<void(const WorkerMessage&)>;
+    void set_message_handler(MessageCallback callback) {
+        require_owner();
+        message_listeners_.set_handler(std::move(callback));
+    }
+    void add_message_listener(MessageCallback callback, bool once = false) {
+        require_owner();
+        message_listeners_.add(std::move(callback), once);
+    }
+    void remove_message_listener(const MessageCallback& callback) {
+        require_owner();
+        message_listeners_.remove(callback.identity());
+    }
+    /** Kept as the handler; a native message decodes at its typed read, so none fires. */
+    void set_messageerror_handler(MessageCallback callback) {
+        require_owner();
+        messageerror_listeners_.set_handler(std::move(callback));
+    }
+    void add_messageerror_listener(MessageCallback callback, bool once = false) {
+        require_owner();
+        messageerror_listeners_.add(std::move(callback), once);
+    }
+    void remove_messageerror_listener(const MessageCallback& callback) {
+        require_owner();
+        messageerror_listeners_.remove(callback.identity());
+    }
+    void gc_trace(const js::TraceVisitor& visitor) const {
+        visitor(message_listeners_);
+        visitor(messageerror_listeners_);
+    }
+
+protected:
+    /** `crossed`: the error a use from another realm's thread throws. */
+    explicit MessageEventTarget(const char* crossed)
+        : crossed_(crossed), owner_(std::this_thread::get_id()) {}
+    void require_owner() const {
+        if (owner_ != std::this_thread::get_id())
+            throw std::logic_error(crossed_);
+    }
+    void dispatch_message(EventLoop& loop, SerializedMessage value) {
+        auto event = std::make_shared<WorkerMessageEvent>(std::move(value));
+        dispatch_platform_event(loop, message_listeners_, event);
+    }
+
+private:
+    const char* crossed_;
+    std::thread::id owner_;
+    PlatformEventListeners<void(const WorkerMessage&)> message_listeners_;
+    PlatformEventListeners<void(const WorkerMessage&)> messageerror_listeners_;
+};
+
+/** Parent-realm object. Its callback state is never captured by the worker thread. */
+class Worker : public MessageEventTarget {
+public:
     using ErrorCallback = js::Callback<void(WorkerErrorEvent&)>;
     explicit Worker(std::shared_ptr<EventLoop::Inbox> inbox)
-        : inbox_(std::move(inbox)), owner_(std::this_thread::get_id()) {}
+        : MessageEventTarget("Worker object crossed realm ownership."), inbox_(std::move(inbox)) {}
     ~Worker() {
         terminate();
         if (thread_.joinable())
@@ -83,47 +161,152 @@ public:
         worker_detail::post({inbox_, 0}, std::move(message));
     }
     void terminate() { inbox_->terminate(); }
-    void add_message_listener(MessageCallback callback, bool once = false) {
-        require_owner();
-        message_listeners_.add(std::move(callback), once);
-    }
-    void remove_message_listener(const MessageCallback& callback) {
-        require_owner();
-        message_listeners_.remove(callback.identity());
-    }
     void add_error_listener(ErrorCallback callback, bool once = false) {
         require_owner();
         error_listeners_.add(std::move(callback), once);
+    }
+    void set_error_handler(ErrorCallback callback) {
+        require_owner();
+        error_listeners_.set_handler(std::move(callback));
     }
     void remove_error_listener(const ErrorCallback& callback) {
         require_owner();
         error_listeners_.remove(callback.identity());
     }
     void gc_trace(const js::TraceVisitor& visitor) const {
-        visitor(message_listeners_);
+        MessageEventTarget::gc_trace(visitor);
         visitor(error_listeners_);
     }
 
 private:
     friend class WorkerRealm;
-    void require_owner() const {
-        if (owner_ != std::this_thread::get_id())
-            throw std::logic_error("Worker object crossed realm ownership.");
-    }
-    void message(EventLoop& loop, SerializedMessage value) {
-        auto event = std::make_shared<WorkerMessageEvent>(std::move(value));
-        dispatch_platform_event(loop, message_listeners_, event);
-    }
     bool error(EventLoop& loop, WorkerErrorEvent& event) {
         dispatch_platform_event(loop, error_listeners_, event);
         return event.default_prevented;
     }
     std::shared_ptr<EventLoop::Inbox> inbox_;
-    std::thread::id owner_;
     std::thread thread_;
-    PlatformEventListeners<void(const WorkerMessage&)> message_listeners_;
     PlatformEventListeners<void(WorkerErrorEvent&)> error_listeners_;
 };
+
+struct TransferredPort final : TransferredResource {
+    TransferredPort(std::shared_ptr<worker_detail::PortPair> value, std::size_t index)
+        : pair(std::move(value)), side(index) {}
+    std::shared_ptr<worker_detail::PortPair> pair;
+    std::size_t side;
+};
+
+/**
+ * One realm's MessagePort: an end of an entangled pair. Its message queue is
+ * enabled by `start()` or by setting `onmessage`; each message is then a task
+ * of this realm. `close()` disentangles both ends without an event. A
+ * `messageerror` never fires: a native message decodes at its typed read.
+ */
+class MessagePort final : public Transferable, public MessageEventTarget {
+public:
+    MessagePort(std::shared_ptr<worker_detail::PortPair> pair, std::size_t side)
+        : MessageEventTarget("MessagePort object crossed realm ownership."), pair_(std::move(pair)),
+          side_(side) {}
+    static std::shared_ptr<MessagePort> create(std::shared_ptr<worker_detail::PortPair> pair,
+                                               std::size_t side) {
+        auto port = js::make_gc_shared<MessagePort>(std::move(pair), side);
+        port->self_ = port;
+        return port;
+    }
+    static std::shared_ptr<MessagePort> receive(TransferredPort payload) {
+        return create(std::move(payload.pair), payload.side);
+    }
+
+    /** A message to the entangled port; one sent while that port is transferred waits in its queue. */
+    template <typename T>
+    void post_message(const T& value, std::span<Transferable* const> transfers = {}) {
+        require_owner();
+        // A message transferring its own target port is serialized, then discarded.
+        bool doomed = false;
+        for (const auto* transferable : transfers) {
+            if (transferable == this)
+                throw DataCloneError("A MessagePort cannot transfer itself.");
+            const auto* port = dynamic_cast<const MessagePort*>(transferable);
+            doomed = doomed || (port && pair_ && port->pair_ == pair_);
+        }
+        auto message = js::serialize_message(value, transfers);
+        if (doomed || !pair_)
+            return;
+        std::lock_guard lock(pair_->mutex);
+        if (!pair_->entangled)
+            return;
+        auto& peer = pair_->sides[1 - side_];
+        peer.queue.push_back(std::move(message));
+        if (peer.receiver)
+            worker_detail::wake(*peer.receiver);
+    }
+    void start();
+    void close();
+    /** Setting `onmessage` enables the queue, as `start()` does. */
+    void set_message_handler(MessageCallback callback) {
+        MessageEventTarget::set_message_handler(std::move(callback));
+        start();
+    }
+    std::unique_ptr<TransferredResource> transfer() override {
+        require_owner();
+        if (!pair_)
+            throw DataCloneError("A closed or transferred MessagePort cannot be transferred.");
+        auto payload = std::make_unique<TransferredPort>(pair_, side_);
+        {
+            std::lock_guard lock(pair_->mutex);
+            pair_->sides[side_].receiver.reset();
+        }
+        pair_.reset();
+        release();
+        return payload;
+    }
+
+private:
+    friend class WorkerRealm;
+    void release();
+    void dispatch_next(EventLoop& loop) {
+        if (!pair_)
+            return;
+        std::optional<SerializedMessage> message;
+        {
+            std::lock_guard lock(pair_->mutex);
+            auto& queue = pair_->sides[side_].queue;
+            if (queue.empty())
+                return;
+            message = std::move(queue.front());
+            queue.pop_front();
+        }
+        dispatch_message(loop, std::move(*message));
+    }
+    std::weak_ptr<MessagePort> self_;
+    std::shared_ptr<worker_detail::PortPair> pair_;
+    std::size_t side_;
+    /** The realm's registration while the queue is enabled. */
+    std::uint64_t id_ = 0;
+};
+
+/** `new MessageChannel()`: two entangled ports of the current realm. */
+class MessageChannel {
+public:
+    MessageChannel() {
+        auto pair = std::make_shared<worker_detail::PortPair>();
+        port1_ = MessagePort::create(pair, 0);
+        port2_ = MessagePort::create(std::move(pair), 1);
+    }
+    const std::shared_ptr<MessagePort>& port1() const { return port1_; }
+    const std::shared_ptr<MessagePort>& port2() const { return port2_; }
+    void gc_trace(const js::TraceVisitor& visitor) const {
+        visitor(port1_);
+        visitor(port2_);
+    }
+
+private:
+    std::shared_ptr<MessagePort> port1_;
+    std::shared_ptr<MessagePort> port2_;
+};
+inline std::shared_ptr<MessageChannel> create_message_channel() {
+    return js::make_gc_shared<MessageChannel>();
+}
 
 /** Platform services for one source realm, including computation-only workers. */
 class WorkerRealm {
@@ -135,6 +318,7 @@ public:
     WorkerRealm& operator=(const WorkerRealm&) = delete;
     ~WorkerRealm() {
         run_teardown("WorkerRealm teardown", [this] {
+            ports_.clear();
             for (auto& [id, worker] : workers_) {
                 static_cast<void>(id);
                 worker->terminate();
@@ -249,6 +433,17 @@ public:
         worker_detail::post(*parent_, std::move(message));
     }
     void close() { loop_.close(); }
+    /** An enabled port stays alive while its realm can deliver to it. */
+    std::uint64_t enable_port(std::shared_ptr<MessagePort> port) {
+        require_owner();
+        const auto id = next_port_++;
+        ports_.emplace(id, std::move(port));
+        return id;
+    }
+    void release_port(std::uint64_t id) {
+        require_owner();
+        ports_.erase(id);
+    }
     void on_platform_event(EventLoop::EventHandler callback) {
         require_owner();
         platform_handler_ = std::move(callback);
@@ -312,6 +507,16 @@ private:
         }
     }
     void deliver(std::unique_ptr<ExternalEvent> external) {
+        if (const auto* task = dynamic_cast<const worker_detail::PortTask*>(external.get())) {
+            const auto found = ports_.find(task->port);
+            if (found == ports_.end())
+                return;
+            // A listener may close the port, releasing the realm's reference.
+            const auto port = found->second;
+            port->dispatch_next(loop_);
+            js::collect_at_frame_boundary();
+            return;
+        }
         auto* packet = dynamic_cast<worker_detail::Packet*>(external.get());
         if (!packet) {
             if (!platform_handler_)
@@ -341,7 +546,7 @@ private:
         if (worker->inbox_->terminated())
             return;
         if (auto* message = std::get_if<SerializedMessage>(&packet->contents))
-            worker->message(loop_, std::move(*message));
+            worker->dispatch_message(loop_, std::move(*message));
         else if (auto* error = std::get_if<WorkerErrorEvent>(&packet->contents)) {
             if (!worker->error(loop_, *error)) {
                 if (parent_)
@@ -367,9 +572,46 @@ private:
     bool animation_subscribed_ = false;
     std::uint64_t next_worker_ = 1;
     std::map<std::uint64_t, std::shared_ptr<Worker>> workers_;
+    std::uint64_t next_port_ = 1;
+    std::map<std::uint64_t, std::shared_ptr<MessagePort>> ports_;
     PlatformEventListeners<void(const WorkerMessage&)> messages_;
     EventLoop::EventHandler platform_handler_;
 };
+
+inline void MessagePort::start() {
+    require_owner();
+    if (id_ || !pair_)
+        return;
+    auto& realm = WorkerRealm::current();
+    id_ = realm.enable_port(self_.lock());
+    std::lock_guard lock(pair_->mutex);
+    auto& side = pair_->sides[side_];
+    side.receiver = worker_detail::Address{realm.loop().inbox(), id_};
+    for (std::size_t index = 0; index < side.queue.size(); ++index)
+        worker_detail::wake(*side.receiver);
+}
+
+inline void MessagePort::close() {
+    require_owner();
+    if (!pair_)
+        return;
+    std::deque<SerializedMessage> discarded;
+    {
+        // Messages already queued to the other end stay deliverable.
+        std::lock_guard lock(pair_->mutex);
+        pair_->entangled = false;
+        auto& side = pair_->sides[side_];
+        discarded.swap(side.queue);
+        side.receiver.reset();
+    }
+    pair_.reset();
+    release();
+}
+
+inline void MessagePort::release() {
+    if (id_)
+        WorkerRealm::current().release_port(std::exchange(id_, 0));
+}
 
 /** A host accessor of the running realm's global; undefined outside a Window realm. */
 inline js::Nullable<double> realm_host_accessor(HostAccessor accessor) {
@@ -378,3 +620,27 @@ inline js::Nullable<double> realm_host_accessor(HostAccessor accessor) {
 }
 
 } // namespace bbl::pal
+
+namespace bbl::js {
+template <> struct CloneCodec<std::shared_ptr<pal::MessagePort>> {
+    using Port = std::shared_ptr<pal::MessagePort>;
+    static pal::CloneId write(pal::CloneWriter& writer, const Port& port) {
+        if (!port)
+            return writer.add(pal::CloneNull{});
+        return writer.transferable(*port);
+    }
+    static Port read(pal::CloneReader& reader, pal::CloneId id) {
+        if (std::holds_alternative<pal::CloneNull>(reader.node(id)))
+            return {};
+        if (const auto* port = reader.recalled<Port>(id))
+            return *port;
+        auto resource = reader.take_transfer(id);
+        auto* payload = dynamic_cast<pal::TransferredPort*>(resource.get());
+        if (!payload)
+            throw pal::DataCloneError("Transferred resource is not a MessagePort.");
+        auto port = pal::MessagePort::receive(std::move(*payload));
+        reader.remember(id, port);
+        return port;
+    }
+};
+} // namespace bbl::js

@@ -7,6 +7,7 @@ import { argumentAt } from "./syntax.js";
 import { documentEngine } from "./window-events.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 
+import type { DataType } from "./data-types.js";
 import { isStringValue, type Value } from "./types.js";
 import { libraryName, namedMember, type NamedMember } from "./symbols.js";
 
@@ -392,24 +393,35 @@ export function compileBrowserFileCall(
         receiver,
     );
     if (!isFileValue(owner, "file")) return undefined;
-    if (callee.name !== "text") {
+    const read = FILE_READS.get(callee.name);
+    if (!read) {
         context.fail(
             callee.key,
-            `File method '${callee.name}' is not lowered; only text() is supported.`,
+            `File method '${callee.name}' is not lowered; only text() and arrayBuffer() are supported.`,
         );
     }
     context.expectArgumentCount(call, 0, 0);
     context.reachFeature("browser:file", call);
     return {
-        // The AOT promise layer consumes this string immediately when it
-        // lowers `.then(text => ...)`.
+        // The AOT promise layer consumes this value immediately when it
+        // lowers `.then(text => ...)` or an `await`.
         kind: "data",
-        cpp: `bbl::js::file_text(${owner.cpp})`,
-        dataType: { kind: "string" },
+        cpp: `bbl::js::${read.helper}(${owner.cpp})`,
+        dataType: read.dataType,
         impure: true,
         freshData: true,
     };
 }
+
+/** The File reads a selected snapshot completes at once, by method name. */
+const FILE_READS: ReadonlyMap<string, { helper: string; dataType: DataType }> =
+    new Map([
+        ["text", { helper: "file_text", dataType: { kind: "string" } }],
+        [
+            "arrayBuffer",
+            { helper: "file_array_buffer", dataType: { kind: "arraybuffer" } },
+        ],
+    ]);
 
 /**
  * `reader.readAsText(fileOrBlob)`. The native read completes inside the

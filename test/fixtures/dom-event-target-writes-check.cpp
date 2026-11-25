@@ -68,6 +68,8 @@ int main() try {
               "an event's time stamp is the clock when it was created");
         check(ui_get_attribute(engine, origin, "data-tabled") == "move7,over,",
               "a table of handlers registers each for its own event class");
+        check(ui_get_attribute(engine, origin, "data-wheel") == "-100,4,0",
+              "a constructed wheel event carries its deltas and position");
 
         pal::UiRmlRuntime runtime(engine, window, 640, 480);
         const auto update = [&](double milliseconds) {

@@ -60,8 +60,13 @@ export function agreedKeyOrder(
 
 /** What one creation of a record makes own, in creation order (`RecordKeyOrders`). */
 export type CreatedKeys =
-    /** A key the creation writes; `maybe` where it is own only at run time (a conditional spread's). */
-    | { readonly key: string; readonly maybe?: true }
+    /**
+     * A key the creation writes; `maybe` where it is own only at run time (a
+     * conditional spread's); `later` where a write after the creation gives
+     * it (`keysWrittenOnDeclaration`), which a write no creation places may
+     * come before.
+     */
+    | { readonly key: string; readonly maybe?: true; readonly later?: true }
     /**
      * The own keys of a record of struct `struct`, in that record's order: a
      * spread or a conversion. `maybe` where no record may be there at all.
@@ -109,6 +114,12 @@ export class RecordKeyOrders {
     private readonly spellings = new EmissionSet<string>();
     /** Enumerated structs, with the first node enumerating each. */
     private readonly enumerations = new EmissionMap<string, ts.Node>();
+    /**
+     * The keys writes no creation places may give each struct's records
+     * (`noteUnplacedWrite`); the empty string stands for a key only the
+     * run time names.
+     */
+    private readonly unplaced = new EmissionMap<string, readonly string[]>();
 
     /** A record of `struct` created making `keys` own, in order. */
     public noteCreation(struct: string, keys: readonly CreatedKeys[]): void {
@@ -118,6 +129,19 @@ export class RecordKeyOrders {
         const known = this.creations.get(struct);
         if (known) known.push(keys);
         else this.creations.set(struct, emissionArray([keys]));
+    }
+
+    /**
+     * A record of `struct` may be given `key` (undefined: one only the
+     * run time names) by a write no creation places (an alias's, a
+     * parameter's): where a creation may lack that key, the write adds it
+     * in an order only the run time knows.
+     */
+    public noteUnplacedWrite(struct: string, key: string | undefined): void {
+        const keys = this.unplaced.get(struct) ?? [];
+        const spelled = key ?? "";
+        if (!keys.includes(spelled))
+            this.unplaced.set(struct, [...keys, spelled]);
     }
 
     /** `struct`'s own keys are enumerated in its field order. */
@@ -243,7 +267,7 @@ export class RecordKeyOrders {
                     source,
                 );
                 if (made === "varies") varies = true;
-                else if (made) orders.push(made);
+                else if (made) orders.push(...made);
             }
             return { orders, varies };
         };
@@ -301,13 +325,18 @@ export class RecordKeyOrders {
     }
 
     /**
-     * The order of the keys a creation of a `struct` record makes own, of
+     * The orders of the keys a creation of a `struct` record makes own, of
      * those `keys` lays out, its sources' records in the order `source`
      * gives them; undefined while a source has none yet. It varies where a
      * source's order varies, or where a key the creation may have made own
      * is written again after other keys (absent, it is created last); a
      * record of `struct` itself may lack such a key only where its order
-     * can put it last: this creation puts it there.
+     * can put it last: this creation puts it there. A key a write no
+     * creation places may add (`noteUnplacedWrite`), which the creation
+     * does not make own before its `later` writes, joins the record after
+     * the creation's keys, before or after each later write's: one order
+     * for each place. Two such keys, or one only the run time names, join
+     * it in an order only the run time knows.
      */
     private created(
         struct: string,
@@ -315,12 +344,18 @@ export class RecordKeyOrders {
         keys: readonly LayoutKey[],
         layout: Layout,
         source: (struct: string) => Agreed | undefined,
-    ): string[] | "varies" | undefined {
+    ): string[][] | "varies" | undefined {
         const stored = new Set(keys.map(({ key }) => key));
-        const made: { key: string; maybe: boolean; own: boolean }[] = [];
+        const made: {
+            key: string;
+            maybe: boolean;
+            own: boolean;
+            later: boolean;
+        }[] = [];
         for (const item of created) {
             if ("unordered" in item) return "varies";
             const own = "struct" in item && item.struct === struct;
+            const later = "key" in item && item.later === true;
             let written: { key: string; maybe: boolean }[];
             if ("key" in item)
                 written = [{ key: item.key, maybe: item.maybe === true }];
@@ -341,7 +376,7 @@ export class RecordKeyOrders {
                 if (!stored.has(key)) continue;
                 const index = made.findIndex((known) => known.key === key);
                 if (index < 0) {
-                    made.push({ key, maybe, own });
+                    made.push({ key, maybe, own, later });
                     continue;
                 }
                 const known = made[index]!;
@@ -354,13 +389,49 @@ export class RecordKeyOrders {
                 ) {
                     if (!known.own) return "varies";
                     made.splice(index, 1);
-                    made.push({ key, maybe, own: false });
+                    made.push({ key, maybe, own: false, later });
                     continue;
                 }
-                made[index] = { key, maybe, own: known.own };
+                made[index] = {
+                    key,
+                    maybe,
+                    own: known.own,
+                    later: known.later,
+                };
             }
         }
-        return ownKeyOrder(made.map(({ key }) => key));
+        const owned = (key: string): boolean =>
+            made.some(
+                (known) => known.key === key && !known.maybe && !known.later,
+            );
+        const unplaced = this.unplaced.get(struct) ?? [];
+        if (unplaced.includes("") && keys.some((field) => !owned(field.key)))
+            return "varies";
+        const joining = unplaced.filter(
+            (key) => key !== "" && stored.has(key) && !owned(key),
+        );
+        const order = made.map(({ key }) => key);
+        if (joining.length === 0) return [ownKeyOrder(order)];
+        if (joining.length > 1) return "varies";
+        const key = joining[0]!;
+        // Made own by the creation or a later write, the key keeps its place;
+        // otherwise the unplaced write adds it at one of the places below.
+        const orders = made.some((known) => known.key === key)
+            ? [ownKeyOrder(order)]
+            : [];
+        const rest = made.filter((known) => known.key !== key);
+        const first = rest.findIndex((known) => known.later);
+        const keysOf = (part: typeof rest): string[] =>
+            part.map((known) => known.key);
+        for (let at = first < 0 ? rest.length : first; at <= rest.length; at++)
+            orders.push(
+                ownKeyOrder([
+                    ...keysOf(rest.slice(0, at)),
+                    key,
+                    ...keysOf(rest.slice(at)),
+                ]),
+            );
+        return orders;
     }
 }
 

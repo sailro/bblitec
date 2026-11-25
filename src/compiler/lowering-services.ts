@@ -1,6 +1,7 @@
 import type ts from "typescript";
 import type { CompileError } from "./compile-error.js";
 import type { DataLowerer } from "./data-lowering.js";
+import type { EngineObjectProperties } from "./engine-object-properties.js";
 import type {
     DataTypeRegistry,
     DataIterationElement,
@@ -60,6 +61,7 @@ import type { IntrinsicOptions } from "./intrinsic-options.js";
 import type {
     ExecutedArgument,
     ExecutedResult,
+    ExecutedTarget,
 } from "./executed-application-function.js";
 
 /** Convert an already evaluated return value, including adopted promise results. */
@@ -171,6 +173,8 @@ export interface LoweringServices {
     readonly parameterObjects: ReadonlySet<ts.ParameterDeclaration>;
     /** Whether the storage took a demand for `declaration` while this attempt lowered (`ReplayStorage.takenDuringAttempt`). */
     storageTakenDuringAttempt(declaration: ts.Declaration): boolean;
+    /** The storage's revision (`ReplayStorage.revision`): the same while what it holds is. */
+    storageRevision(): number;
     readonly conditions: ConditionLowerer;
     readonly browserErasure: BrowserErasure;
     readonly declarations: DeclarationLowerer;
@@ -191,6 +195,8 @@ export interface LoweringServices {
     readonly userFunctions: UserFunctionLowerer;
     readonly dataTypes: DataTypeRegistry;
     readonly dataLowerer: DataLowerer;
+    /** The properties a program adds to engine objects. */
+    readonly engineObjectProperties: EngineObjectProperties;
     readonly classLowerer: ClassLowerer;
     readonly evaluationOrder: EvaluationOrder;
     readonly nativeFunctions: NativeFunctionLowerer;
@@ -277,7 +283,9 @@ export interface LoweringServices {
         value: Value,
         site: ts.Expression,
     ): void;
-    emitWindowLogicalAssignment(expression: ts.BinaryExpression): boolean;
+    emitAddedPropertyLogicalAssignment(
+        expression: ts.BinaryExpression,
+    ): boolean;
     compileValue(expression: ts.Expression): Value;
     /** The undefined an optional chain link is, when its chain stopped at generation. */
     optionalChainStop(node: ts.Expression): Value | undefined;
@@ -377,6 +385,7 @@ export interface LoweringServices {
     ): NativeCaptureBinding;
     takeNativeTemporary(cpp: string, boundary: number): string;
     /** Whether `cpp` names a native local registered since `boundary`. */
+    hasNativeBinding(cpp: string): boolean;
     nativeLocalSince(cpp: string, boundary: number): boolean;
     /** Whether a value names a native binding nothing reassigns. */
     hasStableNativeBinding(value: Value): boolean;
@@ -408,12 +417,12 @@ export interface LoweringServices {
         leaf?: (part: Value) => unknown,
     ): unknown;
     /**
-     * An application function run once at generation per declaration and
-     * arguments; its plain-data result. `pinnedStandIn` binds pinned imports
-     * the run may reach (`executeApplicationFunction`).
+     * An application function (or a closed call) run once at generation per
+     * declaration and arguments; its plain-data result. `pinnedStandIn`
+     * binds pinned imports the run may reach (`executeApplicationFunction`).
      */
     runGenerationFunction(
-        declaration: ts.FunctionLikeDeclaration,
+        declaration: ExecutedTarget,
         args: readonly (ExecutedArgument | undefined)[],
         label: string,
         pinnedStandIn?: (name: string) => unknown,
@@ -499,6 +508,7 @@ export interface LoweringServices {
     settledCallInitializer(
         identifier: ts.Identifier,
     ): ts.CallExpression | undefined;
+    generationRead(expression: ts.Expression): Value | undefined;
     /**
      * The numbers or booleans (`scalar`) an expression reads when the
      * documents the package serves are the ones generation holds, spelled.
@@ -578,6 +588,10 @@ export interface LoweringServices {
     ): void;
     classOf(instance: Value): ts.ClassLikeDeclaration | undefined;
     callbackIdentity(declaration: ts.Node, owner: Value | undefined): number;
+    hasCallbackIdentity(
+        declaration: ts.Node,
+        owner: Value | undefined,
+    ): boolean;
     defaultEngine(): string | undefined;
     reachJsRandom(): void;
     emitNativeCallbackStorage(
@@ -783,6 +797,16 @@ export interface LoweringServices {
         callNode: ts.Node,
         discardReturn?: boolean,
         body?: CallbackInvocationOptions,
+    ): Value;
+    compileCallbackValueWithValues(
+        callback: Value,
+        arguments_: readonly Value[],
+        callNode: ts.Node,
+        options?: {
+            discardReturn?: boolean;
+            predicate?: boolean;
+            body?: CallbackInvocationOptions;
+        },
     ): Value;
     compileStoredDataFunction(
         expression:

@@ -4,6 +4,7 @@ import {
     dataTypesEqual,
     isAbsentSpreadProperty,
     lackedField,
+    slotHoldsOwnPresence,
     type DataStructField,
     type DataType,
 } from "../data-types.js";
@@ -405,6 +406,21 @@ function requireCopiedOwnUndefinedFields(
     }
 }
 
+/**
+ * The value a struct field holds where a record lacks it: `{}` for one a
+ * default fills or a slot holding its own presence (`slotHoldsOwnPresence`),
+ * `std::nullopt` for an optional one; undefined for a field the record must
+ * hold.
+ */
+export function absentFieldCpp(field: DataStructField): string | undefined {
+    return field.defaultWhenMissing ||
+        (slotHoldsOwnPresence(field) && field.type.kind === "optional")
+        ? "{}"
+        : field.type.kind === "optional"
+          ? "std::nullopt"
+          : undefined;
+}
+
 function valueStruct(
     dataType: DataType<"struct">,
     lowerer: DataSinkHost,
@@ -541,6 +557,7 @@ function valueStruct(
             dataType.name,
             represented,
             node,
+            lowerer.convertedMember(node),
         );
         lowerer.context.fail(
             node,
@@ -581,12 +598,39 @@ function valueStruct(
                 (property) => !stored.has(property),
             ),
         );
+        // A record a declaration's literal creates also takes the keys the
+        // statements right after it define; a lacked one holds a placeholder
+        // until they do (`lackedFieldsDefinedOnDeclaration`).
+        const unwrapped = ts.isExpression(node)
+            ? lowerer.context.unwrap(node)
+            : undefined;
+        const literal =
+            unwrapped && ts.isObjectLiteralExpression(unwrapped)
+                ? unwrapped
+                : undefined;
+        const held = new Set(recordPropertyKeys(value));
+        const lacked = fields.filter(
+            (field) =>
+                !held.has(field.sourceName) &&
+                absentFieldCpp(field) === undefined,
+        );
+        const definedLater =
+            literal !== undefined &&
+            lowerer.lackedFieldsDefinedOnDeclaration(literal, lacked);
         // A class instance seen as a record lists the record type's members.
-        if (value.classDeclaration === undefined)
-            lowerer.context.dataTypes.keyOrders.noteCreation(
-                dataType.name,
-                recordCreatedKeys(value),
-            );
+        if (value.classDeclaration === undefined) {
+            if (literal)
+                lowerer.noteLiteralCreation(
+                    literal,
+                    dataType,
+                    recordCreatedKeys(value),
+                );
+            else
+                lowerer.context.dataTypes.keyOrders.noteCreation(
+                    dataType.name,
+                    recordCreatedKeys(value),
+                );
+        }
         // The members lowered into function slots, and the accessors of
         // slots without a receiver, may read `this` as the object the
         // literal creates.
@@ -677,22 +721,23 @@ function valueStruct(
                         field,
                         node,
                     );
+                const missing = (): never => {
+                    lowerer.context.dataTypes.requireViewConstruction(node);
+                    return lowerer.context.fail(
+                        node,
+                        `Compile-time record is missing required field '${field.sourceName}'.${lowerer.context.dataTypes.sharedLayoutNote(node)}`,
+                    );
+                };
                 const stored = property
                     ? field.defaultWhenMissing &&
                       property.dataType?.kind === "optional" &&
                       field.type.kind !== "optional"
                         ? armFieldOrDefault(lowerer, property, field, node)
                         : storeFieldMember(lowerer, property, field, node)
-                    : field.defaultWhenMissing ||
-                        (field.accessorReceiver &&
-                            field.type.kind === "optional")
-                      ? "{}"
-                      : field.type.kind === "optional"
-                        ? "std::nullopt"
-                        : lowerer.context.fail(
-                              node,
-                              `Compile-time record is missing required field '${field.sourceName}'.${lowerer.context.dataTypes.sharedLayoutNote(node)}`,
-                          );
+                    : (absentFieldCpp(field) ??
+                      (definedLater && lacked.includes(field)
+                          ? "{}"
+                          : missing()));
                 return lowerer.context.dataTypes.structFieldInitializerCpp(
                     field,
                     stored,
@@ -722,6 +767,12 @@ function valueStruct(
             dataType.name,
             node,
             "accessors",
+        );
+        lowerer.context.dataTypes.joinInstantiationBeside(
+            sourceType,
+            dataType,
+            lowerer.convertedExpression(node) ??
+                recordExpression(lowerer, value, node),
         );
         // Receiver-aware slots retain presence independently of their payload.
         // Fresh plain literals can move their data into new owner cells;
@@ -837,7 +888,7 @@ function valueStruct(
                             field,
                             stored,
                         );
-                    const presence = source.accessorReceiver
+                    const presence = slotHoldsOwnPresence(source)
                         ? `if (!${sourceCpp}.has_own()) return {}; `
                         : "";
                     return `([&]() -> ${slot} { ${presence}${lines.join(" ")} return ${initialized}; }())`;
@@ -900,6 +951,28 @@ function valueStruct(
                     stored.kind === "string")
             );
         };
+        // Only a record whose every property is required has every key's
+        // entry to copy; an optional one stays a view of the dictionary.
+        const fresh = fields.every(
+            (field) => !field.accessor && !field.optionalProperty,
+        )
+            ? freshDictionaryEntries(lowerer, value, node)
+            : undefined;
+        if (fresh) {
+            const copy = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
+                .map((field) =>
+                    storeFieldMember(
+                        lowerer,
+                        fresh(field.sourceName),
+                        field,
+                        node,
+                    ),
+                )
+                .join(", ")}}`;
+            return lowerer.context.dataTypes.isReferenceStruct(dataType.name)
+                ? `bbl::js::make_ref<bblscene::${dataType.name}Data>(${copy})`
+                : copy;
+        }
         const entryType = (field: DataStructField): boolean =>
             dataTypesEqual(sourceMap.value, field.type) ||
             (field.type.kind === "optional" &&
@@ -1276,6 +1349,51 @@ function accessorSlot(
     )}, ${set})`;
 }
 
+/** Whether the expression a sink converts creates the object it yields, so no other reference holds it. */
+function freshConverted(lowerer: DataSinkHost, node: ts.Node): boolean {
+    const converted = lowerer.convertedExpression(node);
+    return (
+        converted !== undefined &&
+        yieldsFreshObject(lowerer.context.checker, converted)
+    );
+}
+
+/**
+ * A fresh string-keyed dictionary no other reference holds
+ * (`Object.fromEntries`) read as a closed record: a copy of its entries,
+ * which nothing can tell from it. The reader yields a key's entry, which
+ * must be present; the dictionary is read once.
+ */
+function freshDictionaryEntries(
+    lowerer: DataSinkHost,
+    value: Value,
+    node: ts.Node,
+): ((key: string) => Value) | undefined {
+    const source = value.dataType;
+    if (
+        source?.kind !== "map" ||
+        !source.dictionary ||
+        source.key.kind !== "string" ||
+        !freshConverted(lowerer, node)
+    )
+        return undefined;
+    const entries = lowerer.context.allocateTemporaryCppName("entries");
+    lowerer.context.emit({
+        kind: "declaration",
+        type: "const auto",
+        name: entries,
+        initializer: value.cpp,
+    });
+    lowerer.context.reachJsData();
+    const entry =
+        source.value.kind === "optional" ? source.value.inner : source.value;
+    return (key) =>
+        lowerer.leafValue(
+            `bbl::js::present(${entries}.get(${lowerer.context.cppString(key)}))`,
+            entry,
+        );
+}
+
 function valueEnummap(
     dataType: DataType<"enummap">,
     lowerer: DataSinkHost,
@@ -1344,6 +1462,21 @@ function valueEnummap(
     }
     if (value.dataType && dataTypesEqual(value.dataType, dataType)) {
         return value.cpp;
+    }
+    // A fresh dictionary read as the record of a key union: each member's
+    // entry.
+    const entry = freshDictionaryEntries(lowerer, value, node);
+    if (entry) {
+        const slots = lowerer.context.dataTypes
+            .enumMembers(dataType.enumName)
+            .map((member) =>
+                lowerer.compileKnownValueForSink(
+                    entry(member),
+                    dataType.element,
+                    node,
+                ),
+            );
+        return `${lowerer.context.dataTypes.cppType(dataType)}{${slots.join(", ")}}`;
     }
     return undefined;
 }

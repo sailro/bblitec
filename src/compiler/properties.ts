@@ -76,6 +76,7 @@ import {
     type CanvasContext,
 } from "./canvas.js";
 import { renderClosure } from "./closure-captures.js";
+import { readWorkerEventProperty } from "./workers.js";
 import {
     borrowedPlatformEventKind,
     handleCppType,
@@ -153,6 +154,7 @@ import {
     isDocumentVisibilityRead,
 } from "./window-events.js";
 import type { WindowProperties } from "./window-properties.js";
+import type { EngineObjectProperties } from "./engine-object-properties.js";
 import { taskListRemoval } from "./frame-graph-task-list.js";
 
 /** A property the compiled surface deliberately does not serve. */
@@ -399,6 +401,8 @@ const handleCollections: readonly HandleCollectionRead[] = [
     },
 ];
 
+const handleCollectionsByKey = indexRules(handleCollections);
+
 /** Whether any handle owner can expose a collection with this source name. */
 export function isHandleCollectionProperty(property: string): boolean {
     return handleCollections.some(
@@ -418,16 +422,31 @@ const AUDIO_PARAM_RULES: readonly PropertyRule[] = AUDIO_PARAM_NAMES.map(
     }),
 );
 
-/** The rule in a table claiming this (owner kind, property) pair. */
-function ruleFor<Rule extends { owner: ValueKind; property: string }>(
+/** A table's rules by (owner kind, property): the first claiming each pair. */
+type RuleIndex<Rule> = ReadonlyMap<string, Rule>;
+
+function ruleKey(owner: ValueKind, property: string): string {
+    return `${owner}:${property}`;
+}
+
+function indexRules<Rule extends { owner: ValueKind; property: string }>(
     table: readonly Rule[],
+): RuleIndex<Rule> {
+    const index = new Map<string, Rule>();
+    for (const rule of table) {
+        const key = ruleKey(rule.owner, rule.property);
+        if (!index.has(key)) index.set(key, rule);
+    }
+    return index;
+}
+
+/** The rule in a table claiming this (owner kind, property) pair. */
+function ruleFor<Rule>(
+    index: RuleIndex<Rule>,
     owner: Pick<Value, "kind">,
     property: string,
 ): Rule | undefined {
-    return table.find(
-        (candidate) =>
-            candidate.owner === owner.kind && candidate.property === property,
-    );
+    return index.get(ruleKey(owner.kind, property));
 }
 
 /**
@@ -458,7 +477,7 @@ export function readHandleCollection(
     owner: Value,
     property: string,
 ): HandleCollectionRead | undefined {
-    return ruleFor(handleCollections, owner, property);
+    return ruleFor(handleCollectionsByKey, owner, property);
 }
 
 /**
@@ -1315,6 +1334,16 @@ export const propertyRules: readonly PropertyRule[] = [
         impure: true,
     },
     {
+        // A material's own `environmentIntensity`, absent where neither its
+        // props nor a write gave it one.
+        owner: "material",
+        property: "environmentIntensity",
+        value: "data",
+        dataType: { kind: "optional", inner: { kind: "number" } },
+        record: ["materials", "source_environment_intensity"],
+        nativeOptionalScalar: "double",
+    },
+    {
         // A PBR material's own `doubleSided`; materials whose props never
         // named it have none.
         owner: "material",
@@ -1995,6 +2024,13 @@ export const propertyRules: readonly PropertyRule[] = [
     })),
 ];
 
+const propertyRulesByKey = indexRules(propertyRules);
+
+/** Whether a rule claims `property` on `owner` objects. */
+export function hasPropertyRule(owner: ValueKind, property: string): boolean {
+    return propertyRulesByKey.has(ruleKey(owner, property));
+}
+
 /**
  * The native field a camera property stores into, or undefined when the
  * property is not one of them.
@@ -2048,7 +2084,7 @@ export function isDirectDataProperty(
     owner: ValueKind,
     property: string,
 ): boolean {
-    const rule = ruleFor(propertyRules, { kind: owner }, property);
+    const rule = ruleFor(propertyRulesByKey, { kind: owner }, property);
     return (
         rule !== undefined &&
         "field" in rule &&
@@ -2085,7 +2121,7 @@ export function readCallableProperty(
     property: string,
     expression: ts.Node,
 ): Value | undefined {
-    const rule = ruleFor(propertyRules, owner, property);
+    const rule = ruleFor(propertyRulesByKey, owner, property);
     if (!rule || !("dataType" in rule) || rule.dataType?.kind !== "function")
         return undefined;
     return readProperty(context, owner, property, expression);
@@ -2153,7 +2189,7 @@ export function readProperty(
             };
         }
     }
-    const rule = ruleFor(propertyRules, owner, property);
+    const rule = ruleFor(propertyRulesByKey, owner, property);
     if (!rule) {
         return undefined;
     }
@@ -2416,6 +2452,7 @@ interface PropertyAccessContext
     readonly presentationHostCpp: string | undefined;
     readonly ui: UiProjection;
     readonly windowProperties: WindowProperties;
+    readonly engineObjectProperties: EngineObjectProperties;
     compileRecordGetter(
         owner: Value,
         accessor: ts.GetAccessorDeclaration,
@@ -2528,7 +2565,31 @@ const UI_COMPUTED_STYLES: ReadonlyMap<string, string> = new Map([
     ["transform", "transform"],
     ["visibility", "visibility"],
     ["zIndex", "z-index"],
+    ["boxSizing", "box-sizing"],
+    ["paddingTop", "padding-top"],
+    ["paddingRight", "padding-right"],
+    ["paddingBottom", "padding-bottom"],
+    ["paddingLeft", "padding-left"],
+    ["borderTopWidth", "border-top-width"],
+    ["borderRightWidth", "border-right-width"],
+    ["borderBottomWidth", "border-bottom-width"],
+    ["borderLeftWidth", "border-left-width"],
 ]);
+
+/**
+ * The refusal of a computed style read `property` names, listing the
+ * represented ones as a member read (`zIndex`) or a property name
+ * (`z-index`) spells them.
+ */
+export function unrepresentedComputedStyle(
+    property: string,
+    spelling: "member" | "property",
+): string {
+    const names = [...UI_COMPUTED_STYLES].map(([member, name]) =>
+        spelling === "member" ? member : name,
+    );
+    return `Computed style '${property}' is not represented; ${names.join(", ")} and custom properties are.`;
+}
 /**
  * A computed style read of a CSS property name: one of the represented
  * properties, or a custom property, whose computed value is its specified
@@ -3813,7 +3874,7 @@ export class PropertyAccessLowerer {
             if (!read)
                 this.context.fail(
                     expression.name,
-                    `Computed style '${property}' is not represented; display, opacity, transform, visibility, zIndex and custom properties are.`,
+                    unrepresentedComputedStyle(property, "member"),
                 );
             return read;
         }
@@ -3859,6 +3920,21 @@ export class PropertyAccessLowerer {
                         impure: true,
                     },
                 },
+            };
+        }
+        // A render target's Texture2D names the GPUTexture behind it, a new
+        // object per reallocation (`render_texture_gpu_texture`); a stored
+        // Texture2D names its render source's.
+        if (
+            (owner.kind === "render-texture" || owner.kind === "texture") &&
+            property === "texture"
+        ) {
+            return {
+                kind: "gpu-texture",
+                cpp: `bbl::render_texture_gpu_texture(${this.context.requireEngine(owner, expression)}, ${owner.cpp})`,
+                engineCpp: this.context.requireEngine(owner, expression),
+                dataType: { kind: "handle", handle: "gpu-texture" },
+                impure: true,
             };
         }
         if (owner.kind === "shadow-generator" && property === "_depthTexture") {
@@ -4183,7 +4259,7 @@ export class PropertyAccessLowerer {
                 if (
                     !type ||
                     this.context.dataTypes.cppType(type) !==
-                        "bbl::js::Nullable<bbl::js::Map<double, bbl::js::F32Array>>"
+                        "bbl::js::Nullable<bbl::js::Dictionary<double, bbl::js::F32Array>>"
                 )
                     this.context.fail(
                         expression,
@@ -4269,7 +4345,9 @@ export class PropertyAccessLowerer {
                 optionalValueCpp(held.cpp),
                 owner.dataType.inner,
             );
-            const read = this.readOwnerProperty(handle, expression);
+            const read =
+                this.readOwnerProperty(handle, expression) ??
+                this.context.engineObjectProperties.read(handle, expression);
             if (read) {
                 const valuePresent = presenceFlagCpp(read);
                 const { nativeLvalue: _lvalue, ...value } = read;
@@ -4291,7 +4369,12 @@ export class PropertyAccessLowerer {
                   expression.expression,
               );
         const presentRead =
-            presentHandle && this.readOwnerProperty(presentHandle, expression);
+            presentHandle &&
+            (this.readOwnerProperty(presentHandle, expression) ??
+                this.context.engineObjectProperties.read(
+                    presentHandle,
+                    expression,
+                ));
         if (presentRead) return presentRead;
         const shaderFact = readShaderMaterialFact(
             this.context,
@@ -4299,6 +4382,30 @@ export class PropertyAccessLowerer {
             expression,
         );
         if (shaderFact) return shaderFact;
+        // An event read the compile hook did not meet (a string
+        // concatenation's operand).
+        const workerEvent = readWorkerEventProperty(
+            this.context,
+            owner,
+            expression,
+        );
+        if (workerEvent) return workerEvent;
+        // A property nothing above claims is, on an engine object, one the
+        // program adds to it.
+        const added = this.context.engineObjectProperties.read(
+            owner,
+            expression,
+        );
+        if (added) return added;
+        const familyMember = this.context.engineObjectProperties.refusal(
+            owner,
+            expression,
+        );
+        if (familyMember)
+            return this.context.fail(
+                expression,
+                `'${this.propertyPathForDiagnostic(expression)}': ${familyMember}`,
+            );
         return this.context.fail(
             expression,
             `Unsupported property value '${this.propertyPathForDiagnostic(expression)}' (owner ${owner.kind} ${owner.dataType ? JSON.stringify(owner.dataType) : "without data type"}).`,

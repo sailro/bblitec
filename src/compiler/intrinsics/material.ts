@@ -720,6 +720,7 @@ function compileCreatePbrMaterial(
         roughnessFactor,
         directIntensity,
         environmentIntensity,
+        environmentIntensityProperty,
         alpha,
         alphaBlend,
         reflectance,
@@ -811,7 +812,11 @@ function compileCreatePbrMaterial(
         `.use_physical_light_falloff = ` +
         `${usePhysicalLightFalloff}, ` +
         `.composition_profile = ${scenePbrMaterialIndex}u})`;
-    if (slotTextures.some(([, texture]) => texture) || plugins) {
+    if (
+        slotTextures.some(([, texture]) => texture) ||
+        plugins ||
+        environmentIntensityProperty !== undefined
+    ) {
         const temporary = context.allocateTemporaryCppName("material");
         context.emit({
             kind: "declaration",
@@ -819,6 +824,11 @@ function compileCreatePbrMaterial(
             name: temporary,
             initializer: creation,
         });
+        if (environmentIntensityProperty !== undefined)
+            context.emit({
+                kind: "expression",
+                code: `${recordAt(`${engine}.materials`, temporary)}.source_environment_intensity = ${environmentIntensityProperty};`,
+            });
         for (const [slot, texture] of slotTextures) {
             if (!texture) continue;
             context.emit({

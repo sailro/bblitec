@@ -81,6 +81,7 @@ import type { DataType } from "./data-types/model.js";
 import type { CompiledShaderProgram, Value } from "./types.js";
 import {
     knownCondition,
+    holdsMaterial,
     shaderVariantFacts,
     shaderVariantsOf,
     unreadableRefusal,
@@ -498,12 +499,8 @@ export function readShaderMaterialFact(
     const name = expression.name.text;
     const slots = Object.hasOwn(SLOT_MAPS, name) ? SLOT_MAPS[name] : undefined;
     if (!shaderMaterialField(name)?.built && !slots) return undefined;
-    const material =
-        owner.kind === "material" ||
-        (owner.dataType?.kind === "handle" &&
-            owner.dataType.handle === "material");
     if (
-        !material ||
+        !holdsMaterial(owner) ||
         !isShaderMaterialType(
             context.checker.getTypeAtLocation(expression.expression),
         )

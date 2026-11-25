@@ -182,6 +182,23 @@ check(
 `,
 );
 
+// A function written as an argument is given properties through the
+// parameter holding it: the record made there is that function object.
+check(
+    "assign-gives-a-function-argument-its-properties",
+    `
+    type Builder<E>=((ent:E)=>number)&{halo?:(ent:E)=>number};
+    function withHalo<E>(builder:(ent:E)=>number,halo:(ent:E)=>number):Builder<E>{return Object.assign(builder,{halo});}
+    const builders=new Map<string,Builder<{seed:number}>>();
+    const tree=withHalo((ent:{seed:number})=>ent.seed+1,(ent)=>ent.seed*2);
+    builders.set('tree',tree);
+    const plain:Builder<{seed:number}>=(ent)=>ent.seed;
+    builders.set('plain',plain);
+    if(builders.get('tree')!==tree||tree({seed:2})!==3||builders.get('tree')?.halo?.({seed:3})!==6||builders.get('plain')?.halo!==undefined)
+        throw new Error('argument given properties');
+`,
+);
+
 test("callable views refuse invented properties and unowned stored callbacks", () => {
     assert.throws(
         () =>
@@ -202,6 +219,18 @@ test("callable views refuse invented properties and unowned stored callbacks", (
         if(value()!==3) throw new Error('unowned');
     `),
         /original lexical function owner|demanded callable record/,
+    );
+    // A parameter read again holds the function object the record would copy.
+    assert.throws(
+        () =>
+            compileSource(`
+        type Builder=(()=>number)&{halo?:()=>number};
+        let kept:(()=>number)|undefined;
+        function withHalo(builder:()=>number,halo:()=>number):Builder{kept=builder;return Object.assign(builder,{halo});}
+        const built=withHalo(()=>1,()=>2);
+        if(built!==kept) throw new Error('aliased');
+    `),
+        /original lexical function owner/,
     );
     assert.throws(
         () =>

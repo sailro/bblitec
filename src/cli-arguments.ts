@@ -7,7 +7,13 @@ import type { CompileOptions } from "./compiler/types.js";
 /** What a run produces: a generated tree, or a survey's census in its place. */
 export type CliTarget =
     | { kind: "generate"; output: string }
-    | { kind: "survey"; census: string; passes?: number };
+    | {
+          kind: "survey";
+          census: string;
+          passes?: number;
+          /** Only the entry's own lowering, without roots (`SurveySettings.roots`). */
+          entryOnly?: true;
+      };
 
 export interface CliOptions {
     input: string;
@@ -29,6 +35,7 @@ export interface CliOptions {
     idDiagnostics: boolean;
     sourceProfile?: string[];
     coverage?: string;
+    convergeStorage?: CompileOptions["convergeStorage"];
     deferredCapabilities?: CompileOptions["deferredCapabilities"];
     /** The bundler conditions the run builds under (`compiler-node-flags.ts`). */
     conditions: string[];
@@ -60,6 +67,8 @@ const OPTION_FLAGS: ReadonlyArray<{ flag: string; value?: string }> = [
     { flag: "--source-profile", value: "<function,...>" },
     { flag: "--coverage", value: "<coverage.json>" },
     { flag: "--survey-passes", value: "<count>" },
+    { flag: "--survey-entry-only" },
+    { flag: "--converge-storage", value: "<passes>" },
     { flag: "--deferred-capabilities", value: "runtime-throw" },
     { flag: "--condition", value: "<name>" },
 ];
@@ -108,6 +117,8 @@ export function parseArguments(arguments_: readonly string[]): CliOptions {
     let sourceProfile: string[] | undefined;
     let coverage: string | undefined;
     let surveyPasses: number | undefined;
+    let surveyEntryOnly = false;
+    let convergePasses: number | undefined;
     let deferredCapabilities: CompileOptions["deferredCapabilities"];
     const conditions: string[] = [];
 
@@ -132,6 +143,13 @@ export function parseArguments(arguments_: readonly string[]): CliOptions {
                 break;
             case "--survey-passes":
                 surveyPasses = parsePositiveInteger(value, flag);
+                index += 1;
+                break;
+            case "--survey-entry-only":
+                surveyEntryOnly = true;
+                break;
+            case "--converge-storage":
+                convergePasses = parsePositiveInteger(value, flag);
                 index += 1;
                 break;
             case "--deferred-capabilities":
@@ -237,6 +255,7 @@ export function parseArguments(arguments_: readonly string[]): CliOptions {
               kind: "survey",
               census: survey,
               ...(surveyPasses ? { passes: surveyPasses } : {}),
+              ...(surveyEntryOnly ? { entryOnly: true as const } : {}),
           }
         : output
           ? { kind: "generate", output }
@@ -260,6 +279,9 @@ export function parseArguments(arguments_: readonly string[]): CliOptions {
         ...(pageEntry ? { pageEntry } : {}),
         ...(sourceProfile ? { sourceProfile } : {}),
         ...(coverage ? { coverage } : {}),
+        ...(convergePasses
+            ? { convergeStorage: { passes: convergePasses } }
+            : {}),
         ...(deferredCapabilities ? { deferredCapabilities } : {}),
         conditions,
     };

@@ -53,6 +53,7 @@ const REFLECTIVE_DEFINITIONS: ReadonlyMap<string, ReflectiveDefinition> =
         ["Object.defineProperty", "defineProperty"],
         ["Object.defineProperties", "defineProperties"],
         ["Reflect.set", "set"],
+        ["Reflect.defineProperty", "defineProperty"],
     ]);
 
 /**
@@ -121,14 +122,14 @@ export interface NamedRead {
  *   fields;
  * - array writes: changes of an array's elements or length (element and
  *   `length` writes, deletions, the mutating methods);
- * - identities: operands of `===`/`!==` and `Object.is` when both can be
- *   objects; operands of `==`/`!=` other than nullish literals, `switch`
- *   subjects, `includes`/`indexOf`/`lastIndexOf` arguments; the keys given
+ * - identities: the objects reaching operands of `===`/`!==` and
+ *   `Object.is` when both can be objects, of `==`/`!=` other than nullish
+ *   literals, `switch` subjects and `includes`/`indexOf`/`lastIndexOf`
+ *   arguments, read as `heldTypes` reads them; the keys given
  *   to keyed collections (`add`/`delete`/`get`/`has`/`set` arguments,
  *   WeakRef and FinalizationRegistry targets): the record type a closed
- *   key type stores them as, and the objects that reach them, a parameter
- *   of a function the program only calls directly as what its calls pass
- *   (`heldTypes`); and the whole key type of a collection constructed with
+ *   key type stores them as, and the objects that reach them (`heldTypes`);
+ *   and the whole key type of a collection constructed with
  *   entries, or whose keys the program does not see given: one handed
  *   where no keyed collection type is declared or to code the program does
  *   not hold, or whose key method is read other than as a direct callee;
@@ -136,6 +137,8 @@ export interface NamedRead {
  *   `getOwnPropertyDescriptors`/`hasOwn`, `Object.assign` sources, object
  *   spreads and rests, `for...in`, `in`, `hasOwnProperty`, `JSON.stringify`
  *   and `structuredClone`;
+ * - key views: the enumerations but object spreads, which copy the keys
+ *   into the record `copies` names rather than show them;
  * - widened arrays: the element types of mutable arrays read where a
  *   mutable array of another element type is expected, and that type;
  * - assertions: the types `as`/`<T>` retype a value to, the types of the
@@ -158,9 +161,10 @@ export interface NamedRead {
  * - definitions: each site giving objects a member, by the key its syntax
  *   names: an object literal's member (a destructuring pattern's are its
  *   leaves' writes), a class member or parameter property, a write of a
- *   member access, and `Object.defineProperty`, `Reflect.set` (a literal
- *   key) and `Object.defineProperties` (each key of its descriptors
- *   literal, through selections and spreads of such literals); keyed
+ *   member access, and `Object.defineProperty`, `Reflect.defineProperty`,
+ *   `Reflect.set` (a literal key) and `Object.defineProperties` (each key
+ *   of its descriptors literal, through selections and spreads of such
+ *   literals); keyed
  *   definitions are those whose key only the run time knows, and every
  *   `Object.assign`;
  * - type assertions and guards: every `as`/`<T>` assertion, and the type
@@ -173,6 +177,7 @@ export interface ProgramObservations {
     /** Operand/key types at identity, typeof or truthiness uses, consulted only when reached. */
     readonly identityConsumers: ReadonlyMap<ts.Node, ReadonlySet<ts.Type>>;
     readonly enumerations: ReadonlySet<ts.Type>;
+    readonly keyViews: ReadonlySet<ts.Type>;
     readonly assertions: readonly {
         readonly asserted: ts.Type;
         /** The types of the values that reach the assertion. */
@@ -204,9 +209,18 @@ export interface ProgramObservations {
     }[];
     /** Values given where their contextual type declares another type for them. */
     readonly handed: readonly ts.Expression[];
+    /** The function literals given where `handed` values are, which it leaves out. */
+    readonly givenFunctions: readonly (
+        ts.ArrowFunction | ts.FunctionExpression
+    )[];
     readonly definitions: ReadonlyMap<string, readonly MemberDefinition[]>;
     readonly keyedDefinitions: readonly MemberDefinition[];
     readonly typeAssertions: readonly (ts.AsExpression | ts.TypeAssertion)[];
+    /**
+     * The assertions, and the declarations with an initializer, whose type
+     * node names a keyed collection (`collectionViews`), in source order.
+     */
+    readonly collectionSites: readonly CollectionSite[];
     readonly guardedTypes: readonly ts.TypeNode[];
     /**
      * The first site that gives an object a prototype no literal or
@@ -215,6 +229,49 @@ export interface ProgramObservations {
      * null-prototype results of `Object.groupBy` and a match's `groups`.
      */
     readonly foreignPrototype: ts.Node | undefined;
+    /**
+     * Every `Object.setPrototypeOf` and `Reflect.setPrototypeOf` call: each
+     * gives its first argument other inherited members.
+     */
+    readonly prototypeSetters: readonly ts.CallExpression[];
+}
+
+/** A site whose type node names a keyed collection (`collectionSites`). */
+type CollectionSite =
+    | ts.AsExpression
+    | ts.TypeAssertion
+    | ((
+          | ts.VariableDeclaration
+          | ts.ParameterDeclaration
+          | ts.PropertyDeclaration
+      ) & {
+          readonly type: ts.TypeNode;
+          readonly initializer: ts.Expression;
+      });
+
+/** Whether a type node names a keyed collection (`Map`, `ReadonlySet`, ...). */
+function namesCollection(type: ts.TypeNode | undefined): boolean {
+    return (
+        type !== undefined &&
+        ts.isTypeReferenceNode(type) &&
+        KEYED_COLLECTIONS.has(
+            (ts.isIdentifier(type.typeName)
+                ? type.typeName
+                : type.typeName.right
+            ).text,
+        )
+    );
+}
+
+/** Whether a node is a {@link CollectionSite}: syntax only, nothing typed. */
+function isCollectionSite(node: ts.Node): node is CollectionSite {
+    return isTypeAssertion(node)
+        ? namesCollection(node.type)
+        : (ts.isVariableDeclaration(node) ||
+              ts.isParameter(node) ||
+              ts.isPropertyDeclaration(node)) &&
+              node.initializer !== undefined &&
+              namesCollection(node.type);
 }
 
 /** @unjournaled A pure function of the checked program, kept across replays. */
@@ -383,6 +440,7 @@ function observe(program: ts.Program): ProgramObservations {
     const identities = new Set<ts.Type>();
     const identityConsumers = new Map<ts.Node, Set<ts.Type>>();
     const enumerations = new Set<ts.Type>();
+    const keyViews = new Set<ts.Type>();
     const assertions: {
         asserted: ts.Type;
         from: readonly ts.Type[];
@@ -404,10 +462,16 @@ function observe(program: ts.Program): ProgramObservations {
     const wholesaleReads: ts.Node[] = [];
     const copies: { from: ts.Node; into: ts.Node }[] = [];
     const handed: ts.Expression[] = [];
+    const givenFunctions: (ts.ArrowFunction | ts.FunctionExpression)[] = [];
     // A literal or a function is created where it is given: it has no
     // other type to bring.
     const hand = (value: ts.Expression | undefined): void => {
         if (
+            value &&
+            (ts.isArrowFunction(value) || ts.isFunctionExpression(value))
+        )
+            givenFunctions.push(value);
+        else if (
             value &&
             !ts.isLiteralExpression(value) &&
             !ts.isFunctionLike(value) &&
@@ -430,8 +494,10 @@ function observe(program: ts.Program): ProgramObservations {
         }
     };
     const typeAssertions: (ts.AsExpression | ts.TypeAssertion)[] = [];
+    const collectionSites: CollectionSite[] = [];
     const guardedTypes: ts.TypeNode[] = [];
     let foreignPrototype: ts.Node | undefined;
+    const prototypeSetters: ts.CallExpression[] = [];
     const typeOf = (node: ts.Node): ts.Type => checker.getTypeAtLocation(node);
     let order = 0;
     const place = (
@@ -509,11 +575,18 @@ function observe(program: ts.Program): ProgramObservations {
             addConsumer(type, consumer);
         }
     };
-    const identity = (node: ts.Node): void => {
+    // An operand compares the objects that reach it, read through
+    // parameters and `const` bindings as written objects are (`heldTypes`).
+    const compared = (node: ts.Expression): void => {
+        for (const type of heldTypes(program, checker, node))
+            if (objectLike(type)) identities.add(type);
+    };
+    const identity = (node: ts.Expression): void => {
         const type = typeOf(node);
         if (objectLike(type)) {
-            addIdentity(type, node);
-            addIdentity(type, node.parent);
+            addConsumer(type, node);
+            addConsumer(type, node.parent);
+            compared(node);
         }
     };
     // A key is compared by identity with the objects that reach it, read
@@ -550,7 +623,10 @@ function observe(program: ts.Program): ProgramObservations {
             );
         }
     };
-    const identityComparison = (left: ts.Node, right: ts.Node): void => {
+    const identityComparison = (
+        left: ts.Expression,
+        right: ts.Expression,
+    ): void => {
         const leftType = typeOf(left),
             rightType = typeOf(right);
         if (!objectLike(leftType) || !objectLike(rightType)) {
@@ -564,14 +640,22 @@ function observe(program: ts.Program): ProgramObservations {
             }
             return;
         }
-        addIdentity(leftType, left.parent);
-        addIdentity(rightType, right.parent);
-        addIdentity(leftType, left);
-        addIdentity(rightType, right);
+        addConsumer(leftType, left.parent);
+        addConsumer(rightType, right.parent);
+        addConsumer(leftType, left);
+        addConsumer(rightType, right);
+        compared(left);
+        compared(right);
+    };
+    const copiedKeys = (node: ts.Node): ts.Type | undefined => {
+        const type = typeOf(node);
+        if (!objectLike(type)) return undefined;
+        enumerations.add(type);
+        return type;
     };
     const enumerated = (node: ts.Node): void => {
-        const type = typeOf(node);
-        if (objectLike(type)) enumerations.add(type);
+        const type = copiedKeys(node);
+        if (type) keyViews.add(type);
     };
     const read = (
         name: string,
@@ -641,6 +725,8 @@ function observe(program: ts.Program): ProgramObservations {
             : yieldsNewArray(checker, unwrapped);
     };
     const visit = (node: ts.Node): void => {
+        // `collectionViews` types each site when first asked.
+        if (isCollectionSite(node)) collectionSites.push(node);
         if (ts.isCallExpression(node) || ts.isNewExpression(node))
             node.arguments?.forEach(hand);
         else if (ts.isReturnStatement(node)) hand(node.expression);
@@ -739,11 +825,8 @@ function observe(program: ts.Program): ProgramObservations {
             const untyped = (type: ts.Type): boolean =>
                 (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0;
             const asserted = typeOf(node);
-            // `x as unknown as T` retypes the value `x` holds: it is open
-            // only where that operand itself is untyped.
-            let operand = unwrapTypePreserving(node.expression);
-            while (isTypeAssertion(operand) && untyped(typeOf(operand)))
-                operand = unwrapTypePreserving(operand.expression);
+            // It is open only where the operand it retypes is untyped.
+            const operand = assertedOperand(checker, node);
             // No value has type `never` (an exhaustiveness check's
             // `x satisfies never`): such an assertion retypes nothing.
             if (
@@ -757,15 +840,25 @@ function observe(program: ts.Program): ProgramObservations {
                 const reaching = untyped(from)
                     ? heldTypes(program, checker, operand)
                     : [from];
+                // A message event's data is decoded as the type its read
+                // names (a structured clone): it has that shape.
+                const message =
+                    ts.isPropertyAccessExpression(operand) &&
+                    operand.name.text === "data" &&
+                    libraryName(
+                        checker.getNonNullableType(typeOf(operand.expression)),
+                    ) === "MessageEvent";
                 assertions.push({
                     asserted,
                     from: reaching,
                     open: reaching.some(untyped),
-                    shapeless: reaching.some(
-                        (type) =>
-                            untyped(type) ||
-                            (type.flags & ts.TypeFlags.NonPrimitive) !== 0,
-                    ),
+                    shapeless:
+                        !message &&
+                        reaching.some(
+                            (type) =>
+                                untyped(type) ||
+                                (type.flags & ts.TypeFlags.NonPrimitive) !== 0,
+                        ),
                 });
             }
         }
@@ -900,7 +993,10 @@ function observe(program: ts.Program): ProgramObservations {
         } else if (ts.isSwitchStatement(node)) identity(node.expression);
         else if (ts.isForInStatement(node)) enumerated(node.expression);
         else if (ts.isSpreadAssignment(node)) {
-            enumerated(node.expression);
+            // A destructuring pattern's rest shows the keys it takes.
+            if (isDestructuringPattern(node.parent))
+                enumerated(node.expression);
+            else copiedKeys(node.expression);
             wholesaleReads.push(node.expression);
             copies.push({ from: node.expression, into: node.parent });
         } else if (
@@ -952,6 +1048,11 @@ function observe(program: ts.Program): ProgramObservations {
             (owner === "Reflect" && method === "setPrototypeOf")
         )
             foreignPrototype ??= node;
+        if (
+            method === "setPrototypeOf" &&
+            (owner === "Object" || owner === "Reflect")
+        )
+            prototypeSetters.push(node);
         const reflective = REFLECTIVE_DEFINITIONS.get(`${owner}.${method}`);
         if (reflective && first && !ts.isSpreadElement(first)) {
             const definition: MemberDefinition = {
@@ -1037,6 +1138,7 @@ function observe(program: ts.Program): ProgramObservations {
         identities,
         identityConsumers,
         enumerations,
+        keyViews,
         assertions,
         widenedArrays,
         arrayLocalElements,
@@ -1045,10 +1147,86 @@ function observe(program: ts.Program): ProgramObservations {
         wholesaleReads,
         copies,
         handed,
+        givenFunctions,
         definitions,
         keyedDefinitions,
         typeAssertions,
+        collectionSites,
         guardedTypes,
         foreignPrototype,
+        prototypeSetters,
     };
+}
+
+/**
+ * The operand an assertion retypes: `x as unknown as T` retypes the value
+ * `x` holds, past the assertions to an untyped type between them.
+ */
+function assertedOperand(
+    checker: ts.TypeChecker,
+    assertion: ts.AsExpression | ts.TypeAssertion,
+): ts.Expression {
+    let operand = unwrapTypePreserving(assertion.expression);
+    while (
+        isTypeAssertion(operand) &&
+        (checker.getTypeAtLocation(operand).flags &
+            (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !==
+            0
+    )
+        operand = unwrapTypePreserving(operand.expression);
+    return operand;
+}
+
+/** The program's own object a keyed collection type names, and the site naming it. */
+export interface CollectionView {
+    readonly own: ts.Type;
+    readonly site: ts.Node;
+}
+
+/** @unjournaled A pure function of the checked program, kept across replays. */
+const views = new WeakMap<
+    ts.Program,
+    ReadonlyMap<ts.Type, readonly CollectionView[]>
+>();
+
+/**
+ * The program's own objects a keyed collection type (`Map`, `ReadonlyMap`,
+ * `Set`, ...) names, by a cast (`view as ReadonlyMap<K, V>`) or an
+ * annotated declaration's initializer: each such instantiation, and the
+ * type of each object that implements it with the site naming it. Only a
+ * type node naming a keyed collection is typed: creating other types
+ * earlier would reorder the checker's unions, and the properties mapped
+ * over them.
+ */
+export function collectionViews(
+    program: ts.Program,
+): ReadonlyMap<ts.Type, readonly CollectionView[]> {
+    const known = views.get(program);
+    if (known) return known;
+    const checker = program.getTypeChecker();
+    const found = new Map<ts.Type, CollectionView[]>();
+    const view = (
+        site: ts.Node,
+        typeNode: ts.TypeNode,
+        value: ts.Expression,
+    ): void => {
+        const named = checker.getTypeAtLocation(typeNode);
+        const own = checker.getTypeAtLocation(value);
+        if (
+            !KEYED_COLLECTIONS.has(libraryName(named) ?? "") ||
+            (own.flags & ts.TypeFlags.Object) === 0 ||
+            KEYED_COLLECTIONS.has(libraryName(own) ?? "")
+        )
+            return;
+        const list = found.get(named);
+        if (!list) found.set(named, [{ own, site }]);
+        else if (!list.some((implementation) => implementation.own === own))
+            list.push({ own, site });
+    };
+    for (const site of programObservations(program).collectionSites)
+        if (isTypeAssertion(site))
+            view(site, site.type, assertedOperand(checker, site));
+        else view(site, site.type, site.initializer);
+    views.set(program, found);
+    return found;
 }

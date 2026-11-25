@@ -101,7 +101,7 @@ import {
     resolveFunctionDeclaration,
     type AliasedMutationScan,
 } from "./user-functions.js";
-import { heldReferenceBases } from "./kept-values.js";
+import { heldReferenceBases, keptArguments } from "./kept-values.js";
 import { isJsonValue } from "./json-bridge.js";
 import {
     absenceKind,
@@ -115,7 +115,11 @@ import {
     valueKindOf,
 } from "./type-facts.js";
 import { conditionComparison } from "./comparisons.js";
-import { parameterIsReadOnly } from "./parameter-effects.js";
+import {
+    callArgumentEffect,
+    libraryWrittenArgument,
+    parameterIsReadOnly,
+} from "./parameter-effects.js";
 import type { EvaluationOrder } from "./evaluation-order.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { DataLowerer } from "./data-lowering.js";
@@ -480,7 +484,7 @@ export class StaticEvaluator {
      * Where its one empty state holds both absent values, which read 0 and
      * NaN, its storage is demanded tagged; only an untaggable one refuses.
      */
-    private numberFromOptional(value: Value, node: ts.Node): string {
+    public numberFromOptional(value: Value, node: ts.Node): string {
         return (
             numberFromOptionalCpp(this.checker, value, node) ??
             refuseEitherAbsence(
@@ -1623,12 +1627,22 @@ export class StaticEvaluator {
         allowMaterializedOptional = false,
     ): ts.Expression | undefined {
         const left = this.unwrap(expression.left);
+        // A value only the browser holds (a URL parameter's parse) that
+        // erasure evaluates to null or undefined.
+        const browserAbsent = (): boolean => {
+            if (!this.isBrowserOnlyExpression(left)) return false;
+            const kind = this.evaluateBrowserValue(left)?.kind;
+            return kind === "null" || kind === "undefined";
+        };
         if (ts.isIdentifier(left)) {
             const value = this.lookupOptional(left);
             if (!value) {
                 return undefined;
             }
-            if (value.kind === "json-null") {
+            if (
+                value.kind === "json-null" ||
+                (value.kind === "browser" && browserAbsent())
+            ) {
                 return expression.right;
             }
             if (isJsonValue(value) || presenceCpp(value) !== undefined) {
@@ -1646,11 +1660,7 @@ export class StaticEvaluator {
         }
         if (ts.isPropertyAccessExpression(left)) {
             // A global member no host installs reads undefined.
-            if (
-                this.isBrowserOnlyExpression(left) &&
-                this.evaluateBrowserValue(left)?.kind === "undefined"
-            )
-                return expression.right;
+            if (browserAbsent()) return expression.right;
             // Records are identifier-bound, so only those owners and the
             // compile-time records their member chains reach are probed:
             // the probe is a full value compile with emit authority, and an
@@ -1814,8 +1824,43 @@ export class StaticEvaluator {
         return written;
     }
 
-    private scanWritesThrough(declaration: ts.VariableDeclaration): boolean {
+    /**
+     * Whether anything may write through `declaration`'s object before
+     * `read`: a write that source order places earlier in the declaring
+     * function, one in a loop of that function enclosing the read (a later
+     * iteration reads after it), or one a function nested in it makes,
+     * which may run before. A write the read precedes cannot change what it
+     * reads.
+     */
+    public isWrittenThroughBefore(
+        declaration: ts.VariableDeclaration,
+        read: ts.Node,
+    ): boolean {
+        return this.scanWritesThrough(declaration, read);
+    }
+
+    private scanWritesThrough(
+        declaration: ts.VariableDeclaration,
+        before?: ts.Node,
+    ): boolean {
         if (!ts.isIdentifier(declaration.name)) return true;
+        const owner = ts.findAncestor(declaration, ts.isFunctionLike);
+        // The outermost loop of the declaring function enclosing the read.
+        let loop: ts.Node | undefined;
+        for (
+            let node = before?.parent;
+            node && node !== owner;
+            node = node.parent
+        )
+            if (ts.isIterationStatement(node, false)) loop = node;
+        const within = (node: ts.Node, ancestor: ts.Node): boolean =>
+            ts.findAncestor(node, (candidate) => candidate === ancestor) !==
+            undefined;
+        const reaches = (node: ts.Node): boolean =>
+            before === undefined ||
+            node.getStart() < before.getStart() ||
+            (loop !== undefined && within(node, loop)) ||
+            ts.findAncestor(node, ts.isFunctionLike) !== owner;
         // A scalar is copied wherever it goes: it holds no object to write.
         if (
             !typeCanCarryReference(
@@ -1823,14 +1868,8 @@ export class StaticEvaluator {
             )
         )
             return false;
-        // A name holding the object or a member of it: the binding, an
-        // alias, a destructured or iterated leaf, a literal holding one.
-        const holds = (
-            expression: ts.Expression,
-            scan: AliasedMutationScan,
-        ): boolean =>
-            heldReferenceBases(this.checker, expression).some(scan.namesAlias);
-        // A member at any depth: `p.a.b = 1`, `[p.n] = v`, `p.list.push(x)`.
+        // A member at any depth: `p.a.b = 1`, `[p.n] = v`, `p.list.push(x)`,
+        // `f(p).n = 1` through a call that may return the object.
         const throughAlias = (
             expression: ts.Expression,
             scan: AliasedMutationScan,
@@ -1838,9 +1877,48 @@ export class StaticEvaluator {
             const target = unwrapExpression(expression);
             return (
                 isMemberAccess(target) &&
-                referenceBases(target).some(scan.namesAlias)
+                referenceBases(target).some(
+                    (base) =>
+                        scan.namesAlias(base) ||
+                        (ts.isCallExpression(base) &&
+                            handed(base, scan).includes("returned")),
+                )
             );
         };
+        // The arguments of a program call that hold the object or one of its
+        // objects (`holds`: a scalar member is copied in), with what the call
+        // does to each (`callArgumentEffect`).
+        const handed = (
+            call: ts.CallExpression,
+            scan: AliasedMutationScan,
+        ): ReturnType<typeof callArgumentEffect>[] =>
+            this.callReachesABody(call)
+                ? call.arguments.flatMap((argument, index) =>
+                      holds(argument, scan)
+                          ? [callArgumentEffect(this.checker, call, index, [])]
+                          : [],
+                  )
+                : [];
+        // A name holding the object or a member of it: the binding, an
+        // alias, a destructured or iterated leaf, a literal holding one, or
+        // a call that may return one it is handed.
+        const holds = (
+            expression: ts.Expression,
+            scan: AliasedMutationScan,
+        ): boolean => {
+            const unwrapped = unwrapExpression(expression);
+            return (
+                heldReferenceBases(this.checker, expression).some(
+                    scan.namesAlias,
+                ) ||
+                (ts.isCallExpression(unwrapped) &&
+                    handed(unwrapped, scan).includes("returned"))
+            );
+        };
+        const holdsWritten = (
+            argument: ts.Expression | undefined,
+            scan: AliasedMutationScan,
+        ): boolean => argument !== undefined && holds(argument, scan);
         return aliasedMutationScan(
             declaration.name,
             (identifier) => declaredSymbol(this.checker, identifier),
@@ -1849,18 +1927,26 @@ export class StaticEvaluator {
                 aliasingMember: (source, _leaf, scan) => holds(source, scan),
                 aliasingIteration: (source, _leaf, scan) => holds(source, scan),
                 mutates: (node, scan) =>
-                    writeSites(node).some(({ target }) =>
+                    reaches(node) &&
+                    (writeSites(node).some(({ target }) =>
                         throughAlias(target, scan),
                     ) ||
-                    (ts.isCallExpression(node) &&
-                        (throughAlias(node.expression, scan) ||
-                            (node.arguments.some(
-                                (argument) =>
-                                    scan.namesAlias(
-                                        unwrapExpression(argument),
-                                    ) || throughAlias(argument, scan),
-                            ) &&
-                                this.callReachesABody(node)))),
+                        // A call or construction keeping the object where the
+                        // scan does not follow it (`keptArguments`), or a
+                        // library call writing into it (`Object.assign`).
+                        ((ts.isCallExpression(node) ||
+                            ts.isNewExpression(node)) &&
+                            keptArguments(this.checker, node).some((argument) =>
+                                holds(argument, scan),
+                            )) ||
+                        (ts.isCallExpression(node) &&
+                            holdsWritten(
+                                libraryWrittenArgument(this.checker, node),
+                                scan,
+                            )) ||
+                        (ts.isCallExpression(node) &&
+                            (throughAlias(node.expression, scan) ||
+                                handed(node, scan).includes("changed")))),
             },
         );
     }
@@ -2299,9 +2385,14 @@ export class StaticEvaluator {
         // emit, the calls that build it.
         if (!this.isNamedPath(access.expression)) return undefined;
         const value = this.resolveProperty(access);
-        return value?.kind === "number" && !value.parameterBinding
-            ? value.staticNumber
-            : undefined;
+        if (value?.kind === "number" && !value.parameterBinding)
+            if (value.staticNumber !== undefined) return value.staticNumber;
+        // A field of plain data generation runs (the record an awaited
+        // helper's call settles to) reads the number that run holds.
+        if (valueKindOf(this.checker.getTypeAtLocation(access)) !== "number")
+            return undefined;
+        const text = this.generationText(access);
+        return text === undefined ? undefined : Number(text);
     }
 
     private isNamedPath(expression: ts.Expression): boolean {

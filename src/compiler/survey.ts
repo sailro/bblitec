@@ -24,14 +24,19 @@
 import ts from "typescript";
 import { CompileError } from "./compile-error.js";
 import { declaredSymbol } from "./symbols.js";
-import { sourceLocation, syntaxKindName } from "../source-location.js";
+import {
+    nodeSite,
+    sourceLocation,
+    syntaxKindName,
+} from "../source-location.js";
 import {
     describeStorageRequests,
     storageRequestSite,
+    type StorageRequest,
 } from "./replay-storage.js";
 import { StorageDemand } from "./storage-demand.js";
 import { EmissionSet, EmissionTransaction } from "./emission-transaction.js";
-import { keepingCoverage } from "./source-coverage.js";
+import { coverLoweredAgain, keepingCoverage } from "./source-coverage.js";
 import {
     bindingNameIdentifiers,
     hasDeclareModifier,
@@ -205,7 +210,11 @@ interface SurveyUntried {
 /** The functions a census lists by untried statements. */
 const untriedKept = 200;
 
-/** A storage demand a pass met at a statement, which it rolled back: the next pass replays with it. */
+/**
+ * A storage demand a pass met at a statement, which it rolled back: the next
+ * pass replays with it, unless a root met a replay undoing the deployment's
+ * folds (`SurveyCollector.demanded`).
+ */
 interface SurveyDemand {
     /** What the demand asks for (`describeStorageRequests`). */
     demand: string;
@@ -239,6 +248,8 @@ interface Attempt {
     >;
     /** The functions whose bodies this attempt lowered outside a probe. */
     lowered: Set<ts.Node>;
+    /** The argument shapes each of `lowered` was lowered with (`loweredBefore`). */
+    loweredShapes: Map<ts.Node, Set<string>>;
     /** Those of `lowered` whose lowering did not end: the next call lowers the body again. */
     unfinished: Set<ts.Node>;
     /** The statement lowerings inside survey roots. */
@@ -254,8 +265,9 @@ interface Attempt {
      * what they ask for: what it lowered before one can stand on storage
      * the demand changed (a layout already built), so a next pass lowers
      * everything with them, and the census is exact once a pass takes none.
+     * Each with the site it rose at, which a pass names it by.
      */
-    taken: Set<string>;
+    taken: Map<string, string | undefined>;
     /**
      * Those a probe began: journaled, so a probe that rolls back takes
      * its statements away and a committed one keeps them.
@@ -290,6 +302,8 @@ interface Attempt {
      * shared body a probe could not keep, and each call a probe lowered
      * inline with the refusal that ended it. A probe lowers neither again:
      * a body a probe cannot lower is lowered where its statements recover.
+     * Its identity keys what probes lowered on the same storage
+     * (`speculativeEpoch`).
      */
     speculative: SpeculativeRefusals;
 }
@@ -472,12 +486,6 @@ function replayText(replay: Error): string {
         : `${replay.constructor.name}: ${replay.message}`;
 }
 
-/** `node` as `file:line`. */
-function nodeSite(node: ts.Node): string {
-    const location = sourceLocation(node);
-    return `${location.file.fileName}:${location.line}`;
-}
-
 /** What a census lists of the statements a refusal or demand rolled back. */
 function rolledBackCensus(rolledBack: ReadonlySet<ts.Statement>): {
     statements: number;
@@ -489,25 +497,40 @@ function rolledBackCensus(rolledBack: ReadonlySet<ts.Statement>): {
     };
 }
 
-/** Where a storage demand rose: a node as `file:line`, or a signature site. */
-function replaySite(replay: unknown): string | undefined {
-    if (!(replay instanceof StorageDemand)) return undefined;
-    const site = replay.requests.map(storageRequestSite).find(Boolean);
+/** Where storage requests rose: the first one's node as `file:line`, or a signature site. */
+function requestsSite(requests: readonly StorageRequest[]): string | undefined {
+    const site = requests.map(storageRequestSite).find(Boolean);
     return typeof site === "object" ? nodeSite(site) : site;
 }
 
+/** Where a storage demand rose: a node as `file:line`, or a signature site. */
+function replaySite(replay: unknown): string | undefined {
+    return replay instanceof StorageDemand
+        ? requestsSite(replay.requests)
+        : undefined;
+}
+
+/** `text` on one line, cut short, and the site it names. */
+function stopLine(text: string, site: string | undefined): string {
+    return (
+        text.replace(/\s+/g, " ").slice(0, 160) + (site ? ` at ${site}` : "")
+    );
+}
+
 /** What restarted an attempt, and where its storage demand rose. */
-function describeStop(cause: unknown): string {
+export function describeStop(cause: unknown): string {
     const text =
         cause instanceof StorageDemand
             ? `${cause.constructor.name}: ${replayText(cause)}`
             : cause instanceof Error
               ? replayText(cause)
               : String(cause);
-    const site = replaySite(cause);
-    return (
-        text.replace(/\s+/g, " ").slice(0, 160) + (site ? ` at ${site}` : "")
-    );
+    return stopLine(text, replaySite(cause));
+}
+
+/** What a plan's storage requests ask for, and where the first rose. */
+export function describeRequests(requests: readonly StorageRequest[]): string {
+    return stopLine(describeStorageRequests(requests), requestsSite(requests));
 }
 
 /**
@@ -573,6 +596,7 @@ function newAttempt(carries: Partial<Attempt> = {}): Attempt {
         replays: [],
         demands: new Map(),
         lowered: new Set(),
+        loweredShapes: new Map(),
         unfinished: new Set(),
         rooted: 0,
         settling: false,
@@ -580,7 +604,7 @@ function newAttempt(carries: Partial<Attempt> = {}): Attempt {
         distinct: new Set(),
         probed: new EmissionSet(),
         rootProbes: new Set(),
-        taken: new Set(),
+        taken: new Map(),
         fresh: new Set(),
         phases: [],
         probes: { kept: 0, dropped: 0 },
@@ -597,6 +621,12 @@ function newAttempt(carries: Partial<Attempt> = {}): Attempt {
 export interface SurveySettings {
     readonly progress?: SurveyProgress;
     readonly passLimit?: number;
+    /**
+     * Whether a pass lowers the functions and statements no lowering
+     * reached as roots after the entry (default); without them a pass is
+     * the entry's own lowering, the refusals it meets the entry's.
+     */
+    readonly roots?: boolean;
 }
 
 /** How a survey reports while it runs: a line at most every `intervalMs`. */
@@ -638,20 +668,34 @@ export class SurveyCollector {
 
     private readonly progress: SurveyProgress | undefined;
     private readonly passLimit: number | undefined;
+    /** Whether a pass lowers roots after the entry (`SurveySettings.roots`). */
+    public readonly lowersRoots: boolean;
     /** @unjournaled Takes a storage demand into the storage the running attempt lowers with. */
     private apply: ((demand: StorageDemand) => boolean) | undefined;
+    /** @unjournaled The refusals a shared body's recovering lowering withholds (`withholdingRefusals`). */
+    private withheld: { refusals: number } | undefined;
+    /**
+     * @unjournaled The statements each probe lowering under way began
+     * (`beganInProbe`): journaled sets, so an inner probe that rolls back
+     * takes its statements away.
+     */
+    private readonly probing: EmissionSet<ts.Statement>[] = [];
 
     /**
      * `replayable`: the replays a compile applies before its next attempt
      * (a storage demand, a lazy module's activation, runtime query state),
-     * which a pass meets at a statement.
+     * which a pass meets at a statement. `unfolding`: those of them that
+     * undo the deployment's generation-time folds (runtime query state),
+     * which only the program's own lowering takes.
      */
     public constructor(
         settings: SurveySettings = {},
         private readonly replayable?: (error: unknown) => error is Error,
+        private readonly unfolding?: (error: Error) => boolean,
     ) {
         this.progress = settings.progress;
         this.passLimit = settings.passLimit;
+        this.lowersRoots = settings.roots ?? true;
     }
 
     /**
@@ -699,17 +743,35 @@ export class SurveyCollector {
 
     /**
      * Whether this attempt already lowered `declaration`'s body outside a
-     * probe; a lowering outside a probe that answers false lowers it now.
+     * probe with arguments of `shape` (their count and kinds); a lowering
+     * outside a probe that answers false lowers it now. A call of another
+     * shape lowers the body again, once per shape: the storage demands its
+     * arguments raise (an options record a first, argument-less call never
+     * passed) are met in the pass.
      */
-    public loweredBefore(declaration: ts.Node, speculating: boolean): boolean {
+    public loweredBefore(
+        declaration: ts.Node,
+        speculating: boolean,
+        shape: string,
+    ): boolean {
         const attempt = this.current;
         if (!attempt) return false;
+        let shapes = attempt.loweredShapes.get(declaration);
         if (attempt.lowered.has(declaration)) {
-            if (!attempt.unfinished.has(declaration)) return true;
-            if (!speculating) attempt.unfinished.delete(declaration);
+            if (!attempt.unfinished.has(declaration) && shapes?.has(shape))
+                return true;
+            if (!speculating) {
+                attempt.unfinished.delete(declaration);
+                shapes?.add(shape);
+            }
             return false;
         }
-        if (!speculating) attempt.lowered.add(declaration);
+        if (!speculating) {
+            attempt.lowered.add(declaration);
+            if (!shapes)
+                attempt.loweredShapes.set(declaration, (shapes = new Set()));
+            shapes.add(shape);
+        }
         return false;
     }
 
@@ -838,6 +900,27 @@ export class SurveyCollector {
      * body (`refused` notes one that could not): the next call lowers it
      * inline instead of probing it again.
      */
+    /**
+     * Runs `work`, a shared body's lowering with statement recovery, with
+     * the refusals its statements meet withheld from the census: a strict
+     * compile refuses such a body and lowers the call inline, where the
+     * statements that still refuse are recorded.
+     */
+    public withholdingRefusals<T>(work: () => T): {
+        result: T;
+        refused: boolean;
+    } {
+        const enclosing = this.withheld;
+        const withheld = { refusals: 0 };
+        this.withheld = withheld;
+        try {
+            const result = work();
+            return { result, refused: withheld.refusals > 0 };
+        } finally {
+            this.withheld = enclosing;
+        }
+    }
+
     public sharedBodyRefused(declaration: ts.Node, refused = false): boolean {
         const shared = this.current?.speculative.shared;
         if (!shared) return false;
@@ -1012,6 +1095,37 @@ export class SurveyCollector {
         const attempt = this.current;
         if (!attempt) return;
         (speculating ? attempt.probed : attempt.distinct).add(statement);
+        if (speculating) for (const begun of this.probing) begun.add(statement);
+    }
+
+    /**
+     * A key for what probes lowered since storage last changed: a probe
+     * may stand on such a lowering, rolled back since, instead of lowering
+     * it again (`beganInProbe`, `touchProbed`). Undefined outside an attempt.
+     */
+    public speculativeEpoch(): object | undefined {
+        return this.current?.speculative;
+    }
+
+    /** `lower`, a lowering inside a probe, with the statements it began. */
+    public beganInProbe<T>(lower: () => T): {
+        result: T;
+        statements: readonly ts.Statement[];
+    } {
+        const begun = new EmissionSet<ts.Statement>();
+        this.probing.push(begun);
+        try {
+            const result = lower();
+            return { result, statements: [...begun] };
+        } finally {
+            this.probing.pop();
+        }
+    }
+
+    /** Notes that a probe began and lowered `statements` again (`beganInProbe`). */
+    public touchProbed(statements: readonly ts.Statement[]): void {
+        for (const statement of statements) this.touch(statement, true);
+        coverLoweredAgain(statements);
     }
 
     /**
@@ -1123,6 +1237,14 @@ export class SurveyCollector {
                         refused ? taken! : (met as Error),
                         applied === "held",
                     );
+                    // What it declares is the next pass's: the empty
+                    // storage below stands in for it, so a refusal reached
+                    // through one of its names is not a gap of its own.
+                    this.declaredAtNames(
+                        attempt,
+                        context.checker,
+                        statementDeclaredNames(statement),
+                    );
                     if (
                         attempt.root &&
                         applied === false &&
@@ -1201,7 +1323,7 @@ export class SurveyCollector {
             if (error instanceof CompileError) return error;
             throw error;
         }
-        attempt.taken.add(key);
+        attempt.taken.set(key, replaySite(met));
         attempt.fresh.add(key);
         this.storageChanged();
         return true;
@@ -1211,7 +1333,8 @@ export class SurveyCollector {
      * A rolled-back compound statement's own statements, which its rollback
      * left unlowered: each is lowered on its own, the names its header binds
      * (a loop's variables, a catch variable) holding empty storage, counted
-     * with the roots as context the survey rebuilt.
+     * with the roots as context the survey rebuilt. A refusal through one of
+     * those names cascades from it, whether or not its type has empty storage.
      */
     private lowerHeld(
         context: StatementContext,
@@ -1231,6 +1354,7 @@ export class SurveyCollector {
                 ),
         );
         if (unlowered.length === 0) return;
+        this.declaredAtNames(attempt, context.checker, held.names);
         this.inRoots(() => {
             for (const name of held.names) context.bindEmptyStorage(name);
             for (const nested of unlowered) lowerNested(nested);
@@ -1265,7 +1389,11 @@ export class SurveyCollector {
         replay: Error,
         held = false,
     ): void {
-        attempt.replays.push(replay);
+        // A root meets a replay in the context the survey built: one that
+        // undoes the deployment's folds would let the program's own lowering
+        // reach what an ordinary compile folds away.
+        if (!this.inRoot || !this.unfolding?.(replay))
+            attempt.replays.push(replay);
         const described = replayText(replay);
         const site = replaySite(replay);
         const key = `${described} at ${site ?? ""}`;
@@ -1318,14 +1446,24 @@ export class SurveyCollector {
                         : ""),
             );
         if (added === 0) return false;
+        // The demands the pass took, by what they ask for: what a next pass
+        // lowers with, and what a chain of passes is waiting on.
+        const taken = [...(this.last?.taken ?? [])];
+        const named = taken
+            .slice(0, 8)
+            .map(([key, site]) => stopLine(key, site));
+        const which =
+            named.length > 0
+                ? `: ${named.join("; ")}${taken.length > named.length ? `; ${taken.length - named.length} more` : ""}`
+                : "";
         const demands = `${added} demand${added === 1 ? "" : "s"}`;
         if (this.passLimit !== undefined && this.passes >= this.passLimit) {
             this.progress?.report(
-                `Survey pass ${this.passes}: ${demands} left; the pass limit ends the survey here`,
+                `Survey pass ${this.passes}: ${demands} left; the pass limit ends the survey here${which}`,
             );
             return false;
         }
-        const line = `Survey pass ${this.passes}: ${demands} added for the next pass`;
+        const line = `Survey pass ${this.passes}: ${demands} added for the next pass${which}`;
         this.progress?.report(line);
         this.leaveCensus(line, census);
         return true;
@@ -1362,6 +1500,31 @@ export class SurveyCollector {
         this.declaredAt(attempt, checker, [name], census.site);
     }
 
+    /**
+     * A root's parameter holding empty storage, which no call passes: a
+     * refusal reached through it (a value generation must know, a member
+     * of the record a caller hands) cascades from the parameter.
+     */
+    public emptyBinding(checker: ts.TypeChecker, name: ts.Identifier): void {
+        if (this.current) this.declaredAtNames(this.current, checker, [name]);
+    }
+
+    /** Each of `names` that has no refusal site yet takes the name's own. */
+    private declaredAtNames(
+        attempt: Attempt,
+        checker: ts.TypeChecker,
+        names: Iterable<ts.Identifier>,
+    ): void {
+        for (const name of names) {
+            const location = sourceLocation(name);
+            this.declaredAt(attempt, checker, [name], {
+                file: location.file.fileName,
+                line: location.line,
+                column: location.character,
+            });
+        }
+    }
+
     /** Each of `names` that has no refusal site yet takes `site`. */
     private declaredAt(
         attempt: Attempt,
@@ -1382,6 +1545,10 @@ export class SurveyCollector {
         statement: ts.Statement,
         error: CompileError,
     ): void {
+        if (this.withheld) {
+            this.withheld.refusals++;
+            return;
+        }
         const census = this.counted(attempt, checker, statement, error);
         if (census.rolledBack.has(statement)) return;
         census.rolledBack.add(statement);

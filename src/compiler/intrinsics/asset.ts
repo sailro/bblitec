@@ -113,6 +113,7 @@ export interface AssetIntrinsicContext
             | "reachJsData"
             | "probeEmission"
             | "runCallOverHeldData"
+            | "runGenerationFunction"
             | "requireEngine"
             | "requireDefaultEngine"
             | "withRecordScopes"

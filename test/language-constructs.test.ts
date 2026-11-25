@@ -3610,7 +3610,7 @@ check(
 test("a broad key that can hold a record keeps it keyed by identity", () => {
     for (const keyed of [
         "function mark(): number { return note(world.tallies[0]!.gauge(), 'kept'); }",
-        "function mark(): void { const key: object = world; notes.set(key, []); }",
+        "function mark(): void { let key: object = world; notes.set(key, []); }",
         "const handed: unknown = notes;",
     ])
         assert.throws(
@@ -3620,6 +3620,10 @@ test("a broad key that can hold a record keeps it keyed by identity", () => {
                 ),
             /'Gauge' is stored as the 'Tally' instances it holds; a record that is not one stored as it would be a copy of the one object JavaScript keeps/,
         );
+    // A const of a broad type holds the object its initializer gives.
+    compileSource(
+        `${objectKeyedNotes} const gauges: Gauge[] = world.tallies.map((tally) => tally.gauge()); function mark(): void { const key: object = world; notes.set(key, []); } export {};`,
+    );
 });
 
 check(
@@ -6902,10 +6906,6 @@ test("Object.create, defineProperty and getPrototypeOf refuse unrepresented form
             /Object\.defineProperty represents a value with enumerable true, an explicit boolean writable and an explicit boolean configurable attribute only/,
         ],
         [
-            "const o: { x?: number } = {}; Object.defineProperty(o, 'x', { get: () => 3, enumerable: true, configurable: true });",
-            /Object\.defineProperty requires an accessor property that is always own/,
-        ],
-        [
             "class A {} class B extends A {} const a = new A(); const r = Object.getPrototypeOf(a) === A.prototype;",
             /a class other classes extend is not represented/,
         ],
@@ -7606,6 +7606,349 @@ checkInRealm(
 `,
 );
 
+checkInRealm(
+    "instanceof-promise-is-false-for-a-result-that-holds-no-promise",
+    `
+    interface Selection {
+        set(id: string): void | boolean | Promise<void | boolean>;
+        commit?(): void | boolean | Promise<void | boolean>;
+    }
+    let reopened = 0;
+    let log = "";
+    const pick = (selection: Selection, id: string): void => {
+        const done = (accepted: void | boolean): void => { log += accepted === false ? "n" : "y"; };
+        const selected = (accepted: void | boolean): void => {
+            if (accepted === false) return done(false);
+            const result = selection.commit?.();
+            if (result instanceof Promise) void result.then(done);
+            else done(result);
+        };
+        const result = selection.set(id);
+        if (result instanceof Promise) void result.then(selected);
+        else selected(result);
+    };
+    // A commit returning nothing, and a selection without one.
+    pick({ set: (id) => (id.startsWith("now") ? true : Promise.resolve(true)), commit: () => { reopened++; } }, "now");
+    pick({ set: (id) => { log += id.length > 0 ? "s" : "e"; } }, "stair");
+    if (log !== "ysy" || reopened !== 1) throw new Error("log " + log + " reopened " + reopened);
+    pick({ set: () => Promise.resolve(true), commit: () => { reopened++; } }, "later");
+    setTimeout(() => {
+        if (log !== "ysyy" || reopened !== 2) throw new Error("settled log " + log + " reopened " + reopened);
+        globalThis.close();
+    }, 0);
+`,
+);
+
+checkInRealm(
+    "a-call-that-completes-undefined-passes-undefined-to-a-parameter",
+    `
+    interface Selection {
+        set(id: string): void | boolean;
+    }
+    let log = "";
+    const finish = (result: void | boolean, then: (accepted: void | boolean) => void): void => {
+        then(result);
+    };
+    const preview = (selection: Selection, id: string): void => {
+        finish(selection.set(id), (accepted) => {
+            log += accepted === undefined ? "u" : accepted ? "y" : "n";
+        });
+    };
+    preview({ set: (id) => { log += id; } }, "a");
+    preview({ set: (id) => id.length > 3 }, "b");
+    if (log !== "aun") throw new Error("log " + log);
+    globalThis.close();
+`,
+);
+
+checkInRealm(
+    "a-document-member-called-with-a-dynamic-parameter-runs-or-throws-as-javascript-does",
+    `
+    async function sameEntry(a: unknown, b: unknown): Promise<boolean> {
+        if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
+        if (a === b) return true;
+        const native = a as { isSameEntry?: (other: unknown) => Promise<boolean> };
+        if (typeof native.isSameEntry !== "function") return false;
+        try {
+            return await native.isSameEntry(b);
+        } catch {
+            return false;
+        }
+    }
+    const list: unknown[] = JSON.parse('[{"name":"a"},{"name":"b"}]');
+    const one: unknown = JSON.parse('{"name":"a"}');
+    void (async () => {
+        const answers = [await sameEntry(list, list.slice()), await sameEntry(one, list), await sameEntry(one, one)];
+        if (answers.join() !== "false,false,true") throw new Error("answers " + answers.join());
+        // A member that holds no function throws, as JavaScript does.
+        const held = JSON.parse('{"run":3}') as { run?: (value: unknown) => boolean };
+        let thrown = "";
+        try {
+            held.run!(1);
+        } catch (error) {
+            thrown = error instanceof TypeError ? "type" : "other";
+        }
+        if (thrown !== "type") throw new Error("thrown " + thrown);
+        globalThis.close();
+    })();
+`,
+);
+
+checkInRealm(
+    "a-narrower-record-stored-as-its-base-is-copied-where-only-other-objects-are-compared",
+    `
+    class Failure {
+        constructor(readonly code: number) {}
+    }
+    interface Report {
+        kind: string;
+        error: unknown;
+        context?: string;
+    }
+    let log = "";
+    let gate: ((input: Report) => boolean) | null = null;
+    function funnel(input: Report): void {
+        if (gate?.(input) === true) return;
+        const error = input.error instanceof Failure ? input.error.code : typeof input.error === "string" ? input.error : "?";
+        log += input.kind + ":" + error + (input.context ?? "") + ";";
+    }
+    function reportFailure(input: Report & { error: Failure }): void {
+        if (!(input.error instanceof Failure)) return;
+        funnel(input);
+    }
+    gate = (input) => input.kind === "quiet";
+    const failure = new Failure(7);
+    const other = new Failure(9);
+    // A const holds its initializer's object: this compares Failures only.
+    const target = failure as unknown;
+    if (!!target && target !== other) log += "target;";
+    reportFailure({ kind: "boot", error: failure, context: "@1" });
+    reportFailure({ kind: "quiet", error: new Failure(8) });
+    funnel({ kind: "plain", error: "text" });
+    if (log !== "target;boot:7@1;plain:text;") throw new Error("log " + log);
+    globalThis.close();
+`,
+);
+
+// A record literal lends its arrays to an async callee that reads them
+// before it first awaits, while nothing else can change them.
+const lentRecordProgram = `
+    type Ids = readonly (string | null | undefined)[];
+    interface Needs { roof?: Ids; walls?: Ids; dome?: Ids }
+    interface Catalog { resolve(id: string | null | undefined): string }
+    interface Resolved { roof: readonly string[]; walls: readonly string[] }
+    function resolveNeeds(catalog: Catalog, needs: Needs): Resolved {
+        const ids = (requested: Ids | undefined) => [...new Set((requested ?? []).map((id) => catalog.resolve(id)))];
+        return { roof: ids([...(needs.roof ?? []), ...(needs.dome ?? [])]), walls: ids(needs.walls) };
+    }
+    function createPreparer(catalog: Catalog) {
+        const hooks: ((needs: Resolved) => Promise<boolean>)[] = [];
+        return {
+            add(hook: (needs: Resolved) => Promise<boolean>): void { hooks.push(hook); },
+            async prepare(needs: Needs): Promise<void> {
+                const resolved = resolveNeeds(catalog, needs);
+                const ready = await Promise.all(hooks.map((hook) => hook(resolved)));
+                if (!ready.every(Boolean)) throw new Error("failed");
+            },
+        };
+    }
+    const preparer = createPreparer({ resolve: (id) => id ?? "default" });
+    let log = "";
+    preparer.add(async (needs) => { log += needs.roof.join() + "/" + needs.walls.join() + ";"; return true; });
+    const ensure = preparer.prepare;
+    const wanted = ["tile", "slate", "tile", "oak"];
+    const missing = [...new Set(wanted.filter((id) => id !== "oak"))];
+    const sig = missing.sort().join(",");
+    void ensure({ roof: missing, walls: ["oak"] }).then(() => {
+        if (log !== "slate,tile/oak;" || sig !== "slate,tile") throw new Error("needs " + log);
+        const domes = ["cap"].filter((id) => id.length > 0);
+        void ensure({ dome: domes }).then(() => { if (!log.endsWith("cap/;")) throw new Error("dome " + log); globalThis.close(); });
+    });
+`;
+
+checkInRealm(
+    "a-local-array-lent-in-a-record-to-a-callee-that-only-reads-it-is-converted",
+    lentRecordProgram,
+);
+
+// The copy is refused where the callee keeps the property, reads it only
+// after it first awaits, or where code the call runs may change the local.
+test("an array lent in a record refuses where the copy could be told apart", () => {
+    const prepare = "const resolved = resolveNeeds(catalog, needs);";
+    const sorted = 'const sig = missing.sort().join(",");';
+    for (const source of [
+        lentRecordProgram
+            .replace("type Ids", "let kept: Ids = [];\n    type Ids")
+            .replace(prepare, `kept = needs.roof ?? []; ${prepare}`),
+        lentRecordProgram.replace(
+            prepare,
+            `await Promise.resolve(); ${prepare}`,
+        ),
+        lentRecordProgram.replace(
+            sorted,
+            `${sorted} preparer.add(async () => { missing.length = 0; return true; });`,
+        ),
+    ])
+        assert.throws(
+            () => compileSource(source),
+            /An array stored as an array of another element type is a copy/,
+        );
+});
+
+checkInRealm(
+    "a-local-array-handed-where-its-lanes-may-be-absent-stays-one-array",
+    `
+    interface Vine {
+        rebuild: (runs: readonly (readonly number[])[], heights?: readonly (number | undefined)[]) => void;
+        total(): number;
+    }
+    function createVine(): Vine {
+        let kept: readonly (number | undefined)[] = [];
+        return {
+            rebuild: (runs, heights) => {
+                kept = heights ?? [];
+                if (runs.length !== 1) throw new Error("runs");
+            },
+            total: () => kept.reduce((sum: number, height) => sum + (height ?? 0), 0),
+        };
+    }
+    const vine = createVine();
+    const hs: number[] = [];
+    hs.push(1, 2);
+    vine.rebuild([[0]], hs);
+    // The vine holds the caller's array: later writes reach it.
+    hs.push(3);
+    hs[0] = hs[0]! * 10;
+    let sum = 0;
+    for (const height of hs) sum += height;
+    if (vine.total() !== 15 || sum !== 15 || hs.length !== 3) throw new Error("heights " + vine.total() + " " + sum);
+    globalThis.close();
+`,
+);
+
+checkInRealm(
+    "a-record-holding-an-instance-where-its-base-holds-a-dynamic-value-shares-one-layout",
+    `
+    class Failure extends Error {
+        constructor(readonly code: number) {
+            super("failure " + code);
+            this.name = "Failure";
+        }
+    }
+    interface Report {
+        kind: string;
+        error: unknown;
+        context?: string;
+    }
+    let log = "";
+    let last: Report | null = null;
+    let gate: ((input: Report) => boolean) | null = null;
+    function describe(error: unknown): string {
+        if (!error || typeof error !== "object") return typeof error === "string" ? error : "?";
+        const message = (error as Record<string, unknown>)["message"];
+        return typeof message === "string" ? message : "?";
+    }
+    function funnel(input: Report): void {
+        if (gate?.(input) === true) return;
+        log += input.kind + ":" + describe(input.error) + (input.context ?? "") + ";";
+    }
+    function reportFailure(input: Report & { error: Failure }): void {
+        if (!(input.error instanceof Failure)) return;
+        funnel(input);
+    }
+    // An open value asserted to a record type and compared by identity: a
+    // copy of the narrower record could not be told apart from it.
+    interface Token {
+        readonly id?: number;
+    }
+    const tokens = new Set<Token>();
+    function remember(value: unknown): boolean {
+        const token = value as Token;
+        if (tokens.has(token)) return false;
+        tokens.add(token);
+        return true;
+    }
+    gate = (input) => {
+        last = input;
+        return input.kind === "quiet";
+    };
+    const parsed: unknown = JSON.parse('{"id":1}');
+    log += (remember(parsed) ? "new" : "old") + (remember(parsed) ? "new" : "old") + ";";
+    const boot = { kind: "boot", error: new Failure(7), context: "@1" };
+    reportFailure(boot);
+    if (last !== boot || boot.error.code !== 7) throw new Error("shared record");
+    reportFailure({ kind: "quiet", error: new Failure(8) });
+    funnel({ kind: "plain", error: "text" });
+    if (log !== "newold;boot:failure 7@1;plain:text;") throw new Error("log " + log);
+    globalThis.close();
+`,
+);
+
+checkInRealm(
+    "an-authored-error-a-dynamic-slot-holds-is-the-error-it-is",
+    `
+    class Failure extends Error {
+        readonly reason: string;
+        visible = 3;
+        constructor(reason: string) {
+            super("failed: " + reason);
+            this.name = "Failure";
+            this.reason = reason;
+        }
+    }
+    interface Report {
+        kind: string;
+        error: unknown;
+    }
+    function readString(obj: unknown, key: string): string {
+        if (!obj || (typeof obj !== "object" && typeof obj !== "function")) return "";
+        const value = (obj as Record<string, unknown>)[key];
+        return typeof value === "string" ? value : typeof value === "number" ? \`\${value}\` : "";
+    }
+    const reports: Report[] = [];
+    function funnel(input: Report): string {
+        reports.push(input);
+        const error = input.error;
+        const parts = [readString(error, "message"), readString(error, "name"), readString(error, "reason"), readString(error, "visible"), readString(error, "stackless")];
+        return parts.join("|") + (error instanceof Error ? ";error" : "") + (error instanceof Failure ? ";failure" : "") + ";" + typeof error;
+    }
+    const failure = new Failure("timeout");
+    let log = funnel({ kind: "boot", error: failure });
+    const held = reports[0]!.error;
+    failure.visible = 4;
+    log += "/" + readString(held, "visible") + (held === failure ? ";same" : ";other");
+    log += "/" + JSON.stringify(held) + "/" + Object.keys(held as object).join(",");
+    log += "/" + (held as Failure).reason;
+    log += "/" + funnel({ kind: "plain", error: "text" });
+    const expected = 'failed: timeout|Failure|timeout|3|;error;failure;object/4;same/{"reason":"timeout","visible":4,"name":"Failure"}/reason,visible,name/timeout/||||;string';
+    if (log !== expected) throw new Error("log " + log);
+    globalThis.close();
+`,
+);
+
+test("an authored error a dynamic slot holds refuses a name its view cannot place", () => {
+    const held = (classes: string, after = ""): string => `
+    ${classes}
+    const slots: { error: unknown }[] = [{ error: "text" }];
+    const failure = new Failure("x");
+    slots.push({ error: failure });
+    ${after}
+    export {};`;
+    for (const source of [
+        // A base class names it before a subclass creates its fields.
+        held(`class Base extends Error { constructor(m: string) { super(m); this.name = "Base"; } }
+              class Failure extends Base { code = 1; }`),
+        held(
+            `class Failure extends Error { constructor(m: string) { super(m); } }`,
+            `failure.name = "Renamed";`,
+        ),
+    ])
+        assert.throws(
+            () => compileSource(source),
+            /owns 'name' only where its class's constructor assigns it as a statement/,
+        );
+});
+
 check(
     "a-conditional-of-two-boolean-literals-knows-neither",
     `
@@ -8078,17 +8421,19 @@ test("imported functions read numeric tuples through nullable lanes", async (t) 
             ),
         /By-reference data arguments require a matching addressable local or path/,
     );
-    assert.throws(
-        () =>
-            compileSource(
-                `import { keep, held } from "./routes.js";
-                const lanes: [number, number, number] = [1, 2, 3];
-                function run(x: number): number { lanes[0] = x; keep(lanes); lanes[2] = 9; return held[0]![2]; }
-                const runs: Array<typeof run> = [run];
-                if (runs[0]!(Math.random()) !== 9) throw new Error("kept");`,
-                { fileName: join(directory, "retains.ts") },
-            ),
-        /An array stored as an array of another element type is a copy/,
+    // A local the callee keeps holds the nullable lanes itself: one array.
+    const retains = compileSource(
+        `import { keep, held } from "./routes.js";
+        const lanes: [number, number, number] = [1, 2, 3];
+        function run(x: number): number { lanes[0] = x; keep(lanes); lanes[2] = 9; return held[0]![2]; }
+        const runs: Array<typeof run> = [run];
+        if (runs[0]!(Math.random()) !== 9) throw new Error("kept");`,
+        { fileName: join(directory, "retains.ts") },
+    );
+    await executeGeneratedAssertions(
+        t,
+        "tuple-nullable-lanes-retained",
+        retains.cpp,
     );
 });
 
@@ -13796,15 +14141,28 @@ check(
 );
 
 test("strict equality refuses operands that may be null or undefined without storage telling them apart", () => {
-    for (const source of [
-        "interface Box { v: number; } const boxes: Box[] = [{ v: 1 }]; function pick(i: number): Box | null | undefined { return i < 0 ? null : i > 5 ? undefined : boxes[i]; } const g = new Float32Array([0, 1]); if (pick(g[0]!) === pick(g[1]!)) throw new Error();",
-        "type Fn = () => number; const fns: Array<Fn | null | undefined> = [null, undefined]; let last: Fn | null | undefined = null; for (const f of fns) { if (f === last) throw new Error(); last = f; }",
-    ])
-        assert.throws(
-            () => compileSource(source),
-            /compared strictly with another value that may be absent only once one of them is ruled out/,
-        );
+    assert.throws(
+        () =>
+            compileSource(
+                "type Fn = () => number; const fns: Array<Fn | null | undefined> = [null, undefined]; let last: Fn | null | undefined = null; for (const f of fns) { if (f === last) throw new Error(); last = f; }",
+            ),
+        /compared strictly with another value that may be absent only once one of them is ruled out/,
+    );
 });
+
+// A function's result whose callers tell null from undefined is tagged
+// storage, so strict equality of two results compares them exactly.
+check(
+    "strict-equality-of-tagged-call-results",
+    `
+    interface Box { v: number; }
+    const boxes: Box[] = [{ v: 1 }, { v: 2 }];
+    function pick(i: number): Box | null | undefined { return i < 0 ? null : i > 5 ? undefined : boxes[i]; }
+    const g = new Float32Array([0, 1, -1, -2, 7, 9]);
+    const same = (a: number, b: number): boolean => pick(g[a]!) === pick(g[b]!);
+    if (same(0, 1) || !same(0, 0) || !same(2, 3) || !same(4, 5) || same(2, 4)) throw new Error("tagged results");
+`,
+);
 
 check(
     "tuple-spreads-into-class-method-parameters",
@@ -14758,6 +15116,76 @@ check(
     tagged.push(attach(rest, { key: values[0]! }));
     if (tagged.map((item) => Object.keys(item).join()).join("|") !== "tower,height,id|tower,height,id") throw new Error("defined and copied keys");
     if (JSON.stringify(tagged) !== '[{"tower":1,"height":2,"id":{"key":3}},{"tower":1,"height":2,"id":{"key":1}}]') throw new Error("defined and copied json");
+`,
+);
+
+check(
+    "declared-record-key-order-through-writes-after-creation",
+    `
+    type ToolId = "move" | "clone" | "delete" | "resize" | "paint";
+    interface Tool { name: string }
+    const tools: Partial<Record<ToolId, Tool>> = {};
+    tools.resize = { name: "r" };
+    tools.move = { name: "m" };
+    if (Object.keys(tools).join() !== "resize,move") throw new Error("written keys");
+    if (JSON.stringify(tools) !== '{"resize":{"name":"r"},"move":{"name":"m"}}') throw new Error("written json");
+    const visited: string[] = [];
+    for (const key in tools) visited.push(key);
+    if (visited.join() !== "resize,move") throw new Error("written for-in");
+    const copy = { ...tools };
+    if (Object.keys(copy).join() !== "resize,move") throw new Error("written spread");
+    interface Slots { a?: number; b?: number; c?: number }
+    const values = [1, 2, 3];
+    const first: Slots = {};
+    first.b = values[0]!;
+    first.a = values[1]!;
+    const second: Slots = {};
+    second.c = values[2]!;
+    second.b = values[0]!;
+    const slots: Slots[] = [first, second];
+    if (slots.map((row) => Object.keys(row).join()).join("|") !== "b,a|c,b") throw new Error("two write orders");
+    if (JSON.stringify(slots) !== '[{"b":1,"a":2},{"c":3,"b":1}]') throw new Error("two write orders json");
+    const flags = JSON.parse("[true,false]") as boolean[];
+    const runs: string[] = [];
+    for (const flag of flags) {
+        const run: Slots = {};
+        if (flag) run.a = values[0]!;
+        run.b = values[1]!;
+        run.a = values[2]!;
+        runs.push(Object.keys(run).join() + "=" + JSON.stringify(run));
+    }
+    if (runs.join("|") !== 'a,b={"a":3,"b":2}|b,a={"b":2,"a":3}') throw new Error("conditional write " + runs.join("|"));
+`,
+);
+
+check(
+    "declared-record-key-order-through-writes-no-creation-places",
+    `
+    interface ThroughAlias { a?: number; b?: number; c?: number }
+    interface ThroughParameter { a?: number; b?: number; c?: number }
+    interface ThroughKey { a?: number; b?: number; c?: number }
+    const values = [1, 2, 3];
+    const base: ThroughAlias = {};
+    const alias = base;
+    alias.c = values[0]!;
+    base.a = values[1]!;
+    if (Object.keys(base).join() !== "c,a") throw new Error("alias keys " + Object.keys(base).join());
+    if (JSON.stringify(base) !== '{"c":1,"a":2}') throw new Error("alias json " + JSON.stringify(base));
+    function fill(target: ThroughParameter, first: number): void {
+        target.b = first;
+        target.a = first + 1;
+    }
+    const filled: ThroughParameter = {};
+    fill(filled, values[2]!);
+    const visited: string[] = [];
+    for (const key in filled) visited.push(key);
+    if (visited.join() !== "b,a") throw new Error("parameter keys " + visited.join());
+    if (JSON.stringify({ ...filled }) !== '{"b":3,"a":4}') throw new Error("parameter json " + JSON.stringify(filled));
+    const order = JSON.parse('["c","b"]') as (keyof ThroughKey)[];
+    const keyed: ThroughKey = {};
+    for (const key of order) keyed[key] = values[0]!;
+    if (Object.keys(keyed).join() !== "c,b") throw new Error("computed keys " + Object.keys(keyed).join());
+    if (JSON.stringify(keyed) !== '{"c":1,"b":1}') throw new Error("computed json " + JSON.stringify(keyed));
 `,
 );
 
@@ -18309,18 +18737,27 @@ test("arrays destructured with code between their reads refuse a converted copy"
         );
 });
 
-test("arrays stored with converted elements refuse where JavaScript keeps one observable array", () => {
-    for (const [source, message] of [
-        [
-            "const values: number[] = []; function view(): readonly (number | undefined)[] { return values; } const roots: Array<typeof view> = [view]; values.push(1); if (roots[0]!().length !== 1) throw new Error('x');",
-            /is a copy, and the program changes the elements of such arrays/,
-        ],
-        [
-            "const values: readonly number[] = [1, 2].map((i) => i * 2); function view(): readonly (number | undefined)[] { return values; } const roots: Array<typeof view> = [view]; if (roots[0]!() !== roots[0]!()) throw new Error('x');",
-            /is a copy, and the program compares such arrays by identity/,
-        ],
-    ] as const)
-        assert.throws(() => compileSource(source), message);
+// A local array read where its lanes may be absent holds them so: every
+// view is the one array, changed through either.
+check(
+    "a-local-array-viewed-with-absent-lanes-is-one-array",
+    `
+    const values: number[] = [];
+    function view(): readonly (number | undefined)[] { return values; }
+    const roots: Array<typeof view> = [view];
+    values.push(1);
+    if (roots[0]!().length !== 1 || roots[0]!()[0] !== 1 || roots[0]!() !== roots[0]!()) throw new Error("one array");
+    `,
+);
+
+test("an array stored with converted elements refuses where its local already holds other storage", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                "const values: readonly number[] = [1, 2].map((i) => i * 2); function view(): readonly (number | undefined)[] { return values; } const roots: Array<typeof view> = [view]; if (roots[0]!() !== roots[0]!()) throw new Error('x');",
+            ),
+        /is a copy, and the program compares such arrays by identity/,
+    );
 });
 
 // An array of a string literal union the program also reads as a string
@@ -19927,6 +20364,75 @@ test("an object field holds a record whose fields hold meshes as that record", (
     );
 });
 
+// A document record (keys in two orders, enumerated) holding a record whose
+// parts hold meshes: that record stays native, held by reference, and a read
+// out of the document is that very record, so its mesh fields keep handles.
+test("a document record reads a held record whose parts hold meshes as that record", (t) => {
+    const { cpp } = compileSource(`
+        import { createBox, type EngineContext, type Mesh } from "@babylonjs/lite";
+        interface Part { mesh: Mesh; weight: number }
+        interface Model { parts: Part[]; count: number }
+        interface Holder { label: string; model: Model }
+        function inspect(engine: EngineContext): number {
+            const mesh = createBox(engine);
+            const parts: Part[] = [];
+            parts.push({ mesh, weight: 2 });
+            const model: Model = { parts, count: 0 };
+            const first: Holder = { label: "a", model };
+            const second: Holder = { model, label: "b" };
+            const holders = [first, second];
+            const orders = holders.map((holder) => Object.keys(holder).join());
+            if (orders.join(";") !== "label,model;model,label") throw new Error("key orders");
+            let weight = 0;
+            for (const holder of holders) {
+                holder.model.count++;
+                for (const part of holder.model.parts) {
+                    if (part.mesh !== mesh) throw new Error("mesh handle");
+                    weight += part.weight;
+                }
+            }
+            if (first.model !== second.model || model.count !== 2 || weight !== 4) throw new Error("held record");
+            return holders.length;
+        }
+        const inspections: Array<typeof inspect> = [inspect];
+    `);
+    assert.match(
+        cpp,
+        /\.read_property\("model"\)\.asserted_instance<bblscene::Model>\(\)/,
+    );
+    const entry =
+        /double (\w+)\(\[\[maybe_unused\]\] bblscene::(\w+)& \w+, \[\[maybe_unused\]\] bbl::StoredEngine \w+\);/.exec(
+            cpp,
+        );
+    assert.ok(entry, "inspection entry");
+    if (!native) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(
+        native,
+        "language-constructs/document-held-record-with-meshes",
+        `
+        #define main generated_main
+        ${cpp}
+        #undef main
+        #include <cassert>
+        namespace bbl {
+            MeshHandle create_box(Engine& engine, BoxOptions) {
+                engine.meshes.emplace_back();
+                return {0, 0};
+            }
+        }
+        int main() {
+            const bbl::js::RealmScope realm;
+            auto engine = std::make_shared<bbl::Engine>();
+            bblscene::${entry[2]} environment{};
+            assert(bblscene::${entry[1]}(environment, bbl::StoredEngine{engine}) == 2);
+        }
+    `,
+    );
+});
+
 check(
     "a-local-record-stored-as-a-closed-key-record-is-that-record",
     `
@@ -20861,6 +21367,58 @@ test("a promise reaction refuses a chain that completes with a value", () => {
     );
 });
 checkInRealm(
+    "a reaction calling an omitted optional handler completes with undefined",
+    `
+    function widget(onError?: (error: unknown) => void): (fail: boolean) => Promise<void> {
+        const hooks = { failed: (error: unknown) => onError?.(error) };
+        return (fail) => Promise.resolve(fail).then((bad) => { if (bad) throw new Error("bad"); }).catch(hooks.failed);
+    }
+    let seen = 0;
+    const quiet = widget();
+    const loud = widget(() => { seen++; });
+    void quiet(true).then(() => loud(true)).then(() => {
+        if (seen !== 1) throw new Error("handled " + seen);
+        globalThis.close();
+    });
+    `,
+);
+check(
+    "a-module-const-snapshots-the-let-it-reads",
+    `
+    let committed = 0;
+    const previous = committed;
+    const read = (): number => previous;
+    const bump = (): void => { committed = 7; };
+    const later: Array<() => number> = [read, () => committed];
+    bump();
+    if (previous !== 0 || later[0]!() !== 0 || later[1]!() !== 7) throw new Error("snapshot");
+`,
+);
+checkInRealm(
+    "a stored function a builder returns completes as the callback it was handed",
+    `
+    function rollbackTo<T>(read: () => T, present: (value: T) => void): () => void {
+        return () => present(read());
+    }
+    let committed = 0;
+    let shown = 0;
+    const pick = (value: number): Promise<boolean> | boolean => (value > 1 ? Promise.resolve(false) : true);
+    const previous = committed;
+    const rollback = rollbackTo(() => previous, (value) => {
+        if (committed === 5) return;
+        shown = value;
+    });
+    committed = 7;
+    shown = 7;
+    const result = pick(committed);
+    if (result instanceof Promise)
+        void result.then((accepted) => { if (!accepted) rollback(); }).catch(rollback).then(() => {
+            if (shown !== 0) throw new Error("rolled back to " + shown);
+            globalThis.close();
+        });
+    `,
+);
+checkInRealm(
     "Promise.all settles to a new array",
     `
     const arr = [1, 2];
@@ -20869,6 +21427,22 @@ checkInRealm(
         if (arr.length !== 2 || out.length !== 3) throw new Error("all identity " + arr.length);
         globalThis.close();
     });
+    `,
+);
+check(
+    "a parsed document compares with a member an optional parameter may lack",
+    `
+    interface Line { key: string; state?: string | null }
+    interface Selection { key: string | null; onSelect?: (key: string) => void }
+    const lines = JSON.parse('[{"key":"a","state":null},{"key":"b"}]') as Line[];
+    function pick(copy: readonly Line[], selection?: Selection): string {
+        const current = copy.find((line) => line.key === selection?.key) ?? copy[0];
+        return current?.key ?? "-";
+    }
+    const keys: (string | null)[] = [null, "b"];
+    let picked = pick(lines) + ",";
+    for (const key of keys) picked += pick(lines, { key }) + ",";
+    if (picked !== "a,a,b,") throw new Error("picked " + picked);
     `,
 );
 check(

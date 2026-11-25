@@ -80,3 +80,37 @@ test("attribute removal preserves absence, style reset and rendered image update
         imageDecoder: true,
     });
 });
+
+test("a loop naming the attributes it writes expands in a stored body", () => {
+    const { cpp } = compileSource(`
+        const ns = "http://www.w3.org/2000/svg";
+        function mount(origin: HTMLElement, radius: number): void {
+            const svg = document.createElementNS(ns, "svg");
+            origin.append(svg);
+            const path = (color: string, width: number): void => {
+                const p = document.createElementNS(ns, "path");
+                for (const [key, value] of Object.entries({ d: \`M0,0 L\${radius},0\`, stroke: color, "stroke-width": String(width) }))
+                    p.setAttribute(key, value);
+                svg.append(p);
+            };
+            path("#997747", 21);
+            path("#e2c894", 16);
+            for (const name of ["data-a", "data-b"]) if (svg.hasAttribute(name)) svg.removeAttribute(name);
+        }
+        const host = document.createElement("div");
+        document.body.appendChild(host);
+        host.addEventListener("click", () => mount(host, host.offsetWidth));
+    `);
+    for (const name of ["d", "stroke", "stroke-width"])
+        assert.match(
+            cpp,
+            new RegExp(`bbl::ui_set_attribute\\([^;]*"${name}", `),
+            name,
+        );
+    for (const name of ["data-a", "data-b"])
+        assert.match(
+            cpp,
+            new RegExp(`bbl::ui_remove_attribute\\([^;]*"${name}"`),
+            name,
+        );
+});

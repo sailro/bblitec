@@ -1563,7 +1563,7 @@ test("a call reading a run-time ShaderMaterial's fields compiles once per varian
     const programs = compiled.manifest.customShaderPrograms;
     const early = programs.findIndex(({ name }) => name === "early");
     const late = programs.findIndex(({ name }) => name === "late0");
-    // Each arm reads its variant's fields at generation.
+    // Each arm reads its variant's fields at generation, which fold its sum.
     const length = (name: string): number =>
         programs.find((program) => program.name === name)!.fragmentSource
             .length;
@@ -1572,9 +1572,7 @@ test("a call reading a run-time ShaderMaterial's fields compiles once per varian
         [0, "late0"],
     ] as const)
         assert.ok(
-            compiled.cpp.includes(
-                `= ((${samplers}.0 * 1000.0) + ${length(name)}.0);`,
-            ),
+            compiled.cpp.includes(`= ${samplers * 1000 + length(name)}.0;`),
             name,
         );
     // The arm is the one the material's run-time variant selects.

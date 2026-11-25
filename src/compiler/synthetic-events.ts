@@ -45,7 +45,8 @@ export function compileSyntheticEventConstructor(
         );
     const allowed = new Set<string>(options.Event);
     if (name !== "Event") for (const key of options[name]) allowed.add(key);
-    if (name === "PointerEvent")
+    // A pointer and a wheel event are mouse events: their inits take its members.
+    if (name === "PointerEvent" || name === "WheelEvent")
         for (const key of options.MouseEvent) allowed.add(key);
     // The constructor converts its init as its own dictionary
     // (`MouseEventInit`): a member that dictionary does not declare is
@@ -135,8 +136,14 @@ export function compileSyntheticEventConstructor(
         });
     }
     // A key event carries its keys beside the base event its listeners'
-    // family is dispatched with.
-    const kind = name === "Event" ? "Event" : name.slice(0, -5);
+    // family is dispatched with; a wheel event is a mouse event with its
+    // deltas, as the platform's wheel events are.
+    const kind =
+        name === "Event"
+            ? "Event"
+            : name === "WheelEvent"
+              ? "Mouse"
+              : name.slice(0, -5);
     return {
         kind: "dom-event",
         dataType: { kind: "handle", handle: "dom-event" },

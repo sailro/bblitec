@@ -72,11 +72,13 @@ import ts from "typescript";
 import {
     absenceOf,
     knownCondition,
+    valueProvenPresent,
     knownOwnKeys,
     staticBooleanOf,
     staticKeyOf,
     undefinedValue,
 } from "./compiler/values/model.js";
+import { bindingRebinds } from "./compiler/binding-rebinds.js";
 import { CallbackLowerer } from "./compiler/callbacks.js";
 import { AsyncActivations } from "./compiler/async-activations.js";
 import { PageLoader } from "./compiler/page-loader.js";
@@ -95,6 +97,8 @@ import { emptyStorage } from "./compiler/empty-storage.js";
 import { emitSurveyRoots } from "./compiler/survey-roots.js";
 import {
     activeSurvey,
+    describeRequests,
+    describeStop,
     SurveyCollector,
     SurveyPassLimit,
     type SurveySettings,
@@ -139,6 +143,7 @@ import {
 } from "./compiler/worker-modules.js";
 import {
     compileWorkerValue,
+    emitMessageHandler,
     isNativeWorkerExpression,
     isRuntimeLocationMember,
 } from "./compiler/workers.js";
@@ -152,6 +157,7 @@ import {
 import { RuntimeSearchParamsRequired } from "./compiler/search-params.js";
 import { featureRequiresApplicationRealm } from "./feature-activation.js";
 import { WindowProperties } from "./compiler/window-properties.js";
+import { EngineObjectProperties } from "./compiler/engine-object-properties.js";
 import { AsyncLowerer, PendingActivationsRequired } from "./compiler/async.js";
 import { sourceLocation } from "./source-location.js";
 import {
@@ -175,6 +181,7 @@ import {
 import {
     compileStaticFetch,
     compileStaticFetchMethod,
+    packagedFetchText,
 } from "./compiler/static-fetch.js";
 import {
     BrowserErasure,
@@ -262,6 +269,7 @@ import {
 } from "./compiler/loop-control.js";
 import {
     createsReceiverState,
+    isInertDefaultExport,
     isModuleInitializerStatement,
     planEntryModuleState,
     recordHoldsCallables,
@@ -297,6 +305,7 @@ import {
     calledFunction,
     namedMember,
     libraryStaticMember,
+    nullishComparison,
     isLibraryStatic,
 } from "./compiler/symbols.js";
 import {
@@ -309,6 +318,8 @@ import {
     isVoid,
     unionMembers,
     valueKindOf,
+    nullability,
+    typeAdmitsData,
 } from "./compiler/type-facts.js";
 import {
     retainedStaticText,
@@ -327,7 +338,9 @@ import {
     type CallbackInvocationOptions,
 } from "./compiler/user-functions.js";
 import {
+    bindingSubtreeIntact,
     callArgumentIsReadOnly,
+    isEffectFunction,
     parameterIsReadOnly,
     parameterWrittenSlots,
     readsIntactParameterObject,
@@ -349,6 +362,7 @@ import {
     stringLiteralText,
     unwrappedIdentifier,
     writeSites,
+    type WriteSite,
     isValueReference,
     expressionHasEffects,
     expressionMayRunCode,
@@ -702,7 +716,11 @@ export function surveySource(
     options: CompileOptions = {},
     settings: SurveySettings = {},
 ): SurveyOutcome {
-    const collector = new SurveyCollector(settings, isReplay);
+    const collector = new SurveyCollector(
+        settings,
+        isReplay,
+        (error) => error instanceof RuntimeSearchParamsRequired,
+    );
     return withSurvey(collector, () => {
         try {
             const result = compileSourceApplication(source, options);
@@ -874,49 +892,113 @@ function lowerSourceApplication(
         // with what this one met, until a pass meets and takes nothing new.
         // A replay raised in an attempt's setup restarts it; one raised once
         // every statement lowered ends the pass with the others.
-        if (survey)
+        const surveyPasses = (
+            collector: SurveyCollector,
+            accept: (error: unknown) => boolean,
+        ): CompileResult => {
             for (;;) {
                 const realm = input.sourceFile.fileName;
                 let result: CompileResult | undefined;
                 let added = 0;
                 try {
-                    result = survey.attempt(realm, lower, acceptReplay);
+                    result = collector.attempt(realm, lower, accept);
                 } catch (error) {
-                    const accepted = acceptReplay(error);
-                    if (!survey.settling(realm)) {
+                    const accepted = accept(error);
+                    if (!collector.settling(realm)) {
                         if (!accepted) throw error;
-                        survey.restarted(error);
+                        collector.restarted(error);
                         continue;
                     }
                     // One the storage already holds is the next pass's when
                     // this one took a demand (its stale storage may raise
                     // it), and the compile's refusal otherwise.
                     if (accepted) added++;
-                    else if (survey.taken(realm) === 0 || !isReplay(error))
+                    else if (collector.taken(realm) === 0 || !isReplay(error))
                         throw error;
                 }
-                added += survey.replaysOf(realm).filter(acceptReplay).length;
-                added += survey.taken(realm);
-                if (survey.passEnded(added)) continue;
+                added += collector.replaysOf(realm).filter(accept).length;
+                added += collector.taken(realm);
+                if (collector.passEnded(added)) continue;
                 if (result) return result;
                 throw new SurveyPassLimit();
             }
+        };
+        if (survey) return surveyPasses(survey, acceptReplay);
+        // Storage converged as a survey's passes do, on the entry's own
+        // lowering (no roots): each demand a statement meets is taken at
+        // once and the statement lowers again, instead of one restart of
+        // the whole realm per demand. Only storage demands converge: any
+        // other replay (a lazy module's activation) a rolled-back statement
+        // meets is the strict lowering's to meet or not. What the passes
+        // lower is discarded; the compile is the strict lowering below,
+        // with the storage they took.
+        if (options.convergeStorage) {
+            const converging = new SurveyCollector(
+                {
+                    roots: false,
+                    passLimit: options.convergeStorage.passes,
+                    ...(options.compileProgress
+                        ? {
+                              progress: {
+                                  report: options.compileProgress,
+                                  intervalMs: 60 * 1000,
+                              },
+                          }
+                        : {}),
+                },
+                isReplay,
+            );
+            try {
+                withSurvey(converging, () =>
+                    surveyPasses(
+                        converging,
+                        (error) =>
+                            error instanceof StorageDemand &&
+                            acceptReplay(error),
+                    ),
+                );
+            } catch (error) {
+                // The strict lowering meets and reports any refusal itself.
+                if (!(error instanceof Error)) throw error;
+                options.compileProgress?.(
+                    `Storage converged short of a pass meeting nothing new: ${describeStop(error)}`,
+                );
+            }
+            // A statement a pass lowered before another demand reached its
+            // records demands their sharing; the strict lowering demands
+            // again the sharing it needs, so its records keep the layout
+            // and order a strict compile gives them.
+            storage.withdrawSharedRecords();
+        }
         // Once a storage demand restarted the realm, every attempt is a
         // plan: it goes on past the demands later statements do not read, so
         // one attempt meets a run of them, and a plan that lowered every
         // statement is the compile. A plan that adds no demand leaves the
         // next attempt to strict lowering.
         let planning = false;
-        for (;;) {
+        const started = performance.now();
+        const attempted = (attempt: number, ended: string): void => {
+            options.compileProgress?.(
+                `Compile attempt ${attempt} of ${input.sourceFile.fileName}: ${ended} (${((performance.now() - started) / 1000).toFixed(0)} s)`,
+            );
+        };
+        for (let attempt = 1; ; attempt++) {
             if (planning) {
                 const planner = new StorageDemandPlanner(input.checker);
+                let replay = "";
                 try {
                     const planned = planner.run(() => lower(planner));
                     if (planned) return planned;
                 } catch (planningError) {
                     if (!acceptReplay(planningError)) throw planningError;
+                    replay = `, then ${describeStop(planningError)}`;
                 }
-                planning = addPlanned(planner) > 0;
+                const added = addPlanned(planner);
+                planning = added > 0;
+                attempted(
+                    attempt,
+                    `plan took ${added} of ${planner.demands.length} demands (${describeRequests(planner.demands)})${replay}`,
+                );
                 continue;
             }
             try {
@@ -926,6 +1008,7 @@ function lowerSourceApplication(
                 planning =
                     error instanceof StorageDemand &&
                     storageDemandPlanningEnabled();
+                attempted(attempt, describeStop(error));
             }
         }
     };
@@ -1000,6 +1083,18 @@ interface ShaderSourceHole {
  * numbers of, by argument index: key paths into each argument.
  */
 type UnreadLanes = ReadonlyMap<number, ReadonlyArray<readonly string[]>>;
+
+/**
+ * What a local function's call returns, read at generation without running
+ * it (`Compiler.returnedExpression`): the returned expression, read
+ * `within` the scope binding the callee's parameters, and the callee's own
+ * `const` names with the initializers that stand for them.
+ */
+interface ReturnedExpression {
+    readonly returned: ts.Expression;
+    readonly within: <T>(read: () => T) => T;
+    readonly aliases: ReadonlyMap<ts.Symbol, ts.Expression>;
+}
 
 /**
  * One fold of a shader stage's text (`compileShaderSource`): which run, the
@@ -1128,6 +1223,8 @@ class Compiler implements LoweringServices {
     public readonly windowProperties: WindowProperties = new WindowProperties(
         this,
     );
+    public readonly engineObjectProperties: EngineObjectProperties =
+        new EngineObjectProperties(this);
     public readonly dataTypes: DataTypeRegistry;
     public readonly dataLowerer: DataLowerer;
     public readonly classLowerer: ClassLowerer;
@@ -1372,7 +1469,7 @@ class Compiler implements LoweringServices {
         );
         this.dataLowerer = new DataLowerer(this);
         this.classLowerer = new ClassLowerer(this);
-        this.evaluationOrder = new EvaluationOrder(
+        this.evaluationOrder = EvaluationOrder.ofProgram(
             checker,
             this.dataTypes.classHierarchy,
             engineBodies,
@@ -1477,7 +1574,7 @@ class Compiler implements LoweringServices {
         this.emitEntryBody(entry);
         const survey = activeSurvey();
         survey?.phaseEnded("entry");
-        if (survey && !this.options.workers?.namespace) {
+        if (survey?.lowersRoots && !this.options.workers?.namespace) {
             const lowerRoots = (): void =>
                 survey.rollingBack(() => emitSurveyRoots(this, survey));
             lowerRoots();
@@ -1679,18 +1776,40 @@ class Compiler implements LoweringServices {
                         : undefined);
                 if (type) this.dataTypes.markStoredObjectReferences(type);
             });
+        // Named record types with no layout outside a stored position, whose
+        // held named records are marked once every named type is mapped.
+        const unlaid: (ts.InterfaceDeclaration | ts.TypeAliasDeclaration)[] =
+            [];
         for (const site of storedReferenceSites(
             this.program.getSourceFiles(),
             this.symbols,
         ))
             this.predeclaring(
                 site.kind === "retained" ? site.target : site.node,
-                () => this.predeclareSite(site),
+                () => {
+                    if (site.kind !== "named-type") this.predeclareSite(site);
+                    else if (
+                        !this.dataTypes.fromTsType(
+                            this.checker.getTypeAtLocation(site.node.name),
+                            site.node,
+                        )
+                    )
+                        unlaid.push(site.node);
+                },
+            );
+        for (const node of unlaid)
+            this.predeclaring(node, () =>
+                this.dataTypes.markHeldNamedRecords(
+                    this.checker.getTypeAtLocation(node.name),
+                    node,
+                ),
             );
     }
 
     /** Predeclares the storage one stored-reference site needs. */
-    private predeclareSite(site: StoredReferenceSite): void {
+    private predeclareSite(
+        site: Exclude<StoredReferenceSite, { kind: "named-type" }>,
+    ): void {
         switch (site.kind) {
             case "retained": {
                 const targetType = this.checker.getTypeAtLocation(site.target);
@@ -1715,12 +1834,6 @@ class Compiler implements LoweringServices {
                 }
                 break;
             }
-            case "named-type":
-                this.dataTypes.fromTsType(
-                    this.checker.getTypeAtLocation(site.node.name),
-                    site.node,
-                );
-                break;
             case "annotated": {
                 // Mapping an explicitly stored container eagerly marks any
                 // object-valued entries as shared references. Do this before
@@ -1966,15 +2079,7 @@ class Compiler implements LoweringServices {
                         this.emitStatement(runtimeStatement);
                         continue;
                     }
-                    if (
-                        ts.isExportAssignment(statement) &&
-                        this.evaluationOrder.isPureExpression(
-                            statement.expression,
-                        ) &&
-                        !this.evaluationOrder.hasModuleEffects(
-                            statement.expression,
-                        )
-                    )
+                    if (isInertDefaultExport(statement, this.evaluationOrder))
                         continue;
                     if (isModuleInitializerStatement(statement, this.checker)) {
                         this.emitStatement(statement);
@@ -2826,6 +2931,7 @@ class Compiler implements LoweringServices {
     public emitDelete(expression: ts.DeleteExpression): void {
         if (this.recordProxies.remove(expression)) return;
         if (this.windowProperties.remove(expression)) return;
+        if (this.engineObjectProperties.remove(expression)) return;
         this.dataLowerer.emitDelete(expression);
     }
 
@@ -2903,6 +3009,8 @@ class Compiler implements LoweringServices {
         if (emitLibraryNodeParent(this, expression)) return;
         if (emitSplatStreamAssignment(this, expression)) return;
         if (emitCanvasAssignment(this, expression)) return;
+        if (this.options.workers && emitMessageHandler(this, expression))
+            return;
         if (this.options.workers && this.emitUiPropertyAssignment(expression))
             return;
         if (emitStructuralPropertyAssignment(this, expression)) {
@@ -3323,10 +3431,13 @@ class Compiler implements LoweringServices {
         this.ui.emitUiStyleProperty(element, property, site, site, value);
     }
 
-    public emitWindowLogicalAssignment(
+    public emitAddedPropertyLogicalAssignment(
         expression: ts.BinaryExpression,
     ): boolean {
-        return this.windowProperties.assignLogical(expression);
+        return (
+            this.windowProperties.assignLogical(expression) ||
+            this.engineObjectProperties.assign(expression)
+        );
     }
 
     public optionalChainStop(node: ts.Expression): Value | undefined {
@@ -4129,7 +4240,9 @@ class Compiler implements LoweringServices {
                 ...unboundListItem(expression),
                 text,
             }));
-        const returned = this.returnedListItems(expression);
+        const returned =
+            this.returnedListItems(expression) ??
+            this.memberListItems(expression);
         if (returned) return returned;
         try {
             return this.expectStaticArrayElements(expression).map(
@@ -4223,49 +4336,179 @@ class Compiler implements LoweringServices {
     }
 
     /**
-     * The items of the array literal a local function returns and does
-     * nothing else, for a call generation cannot run: its arguments are
-     * evaluated once, here, and each item is read `within` a scope binding
-     * the callee's parameters to them. A returned conditional selects the
-     * literal its condition, known at generation over those bindings,
-     * names. A parameter the callee writes, a default or rest parameter, or
-     * a spread argument keeps the call unspelled.
+     * The items of the array literal a local function's call returns, for a
+     * call generation cannot run (`returnedExpression`): a returned
+     * conditional selects the literal its condition, known at generation,
+     * names.
      */
     private returnedListItems(
         expression: ts.Expression,
     ): StaticListItem[] | undefined {
         const call = this.unwrap(expression);
-        if (!ts.isCallExpression(call) || call.questionDotToken)
-            return undefined;
+        if (!ts.isCallExpression(call)) return undefined;
+        const site = this.returnedExpression(call);
+        return site && this.literalListItems(site.returned, site);
+    }
+
+    /**
+     * The items of a list a record member holds (`a.b.c`) where the record
+     * is what a local function's call returns (`returnedExpression`): the
+     * call `a` is, or the one a `const` holds, re-running alike
+     * (`rerunCallInitializer`) and written through by nothing before the
+     * read; then each key the member of the record literal the returned
+     * expression is, through module constants and calls of local functions
+     * in turn.
+     */
+    private memberListItems(
+        expression: ts.Expression,
+    ): StaticListItem[] | undefined {
+        const keys: string[] = [];
+        let root = this.unwrap(expression);
+        while (ts.isPropertyAccessExpression(root)) {
+            keys.unshift(root.name.text);
+            root = this.unwrap(root.expression);
+        }
+        const held = ts.isIdentifier(root)
+            ? this.rerunCallInitializer(root)
+            : undefined;
+        const call = ts.isCallExpression(root)
+            ? root
+            : held &&
+                !this.evaluator.isWrittenThroughBefore(
+                    held.declaration,
+                    expression,
+                )
+              ? held.call
+              : undefined;
+        if (keys.length === 0 || !call) return undefined;
+        return this.probeEmission(
+            () => unlessRefused(() => this.returnedMemberItems(call, keys)),
+            (items) => items !== undefined,
+        );
+    }
+
+    /** The items the member at `keys` of the record `call` returns holds (`memberListItems`). */
+    private returnedMemberItems(
+        call: ts.CallExpression,
+        keys: readonly string[],
+        enclosing: ReturnedExpression["within"] = (read) => read(),
+    ): StaticListItem[] | undefined {
+        const site = enclosing(() => this.returnedExpression(call));
+        if (!site) return undefined;
+        const within: ReturnedExpression["within"] = (read) =>
+            enclosing(() => site.within(read));
+        let node: ts.Expression = site.returned;
+        for (const [index, key] of keys.entries()) {
+            node = within(() => this.selectedReturnedExpression(node, site));
+            if (ts.isCallExpression(node))
+                return this.returnedMemberItems(
+                    node,
+                    keys.slice(index),
+                    within,
+                );
+            const record = ts.isIdentifier(node)
+                ? this.evaluator.resolveStaticLiteral(node)
+                : node;
+            const member = ts.isObjectLiteralExpression(record)
+                ? this.objectProperty(record, key)
+                : undefined;
+            if (!member) return undefined;
+            node = member;
+        }
+        const list = within(() => this.selectedReturnedExpression(node, site));
+        if (ts.isCallExpression(list))
+            return this.returnedMemberItems(list, [], within);
+        return this.literalListItems(list, { ...site, within });
+    }
+
+    /**
+     * `node`, a part of what a callee returns, past the conditionals its
+     * known conditions settle and the callee's own `const` names it reads.
+     */
+    private selectedReturnedExpression(
+        node: ts.Expression,
+        site: ReturnedExpression,
+    ): ts.Expression {
+        for (let current = this.unwrap(node); ;) {
+            if (ts.isConditionalExpression(current)) {
+                const known = this.compileValue(
+                    current.condition,
+                ).staticBoolean;
+                if (known === undefined) return current;
+                current = this.unwrap(
+                    known ? current.whenTrue : current.whenFalse,
+                );
+                continue;
+            }
+            const alias = ts.isIdentifier(current)
+                ? site.aliases.get(this.symbols.valueSymbol(current)!)
+                : undefined;
+            if (!alias) return current;
+            current = this.unwrap(alias);
+        }
+    }
+
+    /** The items of an array literal `node` settles to, each read `within` the callee's scope. */
+    private literalListItems(
+        node: ts.Expression,
+        site: Pick<ReturnedExpression, "within" | "aliases">,
+    ): StaticListItem[] | undefined {
+        const list = site.within(() =>
+            this.selectedReturnedExpression(node, {
+                ...site,
+                returned: node,
+            }),
+        );
+        if (!ts.isArrayLiteralExpression(list)) return undefined;
+        const elements = list.elements;
+        return site
+            .within(() =>
+                elements.flatMap((element) =>
+                    ts.isSpreadElement(element)
+                        ? this.staticListItems(element.expression)
+                        : [unboundListItem(element)],
+                ),
+            )
+            .map((item) => ({
+                ...item,
+                within: <T>(read: () => T): T =>
+                    site.within(() => item.within(read)),
+            }));
+    }
+
+    /**
+     * What a call of a local function generation cannot run returns, read
+     * without running it: its arguments are evaluated once, here, and read
+     * `within` a scope binding the callee's parameters to them. Its body is
+     * `return`s, `if` statements whose pure conditions generation knows
+     * over those bindings (a known-false one skipped, a known-true one entered),
+     * and `const` declarations, whose initializers stand for their names
+     * (`aliases`). A parameter the callee writes, a rest parameter, a
+     * default an argument may leave in use, or a spread argument keeps the
+     * call unspelled.
+     */
+    private returnedExpression(
+        call: ts.CallExpression,
+    ): ReturnedExpression | undefined {
+        if (call.questionDotToken) return undefined;
         const callee = calledFunction(this.checker, call);
         const body = callee?.body;
-        const statement =
-            body && ts.isBlock(body) && body.statements.length === 1
-                ? body.statements[0]
-                : undefined;
-        const returned =
-            body && !ts.isBlock(body)
-                ? body
-                : statement && ts.isReturnStatement(statement)
-                  ? statement.expression
-                  : undefined;
-        const listsOnly = (node: ts.Expression): boolean => {
-            const current = this.unwrap(node);
-            return ts.isConditionalExpression(current)
-                ? listsOnly(current.whenTrue) && listsOnly(current.whenFalse)
-                : ts.isArrayLiteralExpression(current);
-        };
         if (
             !callee ||
-            !returned ||
-            !listsOnly(returned) ||
+            !body ||
+            callee.getSourceFile().isDeclarationFile ||
             call.arguments.length !== callee.parameters.length ||
             call.arguments.some(ts.isSpreadElement) ||
             !callee.parameters.every(
-                (parameter) =>
+                (parameter, index) =>
                     ts.isIdentifier(parameter.name) &&
                     !parameter.dotDotDotToken &&
-                    !parameter.initializer &&
+                    (!parameter.initializer ||
+                        !nullability(
+                            this.checker.getTypeAtLocation(
+                                call.arguments[index]!,
+                            ),
+                        ).undefined) &&
                     parameterIsReadOnly(this.checker, callee, parameter.name),
             )
         )
@@ -4300,27 +4543,55 @@ class Compiler implements LoweringServices {
                 this.bindings.popScope();
             }
         };
-        let list = this.unwrap(returned);
-        while (ts.isConditionalExpression(list)) {
-            const condition = list.condition;
-            const known = within(
-                () => this.compileValue(condition).staticBoolean,
-            );
-            if (known === undefined) return undefined;
-            list = this.unwrap(known ? list.whenTrue : list.whenFalse);
-        }
-        if (!ts.isArrayLiteralExpression(list)) return undefined;
-        const elements = list.elements;
-        return within(() =>
-            elements.flatMap((element) =>
-                ts.isSpreadElement(element)
-                    ? this.staticListItems(element.expression)
-                    : [unboundListItem(element)],
-            ),
-        ).map((item) => ({
-            ...item,
-            within: <T>(read: () => T): T => within(() => item.within(read)),
-        }));
+        if (!ts.isBlock(body))
+            return { returned: body, within, aliases: new Map() };
+        const aliases = new Map<ts.Symbol, ts.Expression>();
+        // The expression the statements return, or "none" when they fall
+        // through; undefined where generation cannot tell.
+        const returned = (
+            statements: readonly ts.Statement[],
+        ): ts.Expression | "none" | undefined => {
+            for (const statement of statements) {
+                if (ts.isReturnStatement(statement))
+                    return statement.expression ?? undefined;
+                if (ts.isVariableStatement(statement)) {
+                    if (variableKind(statement.declarationList) !== "const")
+                        return undefined;
+                    for (const declaration of statement.declarationList
+                        .declarations) {
+                        const symbol = ts.isIdentifier(declaration.name)
+                            ? this.symbols.valueSymbol(declaration.name)
+                            : undefined;
+                        if (!symbol || !declaration.initializer)
+                            return undefined;
+                        aliases.set(symbol, declaration.initializer);
+                    }
+                    continue;
+                }
+                if (
+                    !ts.isIfStatement(statement) ||
+                    !this.evaluationOrder.isPureExpression(statement.expression)
+                )
+                    return undefined;
+                const known = within(
+                    () => this.compileValue(statement.expression).staticBoolean,
+                );
+                if (known === undefined) return undefined;
+                const branch = known
+                    ? statement.thenStatement
+                    : statement.elseStatement;
+                if (!branch) continue;
+                const inner = returned(
+                    ts.isBlock(branch) ? branch.statements : [branch],
+                );
+                if (inner !== "none") return inner;
+            }
+            return "none";
+        };
+        const found = returned(body.statements);
+        return found === undefined || found === "none"
+            ? undefined
+            : { returned: found, within, aliases };
     }
 
     /** The strings a list generation cannot spell holds (`staticListItems`). */
@@ -5461,8 +5732,18 @@ class Compiler implements LoweringServices {
             this.reachFeature("renderer:floating-origin", call);
         }
         const engineIdentity = Symbol();
-        if (engineCanvas)
+        if (engineCanvas) {
             writable(engineCanvas).canvasEngineIdentity = engineIdentity;
+            // A read of a binding is a copy of its value (a narrowed
+            // `canvas!` too): the binding keeps the proof its later reads
+            // and the aliases they make carry.
+            const argument = this.unwrap(argumentAt(call, 0));
+            const stored = ts.isIdentifier(argument)
+                ? this.bindings.lookupOptional(argument)
+                : undefined;
+            if (stored?.kind === engineCanvas.kind)
+                writable(stored).canvasEngineIdentity = engineIdentity;
+        }
         return {
             kind: "engine",
             cpp: engineCpp,
@@ -5761,9 +6042,12 @@ class Compiler implements LoweringServices {
         )
             return undefined;
         const lanes: Array<{ lane: readonly string[]; value: Value }> = [];
-        // A parsed document typed as a number is one lane too.
-        const numberTyped =
-            valueKindOf(this.checker.getTypeAtLocation(node)) === "number";
+        // A parsed document typed as a number is one lane too, and so is one
+        // typed as an optional number generation proved present.
+        const type = this.checker.getTypeAtLocation(node);
+        const numberTyped = valueKindOf(type) === "number";
+        const presentNumberTyped =
+            valueKindOf(this.checker.getNonNullableType(type)) === "number";
         const visit = (
             current: Value,
             lane: readonly string[],
@@ -5772,7 +6056,10 @@ class Compiler implements LoweringServices {
                 current.kind === "number" ||
                 (current.kind === "data" &&
                     current.dataType?.kind === "number") ||
-                (lane.length === 0 && numberTyped && isJsonValue(current))
+                (lane.length === 0 &&
+                    isJsonValue(current) &&
+                    (numberTyped ||
+                        (presentNumberTyped && valueProvenPresent(current))))
             ) {
                 const known = current.staticNumber;
                 if (
@@ -5851,9 +6138,10 @@ class Compiler implements LoweringServices {
 
     /**
      * A shader stage's builder run over arguments with numbers generation
-     * does not know (`compileShaderSource`): each formatter call of its own
-     * body spelling one runs as this run's spelling of that hole, and any
-     * other read of such a number refuses.
+     * does not know (`compileShaderSource`): each formatter call spelling
+     * one, in its body or a local function it hands the number to
+     * (`shaderSourceReads`), runs as this run's spelling of that hole, and
+     * any other read of such a number refuses.
      */
     private runShaderSourceBuilder(
         call: ts.CallExpression,
@@ -5862,10 +6150,12 @@ class Compiler implements LoweringServices {
         unread: UnreadLanes,
         state: ShaderSourceRun,
         label: string,
+        keys?: readonly string[],
     ): unknown {
         state.admitted = true;
         const spellings = new Map<ts.Node, string>();
-        for (const found of this.shaderSourceFormatters(declaration, unread)) {
+        const reads = this.shaderSourceReads(declaration, unread);
+        for (const found of reads.formatters) {
             let index = state.holes.findIndex(
                 (hole) =>
                     hole.call === call && hole.formatter === found.formatter,
@@ -5881,36 +6171,13 @@ class Compiler implements LoweringServices {
             return `it reads the run-time number '${parameter.getText()}' other than through a number formatter with literal digits, whose text a shader source's uniform replaces`;
         };
         // A number passed whole has no accessor to refuse a read through:
-        // only the formatters it stands in for may read its parameter.
-        for (const [index, lanes] of unread) {
-            const parameter = declaration.parameters[index]!.name;
-            if (
-                !lanes.some((lane) => lane.length === 0) ||
-                !declaration.body ||
-                !ts.isIdentifier(parameter)
-            )
-                continue;
-            const symbol = this.symbols.valueSymbol(parameter);
-            let stray: ts.Node | undefined;
-            forEachAnalysisNode(
-                declaration.body,
-                (node) => {
-                    if (spellings.has(node)) return "skip";
-                    if (
-                        !stray &&
-                        ts.isIdentifier(node) &&
-                        this.symbols.valueSymbol(node) === symbol
-                    )
-                        stray = node;
-                },
-                { types: "skip" },
+        // only the formatters it stands in for, the calls it is handed on
+        // to and its presence tests may read its parameter.
+        if (reads.stray)
+            this.fail(
+                reads.stray.node,
+                `${label} cannot run at generation: ${message(reads.stray.parameter)}.`,
             );
-            if (stray)
-                this.fail(
-                    stray,
-                    `${label} cannot run at generation: ${message(index)}.`,
-                );
-        }
         return executeApplicationFunction(
             this.generationRunContext(
                 (identifier) => this.staticScalar(identifier),
@@ -5930,99 +6197,182 @@ class Compiler implements LoweringServices {
             declaration,
             args,
             label,
+            keys,
         );
     }
 
     /**
-     * The library number formatter calls of a builder's own body that spell
-     * a number generation does not know of one of its arguments:
+     * Where a builder's run reads the run-time numbers of its arguments
+     * (`runShaderSourceBuilder`), through its own body and the local
+     * functions it hands one of its arguments whole (whose parameter then
+     * stands for that argument): each number formatter spelling such a number
+     * (`shaderSourceFormatter`), and the first other read of a number passed
+     * whole. A presence test of one against `null` or `undefined` is no such
+     * read: a lane is a number, present at every run.
+     */
+    private shaderSourceReads(
+        declaration: SupportedFunction,
+        unread: UnreadLanes,
+    ): {
+        readonly formatters: Array<Omit<ShaderSourceHole, "call">>;
+        readonly stray?: { readonly node: ts.Node; readonly parameter: number };
+    } {
+        const formatters: Array<Omit<ShaderSourceHole, "call">> = [];
+        let stray: { node: ts.Node; parameter: number } | undefined;
+        const followed = new Map<ts.Node, Set<string>>();
+        const whole = (parameter: number): boolean =>
+            unread.get(parameter)?.some((lane) => lane.length === 0) ?? false;
+        const walk = (
+            unit: SupportedFunction,
+            bound: ReadonlyMap<ts.Symbol, number>,
+        ): void => {
+            const key = [...bound.values()].join(",");
+            const seen = followed.get(unit) ?? new Set<string>();
+            if (!unit.body || seen.has(key)) return;
+            followed.set(unit, seen.add(key));
+            const boundOf = (node: ts.Node): number | undefined => {
+                const symbol = ts.isIdentifier(node)
+                    ? this.symbols.valueSymbol(node)
+                    : undefined;
+                return symbol === undefined ? undefined : bound.get(symbol);
+            };
+            // Reads that pass a number on whole or test its presence.
+            const allowed = new Set<ts.Node>();
+            forEachAnalysisNode(
+                unit.body,
+                (node) => {
+                    if (ts.isCallExpression(node)) {
+                        const found = this.shaderSourceFormatter(
+                            node,
+                            boundOf,
+                            unread,
+                        );
+                        if (found) {
+                            formatters.push(found);
+                            return "skip";
+                        }
+                        const callee = unwrapExpression(node.expression);
+                        const target = ts.isIdentifier(callee)
+                            ? resolveFunctionDeclaration(
+                                  this.checker,
+                                  callee,
+                                  (at, message) => this.fail(at, message),
+                              )
+                            : undefined;
+                        const passed = new Map<ts.Symbol, number>();
+                        if (target?.body)
+                            node.arguments.forEach((argument, index) => {
+                                const read = unwrapExpression(argument);
+                                const parameter = boundOf(read);
+                                const name = target.parameters[index]?.name;
+                                const symbol =
+                                    name && ts.isIdentifier(name)
+                                        ? this.symbols.valueSymbol(name)
+                                        : undefined;
+                                if (parameter === undefined || !symbol) return;
+                                passed.set(symbol, parameter);
+                                allowed.add(read);
+                            });
+                        if (target && passed.size > 0) walk(target, passed);
+                    }
+                    const comparison = ts.isBinaryExpression(node)
+                        ? nullishComparison(this.checker, node)
+                        : undefined;
+                    const tested =
+                        comparison && unwrapExpression(comparison.tested);
+                    if (tested && boundOf(tested) !== undefined)
+                        allowed.add(tested);
+                    const parameter = boundOf(node);
+                    if (
+                        !stray &&
+                        parameter !== undefined &&
+                        whole(parameter) &&
+                        !allowed.has(node)
+                    )
+                        stray = { node, parameter };
+                },
+                { types: "skip" },
+            );
+        };
+        walk(
+            declaration,
+            new Map(
+                declaration.parameters.flatMap((parameter, index) => {
+                    const symbol =
+                        unread.has(index) && ts.isIdentifier(parameter.name)
+                            ? this.symbols.valueSymbol(parameter.name)
+                            : undefined;
+                    return symbol ? [[symbol, index] as const] : [];
+                }),
+            ),
+        );
+        return { formatters, ...(stray ? { stray } : {}) };
+    }
+
+    /**
+     * A library number formatter call spelling a number generation does not
+     * know of an argument a parameter `boundOf` stands for:
      * `<parameter>[.<key>]*.toFixed(<digits>)` or `.toExponential(<digits>?)`,
      * with literal digits, so the text is a float literal for every number.
      */
-    private shaderSourceFormatters(
-        declaration: SupportedFunction,
+    private shaderSourceFormatter(
+        node: ts.CallExpression,
+        boundOf: (node: ts.Node) => number | undefined,
         unread: UnreadLanes,
-    ): Array<Omit<ShaderSourceHole, "call">> {
-        const found: Array<Omit<ShaderSourceHole, "call">> = [];
-        if (!declaration.body) return found;
-        forEachAnalysisNode(
-            declaration.body,
-            (node) => {
-                if (
-                    !ts.isCallExpression(node) ||
-                    node.questionDotToken ||
-                    !isLibraryNumberFormatter(this.checker, node)
-                )
-                    return;
-                const member = namedMember(
-                    this.checker,
-                    unwrapExpression(node.expression),
-                )!;
-                const lane: string[] = [];
-                let receiver = unwrapExpression(member.expression);
-                for (
-                    let access = namedMember(this.checker, receiver);
-                    access && !ts.isOptionalChain(access.access);
-                    access = namedMember(this.checker, receiver)
-                ) {
-                    lane.unshift(access.name);
-                    receiver = unwrapExpression(access.expression);
-                }
-                const symbol = ts.isIdentifier(receiver)
-                    ? this.symbols.valueSymbol(receiver)
-                    : undefined;
-                const parameter = declaration.parameters.findIndex(
-                    ({ name }) =>
-                        ts.isIdentifier(name) &&
-                        symbol !== undefined &&
-                        this.symbols.valueSymbol(name) === symbol,
-                );
-                if (
-                    !unread
-                        .get(parameter)
-                        ?.some((known) => sameKeys(known, lane))
-                )
-                    return;
-                const format = numberFormatOf(member.name)!;
-                const written = node.arguments[0]
-                    ? unwrapExpression(node.arguments[0])
-                    : undefined;
-                const digits =
-                    written && ts.isNumericLiteral(written)
-                        ? Number(written.text)
-                        : undefined;
-                if (
-                    (written && digits === undefined) ||
-                    (digits !== undefined &&
-                        foldNumberFormat(format, 0, digits) === undefined)
-                ) {
-                    this.fail(
-                        node,
-                        `A shader source's run-time number formatted by '${node.getText()}' requires literal ${format} digits.`,
-                    );
-                }
-                if (
-                    format === "toPrecision" ||
-                    (format === "toFixed" &&
-                        !(digits !== undefined && digits >= 1))
-                ) {
-                    this.fail(
-                        node,
-                        `A shader source's run-time number formatted by '${node.getText()}' spells an integer literal for some numbers, whose WGSL type its position decides; toFixed with one or more digits and toExponential spell a float.`,
-                    );
-                }
-                found.push({
-                    formatter: node,
-                    parameter,
-                    lane,
-                    format,
-                    digits,
-                });
-                return "skip";
-            },
-            { types: "skip" },
-        );
-        return found;
+    ): Omit<ShaderSourceHole, "call"> | undefined {
+        if (
+            node.questionDotToken ||
+            !isLibraryNumberFormatter(this.checker, node)
+        )
+            return undefined;
+        const member = namedMember(
+            this.checker,
+            unwrapExpression(node.expression),
+        )!;
+        const lane: string[] = [];
+        let receiver = unwrapExpression(member.expression);
+        for (
+            let access = namedMember(this.checker, receiver);
+            access && !ts.isOptionalChain(access.access);
+            access = namedMember(this.checker, receiver)
+        ) {
+            lane.unshift(access.name);
+            receiver = unwrapExpression(access.expression);
+        }
+        const parameter = boundOf(receiver);
+        if (
+            parameter === undefined ||
+            !unread.get(parameter)?.some((known) => sameKeys(known, lane))
+        )
+            return undefined;
+        const format = numberFormatOf(member.name)!;
+        const written = node.arguments[0]
+            ? unwrapExpression(node.arguments[0])
+            : undefined;
+        const digits =
+            written && ts.isNumericLiteral(written)
+                ? Number(written.text)
+                : undefined;
+        if (
+            (written && digits === undefined) ||
+            (digits !== undefined &&
+                foldNumberFormat(format, 0, digits) === undefined)
+        ) {
+            this.fail(
+                node,
+                `A shader source's run-time number formatted by '${node.getText()}' requires literal ${format} digits.`,
+            );
+        }
+        if (
+            format === "toPrecision" ||
+            (format === "toFixed" && !(digits !== undefined && digits >= 1))
+        ) {
+            this.fail(
+                node,
+                `A shader source's run-time number formatted by '${node.getText()}' spells an integer literal for some numbers, whose WGSL type its position decides; toFixed with one or more digits and toExponential spell a float.`,
+            );
+        }
+        return { formatter: node, parameter, lane, format, digits };
     }
 
     /**
@@ -6047,8 +6397,12 @@ class Compiler implements LoweringServices {
             }),
         );
         if (carried !== undefined) return carried;
+        if (ts.isIdentifier(expression))
+            return (
+                this.executedConstantText(expression) ??
+                this.localText(expression)
+            );
         if (
-            ts.isIdentifier(expression) ||
             ts.isPropertyAccessExpression(expression) ||
             ts.isElementAccessExpression(expression)
         )
@@ -6056,6 +6410,213 @@ class Compiler implements LoweringServices {
         return ts.isCallExpression(expression)
             ? this.runGenerationBuilder(expression)
             : undefined;
+    }
+
+    /**
+     * The text a local `const` or `let` holds at `read`, generation folding
+     * its writes in order: its initializer's text, then each `=` or `+=` of
+     * text its function makes before the read outside loops, skipping one
+     * whose enclosing `if` is not taken, each selection and `if` decided
+     * where its condition is settled (`settledCondition`), each text folded
+     * where what it reads holds at the read (`unchangedUntil`). Undefined for
+     * another write, a write in a loop or another function, an enclosing
+     * statement other than a block or a settled `if`, or text generation
+     * cannot fold.
+     */
+    private localText(read: ts.Identifier): string | undefined {
+        const symbol = this.symbols.valueSymbol(read);
+        const declaration = symbol?.valueDeclaration;
+        if (
+            !symbol ||
+            !declaration ||
+            !ts.isVariableDeclaration(declaration) ||
+            !declaration.initializer
+        )
+            return undefined;
+        const kind = variableKind(declaration);
+        if (kind !== "let" && kind !== "const") return undefined;
+        const unit = ts.findAncestor(declaration, ts.isFunctionLike);
+        const scope = declaration.parent.parent.parent;
+        if (!unit || ts.findAncestor(read, ts.isFunctionLike) !== unit)
+            return undefined;
+        // A selection the initializer or a write makes takes its settled arm.
+        const text = (expression: ts.Expression): string | undefined => {
+            const node = unwrapExpression(expression);
+            if (ts.isConditionalExpression(node)) {
+                const known = this.settledCondition(node.condition);
+                return known === undefined
+                    ? undefined
+                    : text(known ? node.whenTrue : node.whenFalse);
+            }
+            return this.unchangedUntil(expression, read)
+                ? unlessRefused(() =>
+                      this.evaluator.compileStringLiteral(expression),
+                  )
+                : undefined;
+        };
+        const writes = bindingRebinds(
+            this.checker,
+            [read.getSourceFile()],
+            symbol,
+        );
+        // A write in a loop may come before the read in a later round, and
+        // one in another function whenever that function runs: the text is
+        // the run's.
+        if (
+            writes.some(
+                (write) =>
+                    ts.findAncestor(
+                        write.node,
+                        (node) =>
+                            ts.isFunctionLike(node) ||
+                            ts.isIterationStatement(node, false),
+                    ) !== unit,
+            )
+        )
+            return undefined;
+        let held = text(declaration.initializer);
+        for (const write of [...writes]
+            .filter((site) => site.node.getEnd() <= read.getStart())
+            .sort((left, right) => left.node.pos - right.node.pos)) {
+            if (held === undefined) return undefined;
+            const taken = this.writeTaken(write.node, scope);
+            if (taken === undefined) return undefined;
+            if (!taken) continue;
+            const assignment = write.node;
+            if (
+                !ts.isBinaryExpression(assignment) ||
+                (write.kind === "assign"
+                    ? assignment.operatorToken.kind !==
+                      ts.SyntaxKind.EqualsToken
+                    : write.kind !== "compound" ||
+                      assignment.operatorToken.kind !==
+                          ts.SyntaxKind.PlusEqualsToken)
+            )
+                return undefined;
+            const right = text(assignment.right);
+            held =
+                right === undefined
+                    ? undefined
+                    : write.kind === "assign"
+                      ? right
+                      : held + right;
+        }
+        return held;
+    }
+
+    /**
+     * Whether what `expression` reads holds the same at `read`, later in its
+     * function: no name it reads is written between the two or in another
+     * function, and no member it reads is one a write in the program
+     * replaces (`recordFieldIsWritten`).
+     */
+    private unchangedUntil(expression: ts.Node, read: ts.Node): boolean {
+        const unit = ts.findAncestor(read, ts.isFunctionLike);
+        return !this.readsReplaced(
+            expression,
+            (writes) =>
+                writes.some(
+                    (write) =>
+                        ts.findAncestor(write.node, ts.isFunctionLike) !==
+                            unit ||
+                        (write.node.getStart() >= expression.getEnd() &&
+                            write.node.getEnd() <= read.getStart()),
+                ),
+            { functions: "skip" },
+        );
+    }
+
+    /**
+     * Whether `expression` reads a member a write in the program replaces
+     * (`recordFieldIsWritten`) or a name whose writes (`bindingRebinds`)
+     * `replaced` counts.
+     */
+    private readsReplaced(
+        expression: ts.Node,
+        replaced: (writes: readonly WriteSite[]) => boolean,
+        policy?: { readonly functions?: "skip" },
+    ): boolean {
+        return someAnalysisNode(
+            expression,
+            (node) => {
+                if (ts.isPropertyAccessExpression(node))
+                    return recordFieldIsWritten(
+                        this,
+                        this.checker.getTypeAtLocation(node.expression),
+                        node.name.text,
+                    );
+                if (!ts.isIdentifier(node) || !isValueReference(node))
+                    return false;
+                const symbol = this.symbols.valueSymbol(node);
+                return (
+                    symbol !== undefined &&
+                    replaced(
+                        bindingRebinds(
+                            this.checker,
+                            [node.getSourceFile()],
+                            symbol,
+                        ),
+                    )
+                );
+            },
+            policy,
+        );
+    }
+
+    /**
+     * Whether a write statement inside `scope` runs, where generation knows
+     * every `if` it is nested in; undefined for another enclosing statement
+     * or a condition generation does not know.
+     */
+    private writeTaken(write: ts.Node, scope: ts.Node): boolean | undefined {
+        let taken = true;
+        if (!ts.isExpressionStatement(write.parent)) return undefined;
+        let child: ts.Node = write.parent;
+        for (let node = child.parent; node !== scope; node = node.parent) {
+            if (!node || ts.isFunctionLike(node)) return undefined;
+            if (ts.isBlock(node)) {
+                child = node;
+                continue;
+            }
+            if (!ts.isIfStatement(node) || child === node.expression)
+                return undefined;
+            const known = this.settledCondition(node.expression);
+            if (known === undefined) return undefined;
+            if (known !== (child === node.thenStatement)) taken = false;
+            child = node;
+        }
+        return taken;
+    }
+
+    /**
+     * What a condition is where text is folded later than the program
+     * evaluates it (`localText`): what generation knows of it now, when it reads
+     * nothing that could have changed since -- names never rebound, members
+     * no write in the program replaces (`recordFieldIsWritten`) -- and calls
+     * or writes nothing. Undefined otherwise: the condition is then a
+     * run-time test.
+     */
+    private settledCondition(condition: ts.Expression): boolean | undefined {
+        if (
+            someAnalysisNode(
+                condition,
+                (node) =>
+                    ts.isCallExpression(node) ||
+                    ts.isNewExpression(node) ||
+                    ts.isTaggedTemplateExpression(node) ||
+                    ts.isElementAccessExpression(node) ||
+                    writeSites(node).length > 0,
+            ) ||
+            this.readsReplaced(condition, (writes) => writes.length > 0)
+        )
+            return undefined;
+        const compiled = unlessRefused(() =>
+            this.probeEmission(
+                () => this.conditions.compileCondition(condition),
+                () => false,
+            ),
+        );
+        return compiled === undefined ? undefined : knownCondition(compiled);
     }
 
     /**
@@ -6119,40 +6680,9 @@ class Compiler implements LoweringServices {
     private executedConstantText(
         expression: ts.Expression,
     ): string | undefined {
-        const keys: string[] = [];
-        let root = this.unwrap(expression);
-        while (
-            ts.isPropertyAccessExpression(root) ||
-            ts.isElementAccessExpression(root)
-        ) {
-            const key = ts.isPropertyAccessExpression(root)
-                ? root.name.text
-                : this.evaluator.staticTextValue(root.argumentExpression);
-            if (key === undefined) return undefined;
-            keys.unshift(key);
-            root = this.unwrap(root.expression);
-        }
-        // A local `const` naming a module constant reads that constant.
-        while (ts.isIdentifier(root) && !this.moduleConstantDeclaration(root)) {
-            const aliased = constInitializer(this, root);
-            if (!aliased || !ts.isIdentifier(aliased)) break;
-            root = aliased;
-        }
-        const constant = ts.isIdentifier(root)
-            ? this.moduleConstantDeclaration(root)
-            : undefined;
-        // A held result re-reads the call its declaration still evaluates;
-        // a call read in place is folded away, so it may write nothing.
-        const held =
-            !constant && ts.isIdentifier(root)
-                ? this.settledCallInitializer(root)
-                : undefined;
-        const call =
-            held ??
-            (ts.isCallExpression(root) && !root.questionDotToken
-                ? root
-                : undefined);
-        if (!constant && !call) return undefined;
+        const path = this.executedPath(expression);
+        if (!path) return undefined;
+        const { call, held, keys } = path;
         const returned =
             call &&
             (held ||
@@ -6163,16 +6693,105 @@ class Compiler implements LoweringServices {
                 ? this.returnedLiteralText(call, keys)
                 : undefined;
         if (returned !== undefined) return returned;
-        let value: unknown = constant
-            ? this.runModuleConstant(constant.declaration)
-            : this.executedCall(call!);
-        for (const key of keys) {
-            if (value === null || typeof value !== "object") return undefined;
-            value = Object.getOwnPropertyDescriptor(value, key)?.value;
-        }
+        const value = this.executedPathValue(path);
         return typeof value === "string" || typeof value === "number"
             ? String(value)
             : undefined;
+    }
+
+    /**
+     * The plain data generation runs for a read (`executedConstantText`):
+     * the module constant or helper call at its root, and the keys it reads
+     * through.
+     */
+    private executedPath(expression: ts.Expression):
+        | {
+              constant?: ts.VariableDeclaration;
+              call?: ts.CallExpression;
+              held: boolean;
+              keys: readonly string[];
+          }
+        | undefined {
+        const keys: string[] = [];
+        let root = this.unwrap(expression);
+        for (;;) {
+            while (
+                ts.isPropertyAccessExpression(root) ||
+                ts.isElementAccessExpression(root)
+            ) {
+                const key = ts.isPropertyAccessExpression(root)
+                    ? root.name.text
+                    : this.evaluator.staticTextValue(root.argumentExpression);
+                if (key === undefined) return undefined;
+                keys.unshift(key);
+                root = this.unwrap(root.expression);
+            }
+            // A member of the literal a read-only parameter is handed is
+            // the expression that literal holds there.
+            if (ts.isObjectLiteralExpression(root) && keys.length > 0) {
+                const literal = root;
+                // A key a spread may supply leaves the read to the run time.
+                const member = unlessRefused(() =>
+                    this.objectProperty(literal, keys[0]!),
+                );
+                if (!member) return undefined;
+                keys.shift();
+                root = this.unwrap(member);
+                continue;
+            }
+            if (!ts.isIdentifier(root) || this.moduleConstantDeclaration(root))
+                break;
+            // A local `const` naming a module constant, or a member of what
+            // another binding holds, reads that one; an inlined call's
+            // read-only parameter reads its argument.
+            const aliased = constInitializer(this, root);
+            const next =
+                aliased &&
+                (ts.isIdentifier(aliased) ||
+                    ts.isPropertyAccessExpression(aliased))
+                    ? aliased
+                    : this.userFunctions.inlinedArgument(root, (name) =>
+                          this.bindings.scopeOf(name),
+                      );
+            if (!next) break;
+            root = this.unwrap(next);
+        }
+        const constant = ts.isIdentifier(root)
+            ? this.moduleConstantDeclaration(root)
+            : undefined;
+        // A held result re-reads the call its declaration still evaluates;
+        // a call read in place is folded away, so it may write nothing.
+        const held =
+            !constant && ts.isIdentifier(root)
+                ? this.settledCallInitializer(root, keys)
+                : undefined;
+        const call =
+            held ??
+            (ts.isCallExpression(root) && !root.questionDotToken
+                ? root
+                : undefined);
+        if (!constant && !call) return undefined;
+        return {
+            ...(constant ? { constant: constant.declaration } : {}),
+            ...(call ? { call } : {}),
+            held: held !== undefined,
+            keys,
+        };
+    }
+
+    /** What the run of an `executedPath` holds at its keys, if it runs. */
+    private executedPathValue(
+        path: NonNullable<ReturnType<Compiler["executedPath"]>>,
+    ): unknown {
+        // A call's run is read at the keys inside it: what else its result
+        // holds (a function beside the text read) is never read.
+        if (!path.constant) return this.executedCall(path.call!, path.keys);
+        let value: unknown = this.runModuleConstant(path.constant);
+        for (const key of path.keys) {
+            if (value === null || typeof value !== "object") return undefined;
+            value = Object.getOwnPropertyDescriptor(value, key)?.value;
+        }
+        return value;
     }
 
     /**
@@ -6416,13 +7035,20 @@ class Compiler implements LoweringServices {
     private runGenerationCall(
         call: ts.CallExpression,
         holes?: ShaderSourceRun,
+        keys?: readonly string[],
     ): { value: unknown; label: string } | undefined {
         const callee = this.unwrap(call.expression);
         const member = libraryStaticMember(this.checker, callee);
         if (member && !member.access.questionDotToken) {
             const label = `Static call '${callee.getText()}'`;
             return {
-                value: this.runGenerationFunction(call, [], label),
+                value: this.runGenerationFunction(
+                    call,
+                    [],
+                    label,
+                    undefined,
+                    keys,
+                ),
                 label,
             };
         }
@@ -6514,8 +7140,15 @@ class Compiler implements LoweringServices {
                           unread,
                           holes,
                           label,
+                          keys,
                       )
-                    : this.runGenerationFunction(declaration, args, label),
+                    : this.runGenerationFunction(
+                          declaration,
+                          args,
+                          label,
+                          undefined,
+                          keys,
+                      ),
             label,
         };
     }
@@ -6531,9 +7164,11 @@ class Compiler implements LoweringServices {
         args: readonly (ExecutedArgument | undefined)[],
         label: string,
         pinnedStandIn?: (name: string) => unknown,
+        keys: readonly string[] = [],
     ): unknown {
         const key = JSON.stringify([
             pinnedStandIn !== undefined,
+            keys,
             ...args.map((value) =>
                 value === undefined
                     ? ["undefined"]
@@ -6576,6 +7211,7 @@ class Compiler implements LoweringServices {
             declaration,
             args,
             label,
+            keys,
         );
         if (closed) runs.set(key, result);
         return result;
@@ -6638,6 +7274,7 @@ class Compiler implements LoweringServices {
             foldEnclosing,
             deploymentValue: (expression) =>
                 browserDeploymentValue(this, expression),
+            packagedText: (url) => packagedFetchText(this, url),
             ...more,
         };
     }
@@ -6728,8 +7365,25 @@ class Compiler implements LoweringServices {
         // Nested undefined values remain excluded by the lossless JSON boundary.
         if (absenceOf(carried) === "undefined" && !carried.parameterBinding)
             return { value: undefined };
+        // A known null (a case split's null arm) is plain data too.
+        if (absenceOf(carried) === "null" && !carried.parameterBinding)
+            return { value: null };
         const value = this.generationScalar(node, carried);
         if (value !== undefined) return { value };
+        // A field of plain data generation runs (`executedPath`), such as
+        // the record an awaited helper's call settles to.
+        const path =
+            ts.isPropertyAccessExpression(node) ||
+            ts.isElementAccessExpression(node)
+                ? this.executedPath(node)
+                : undefined;
+        const executed = path && this.executedPathValue(path);
+        if (
+            typeof executed === "number" ||
+            typeof executed === "string" ||
+            typeof executed === "boolean"
+        )
+            return { value: executed };
         // A complete static snapshot of retained data (a record or array
         // whose current contents generation knows) crosses as its copy.
         const snapshot = this.currentStaticLiteral(carried, node);
@@ -6811,30 +7465,82 @@ class Compiler implements LoweringServices {
             : undefined;
     }
 
-    /** What a closed-helper call returns when generation runs it, if it can. */
-    private executedCall(call: ts.CallExpression): unknown {
+    /**
+     * What a closed-helper call returns when generation runs it, if it can,
+     * read at `keys` (`executeApplicationFunction`); while a shader stage's
+     * text folds, the run-time numbers it formats spelled as that fold's
+     * holes (`runShaderSourceBuilder`).
+     */
+    private executedCall(
+        call: ts.CallExpression,
+        keys?: readonly string[],
+    ): unknown {
         return unlessRefused(() =>
             this.probeEmission(
-                () => this.runGenerationCall(call)?.value,
+                () =>
+                    this.runGenerationCall(call, this.shaderSourceHoles, keys)
+                        ?.value,
                 () => false,
             ),
         );
     }
 
     /**
-     * The helper call a local `const` holds the result of
+     * The helper call a `const` holds the result of
      * (`const sources = stageSources(lit)`), when evaluating it at a later
-     * read gives what the binding holds there: a run there is the
-     * declaration's (`rerunCallInitializer`) and nothing writes through the
-     * binding.
+     * read of its member at `keys` gives what the binding holds there: a
+     * run there is the declaration's (`rerunCallInitializer`) and no write
+     * the program can make reaches that member -- for a function's own
+     * `const`, nor anything it holds (`bindingSubtreeIntact`); for a module
+     * one, the binding at all.
      */
     public settledCallInitializer(
         identifier: ts.Identifier,
+        keys: readonly string[] = [],
     ): ts.CallExpression | undefined {
         const initializer = this.rerunCallInitializer(identifier);
-        return initializer && this.unwrittenConst(initializer.declaration)
-            ? initializer.call
-            : undefined;
+        if (!initializer) return undefined;
+        const { declaration } = initializer;
+        const unwritten = ts.findAncestor(declaration.parent, isEffectFunction)
+            ? bindingSubtreeIntact(this.checker, declaration, keys)
+            : this.unwrittenConst(declaration);
+        return unwritten ? initializer.call : undefined;
+    }
+
+    /**
+     * The value a member read of `const x = await f()` holds where
+     * generation runs the call and it settles to plain data reading only
+     * packaged files (`executedPath`), and no write the program can make
+     * reaches the member read (`settledCallInitializer`). The binding's
+     * run-time storage answers every other read.
+     */
+    public generationRead(expression: ts.Expression): Value | undefined {
+        const path = this.executedPath(expression);
+        const declaration =
+            path?.held && path.call
+                ? ts.findAncestor(path.call, ts.isVariableDeclaration)
+                : undefined;
+        if (
+            !path ||
+            path.keys.length === 0 ||
+            !declaration?.initializer ||
+            !ts.isAwaitExpression(
+                this.evaluator.unwrap(declaration.initializer, {
+                    await: false,
+                }),
+            )
+        )
+            return undefined;
+        const data = this.executedPathValue(path);
+        // Data of a kind the read does not type stays the run time's to read.
+        return data === undefined ||
+            !typeAdmitsData(
+                this.checker,
+                this.checker.getTypeAtLocation(expression),
+                data,
+            )
+            ? undefined
+            : jsonToValue(this, executedConstantJsonPolicy, data, expression);
     }
 
     public resolveStaticExpression(
@@ -8179,14 +8885,37 @@ class Compiler implements LoweringServices {
         declaration: ts.Node,
         owner: Value | undefined,
     ): object {
+        const found = this.callbackClosureKeyOf(declaration, owner);
+        return "key" in found
+            ? found.key
+            : this.fail(declaration, found.refusal);
+    }
+
+    /**
+     * Whether a materialization of `declaration` with `owner` names the
+     * function object it is (`callbackIdentity` gives it an identity
+     * without refusing).
+     */
+    public hasCallbackIdentity(
+        declaration: ts.Node,
+        owner: Value | undefined,
+    ): boolean {
+        return "key" in this.callbackClosureKeyOf(declaration, owner);
+    }
+
+    /** `callbackClosureKey`'s key, or why a materialization names none. */
+    private callbackClosureKeyOf(
+        declaration: ts.Node,
+        owner: Value | undefined,
+    ): { key: object } | { refusal: string } {
         const container = callbackClosureContainer(declaration);
         if (!container) {
             if (owner?.callbackEvaluationIdentity) {
-                return owner.callbackEvaluationIdentity;
+                return { key: owner.callbackEvaluationIdentity };
             }
             // Module scope: the program evaluates the declaration once, so
             // every materialization names the same function object.
-            return unownedCallbackScope;
+            return { key: unownedCallbackScope };
         }
         if (ts.isClassLike(container)) {
             const receiver = this.thisInstance;
@@ -8204,23 +8933,23 @@ class Compiler implements LoweringServices {
                 instance?.dataType?.kind === "struct" &&
                 this.dataTypes.isClassStruct(instance.dataType.name)
             ) {
-                this.fail(
-                    declaration,
-                    "A callback declared per instance of a shared class has " +
+                return {
+                    refusal:
+                        "A callback declared per instance of a shared class has " +
                         "no identity a container could compare: every " +
                         "instance would register the same handler.",
-                );
+                };
             }
             const properties = instance?.recordProperties;
             if (!properties) {
-                this.fail(
-                    declaration,
-                    "A callback declared in a class body is one function " +
+                return {
+                    refusal:
+                        "A callback declared in a class body is one function " +
                         "object per instance, and this materialization names " +
                         "no instance to compare it by.",
-                );
+                };
             }
-            return properties;
+            return { key: properties };
         }
         if (
             ts.isConstructorDeclaration(container) &&
@@ -8231,39 +8960,39 @@ class Compiler implements LoweringServices {
                 owner.dataType?.kind === "struct" &&
                 this.dataTypes.isClassStruct(owner.dataType.name)
             ) {
-                this.fail(
-                    declaration,
-                    "A callback declared by a shared class constructor has " +
+                return {
+                    refusal:
+                        "A callback declared by a shared class constructor has " +
                         "no per-instance identity a container could compare.",
-                );
+                };
             }
             // A constructor evaluates once for this exact instance, so its
             // field record is also the identity of every function literal
             // created by that evaluation.
-            return owner.recordProperties;
+            return { key: owner.recordProperties };
         }
         // Declared inside a function: one function object per evaluation of
         // that body, and the innermost scope the evaluation pushed is what
         // the declaration closed over.
         const scope = owner?.recordScopes?.at(-1);
-        if (scope) return scope;
+        if (scope) return { key: scope };
         // A body emitted once as a native function runs many times behind one
         // emission, so its evaluations have no compile-time scope to tell
         // them apart and are refused rather than conflated.
         if (this.returnFrames.some((frame) => frame.kind === "native")) {
-            this.fail(
-                declaration,
-                "A callback declared inside a function emitted as a native " +
+            return {
+                refusal:
+                    "A callback declared inside a function emitted as a native " +
                     "function is a new function object at every call, and " +
                     "one identity would make them all the same handler.",
-            );
+            };
         }
-        this.fail(
-            declaration,
-            "A callback declared inside a function is a new function " +
+        return {
+            refusal:
+                "A callback declared inside a function is a new function " +
                 "object at every evaluation, and this materialization " +
                 "carries no closure to tell those evaluations apart.",
-        );
+        };
     }
 
     public defaultEngine(): string | undefined {
@@ -8458,6 +9187,10 @@ class Compiler implements LoweringServices {
 
     public storageTakenDuringAttempt(declaration: ts.Declaration): boolean {
         return this.replayStorage.takenDuringAttempt(declaration);
+    }
+
+    public storageRevision(): number {
+        return this.replayStorage.revision;
     }
 
     public refusedDemand(error: unknown): CompileError | undefined {
@@ -8761,6 +9494,11 @@ class Compiler implements LoweringServices {
         return binding;
     }
 
+    /** Whether `cpp` names a native binding the compile tracks. */
+    public hasNativeBinding(cpp: string): boolean {
+        return this.nativeBindings.has(cpp);
+    }
+
     public nativeLocalSince(cpp: string, boundary: number): boolean {
         const binding = this.nativeBindings.get(cpp);
         return binding !== undefined && binding.sequence > boundary;
@@ -8910,7 +9648,10 @@ class Compiler implements LoweringServices {
                       ? "bbl::FileTexture"
                       : producerTexture && value.textureStorage === "pixels"
                         ? "bbl::PixelsTexture"
-                        : value.absenceTagType
+                        : // The tagged slot's type is the slot's own: a local
+                          // holding the value read through it holds that value.
+                          value.absenceTagType &&
+                            storage === value.absenceTagStorageCpp
                           ? this.dataTypes.cppType(value.absenceTagType)
                           : value.dataType
                             ? this.dataTypes.cppType(value.dataType)
@@ -10807,6 +11548,25 @@ class Compiler implements LoweringServices {
         );
     }
 
+    public compileCallbackValueWithValues(
+        callback: Value,
+        arguments_: readonly Value[],
+        callNode: ts.Node,
+        options?: {
+            discardReturn?: boolean;
+            predicate?: boolean;
+            body?: CallbackInvocationOptions;
+        },
+    ): Value {
+        return this.userFunctions.compileCallbackValueWithValues(
+            this,
+            callback,
+            arguments_,
+            callNode,
+            options,
+        );
+    }
+
     public compileStoredDataFunction(
         expression:
             | ts.Identifier
@@ -12338,6 +13098,9 @@ class Compiler implements LoweringServices {
                 ? [{ name: this.presentationHostCpp, type: "bbl::Engine" }]
                 : []),
         ]).map(renderNativeEmission);
+        // The worker runtime declares the messaging objects storage holds.
+        if (!this.options.workers && this.dataTypes.usesWorkerStorage())
+            throw new ApplicationRealmRequired();
         return renderMainCpp({
             source: this.options.fileName,
             ...(this.options.workers

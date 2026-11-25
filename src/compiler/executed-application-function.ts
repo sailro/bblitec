@@ -26,7 +26,7 @@
  * the reason the in-process module passes give: anything else is a value two
  * engines need not agree on.
  */
-import { isDeepStrictEqual, types } from "node:util";
+import { types } from "node:util";
 import vm from "node:vm";
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
@@ -56,6 +56,7 @@ import { transpileCommonJs } from "../typescript-transpile.js";
 import { sharedUpstreamStore } from "../upstream-source.js";
 import { mathMemberAccess, mathMemberIsImpure } from "./math-intrinsics.js";
 import { GenerationBlob } from "./generation-blob.js";
+import { isStaticMember } from "./class-members.js";
 
 /** A value generation hands the function or binds to a name it closes over. */
 export type ExecutedScalar = string | number | boolean;
@@ -89,6 +90,13 @@ export interface ExecutedFunctionContext {
     deploymentValue?(
         expression: ts.Expression,
     ): string | boolean | null | undefined;
+    /**
+     * The text of the packaged file a URL the run fetches serves, or
+     * undefined where the package holds none (that fetch rejects, as it
+     * does natively). A packaged file is part of the build, so a run that
+     * reads one describes every run.
+     */
+    packagedText?(url: string): string | undefined;
     /**
      * The value a pinned import is bound to for this run instead of being
      * refused: the caller's own model of that export (a loader recording
@@ -144,6 +152,37 @@ const GENERATION_HOST_GLOBALS: ReadonlyMap<string, unknown> = new Map<
     ["atob", atob],
 ]);
 
+/**
+ * Host globals the realm builds itself, given the host's `read` of a
+ * packaged file: `fetch` of the packaged files, whose responses read their
+ * file's text, and a `console` whose output the program's own run of the
+ * same call writes.
+ */
+const GENERATION_REALM_GLOBALS = `({ read }) => ({
+    fetch: (input) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : String(input.url);
+        const body = read(url);
+        if (body === undefined) return Promise.reject(new TypeError("Failed to fetch " + url));
+        return Promise.resolve(Object.freeze({
+            ok: true,
+            status: 200,
+            statusText: "",
+            url,
+            text: async () => body,
+            json: async () => JSON.parse(body),
+        }));
+    },
+    console: Object.freeze(Object.fromEntries(
+        ["debug", "error", "info", "log", "warn"].map((name) => [name, () => undefined]),
+    )),
+})`;
+
+/** The names `GENERATION_REALM_GLOBALS` binds. */
+const GENERATION_REALM_NAMES: ReadonlySet<string> = new Set([
+    "fetch",
+    "console",
+]);
+
 /** The pinned imports an executed closure may reach, by imported name. */
 const pinnedTags: ReadonlySet<string> = new Set(["wgsl"]);
 
@@ -191,13 +230,60 @@ export function runApplicationFunction(
     label: string,
 ): ExecutedResult & { readonly parse: (text: string) => unknown } {
     const closure = new ExecutedClosure(context, target, label);
-    const program = closure.program();
-    const realm = vm.createContext(
-        Object.fromEntries(GENERATION_HOST_GLOBALS),
-        {
-            name: `generation function ${label}`,
-            microtaskMode: "afterEvaluate",
+    // The first pinned function the run uses, and the first module-scope
+    // write it makes, which a catch in the run cannot hide: the run then
+    // describes no run.
+    let pinnedUse: string | undefined;
+    let moduleWrite: string | undefined;
+    const program = closure.program(
+        (name) => {
+            pinnedUse ??= name;
         },
+        (where) => {
+            moduleWrite ??= where;
+        },
+    );
+    const refuseEffect = (): never | undefined =>
+        pinnedUse !== undefined
+            ? context.fail(
+                  target,
+                  `${label} uses pinned '${pinnedUse}', which generation does not run; only the ${[...pinnedTags].join(", ")} tag executes with it.`,
+              )
+            : moduleWrite !== undefined
+              ? context.fail(
+                    target,
+                    `${label} writes a module-scope binding at ${moduleWrite}, so one execution would not describe every call.`,
+                )
+              : undefined;
+    // The realm's global object is this fresh record (`vm.createContext`
+    // contextifies it in place), which the realm's own globals extend.
+    const globals: Record<string, unknown> = {
+        ...Object.fromEntries(GENERATION_HOST_GLOBALS),
+    };
+    const realm = vm.createContext(globals, {
+        name: `generation function ${label}`,
+        microtaskMode: "afterEvaluate",
+    });
+    const realmGlobals: unknown = vm.runInContext(
+        GENERATION_REALM_GLOBALS,
+        realm,
+    );
+    if (typeof realmGlobals !== "function")
+        throw new Error("A generation function realm has no host globals.");
+    // A fetch the package does not serve rejects natively, but its outcome
+    // is the deployment's, not the build's: the run then describes no run.
+    let unpackaged: string | undefined;
+    Object.assign(
+        globals,
+        Reflect.apply(realmGlobals, undefined, [
+            {
+                read: (url: string): string | undefined => {
+                    const text = context.packagedText?.(url);
+                    if (text === undefined) unpackaged ??= url;
+                    return text;
+                },
+            },
+        ]),
     );
     const parse: unknown = vm.runInContext("JSON.parse", realm);
     const plain: unknown = vm.runInContext(
@@ -249,6 +335,7 @@ export function runApplicationFunction(
             {
                 pinned: program.bindings.pinned,
                 opaque: program.bindings.opaque,
+                written: program.bindings.written,
                 enclosing: Object.fromEntries(
                     Object.entries(program.bindings.enclosing).map(
                         ([name, value]) => [name, inRealm(value)],
@@ -273,11 +360,18 @@ export function runApplicationFunction(
         }
         result = settledResult(realm, result);
     } catch (error: unknown) {
+        refuseEffect();
         return context.fail(
             target,
             `${label} threw at generation: ${errorMessage(error)}`,
         );
     }
+    refuseEffect();
+    if (unpackaged !== undefined)
+        return context.fail(
+            target,
+            `${label} fetches '${unpackaged}', which the package does not hold.`,
+        );
     return {
         value: result,
         isPlain: (value) => Reflect.apply(plain, undefined, [value]) === true,
@@ -287,38 +381,99 @@ export function runApplicationFunction(
 
 /**
  * `runApplicationFunction`'s result as plain data, which it must be: the
- * value generation carries.
+ * value generation carries. With `keys`, the value a read takes through the
+ * result's plain records and arrays, as JavaScript reads it, so only that
+ * value must be plain: its siblings (a function a record also holds) are
+ * never read. Undefined where a key reaches no own data member or a step
+ * holds no object.
  */
 export function executeApplicationFunction(
     context: ExecutedFunctionContext,
     target: ExecutedTarget,
     args: readonly (ExecutedArgument | undefined)[],
     label: string,
+    keys: readonly string[] = [],
 ): unknown {
-    const { value: result, parse } = runApplicationFunction(
-        context,
-        target,
-        args,
-        label,
-    );
-    let text: string | undefined;
-    try {
-        text = JSON.stringify(result);
-    } catch (error: unknown) {
+    const run = runApplicationFunction(context, target, args, label);
+    const isPlain = (held: unknown): boolean => run.isPlain(held);
+    let read: unknown = run.value;
+    for (const key of keys) {
+        if (read === null || typeof read !== "object") return undefined;
+        if (!isPlain(read))
+            return context.fail(
+                target,
+                `${label} returned a value whose '${keys.join(".")}' is not ` +
+                    "read through plain data, which generation cannot carry.",
+            );
+        read = Object.getOwnPropertyDescriptor(read, key)?.value;
+        if (read === undefined) return undefined;
+    }
+    const value = plainCopy(read, isPlain);
+    if (value === notPlain) {
         return context.fail(
             target,
-            `${label} returned a value with no JSON form: ${errorMessage(error)}`,
+            keys.length > 0
+                ? `${label} returned a value whose '${keys.join(".")}' is ` +
+                      "not plain data, which generation cannot carry."
+                : `${label} returned a value that is not plain data, which ` +
+                      "generation cannot carry.",
         );
     }
-    if (text === undefined || !isDeepStrictEqual(parse(text), result)) {
-        return context.fail(
-            target,
-            `${label} returned a value that is not plain data, which ` +
-                "generation cannot carry.",
-        );
-    }
-    const value: unknown = JSON.parse(text);
     return value;
+}
+
+const notPlain: unique symbol = Symbol("not plain data");
+
+/**
+ * A run's value as plain data of this realm, in its key order: null,
+ * strings, booleans, finite numbers other than -0, arrays of them without
+ * holes or undefined, and plain records of them, whose own members may
+ * also hold undefined. Anything else is `notPlain`.
+ */
+function plainCopy(
+    value: unknown,
+    isPlain: (value: unknown) => boolean,
+): unknown {
+    if (
+        value === null ||
+        typeof value === "string" ||
+        typeof value === "boolean"
+    )
+        return value;
+    if (typeof value === "number")
+        return Number.isFinite(value) && !Object.is(value, -0)
+            ? value
+            : notPlain;
+    if (typeof value !== "object" || !isPlain(value)) return notPlain;
+    if (Array.isArray(value)) {
+        const elements: unknown[] = [];
+        for (let index = 0; index < value.length; index++) {
+            if (!(index in value)) return notPlain;
+            const element: unknown = value[index];
+            const copied =
+                element === undefined ? notPlain : plainCopy(element, isPlain);
+            if (copied === notPlain) return notPlain;
+            elements.push(copied);
+        }
+        return elements;
+    }
+    const record: Record<string, unknown> = {};
+    for (const key of Object.keys(value)) {
+        const member = Object.getOwnPropertyDescriptor(value, key);
+        if (!member || !("value" in member)) return notPlain;
+        const held: unknown = member.value;
+        const copied =
+            held === undefined ? undefined : plainCopy(held, isPlain);
+        if (copied === notPlain) return notPlain;
+        // An own `["__proto__"]` key is data; `=` would set the prototype.
+        Object.defineProperty(record, key, {
+            value: copied,
+            enumerable: true,
+            writable: true,
+            configurable: true,
+        });
+    }
+    return record;
 }
 
 /**
@@ -364,6 +519,33 @@ function contains(outer: ts.Node, inner: ts.Node): boolean {
         outer.getSourceFile() === inner.getSourceFile() &&
         inner.pos >= outer.pos &&
         inner.end <= outer.end
+    );
+}
+
+/** The class whose instance a `this` reads, through arrow functions. */
+function thisClass(node: ts.Node): ts.ClassDeclaration | undefined {
+    for (let current = node.parent; current; current = current.parent) {
+        if (ts.isArrowFunction(current)) continue;
+        if (ts.isFunctionLike(current) || ts.isPropertyDeclaration(current))
+            return ts.isClassDeclaration(current.parent)
+                ? current.parent
+                : undefined;
+    }
+    return undefined;
+}
+
+/** A module-scope class a closure carries: no base class, decorator or static member. */
+function carriedClass(declaration: ts.ClassDeclaration): boolean {
+    return (
+        !declaration.heritageClauses?.some(
+            (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
+        ) &&
+        !ts.getDecorators(declaration)?.length &&
+        !declaration.members.some(
+            (member) =>
+                ts.isClassStaticBlockDeclaration(member) ||
+                isStaticMember(member),
+        )
     );
 }
 
@@ -434,6 +616,14 @@ class ExecutedClosure {
     /** @unjournaled Scratch of one execution's analysis, discarded with it. */
     private readonly opaquePinned = new Set<string>();
     /** @unjournaled Scratch of one execution's analysis, discarded with it. */
+    private readonly heldPinned = new Set<string>();
+    /**
+     * @unjournaled Scratch of one execution's analysis, discarded with it:
+     * the expressions writing module-scope state, each run after reporting
+     * where it writes (`program`'s `written`), which refuses the run.
+     */
+    private readonly guardedWrites = new Set<ts.Node>();
+    /** @unjournaled Scratch of one execution's analysis, discarded with it. */
     private readonly queue: Array<{ root: ts.Node; file: ts.SourceFile }> = [];
     /**
      * @unjournaled Scratch of one execution's analysis, discarded with it:
@@ -449,12 +639,16 @@ class ExecutedClosure {
         this.symbols = new CompilerSymbols(context.checker);
     }
 
-    public program(): {
+    public program(
+        used: (name: string) => void,
+        written: (where: string) => void,
+    ): {
         javascript: string;
         bindings: {
             pinned: Record<string, unknown>;
             opaque: Record<string, unknown>;
             enclosing: Record<string, ExecutedArgument>;
+            written: (where: string) => void;
         };
     } {
         const targetFile = this.target.getSourceFile();
@@ -485,7 +679,9 @@ class ExecutedClosure {
                         this.context.pinnedStandIn?.(source.name) ??
                         (this.opaquePinned.has(source.name)
                             ? opaqueValue(source.name)
-                            : pinnedExport(source.name));
+                            : this.heldPinned.has(source.name)
+                              ? unusedPinned(source.name, used)
+                              : pinnedExport(source.name));
                     prologue.push(
                         `const ${local} = __bblBindings.pinned[${JSON.stringify(source.name)}];`,
                     );
@@ -558,7 +754,7 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
                 source,
                 `${targetFile.fileName}.executed.ts`,
             ),
-            bindings: { pinned, opaque, enclosing },
+            bindings: { pinned, opaque, enclosing, written },
         };
     }
 
@@ -610,12 +806,13 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
         const part = this.part(statement.getSourceFile());
         if (part.statements.has(statement)) return;
         // An enum is an object of read-only members its statement creates
-        // (a const enum's too, as the closure's transpile preserves it), so
-        // the closure runs that statement as the module does.
-        if (ts.isClassDeclaration(statement)) {
+        // (a const enum's too, as the closure's transpile preserves it), and
+        // a class with no static members is a constructor no module state
+        // rides on, so the closure runs either statement as the module does.
+        if (ts.isClassDeclaration(statement) && !carriedClass(statement)) {
             this.context.fail(
                 statement,
-                `${this.label} reaches a module-scope class, which a generation closure does not carry.`,
+                `${this.label} reaches a module-scope class with static members or a base class, which a generation closure does not carry.`,
             );
         }
         if (
@@ -677,9 +874,19 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
                     this.deployed.set(node, deployed);
                     return "skip";
                 }
+                // A carried class's own members read their instance.
+                const owner =
+                    node.kind === ts.SyntaxKind.ThisKeyword
+                        ? thisClass(node)
+                        : undefined;
                 if (
-                    node.kind === ts.SyntaxKind.ThisKeyword ||
-                    node.kind === ts.SyntaxKind.SuperKeyword
+                    (node.kind === ts.SyntaxKind.ThisKeyword ||
+                        node.kind === ts.SyntaxKind.SuperKeyword) &&
+                    !(
+                        owner &&
+                        carriedClass(owner) &&
+                        !contains(this.target, node)
+                    )
                 ) {
                     this.context.fail(
                         node,
@@ -705,12 +912,14 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
                                 : {}),
                         },
                     )
-                ) {
-                    this.context.fail(
-                        node,
-                        `${this.label} writes a module-scope binding, so one execution would not describe every call.`,
+                )
+                    // A write in a function the run only holds is never
+                    // made: each runs behind a guard (`guardedWrites`).
+                    this.guardedWrites.add(
+                        ts.isForOfStatement(node) || ts.isForInStatement(node)
+                            ? node.expression
+                            : node,
                     );
-                }
                 const varying = this.varyingRead(node);
                 if (varying) {
                     this.context.fail(
@@ -819,7 +1028,8 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
         if (origin === "default-lib") return;
         if (
             origin === "dom" &&
-            GENERATION_HOST_GLOBALS.has(identifier.text) &&
+            (GENERATION_HOST_GLOBALS.has(identifier.text) ||
+                GENERATION_REALM_NAMES.has(identifier.text)) &&
             (ts.isVariableDeclaration(declaration) ||
                 ts.isFunctionDeclaration(declaration)) &&
             declaration.getSourceFile().isDeclarationFile
@@ -894,14 +1104,20 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
         if (part.imports.has(identifier.text)) return;
         const pinned = this.symbols.babylonImportName(identifier);
         if (pinned !== undefined) {
-            if (
-                this.context.model &&
+            const pinnedFunction =
                 !pinnedTags.has(pinned) &&
                 aliasTarget(this.context.checker, symbol).declarations?.some(
                     ts.isFunctionDeclaration,
-                )
-            )
+                ) === true;
+            if (this.context.model && pinnedFunction)
                 this.opaquePinned.add(pinned);
+            else if (
+                pinnedFunction &&
+                this.context.pinnedStandIn?.(pinned) === undefined
+            )
+                // A run may hold the pin's function (a record's callback)
+                // without calling it; a use refuses the run (`unusedPinned`).
+                this.heldPinned.add(pinned);
             else if (
                 !pinnedTags.has(pinned) &&
                 this.context.pinnedStandIn?.(pinned) === undefined
@@ -981,26 +1197,72 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
         );
     }
 
-    /** A range of `file` as it runs: each deployment constant as its literal. */
+    /**
+     * A range of `file` as it runs: each deployment constant as its literal,
+     * each guarded write (`guardedWrites`) reporting where it writes first.
+     */
     private sourceText(
         file: ts.SourceFile,
         start: number,
         end: number,
     ): string {
-        const folds = [...this.deployed]
-            .filter(
-                ([node]) =>
-                    node.getSourceFile() === file &&
-                    node.getStart(file) >= start &&
-                    node.end <= end,
-            )
-            .sort(([left], [right]) => left.pos - right.pos);
+        const within = (node: ts.Node): boolean =>
+            node.getSourceFile() === file &&
+            node.getStart(file) >= start &&
+            node.end <= end;
+        // Edits by position; at one position, a guard's closing comes first,
+        // then the openings, outer first, then a literal's replacement.
+        const edits: Array<{
+            from: number;
+            to: number;
+            text: string;
+            rank: number;
+            order: number;
+        }> = [];
+        for (const [node, value] of this.deployed)
+            if (within(node))
+                edits.push({
+                    from: node.getStart(file),
+                    to: node.end,
+                    text: `(${JSON.stringify(value)})`,
+                    rank: 2,
+                    order: 0,
+                });
+        for (const node of this.guardedWrites) {
+            if (!within(node)) continue;
+            const from = node.getStart(file);
+            const { line, character } =
+                file.getLineAndCharacterOfPosition(from);
+            const where = `${file.fileName}:${line + 1}:${character + 1}`;
+            edits.push(
+                {
+                    from,
+                    to: from,
+                    text: `(__bblBindings.written(${JSON.stringify(where)}), `,
+                    rank: 1,
+                    order: -node.end,
+                },
+                // An inner guard (the later start) closes first.
+                {
+                    from: node.end,
+                    to: node.end,
+                    text: ")",
+                    rank: 0,
+                    order: -from,
+                },
+            );
+        }
+        edits.sort(
+            (left, right) =>
+                left.from - right.from ||
+                left.rank - right.rank ||
+                left.order - right.order,
+        );
         let text = "";
         let at = start;
-        for (const [node, value] of folds) {
-            const from = node.getStart(file);
-            text += `${file.text.slice(at, from)}(${JSON.stringify(value)})`;
-            at = node.end;
+        for (const edit of edits) {
+            text += file.text.slice(at, edit.from) + edit.text;
+            at = edit.to;
         }
         return text + file.text.slice(at, end);
     }
@@ -1029,6 +1291,33 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
             `${this.label} is a ${syntaxKindName(target.kind)}, which generation does not execute alone.`,
         );
     }
+}
+
+/**
+ * A pinned function a generation run holds without running: passing,
+ * storing and comparing it run as in JavaScript; any other use (a call, a
+ * member read) reports `name` to `used` and throws.
+ */
+function unusedPinned(name: string, used: (name: string) => void): unknown {
+    const refuse = (): never => {
+        used(name);
+        throw new Error(
+            `it uses pinned '${name}', which generation does not run`,
+        );
+    };
+    return new Proxy(function pinned() {}, {
+        get: refuse,
+        set: refuse,
+        has: refuse,
+        deleteProperty: refuse,
+        defineProperty: refuse,
+        ownKeys: refuse,
+        getOwnPropertyDescriptor: refuse,
+        getPrototypeOf: refuse,
+        setPrototypeOf: refuse,
+        apply: refuse,
+        construct: refuse,
+    });
 }
 
 /**

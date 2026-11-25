@@ -359,6 +359,8 @@ void create_frame_graph_textures(GpuState& state, const Engine& engine,
         if (record.swapchain)
             continue;
         target.allocation = ++state.render_target_allocations;
+        // An eager target's `.texture` names this allocation (`render_texture_gpu_texture`).
+        engine.render_targets[index].attachment_allocation = target.allocation;
         const auto samples = task_sample_count(state, record.samples);
         const auto color_format = planned.color_format;
         if (record.has_color) {
@@ -763,6 +765,8 @@ static GpuState::TaskTransmission& prepare_task_transmission(GpuState& state, co
             gpu_error("SDL_CreateGPUTexture render-task depth grab");
         grab.depth_width = depth ? target.width : 0;
         grab.depth_height = depth ? target.height : 0;
+        // The depth snapshot's `.texture` names this allocation (`render_texture_gpu_texture`).
+        record.transmission_depth_allocation = depth ? ++state.render_target_allocations : 0;
     }
     return grab;
 }

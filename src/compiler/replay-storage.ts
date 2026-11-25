@@ -16,6 +16,7 @@ import {
 import {
     describeRecordDemand,
     mergeNativeRecordStorage,
+    recordDemandAsks,
     type NativeRecordStorageDemand,
 } from "./native-record-storage.js";
 import type {
@@ -68,6 +69,11 @@ export type StorageRequest =
     | { kind: "enum-array"; unions: readonly string[] }
     | { kind: "enum-record"; schema: string }
     | {
+          kind: "struct-record";
+          schema: string;
+          struct: { readonly type: ts.Type; readonly node: ts.Node };
+      }
+    | {
           kind: "key-order";
           record: ts.Symbol | ts.Type;
           orders: KeyOrders;
@@ -90,6 +96,8 @@ export function storageRequestSite(
         case "completion":
         case "unproven-completion":
             return request.signatureSite;
+        case "struct-record":
+            return request.struct.node;
         case "generic":
         case "enum-array":
         case "enum-record":
@@ -174,6 +182,11 @@ export class ReplayStorage {
     readonly stringElementUnions = new Set<string>();
     /** @unjournaled Finite-key record schemas whose enumeration requires dictionary order. */
     readonly orderedRecordSchemas = new Set<string>();
+    /** @unjournaled Demands outlive the attempts that met them. Finite-key record schemas stored as the struct of their keys (`KeyRecordStructRequired`). */
+    readonly structRecordSchemas = new Map<
+        string,
+        { readonly type: ts.Type; readonly node: ts.Node }
+    >();
     /**
      * @unjournaled Demands outlive the attempts that met them. The own-key
      * orders an enumerated record type's records take, by record identity,
@@ -201,7 +214,18 @@ export class ReplayStorage {
      */
     private readonly takenSinceAttempt = new Set<ts.Declaration | string>();
 
+    /**
+     * @unjournaled How many times this storage changed: a lowering that
+     * meets the same storage again sees the same revision (`revision`).
+     */
+    private changes = 0;
+
     public constructor(private readonly checker: ts.TypeChecker) {}
+
+    /** The storage's revision: it changes whenever what it holds does. */
+    public get revision(): number {
+        return this.changes;
+    }
 
     /** An attempt begins lowering with the storage this holds now. */
     public beginAttempt(): void {
@@ -244,6 +268,7 @@ export class ReplayStorage {
                   )
                 : [];
         const added = this.addRequest(request);
+        if (added) this.changes++;
         if (added && "declaration" in request)
             this.takenSinceAttempt.add(request.declaration);
         for (const union of unions) this.takenSinceAttempt.add(union);
@@ -255,11 +280,13 @@ export class ReplayStorage {
             case "dynamic": {
                 const known = this.dynamicBindings.get(request.declaration);
                 // A callback binding's record of callables, and an array
-                // binding's elements, refine the storage it holds.
+                // binding's elements (its declared or source array), refine
+                // the storage it holds.
                 const upgrade =
                     typeof request.storage === "object" &&
                     ((known === "callback" && "callable" in request.storage) ||
-                        (known === "array" && "elements" in request.storage));
+                        ((known === "array" || known === "source") &&
+                            "elements" in request.storage));
                 if (
                     this.dynamicBindings.has(request.declaration) &&
                     !upgrade &&
@@ -293,11 +320,14 @@ export class ReplayStorage {
                     if (known && site !== known)
                         this.records.set(key, {
                             ...known,
-                            ...recordSite(site),
+                            ...recordSite(site, known),
                         });
                     return false;
                 }
-                this.records.set(key, { ...merged, ...recordSite(site) });
+                this.records.set(key, {
+                    ...merged,
+                    ...recordSite(site, merged),
+                });
                 this.plannedComponents = undefined;
                 return true;
             }
@@ -357,6 +387,10 @@ export class ReplayStorage {
                 );
             case "enum-record":
                 return addNew(this.orderedRecordSchemas, request.schema);
+            case "struct-record":
+                if (this.structRecordSchemas.has(request.schema)) return false;
+                this.structRecordSchemas.set(request.schema, request.struct);
+                return true;
             case "key-order": {
                 // Orders demanded once already would replay in a cycle.
                 if (this.demandedKeyOrders(request.record, request.orders))
@@ -387,6 +421,21 @@ export class ReplayStorage {
             this.keyOrderSpellings.get(record)?.has(spellKeyOrders(orders)) ===
             true
         );
+    }
+
+    /**
+     * Withdraws the record demands that ask only to share their records
+     * (`recordDemandAsks`): a strict lowering meets again each one its
+     * records need, and one another demand already serves (a dynamic
+     * binding's) lays its record out where that demand does.
+     */
+    public withdrawSharedRecords(): void {
+        for (const [key, demand] of this.records)
+            if (recordDemandAsks(demand).length === 0) {
+                this.records.delete(key);
+                this.plannedComponents = undefined;
+                this.changes++;
+            }
     }
 
     /**
@@ -538,11 +587,14 @@ function typeOrder(
 /** Where and as what a record demand was met: the fields its site decides. */
 function recordSite(
     demand: NativeRecordStorageDemand,
+    held: NativeRecordStorageDemand,
 ): Pick<NativeRecordStorageDemand, "identity" | "type" | "node" | "frames"> {
     return {
         identity: demand.identity,
         type: demand.type,
-        node: demand.node,
+        // A document's site is its record type's declaration, whichever use
+        // met it first: the storage it holds does not depend on that order.
+        node: (held.document && typeDeclaration(demand.type)) || demand.node,
         frames: demand.frames,
     };
 }

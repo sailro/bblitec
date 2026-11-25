@@ -62,3 +62,49 @@ if (!refused || feel.orbit !== 1) throw new Error("getter-only write");
         expectedOutput: "",
     });
 });
+
+test("read-only and non-configurable data defined on a copy of a parsed record keep their attributes", (t) => {
+    // One generic attach copies a parsed row and a fresh literal: the
+    // parsed copy is a dynamic object, the literal's a record. Module code
+    // is strict: a read-only write, a non-configurable delete and a
+    // redefinition that changes a locked property throw.
+    const source = `"use strict";
+interface Token { readonly key: number }
+interface Save { readonly id?: unknown; key: string; s: number }
+function attach<T extends object>(row: T, id: Token): T & { readonly id: Token } {
+    const item = { ...row } as T & { readonly id: Token };
+    Object.defineProperty(item, "id", { value: id, enumerable: true, writable: false, configurable: false });
+    return item;
+}
+const first: Token = { key: 1 };
+const saves = JSON.parse('[{"key":"w1","s":0.5,"extra":true}]') as Save[];
+const parsed = attach(saves[0]!, first);
+const fresh = attach({ s: 2, y: 1 }, first);
+if (parsed.id !== first || parsed.s !== 0.5 || fresh.id !== first || fresh.y !== 1) throw new Error("attached");
+if (Object.keys(parsed).join(",") !== "key,s,extra,id") throw new Error("keys " + Object.keys(parsed).join(","));
+if (JSON.stringify(parsed) !== '{"key":"w1","s":0.5,"extra":true,"id":{"key":1}}') throw new Error("stringify " + JSON.stringify(parsed));
+let refused = 0;
+const deny = (change: () => void): void => {
+    try { change(); } catch (error) { if (error instanceof TypeError) refused++; }
+};
+deny(() => { (parsed as { id: Token }).id = { key: 2 }; });
+deny(() => { delete (parsed as Partial<{ id: Token }>).id; });
+deny(() => { Object.assign(parsed, { id: { key: 3 } }); });
+deny(() => Object.defineProperty(parsed, "id", { value: { key: 4 }, enumerable: true, writable: false, configurable: false }));
+Object.defineProperty(parsed, "id", { value: first, enumerable: true, writable: false, configurable: false });
+if (refused !== 4 || parsed.id !== first) throw new Error("locked " + refused);
+const copy = { ...parsed } as { id: Token };
+copy.id = { key: 5 };
+if (copy.id.key !== 5 || parsed.id !== first) throw new Error("spread copy");
+const open = { ...saves[0]! } as Save & { s: number };
+Object.defineProperty(open, "s", { value: 6, enumerable: true, writable: true, configurable: false });
+open.s = 7;
+Object.defineProperty(open, "s", { value: 8, enumerable: true, writable: false, configurable: false });
+deny(() => { open.s = 9; });
+if (refused !== 5 || open.s !== 8) throw new Error("writable then locked " + open.s);
+`;
+    return runSelfCheckingProgram(t, "document-read-only-data", source, {
+        compile: { fileName: resolve("document-read-only-data.ts") },
+        expectedOutput: "",
+    });
+});

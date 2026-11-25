@@ -198,3 +198,36 @@ test("reassigned query primitives use native storage", () => {
     assert.match(result.cpp, /bool .*enabled/);
     assert.match(result.cpp, /query toggle failed/);
 });
+
+test(
+    "a stored function reads a URL parameter's absent parse through ??",
+    { skip: !optionalNativeFixtureTools(false) },
+    () => {
+        // Erasure evaluates `pin` to null; the stored `read` lowers on its
+        // own, where `pin ?? wind.time` must select the fallback.
+        const { cpp } = compileSource(
+            `
+            const wind = { time: 0 };
+            const params = new URLSearchParams(location.search);
+            function resolvePin(p: URLSearchParams): number | null {
+                const raw = p.get("pinwind");
+                if (raw === null) return null;
+                const v = Number(raw);
+                return Number.isFinite(v) && v >= 0 ? v : null;
+            }
+            const pin = resolvePin(params);
+            const read = (): number => pin ?? wind.time;
+            const stored = { read };
+            wind.time = 2;
+            const seen = [pin ?? wind.time, read(), stored.read()].join(",");
+            if (seen !== "2,2,2") throw new Error("wind " + seen);
+            `,
+            { fileName: "search-param-nullish.ts" },
+        );
+        runGeneratedProgram(
+            optionalNativeFixtureTools(false)!,
+            "search-params-stored-nullish",
+            cpp,
+        );
+    },
+);

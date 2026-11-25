@@ -2024,14 +2024,10 @@ export class ClassLowerer {
                 const missing = (flags & ts.ElementFlags.Optional) !== 0;
                 if (type.kind === "vector" && missing) {
                     // A lane past the array's end is undefined.
-                    const lane: DataType =
-                        type.element.kind === "optional"
-                            ? type.element
-                            : {
-                                  kind: "optional",
-                                  inner: type.element,
-                                  undefinedOnly: true,
-                              };
+                    const lane = this.context.dataTypes.absentableElement(
+                        type.element,
+                        true,
+                    );
                     return {
                         value: this.context.dataLowerer.leafValue(
                             `bbl::js::array_relative_at<${this.context.dataTypes.cppType(lane)}>(${pinned.cpp}, ${index}.0)`,

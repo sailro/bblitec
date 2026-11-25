@@ -206,7 +206,11 @@ public:
         requires std::is_trivially_copyable_v<T>
     explicit ArrayBuffer(const std::shared_ptr<std::vector<T>>& values)
         : external_owner_(values), external_data_(reinterpret_cast<std::uint8_t*>(values->data())),
-          external_length_(values->size() * sizeof(T)) {}
+          external_length_(values->size() * sizeof(T)),
+          clear_owner_([](void* owner) { static_cast<std::vector<T>*>(owner)->clear(); }),
+          owner_length_([](const void* owner) {
+              return static_cast<const std::vector<T>*>(owner)->size() * sizeof(T);
+          }) {}
     template <typename T>
         requires std::is_trivially_copyable_v<T>
     explicit ArrayBuffer(std::vector<T>& values)
@@ -223,7 +227,9 @@ public:
           external_length_(values.size() * sizeof(T)) {}
 
     [[nodiscard]] std::size_t byte_length() const {
-        return bytes_ ? bytes_->size() : external_length_;
+        return bytes_          ? bytes_->size()
+               : owner_length_ ? owner_length_(external_owner_.get())
+                               : external_length_;
     }
     [[nodiscard]] const std::uint8_t* data() const {
         return bytes_ ? bytes_->data() : external_data_;
@@ -241,6 +247,23 @@ public:
     [[nodiscard]] bool retains_storage() const { return bytes_ || external_owner_; }
     /** Whether the buffer is a SharedArrayBuffer rather than an ArrayBuffer. */
     [[nodiscard]] bool shared() const { return shared_; }
+    /** Whether a transfer can detach this buffer: it owns its storage or shares a typed array's. */
+    [[nodiscard]] bool detachable() const { return !shared_ && (bytes_ || clear_owner_); }
+    /**
+     * A transfer's detach: the bytes move out, and this buffer, its typed
+     * array and every view of it read empty. The allocation stays, so an
+     * address a view holds never dangles.
+     */
+    [[nodiscard]] std::vector<std::uint8_t> detach() {
+        if (!detachable())
+            throw std::logic_error("This ArrayBuffer cannot be detached.");
+        std::vector<std::uint8_t> bytes(data(), data() + byte_length());
+        if (bytes_)
+            bytes_->clear();
+        else
+            clear_owner_(external_owner_.get());
+        return bytes;
+    }
     [[nodiscard]] const void* identity() const {
         return bytes_ ? static_cast<const void*>(bytes_.get()) : external_owner_.get();
     }
@@ -256,6 +279,9 @@ private:
     std::shared_ptr<void> external_owner_;
     std::uint8_t* external_data_ = nullptr;
     std::size_t external_length_ = 0;
+    /** A typed array's storage: its element type's clear and live byte length. */
+    void (*clear_owner_)(void*) = nullptr;
+    std::size_t (*owner_length_)(const void*) = nullptr;
     bool shared_ = false;
 };
 
@@ -317,7 +343,14 @@ public:
         view_ = std::make_shared<BufferView>(buffer, offset, count.value_or(available / sizeof(T)));
     }
 
-    [[nodiscard]] std::size_t size() const { return view_ ? view_->length : values_->size(); }
+    /** A view of a detached buffer is out of bounds and reads empty. */
+    [[nodiscard]] std::size_t size() const {
+        if (!view_)
+            return values_->size();
+        return view_->offset + view_->length * sizeof(T) > view_->buffer.byte_length()
+                   ? 0
+                   : view_->length;
+    }
     [[nodiscard]] bool empty() const { return size() == 0; }
     [[nodiscard]] ArrayBuffer buffer() const {
         return view_ ? view_->buffer : ArrayBuffer(values_);
@@ -340,7 +373,7 @@ public:
     [[nodiscard]] T load(std::size_t index) const {
         if (!view_)
             return (*values_)[index];
-        if (index >= view_->length)
+        if (index >= size())
             throw std::runtime_error("TypedArray view read exceeds its length.");
         T result;
         std::memcpy(&result, view_->buffer.data() + view_->offset + index * sizeof(T), sizeof(T));
@@ -351,7 +384,7 @@ public:
             (*values_)[index] = value;
             return;
         }
-        if (index >= view_->length)
+        if (index >= size())
             throw std::runtime_error("TypedArray view write exceeds its length.");
         std::memcpy(view_->buffer.data() + view_->offset + index * sizeof(T), &value, sizeof(T));
     }
@@ -505,6 +538,19 @@ template <typename Values> [[nodiscard]] Values retain_typed_array_owner(const V
     }
 }
 
+/** A read through null or undefined: JavaScript's TypeError. */
+[[noreturn]] inline void
+throw_nullish_access(const char* message = "Cannot read properties of null or undefined") {
+    throw NamedError("TypeError", message);
+}
+
+/** The object a pointer selects; a null one is a read through null or undefined. */
+template <typename T> [[nodiscard]] T& present_pointee(T* pointer) {
+    if (!pointer)
+        throw_nullish_access();
+    return *pointer;
+}
+
 /**
  * A JavaScript object reference: the plain-data records a scene declares
  * are shared by identity, and this is the handle that shares them.
@@ -632,8 +678,10 @@ public:
 
 private:
     T& require_value() const {
-        if (!block_ || !block_->payload_alive)
-            throw std::runtime_error("Cannot access a nullish object.");
+        if (!block_)
+            throw_nullish_access();
+        if (!block_->payload_alive)
+            throw std::runtime_error("Cannot access a released object.");
         return block_->value;
     }
 
@@ -832,14 +880,17 @@ public:
         return *this;
     }
 
-    [[nodiscard]] std::size_t size() const { return length_; }
-    [[nodiscard]] std::size_t length() const { return length_; }
+    /** A view of a detached buffer is out of bounds and reads empty. */
+    [[nodiscard]] std::size_t size() const {
+        return view_ && view_->offset + length_ > view_->buffer.byte_length() ? 0 : length_;
+    }
+    [[nodiscard]] std::size_t length() const { return size(); }
     [[nodiscard]] std::uint8_t* data() { return data_; }
     [[nodiscard]] const std::uint8_t* data() const { return data_; }
     [[nodiscard]] iterator begin() { return data(); }
-    [[nodiscard]] iterator end() { return data() + length_; }
+    [[nodiscard]] iterator end() { return data() + size(); }
     [[nodiscard]] const_iterator begin() const { return data(); }
-    [[nodiscard]] const_iterator end() const { return data() + length_; }
+    [[nodiscard]] const_iterator end() const { return data() + size(); }
     [[nodiscard]] std::uint8_t& operator[](std::size_t index) { return data()[index]; }
     [[nodiscard]] const std::uint8_t& operator[](std::size_t index) const { return data()[index]; }
     [[nodiscard]] std::uint8_t load(std::size_t index) const { return data()[index]; }
@@ -852,18 +903,19 @@ public:
     }
     [[nodiscard]] ArrayBuffer buffer() const { return view_ ? view_->buffer : ArrayBuffer(); }
     [[nodiscard]] std::size_t byte_offset() const { return view_ ? view_->offset : 0; }
-    [[nodiscard]] std::size_t byte_length() const { return length_; }
+    [[nodiscard]] std::size_t byte_length() const { return size(); }
     [[nodiscard]] std::vector<std::uint8_t> to_vector() const {
-        return std::vector<std::uint8_t>(data(), data() + length_);
+        return std::vector<std::uint8_t>(data(), data() + size());
     }
     [[nodiscard]] U8Array subarray(std::size_t begin, std::size_t end) const {
-        begin = std::min(begin, length_);
-        end = std::min(std::max(end, begin), length_);
+        const auto length = size();
+        begin = std::min(begin, length);
+        end = std::min(std::max(end, begin), length);
         return U8Array(buffer(), byte_offset() + begin, end - begin);
     }
     [[nodiscard]] U8Array slice(std::size_t begin, std::size_t end) const {
         const U8Array view = subarray(begin, end);
-        std::vector<std::uint8_t> copied(view.data(), view.data() + view.length_);
+        std::vector<std::uint8_t> copied(view.data(), view.data() + view.size());
         return U8Array(ArrayBuffer(std::move(copied)));
     }
 
@@ -876,8 +928,8 @@ private:
     };
     std::shared_ptr<View> view_;
     std::size_t length_ = 0;
-    // The view's first byte. An ArrayBuffer never resizes its bytes, so the
-    // address holds for the view's life and a read skips the buffer's owner.
+    // The view's first byte. An ArrayBuffer never resizes its bytes (a detach
+    // empties them in place), so the address holds for the view's life.
     std::uint8_t* data_ = nullptr;
 };
 inline TypedArraySlot<U8Array> U8Array::slot(std::size_t index) { return {*this, index}; }
@@ -901,7 +953,10 @@ public:
 
     [[nodiscard]] ArrayBuffer buffer() const { return buffer_; }
     [[nodiscard]] std::size_t byte_offset() const { return offset_; }
-    [[nodiscard]] std::size_t byte_length() const { return length_; }
+    /** A view of a detached buffer is out of bounds and reads empty. */
+    [[nodiscard]] std::size_t byte_length() const {
+        return offset_ + length_ > buffer_.byte_length() ? 0 : length_;
+    }
     [[nodiscard]] const void* identity() const { return identity_.get(); }
     [[nodiscard]] std::shared_ptr<void> shared_identity() const { return identity_; }
     [[nodiscard]] friend bool operator==(const DataView& left, const DataView& right) {
@@ -992,7 +1047,8 @@ private:
         }
     }
     void require(std::size_t offset, std::size_t width) const {
-        if (offset > length_ || width > length_ - offset) {
+        const auto length = byte_length();
+        if (offset > length || width > length - offset) {
             throw std::runtime_error("DataView read exceeds buffer.");
         }
     }
@@ -1020,7 +1076,10 @@ public:
 
     [[nodiscard]] ArrayBuffer buffer() const { return buffer_; }
     [[nodiscard]] std::size_t byte_offset() const { return offset_; }
-    [[nodiscard]] std::size_t byte_length() const { return length_; }
+    /** A view of a detached buffer is out of bounds and reads empty. */
+    [[nodiscard]] std::size_t byte_length() const {
+        return offset_ + length_ > buffer_.byte_length() ? 0 : length_;
+    }
     [[nodiscard]] const void* identity() const { return identity_.get(); }
     [[nodiscard]] std::shared_ptr<void> shared_identity() const { return identity_; }
     [[nodiscard]] friend bool operator==(const ArrayBufferView& left,
@@ -1266,12 +1325,6 @@ template <typename T>
  * object, array and primitive has its kind's in a program that gives no object another one.
  */
 enum class Prototype : std::uint8_t { object, array, string, number, boolean };
-
-/** A read through null or undefined: JavaScript's TypeError. */
-[[noreturn]] inline void
-throw_nullish_access(const char* message = "Cannot read properties of null or undefined") {
-    throw NamedError("TypeError", message);
-}
 
 /** A value asserted to a class it is no instance of: TypeError, as a private member read throws. */
 template <typename T = void> [[noreturn]] T throw_not_an_instance() {
@@ -2654,6 +2707,23 @@ public:
 namespace gc {
 template <typename K, typename V>
 struct Traceable<Map<K, V>> : std::disjunction<Traceable<K>, Traceable<V>> {};
+} // namespace gc
+
+/**
+ * An object the source types by an index signature (`Record<string, V>`),
+ * stored as the Map of its own properties: every Map operation applies, and
+ * a Map converts to one. Where JavaScript tells the two apart it is a plain
+ * object (a structured clone writes and reads one).
+ */
+template <typename K, typename V> class Dictionary : public Map<K, V> {
+public:
+    using Map<K, V>::Map;
+    Dictionary() = default;
+    // NOLINTNEXTLINE(google-explicit-constructor): a Map operation's result stays the dictionary.
+    Dictionary(Map<K, V> entries) : Map<K, V>(std::move(entries)) {}
+};
+namespace gc {
+template <typename K, typename V> struct Traceable<Dictionary<K, V>> : Traceable<Map<K, V>> {};
 } // namespace gc
 
 using WeakIdentity = std::weak_ptr<const void>;

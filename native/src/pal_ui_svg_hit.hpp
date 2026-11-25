@@ -201,6 +201,13 @@ ui_svg_shape_outline(const UiElementRecord& record,
                      const std::function<double(std::string_view)>& number) {
     using std::numbers::pi;
     const auto& tag = record.tag;
+    // An image takes the pointer across its viewport rectangle.
+    if (tag == "image") {
+        const double x = number("x"), y = number("y"), width = number("width"),
+                     height = number("height");
+        return UiSvgPolylines{
+            {{x, y}, {x + width, y}, {x + width, y + height}, {x, y + height}, {x, y}}};
+    }
     if (tag == "rect") {
         const double x = number("x"), y = number("y"), width = number("width"),
                      height = number("height");

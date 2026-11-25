@@ -21,7 +21,7 @@ import type { Value } from "./types.js";
 import type { DataType } from "./data-types.js";
 import { presentDataType } from "./data-types/operations.js";
 import { undefinedOnly, holdsOnly, PRIMITIVE_KINDS } from "./type-facts.js";
-import { ownKeysKnown, undefinedValue } from "./values/model.js";
+import { isAbsentValue, ownKeysKnown, undefinedValue } from "./values/model.js";
 import type { ClassHierarchy } from "./class-members.js";
 import { engineBodies, isEngineDeclaration } from "./engine-bodies.js";
 
@@ -294,6 +294,14 @@ function provenUndefinedValue(
             );
         if (ts.isIdentifier(callee)) {
             const bound = context.bindings.lookupOptional(callee);
+            // An absent function (an omitted argument) called optionally
+            // yields undefined.
+            if (
+                bound &&
+                isAbsentValue(bound) &&
+                expression.questionDotToken !== undefined
+            )
+                return true;
             const stored = bound?.dataType;
             if (
                 stored?.kind === "function" &&
@@ -438,12 +446,13 @@ export function readsErasedVoid(
     context: UndefinedContext,
     value: Value,
     node: ts.Node | undefined,
+    options: ProvenUndefinedOptions = {},
 ): boolean {
     return (
         value.erasedVoidCompletion === true ||
         (node !== undefined &&
             value.kind === "void" &&
-            !provenUndefinedValue(context, node))
+            !provenUndefinedValue(context, node, options))
     );
 }
 

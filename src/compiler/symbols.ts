@@ -17,6 +17,7 @@ import {
     writeSites,
     isMemberAccess,
     type MemberAccess,
+    isConstDeclaration,
 } from "./syntax.js";
 import { someAnalysisNode } from "./analysis-walk.js";
 import {
@@ -102,6 +103,57 @@ function sourceFileOrigin(file: ts.SourceFile): DeclarationOrigin {
         : path === typings.webGpu
           ? "webgpu"
           : "program";
+}
+
+const pinnedInterfaces = new WeakMap<
+    ts.TypeChecker,
+    Map<string, ts.Type | undefined>
+>();
+
+/**
+ * The interface `name` the pinned typings export (`PbrMaterialProps`), or
+ * undefined where the program reads no typings declaring it.
+ */
+export function pinnedInterfaceType(
+    program: ts.Program,
+    checker: ts.TypeChecker,
+    name: string,
+): ts.Type | undefined {
+    let types = pinnedInterfaces.get(checker);
+    if (!types)
+        pinnedInterfaces.set(
+            checker,
+            (types = new Map<string, ts.Type | undefined>()),
+        );
+    if (types.has(name)) return types.get(name);
+    const file = program.getSourceFile(compilerPackageTypings().babylon);
+    const module = file && checker.getSymbolAtLocation(file);
+    const symbol =
+        module &&
+        checker
+            .getExportsOfModule(module)
+            .find(
+                (exported) =>
+                    exported.name === name &&
+                    (exported.flags & ts.SymbolFlags.Interface) !== 0,
+            );
+    const type = symbol && checker.getDeclaredTypeOfSymbol(symbol);
+    types.set(name, type);
+    return type;
+}
+
+/** The global type `name` declares (`Window`), or undefined where no declaration names it. */
+export function libraryInterfaceType(
+    checker: ts.TypeChecker,
+    name: string,
+): ts.Type | undefined {
+    const symbol = checker.resolveName(
+        name,
+        undefined,
+        ts.SymbolFlags.Type,
+        false,
+    );
+    return symbol && checker.getDeclaredTypeOfSymbol(symbol);
 }
 
 /** See {@link DeclarationOrigin}. */
@@ -422,6 +474,23 @@ export function resolvedSymbol(
 }
 
 /**
+ * The initializer of the `const` binding an expression reads, past the
+ * wrappers around it ({@link isConstDeclaration}).
+ */
+export function constInitializerOf(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): ts.Expression | undefined {
+    const root = unwrapExpression(expression);
+    const declaration = ts.isIdentifier(root)
+        ? resolvedSymbol(checker, root)?.valueDeclaration
+        : undefined;
+    return isConstDeclaration(declaration)
+        ? declaration.initializer
+        : undefined;
+}
+
+/**
  * The binding a value name stands for: {@link resolvedSymbol}, with a
  * constructor parameter-property canonicalized to its parameter. The
  * checker may expose the parameter's symbol at the declaration and a
@@ -489,6 +558,14 @@ export function calledFunction(
         : undefined;
 }
 
+/** The signature a call, construction or tag resolves to, its type arguments instantiated. */
+export function calledSignature(
+    checker: ts.TypeChecker,
+    call: ts.CallLikeExpression,
+): ts.Signature | undefined {
+    return checker.getResolvedSignature(call);
+}
+
 /**
  * The type a call gives the parameter at `index` of the signature it
  * resolves to, its type arguments instantiated; undefined past its
@@ -499,7 +576,7 @@ export function calledParameterType(
     call: ts.CallLikeExpression,
     index: number,
 ): ts.Type | undefined {
-    const parameter = checker.getResolvedSignature(call)?.parameters[index];
+    const parameter = calledSignature(checker, call)?.parameters[index];
     return parameter && checker.getTypeOfSymbol(parameter);
 }
 

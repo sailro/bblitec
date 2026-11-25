@@ -60,6 +60,63 @@ const material=createShaderMaterial({vertexSource:${JSON.stringify(vertexSource)
     );
 });
 
+test("a shader source chosen by whether an object argument is there reads the arm it takes", () => {
+    // A stored method hands a class instance's object field to a helper whose
+    // parameter is optional: the object is there (the checker proves it), so
+    // the source the helper composes is its present arm, known at generation.
+    const result =
+        compileSource(`import { createEngine, createShaderMaterial, wgsl, type ShaderMaterial } from "@babylonjs/lite";
+type Options = Parameters<typeof createShaderMaterial>[0];
+const FRAG = "@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }";
+const VERTEX = ${JSON.stringify(vertexSource)};
+interface Matrices { readonly count: number; bind(material: ShaderMaterial): void }
+function silhouette(options: Options, bind?: (material: ShaderMaterial) => void): ShaderMaterial {
+    const material = createShaderMaterial(options);
+    bind?.(material);
+    return material;
+}
+function keyed(matrices?: Matrices): ShaderMaterial {
+    return silhouette({
+        name: "keyed",
+        vertexSource: wgsl\`\${matrices ? \`// placed\\n\${VERTEX}\` : VERTEX}\`,
+        fragmentSource: wgsl\`\${FRAG}\`,
+        attributes: ["position"],
+    }, matrices ? (material) => matrices.bind(material) : undefined);
+}
+class Frame {
+    readonly matrices: Matrices;
+    constructor(count: number) { this.matrices = { count, bind: () => {} }; }
+}
+function createBatch(pointed: boolean): { outline(key: number): ShaderMaterial } {
+    const frame = pointed ? new Frame(4) : null;
+    const masks = new Map<number, ShaderMaterial>();
+    return {
+        outline(key: number): ShaderMaterial {
+            let view = masks.get(key);
+            if (!view) {
+                view = frame ? keyed(frame.matrices) : keyed();
+                masks.set(key, view);
+            }
+            return view;
+        },
+    };
+}
+async function main(): Promise<void> {
+    await createEngine(document.createElement("canvas"));
+    const params = new URLSearchParams(location.search);
+    const batch = createBatch(Number(params.get("p") ?? "1") > 0);
+    console.log(batch.outline(Number(params.get("k") ?? "1")) !== undefined);
+}
+void main();`);
+    const sources = (result.manifest.customShaderPrograms ?? []).map(
+        ({ vertexSource }) => vertexSource,
+    );
+    assert.ok(
+        sources.some((source) => source.includes("// placed")),
+        sources.join("\n---\n"),
+    );
+});
+
 test("shader reflection refuses an unsupported struct member type", () => {
     assert.throws(
         () =>
@@ -173,6 +230,38 @@ test("typed shader IR carries helper functions, loops and full operators", () =>
     assert.match(native, /for \(var j = 0; \(j <= i\); j\+\+\) \{/);
     assert.match(native, /\} else if \(\(j > 5\)\) \{/);
     assert.match(native, /w -= -0\.5;/);
+});
+
+test("a module-scope private variable is each invocation's own, with no binding", () => {
+    const source = {
+        name: "private-surface",
+        vertexSource,
+        fragmentSource: `
+            struct Surface { tint: vec4<f32>, };
+            var<private> surface: Surface;
+            var<private> scale: f32 = 2.0;
+            fn fillSurface() { surface.tint = shaderUniforms.tint * scale; }
+            @fragment fn mainFragment() -> @location(0) vec4<f32> {
+                fillSurface();
+                return surface.tint;
+            }
+        `,
+        attributes: ["position"],
+        uniforms: ["tint:vec4<f32>"],
+        ...renderState,
+    };
+    const program = lowerWgslShaderProgram(source);
+    assert.deepEqual(
+        program.fragment.privates?.map(({ name, type }) => [name, type]),
+        [
+            ["surface", "Surface"],
+            ["scale", "f32"],
+        ],
+    );
+    const native = emitNativeWgslProgram(program, "fragment");
+    assert.match(native, /^var<private> surface: Surface;$/m);
+    assert.match(native, /^var<private> scale: f32 = 2\.0;$/m);
+    assert.doesNotMatch(native, /@binding\(\d+\) var<private>/);
 });
 
 test("template lists are told apart from comparisons", () => {

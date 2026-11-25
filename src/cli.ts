@@ -704,7 +704,7 @@ function writeSurvey(
     censusPath: string,
     source: string,
     compileOptions: CompileOptions,
-    passes: number | undefined,
+    { passes, entryOnly }: { passes?: number; entryOnly?: true },
     leaveCoverage: () => void,
 ): void {
     // A survey of a large entry says where it is and leaves its census as
@@ -723,6 +723,7 @@ function writeSurvey(
             },
         },
         ...(passes ? { passLimit: passes } : {}),
+        ...(entryOnly ? { roots: false } : {}),
     });
     writeJsonRecord(censusPath, report);
     console.log(
@@ -746,8 +747,9 @@ function writeSurvey(
 
 /**
  * Runs `lower` under `--coverage`, writing what it observed when it ends.
- * `leave` writes what stands so far: a survey calls it at each restart, so
- * one stopped early still leaves its furthest attempt's coverage.
+ * `leave` writes what stands so far: a survey and a long compile call it
+ * as they go, so one stopped early still leaves its furthest attempt's
+ * coverage.
  */
 function withCoverage<T>(
     path: string | undefined,
@@ -815,22 +817,34 @@ async function main(): Promise<void> {
         ...(options.sourceProfile
             ? { sourceProfile: options.sourceProfile }
             : {}),
+        ...(options.convergeStorage
+            ? { convergeStorage: options.convergeStorage }
+            : {}),
     };
     if (options.target.kind === "survey") {
         const census = resolve(options.target.census);
-        const { passes } = options.target;
+        const target = options.target;
         withCoverage(options.coverage, (leave) =>
-            writeSurvey(census, source, compileOptions, passes, leave),
+            writeSurvey(census, source, compileOptions, target, leave),
         );
         return;
     }
     const outputPath = resolve(options.target.output);
-    const result = withCoverage(options.coverage, () =>
-        compileSource(source, {
+    // A long compile leaves its furthest attempt's coverage every ten minutes,
+    // between attempts, as a survey does: one stopped early is still read.
+    const result = withCoverage(options.coverage, (leave) => {
+        let coverageLeftAt = Date.now();
+        return compileSource(source, {
             ...compileOptions,
             readAssetBytes: readAssetBytesSync,
-        }),
-    );
+            compileProgress: (line) => {
+                console.error(line);
+                if (Date.now() - coverageLeftAt < 10 * 60 * 1000) return;
+                coverageLeftAt = Date.now();
+                leave();
+            },
+        });
+    });
 
     // The frozen node-particle bake is a Chromium run that nothing between
     // here and the emitters depends on, so it is started rather than

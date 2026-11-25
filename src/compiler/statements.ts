@@ -202,7 +202,7 @@ interface StatementLoweringContext extends Pick<
     | "varBindings"
     | "emitAssignment"
     | "noteHeldNativeBindings"
-    | "emitWindowLogicalAssignment"
+    | "emitAddedPropertyLogicalAssignment"
     | "emitDelete"
     | "compileValue"
     | "compileTextMutation"
@@ -4750,7 +4750,7 @@ export class StatementLowerer {
             ts.isBinaryExpression(unwrapped) &&
             isLogicalAssignmentOperator(unwrapped.operatorToken.kind)
         ) {
-            if (context.emitWindowLogicalAssignment(unwrapped)) return;
+            if (context.emitAddedPropertyLogicalAssignment(unwrapped)) return;
             context.dataLowerer.emitLogicalAssignment(unwrapped);
             return;
         }

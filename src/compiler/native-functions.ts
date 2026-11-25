@@ -9,7 +9,7 @@ import ts from "typescript";
 import { bindingIsOnlyCalledDirectly } from "./binding-rebinds.js";
 import { schedulerOf } from "./schedulers.js";
 import { CompileError } from "./compile-error.js";
-import { isAbsentValue } from "./values/model.js";
+import { bindsPresent, isAbsentValue } from "./values/model.js";
 import {
     expressionMayRunCode,
     soleReturnedExpression,
@@ -71,6 +71,7 @@ import {
     fixedLengthParameterWrites,
     parameterIsReadOnly,
     parameterOnlyRead,
+    parameterPresenceTested,
 } from "./parameter-effects.js";
 import { isVoid } from "./type-facts.js";
 import {
@@ -433,6 +434,26 @@ export class NativeFunctionLowerer {
         )
             return undefined;
         if (fixedByCaseSplit(this.context, call)) return undefined;
+        // A body that tests whether a parameter is present specializes on an
+        // argument that binds it present, which the shared body owner does.
+        if (
+            declaration.parameters.some((parameter, index) => {
+                const argument = call.arguments[index];
+                return (
+                    argument !== undefined &&
+                    parameterPresenceTested(
+                        this.context.checker,
+                        parameter,
+                        declaration,
+                    ) &&
+                    this.context.probeEmission(
+                        () => bindsPresent(this.context.compileValue(argument)),
+                        () => false,
+                    ) === true
+                );
+            })
+        )
+            return undefined;
         const signature = this.resolveSignature(declaration, callee);
         if (!signature) {
             return undefined;
@@ -1145,8 +1166,16 @@ export class NativeFunctionLowerer {
         if (!returnType) {
             return { kind: "void", cpp };
         }
+        // A tagged result is read twice (its state and its value): the call
+        // runs once, into a temporary.
         return {
-            ...this.context.dataLowerer.leafValue(cpp, returnType),
+            ...(returnType.kind === "tagged"
+                ? this.context.dataLowerer.storedCallResult(
+                      cpp,
+                      returnType,
+                      "tagged_result",
+                  )
+                : this.context.dataLowerer.leafValue(cpp, returnType)),
             nativeOwnedRvalue: true,
         };
     }
@@ -1714,10 +1743,13 @@ export class NativeFunctionLowerer {
             ) {
                 return undefined;
             }
-            returnType =
+            // A caller telling the returned `null` from `undefined` tags it.
+            returnType = this.context.dataTypes.absenceTaggedStorage(
+                declaration,
                 options.markAllStructReturns && mapped.kind === "struct"
                     ? this.context.dataTypes.markStoredObjectReferences(mapped)
-                    : mapped;
+                    : mapped,
+            );
         }
         const parameters: DataFunctionParameter[] = [];
         for (const parameter of declaration.parameters) {

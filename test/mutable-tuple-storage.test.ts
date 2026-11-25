@@ -66,9 +66,33 @@ test("represented initializer storage refuses writes outside its retained elemen
     assert.throws(
         () =>
             compileSource(`
-            const values: (ArrayBuffer | MessagePort | number)[] = [new ArrayBuffer(1)];
+            const values: (ArrayBuffer | ReadableStream | number)[] = [new ArrayBuffer(1)];
             values.push(3);
         `),
         /ArrayBuffer|arraybuffer|data type/,
     );
+});
+
+test("an array annotated with a represented union stores each of its arms", (t) => {
+    const result = compileSource(`
+        const values: (ArrayBuffer | MessagePort | number)[] = [new ArrayBuffer(1)];
+        if (values.push(3) !== 2 || typeof values[1] !== "number" || (values[1] as number) !== 3)
+            throw new Error("pushed number");
+        if (typeof values[0] !== "object" || (values[0] as ArrayBuffer).byteLength !== 1)
+            throw new Error("initial buffer");
+        globalThis.close();
+    `);
+    assert.match(
+        result.cpp,
+        /bbl::js::Array<std::variant<bbl::js::ArrayBuffer, std::shared_ptr<bbl::pal::MessagePort>, double>> v_values/,
+    );
+    const native = optionalNativeFixtureTools(false);
+    if (!native) return t.skip("Native fixture compiler unavailable.");
+    // A MessagePort arm is declared by the worker runtime, which runs the
+    // program in the application realm until it closes.
+    runGeneratedProgram(native, "mutable-tuple-union-storage", result.cpp, {
+        flags: ["/DBBLITE_WORKERS=1"],
+        timeoutMs: 20000,
+        expectedOutput: "",
+    });
 });

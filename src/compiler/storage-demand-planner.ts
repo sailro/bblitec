@@ -14,6 +14,7 @@ import {
     writeSites,
 } from "./syntax.js";
 import { CompileError } from "./compile-error.js";
+import { unwrapObjectIdentity } from "./static-evaluator.js";
 import {
     DynamicBindingStorageRequired,
     ParameterObjectStorageRequired,
@@ -155,10 +156,13 @@ function independentGenericCall(
 /**
  * A binding's named storage demanded by its own initializer. Rolling back
  * this declaration loses only its binding: evaluating the initializer
- * runs no calls, accessors or writes. Its source/array storage does not
- * carry a representation inferred at another use of the binding.
+ * runs no calls, accessors or writes, but an `Object` identity call
+ * (`Object.freeze`) on a fresh literal, which changes no object another
+ * holds. Its source/array storage does not carry a representation
+ * inferred at another use of the binding.
  */
 function ownBindingDemand(
+    checker: ts.TypeChecker,
     statement: ts.Statement | undefined,
     request: StorageRequest,
 ): boolean {
@@ -171,14 +175,21 @@ function ownBindingDemand(
     )
         return false;
     const declaration = statement.declarationList.declarations[0]!;
+    if (
+        declaration !== request.declaration ||
+        !ts.isIdentifier(declaration.name) ||
+        declaration.initializer === undefined
+    )
+        return false;
+    const value = unwrapObjectIdentity(checker, declaration.initializer);
     return (
-        declaration === request.declaration &&
-        ts.isIdentifier(declaration.name) &&
-        declaration.initializer !== undefined &&
-        !expressionMayRunCode(declaration.initializer) &&
+        (value === unwrapExpression(declaration.initializer) ||
+            ts.isArrayLiteralExpression(value) ||
+            ts.isObjectLiteralExpression(value)) &&
+        !expressionMayRunCode(value) &&
         // Spreads can invoke getters/iterators; computed keys can run coercion.
         !someAnalysisNode(
-            declaration.initializer,
+            value,
             (node) =>
                 ts.isSpreadElement(node) ||
                 ts.isSpreadAssignment(node) ||
@@ -205,7 +216,7 @@ function independentDemand(
     if (error instanceof GenericFunctionStorageRequired)
         return independentGenericCall(context, statement, error);
     if (error instanceof DynamicBindingStorageRequired)
-        return ownBindingDemand(statement, error.request);
+        return ownBindingDemand(context.checker, statement, error.request);
     return !(
         error instanceof ParameterObjectStorageRequired ||
         error instanceof NativeRecordStorageRequired ||
@@ -331,7 +342,7 @@ export class StorageDemandPlanner {
      */
     private bounded = false;
 
-    public constructor(checker: ts.TypeChecker) {
+    public constructor(private readonly checker: ts.TypeChecker) {
         this.collected = new ReplayStorage(checker);
     }
 
@@ -486,7 +497,7 @@ export class StorageDemandPlanner {
             requests.every(
                 (request) =>
                     demandsKeyOnly(request) ||
-                    ownBindingDemand(statement, request),
+                    ownBindingDemand(this.checker, statement, request),
             )
         );
     }

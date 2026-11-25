@@ -15,6 +15,10 @@ import {
     emissionArray,
     writable,
 } from "../src/compiler/emission-transaction.js";
+import {
+    optionalNativeFixtureTools,
+    runGeneratedProgram,
+} from "./native-fixture.js";
 
 test("cached captures follow nested writes, native aliases and speculative rollback", () => {
     const first = {
@@ -231,3 +235,128 @@ test("a shared body captures the record a spread literal built for its call", ()
         ),
     );
 });
+
+test(
+    "a shared body captures a record argument's member a caller temporary holds",
+    { skip: !optionalNativeFixtureTools(false) },
+    () => {
+        // `walls.filter(...)` is a temporary of the caller; the record literal
+        // holding it is the shared body's compile-time argument.
+        const { cpp } = compileSource(
+            `
+            interface Needs { wallSurface?: readonly string[]; houses?: readonly string[] }
+            const ids = (requested: readonly string[] | undefined): string[] =>
+                [...new Set((requested ?? []).map((id) => id + "!"))];
+            function resolve(needs: Needs): string[] {
+                return ids([...(needs.wallSurface ?? []), ...(needs.houses ?? [])]);
+            }
+            const walls: string[] = ["x", "y"];
+            const first = resolve({ wallSurface: walls.filter((w) => w !== "y"), houses: ["a"] }).join(",");
+            if (first !== "x!,a!") throw new Error("filtered member " + first);
+            const second = resolve({ wallSurface: ["w", "z"], houses: ["a"] }).join(",");
+            if (second !== "w!,z!,a!") throw new Error("literal member " + second);
+            `,
+            { fileName: "shared-record-member.ts" },
+        );
+        runGeneratedProgram(
+            optionalNativeFixtureTools(false)!,
+            "closure-captures-shared-record-member",
+            cpp,
+        );
+    },
+);
+
+test(
+    "a spread copies a method with the scope that declared it",
+    { skip: !optionalNativeFixtureTools(false) },
+    () => {
+        const factory = `
+            interface Channel { sync(force?: boolean): void; facts(): Float32Array; version(): number }
+            interface Deps { pack(): Float32Array; same(a: Float32Array, b: Float32Array): boolean; publish(v: number): void }
+            function createChannel(deps: Deps): Channel {
+                let facts = new Float32Array(0);
+                let version = 0;
+                return {
+                    sync(force = false): void {
+                        const next = deps.pack();
+                        if (!force && deps.same(next, facts)) return;
+                        version++;
+                        facts = next;
+                        deps.publish(version);
+                    },
+                    facts: () => facts,
+                    version: () => version,
+                };
+            }
+            let published = 0;
+            let n = 1;
+            const source = () => createChannel({
+                pack: () => new Float32Array(n),
+                same: (a, b) => a.length === b.length,
+                publish: (v) => { published += v; },
+            });`;
+        const { cpp } = compileSource(
+            `${factory}
+            function createChannels() {
+                const amenity = source();
+                return { amenity: { ...amenity, has: (id: number) => amenity.facts().length > id } };
+            }
+            const channel = createChannels().amenity;
+            channel.sync(true);
+            n = 3;
+            channel.sync();
+            const settled = () => channel.sync(true);
+            settled();
+            const seen = published + " " + channel.version() + " " + channel.has(2);
+            if (seen !== "6 3 true") throw new Error("spread channel " + seen);
+            `,
+            { fileName: "spread-method-scope.ts" },
+        );
+        runGeneratedProgram(
+            optionalNativeFixtureTools(false)!,
+            "closure-captures-spread-method-scope",
+            cpp,
+        );
+        // A copied method the literal replaces later is never called: the
+        // key keeps the spread's place and the later value.
+        const replaced = compileSource(
+            `
+            function createMover(step: number) {
+                let moved = 0;
+                return {
+                    begin(id: number): boolean { return this.prepare(id) > 0; },
+                    prepare(id: number): number { moved += step; return id + moved; },
+                };
+            }
+            const base = createMover(2);
+            const mover = {
+                ...base,
+                extra: 1,
+                begin: (id: number): boolean => base.begin(id) && id > 0,
+            };
+            const seen = [mover.begin(3), mover.begin(-9), Object.keys(mover).join()].join("|");
+            if (seen !== "true|false|begin,prepare,extra") throw new Error(seen);
+            `,
+            { fileName: "spread-method-replaced.ts" },
+        );
+        runGeneratedProgram(
+            optionalNativeFixtureTools(false)!,
+            "closure-captures-spread-method-replaced",
+            replaced.cpp,
+        );
+        // A copied method reading its own `this` runs on the copy, away from
+        // the scope that declared it.
+        assert.throws(
+            () =>
+                compileSource(`
+                    function create(step: number) {
+                        let total = 0;
+                        return { add() { total += step; return this.read(); }, read: () => total };
+                    }
+                    function wrap() { return { ...create(2), extra: 1 }; }
+                    localStorage.setItem("t", String(wrap().add()));
+                `),
+            /A spread copies method 'add', which reads `this`, out of the scope that declared it\./,
+        );
+    },
+);

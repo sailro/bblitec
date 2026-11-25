@@ -3,8 +3,17 @@
 #include <bblite/js_data.hpp>
 #include <bblite/pal_structured_clone.hpp>
 
+#include <algorithm>
+#include <charconv>
 #include <cstdint>
 #include <cstring>
+#include <limits>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <variant>
+#include <vector>
 
 namespace bbl::js {
 
@@ -234,6 +243,94 @@ template <std::size_t N> struct CloneCodec<Tuple<N>> {
     }
 };
 
+/** A record key: a string is itself, a numeric key is its own spelling. */
+[[nodiscard]] inline const std::string& json_object_key(const std::string& key) { return key; }
+/** A temporary key would leave the returned reference dangling. */
+const std::string& json_object_key(std::string&&) = delete;
+
+[[nodiscard]] inline std::string json_object_key(double key) { return number_to_string(key); }
+
+[[nodiscard]] inline std::optional<std::uint32_t> json_property_index(std::string_view name) {
+    if (name.empty() || (name.size() > 1 && name.front() == '0'))
+        return std::nullopt;
+    std::uint32_t index = 0;
+    const auto parsed = std::from_chars(name.data(), name.data() + name.size(), index);
+    if (parsed.ec != std::errc{} || parsed.ptr != name.data() + name.size() ||
+        index == std::numeric_limits<std::uint32_t>::max())
+        return std::nullopt;
+    return index;
+}
+
+[[nodiscard]] inline bool json_property_key_less(std::string_view left, std::string_view right) {
+    const auto a = json_property_index(left), b = json_property_index(right);
+    return a && (!b || *a < *b);
+}
+
+/**
+ * A dictionary's own entries in property order: array-index names ascending,
+ * then the other names as they were inserted.
+ */
+template <typename Map, typename Visitor>
+inline void for_each_property_entry(const Map& map, Visitor&& visitor) {
+    using Entry = std::remove_cvref_t<decltype(*map.begin())>;
+    std::vector<std::pair<std::string, const Entry*>> ordered;
+    ordered.reserve(map.size());
+    for (const auto& entry : map)
+        ordered.emplace_back(json_object_key(entry.first), &entry);
+    std::stable_sort(ordered.begin(), ordered.end(), [](const auto& left, const auto& right) {
+        return json_property_key_less(left.first, right.first);
+    });
+    for (const auto& [name, entry] : ordered)
+        visitor(name, entry->second);
+}
+
+/**
+ * The number a number-keyed dictionary stores property `name` under: the
+ * number whose string `name` is, or none when no number spells it (its
+ * `get` then misses).
+ */
+[[nodiscard]] inline Nullable<double> number_property_key(const std::string& name) {
+    const double key = number_from_string(name);
+    if (number_to_string(key) != name)
+        return Nullable<double>{std::nullopt};
+    return Nullable<double>{key};
+}
+
+/** A dictionary is a plain object: its own properties, in property order. */
+template <typename K, typename V> struct CloneCodec<Dictionary<K, V>> {
+    static pal::CloneId write(pal::CloneWriter& writer, const Dictionary<K, V>& value) {
+        const auto [id, fresh] = writer.remember(value.identity());
+        if (!fresh)
+            return id;
+        pal::CloneObject object;
+        object.properties.reserve(value.size());
+        for_each_property_entry(value, [&](const std::string& name, const V& item) {
+            object.properties.emplace_back(name, clone_write(writer, item));
+        });
+        writer.replace(id, std::move(object));
+        return id;
+    }
+    static Dictionary<K, V> read(pal::CloneReader& reader, pal::CloneId id) {
+        if (const auto* value = reader.recalled<Dictionary<K, V>>(id))
+            return *value;
+        const auto properties = reader.get<pal::CloneObject>(id).properties;
+        Dictionary<K, V> value;
+        reader.remember(id, value);
+        for (const auto& [name, item] : properties) {
+            if constexpr (std::is_same_v<K, std::string>)
+                value.set(name, clone_read<V>(reader, item));
+            else {
+                const auto key = number_property_key(name);
+                if (!key)
+                    throw pal::DataCloneError("A number-keyed dictionary receives property '" +
+                                              name + "', which no number spells.");
+                value.set(*key, clone_read<V>(reader, item));
+            }
+        }
+        return value;
+    }
+};
+
 template <typename K, typename V> struct CloneCodec<Map<K, V>> {
     static pal::CloneId write(pal::CloneWriter& writer, const Map<K, V>& value) {
         const auto [id, fresh] = writer.remember(value.identity());
@@ -411,9 +508,11 @@ template <typename T> struct CloneCodec<TypedArray<T>> {
                 reader.remember(view.buffer, ArrayBuffer(owned.storage()));
                 return owned;
             }
+            // A view's byte length is a whole number of elements.
+            const std::size_t length = view.byte_length / sizeof(T);
             return TypedArray<T>(clone_read<ArrayBuffer>(reader, view.buffer),
                                  static_cast<double>(view.byte_offset),
-                                 static_cast<double>(view.byte_length / sizeof(T)));
+                                 static_cast<double>(length));
         }();
         reader.remember(id, value);
         return value;
@@ -461,6 +560,19 @@ template <typename T> struct CloneCodec<std::optional<T>> {
     }
 };
 
+/** A slot telling `undefined` from `null`: undefined until defined, then its value (`null` its empty state). */
+template <typename T> struct CloneCodec<Tagged<T>> {
+    static pal::CloneId write(pal::CloneWriter& writer, const Tagged<T>& value) {
+        return value.defined() ? clone_write(writer, value.value())
+                               : writer.add(pal::CloneUndefined{});
+    }
+    static Tagged<T> read(pal::CloneReader& reader, pal::CloneId id) {
+        if (std::holds_alternative<pal::CloneUndefined>(reader.node(id)))
+            return {};
+        return Tagged<T>(clone_read<T>(reader, id), true);
+    }
+};
+
 template <typename T> struct CloneCodec<Nullable<T>> {
     static pal::CloneId write(pal::CloneWriter& writer, const Nullable<T>& value) {
         return value ? clone_write(writer, *value) : writer.add(pal::CloneUndefined{});
@@ -470,6 +582,70 @@ template <typename T> struct CloneCodec<Nullable<T>> {
             std::holds_alternative<pal::CloneNull>(reader.node(id)))
             return {};
         return clone_read<T>(reader, id);
+    }
+};
+
+/**
+ * Whether a message node is the kind `T`'s codec writes: how a union reads
+ * its member back. The compiler admits a union only where its members' kinds
+ * differ.
+ */
+template <typename T> struct CloneShape {
+    static bool holds(const pal::CloneNode& node) {
+        if constexpr (std::is_same_v<T, bool>)
+            return std::holds_alternative<bool>(node);
+        else if constexpr (std::is_same_v<T, std::string>)
+            return std::holds_alternative<std::string>(node);
+        else if constexpr (std::is_arithmetic_v<T>)
+            return std::holds_alternative<double>(node);
+        else if constexpr (requires(const T& value) { clone_enum_value(value); })
+            return std::holds_alternative<std::string>(node);
+        else
+            return std::holds_alternative<pal::CloneObject>(node);
+    }
+};
+/** The shape of a value whose node is one `Node` alternative. */
+template <typename Node> struct CloneShapeIs {
+    static bool holds(const pal::CloneNode& node) { return std::holds_alternative<Node>(node); }
+};
+/** The shape of a view of one element kind. */
+template <pal::CloneViewKind Kind> struct CloneViewShape {
+    static bool holds(const pal::CloneNode& node) {
+        const auto* view = std::get_if<pal::CloneView>(&node);
+        return view && view->kind == Kind;
+    }
+};
+template <> struct CloneShape<Undefined> : CloneShapeIs<pal::CloneUndefined> {};
+template <> struct CloneShape<Null> : CloneShapeIs<pal::CloneNull> {};
+template <typename T> struct CloneShape<Array<T>> : CloneShapeIs<pal::CloneArray> {};
+template <std::size_t N> struct CloneShape<Tuple<N>> : CloneShape<Array<double>> {};
+template <typename K, typename V> struct CloneShape<Map<K, V>> : CloneShapeIs<pal::CloneMap> {};
+template <typename K, typename V>
+struct CloneShape<Dictionary<K, V>> : CloneShapeIs<pal::CloneObject> {};
+template <typename T> struct CloneShape<Set<T>> : CloneShapeIs<pal::CloneSet> {};
+template <> struct CloneShape<Date> : CloneShapeIs<pal::CloneDate> {};
+template <> struct CloneShape<ArrayBuffer> : CloneShapeIs<pal::CloneBuffer> {};
+template <typename T> struct CloneShape<TypedArray<T>> : CloneViewShape<CloneElement<T>::kind> {};
+template <> struct CloneShape<U8Array> : CloneViewShape<pal::CloneViewKind::uint8> {};
+template <> struct CloneShape<DataView> : CloneViewShape<pal::CloneViewKind::data_view> {};
+template <typename T> struct CloneShape<Ref<T>> : CloneShape<T> {};
+
+/** A union clones as its present member and is received as the member its node holds. */
+template <typename... Ts> struct CloneCodec<std::variant<Ts...>> {
+    using Union = std::variant<Ts...>;
+    static pal::CloneId write(pal::CloneWriter& writer, const Union& value) {
+        return std::visit([&](const auto& member) { return clone_write(writer, member); }, value);
+    }
+    static Union read(pal::CloneReader& reader, pal::CloneId id) {
+        const auto& node = reader.node(id);
+        std::optional<Union> result;
+        static_cast<void>(
+            ((CloneShape<Ts>::holds(node) &&
+              (result.emplace(std::in_place_type<Ts>, clone_read<Ts>(reader, id)), true)) ||
+             ...));
+        if (!result)
+            throw pal::DataCloneError("Message value matches no member of the receiving union.");
+        return std::move(*result);
     }
 };
 
@@ -487,6 +663,46 @@ template <typename T> T clone_read(pal::CloneReader& reader, pal::CloneId id) {
         CloneCodec<T>::read_into(reader, id, value);
         return value;
     }
+}
+
+/**
+ * An ArrayBuffer in a transfer list (a typed array's `.buffer` included):
+ * serialization meets it by its storage, and the transfer detaches it after
+ * serialization, as HTML's StructuredSerializeWithTransfer does.
+ */
+class BufferTransfer final : public pal::Transferable {
+public:
+    explicit BufferTransfer(ArrayBuffer buffer) : buffer_(std::move(buffer)) {}
+    /** Serialization asks first: a buffer no transfer detaches throws before any is serialized. */
+    [[nodiscard]] std::pair<const void*, pal::CloneIdentitySpace>
+    transfer_identity() const override {
+        if (buffer_.shared())
+            throw pal::DataCloneError("A SharedArrayBuffer cannot be transferred.");
+        if (!buffer_.detachable())
+            throw pal::DataCloneError("A borrowed native buffer cannot be transferred.");
+        return {buffer_.identity(), pal::CloneIdentitySpace::buffer};
+    }
+    std::unique_ptr<pal::TransferredResource> transfer() override {
+        return std::make_unique<pal::TransferredBuffer>(buffer_.detach());
+    }
+
+private:
+    ArrayBuffer buffer_;
+};
+
+/** An ArrayBuffer held in a run-time transfer list (`Transferable[]`). */
+inline std::shared_ptr<pal::Transferable> transferable_buffer(ArrayBuffer buffer) {
+    return std::make_shared<BufferTransfer>(std::move(buffer));
+}
+
+/** A run-time transfer list's entries, as serialization takes them. */
+inline std::vector<pal::Transferable*>
+transfer_list(const Array<std::shared_ptr<pal::Transferable>>& list) {
+    std::vector<pal::Transferable*> entries;
+    entries.reserve(list.size());
+    for (const auto& entry : list)
+        entries.push_back(entry.get());
+    return entries;
 }
 
 template <typename T>

@@ -220,6 +220,42 @@ test("lowers one-file input, change dispatch, files[0], and File.text", () => {
     );
 });
 
+test("lowers File.arrayBuffer to the selected file's bytes", () => {
+    const result = compileFileBody(`
+        let received = 0;
+        const input = document.createElement("input");
+        input.type = "file";
+        input.addEventListener("change", () => {
+            void (async () => {
+                const file = input.files?.[0];
+                if (!file) return;
+                const bytes = new Uint8Array(await file.arrayBuffer());
+                received = bytes.length;
+            })();
+        });
+        input.click();
+        engine.canvas.width = received;
+    `);
+    assert.match(result.cpp, /bbl::js::file_array_buffer\(/);
+
+    assert.throws(
+        () =>
+            compileFileBody(`
+                const input = document.createElement("input");
+                input.type = "file";
+                input.onchange = () => {
+                    const file = input.files?.[0];
+                    if (file) void file.stream();
+                };
+            `),
+        (error: unknown) =>
+            error instanceof CompileError &&
+            /File method 'stream' is not lowered; only text\(\) and arrayBuffer\(\)/.test(
+                error.message,
+            ),
+    );
+});
+
 test("lowers a file input's onchange handler property and FileReader handlers", () => {
     const result = compileFileBody(`
         let loaded = 0;

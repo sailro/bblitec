@@ -378,6 +378,10 @@ struct UiComputedStyle {
     std::string transform;
     std::string visibility;
     std::string z_index;
+    std::string box_sizing;
+    /** Used padding and border widths, top, right, bottom, left, in the layout's pixels. */
+    std::array<double, 4> padding{};
+    std::array<double, 4> border_width{};
     /** The computed (specified, var()-substituted) values of the custom properties read, by name. */
     std::vector<std::pair<std::string, std::string>> custom_properties;
     [[nodiscard]] bool operator==(const UiComputedStyle&) const = default;
@@ -613,6 +617,19 @@ struct GpuTextureIdentity {
     friend bool operator==(const GpuTextureIdentity&, const GpuTextureIdentity&) = default;
 };
 
+/**
+ * The GPU texture an attachment holds, as a `.texture` read sees it: one
+ * identity per allocation the backend makes (`allocation`, the ordinal it
+ * writes as it allocates), the first one the attachment's own from its
+ * creation, so only a reallocation (a resize, a lost device) gives a new
+ * object, as the pin's replaced `GPUTexture` is one
+ * (`published_attachment`).
+ */
+struct PublishedAttachment {
+    GpuTextureIdentity texture{};
+    std::uint64_t allocation = 0;
+};
+
 /** The texels behind a program-made texture; any other texture's are the backend's alone. */
 inline const GpuTextureTexels& gpu_texture_texels(const GpuTextureIdentity& texture) {
     if (!texture.texels)
@@ -665,7 +682,7 @@ struct VatBakeRecord {
     GpuTextureIdentity texture;
     std::vector<VatClipRow> clips;
     /** `boneOrigins` / `boneMatrices`: bone index -> its per-frame capture, when prepared with one. */
-    js::Nullable<js::Map<double, js::F32Array>> bone_origins, bone_matrices;
+    js::Nullable<js::Dictionary<double, js::F32Array>> bone_origins, bone_matrices;
 };
 
 /**
@@ -678,7 +695,7 @@ struct PreparedVatPayload {
     double frame_count = std::numeric_limits<double>::quiet_NaN();
     js::F32Array data;
     std::vector<VatClipRow> clips;
-    js::Nullable<js::Map<double, js::F32Array>> bone_origins, bone_matrices;
+    js::Nullable<js::Dictionary<double, js::F32Array>> bone_origins, bone_matrices;
 };
 
 /**
@@ -2001,6 +2018,14 @@ struct RenderTargetRecord {
      * allocation `buildRenderTarget` makes; read while `_colorView` is set.
      */
     GpuTextureIdentity color_texture{};
+    /**
+     * The ordinal of the backend's allocation of this target's attachments,
+     * written as it allocates them (`create_frame_graph_textures`); 0 until
+     * the first. An eager target's `.texture` publishes one identity per
+     * allocation (`eager_color`).
+     */
+    mutable std::uint64_t attachment_allocation = 0;
+    PublishedAttachment eager_color{};
     TargetAllocation allocation = TargetAllocation::record;
     /**
      * A shader reads the depth attachment without a sampled facade (a
@@ -2060,6 +2085,13 @@ struct FrameTaskRecord {
     std::optional<RenderTaskTransmission> transmission;
     /** The borrowed geometry wrapper has published its depth at record or a later grab. */
     mutable bool transmission_geometry_depth_ready = false;
+    /**
+     * The ordinal of the backend's allocation of the transmission grab's
+     * depth snapshot, written as it (re)allocates it at the target's extent;
+     * its `.texture` publishes one identity per allocation.
+     */
+    mutable std::uint64_t transmission_depth_allocation = 0;
+    PublishedAttachment transmission_depth{};
     bool render_meshes_dirty = false;
     /** A backend built this task's draw lists once: the recorded generation is drawn. */
     bool render_generation_built = false;
@@ -3535,6 +3567,12 @@ struct MaterialRecord {
     // Source control reads retain number precision separately from GPU floats.
     bool source_transmissive = false;
     std::optional<double> source_refraction_intensity;
+    /**
+     * `environmentIntensity` as the material's own property: what its props or
+     * a write gave it, absent otherwise, whatever the family. A PBR draw reads
+     * `environment_intensity`, its writer's `?? 1`.
+     */
+    std::optional<double> source_environment_intensity;
     // Babylon keeps the material-wide alpha separate from the PBR base-color
     // factor. The fragment multiplies both when the factor field is composed.
     float alpha = 1.0f;
@@ -5232,6 +5270,8 @@ struct Engine {
     std::uint64_t draw_call_count = 0;
     OwnerLifetime lifetime;
     DomTargetState dom_targets;
+    /** The properties a program adds to this engine's objects (`engine_object_property`). */
+    std::unordered_map<const void*, std::shared_ptr<void>> object_properties;
     std::shared_ptr<pal::OffscreenRun> offscreen_run;
     /** Generated subsystem state; callbacks hold weak references back to it. */
     std::vector<std::shared_ptr<void>> native_resource_owners;
@@ -5410,6 +5450,8 @@ struct Engine {
     void (*ui_link_navigation)(const std::string& url) = nullptr;
     /** A realm host can synchronously publish pending edits before a source layout read. */
     UiClientRect (*ui_measure_element)(Engine&, UiElementHandle) = nullptr;
+    /** The same read of the element's content box. */
+    UiContentBox (*ui_measure_content_box)(Engine&, UiElementHandle) = nullptr;
     /** A realm host asks its display what lies at a viewport point (`DomInput::element_at`). */
     std::optional<DomEventTarget> (*ui_element_at)(Engine&, double, double) = nullptr;
     /** A realm host adopts its display's latest `pointer_states` before a selector reads them. */
@@ -5694,6 +5736,44 @@ struct Engine {
     std::vector<std::shared_ptr<pal::LoadedTexels>> unread_loaded_texels;
     std::vector<FileTexture> render_texture_facades;
 };
+
+/**
+ * One property a program adds to engine objects of one kind, a JavaScript own
+ * property the pin's type does not declare: the value each object that has it
+ * holds, by the object's identity (`engine_object_identity`). An object with
+ * no entry has no such property.
+ */
+template <typename Value> using EngineObjectProperty = std::unordered_map<std::uint64_t, Value>;
+
+/** The property a generated accessor names by `key`, made empty on first use. */
+template <typename Value>
+EngineObjectProperty<Value>& engine_object_property(Engine& engine, const void* key) {
+    auto& storage = engine.object_properties[key];
+    if (!storage)
+        storage = std::make_shared<EngineObjectProperty<Value>>();
+    return *static_cast<EngineObjectProperty<Value>*>(storage.get());
+}
+
+/** The value an object holds, or the absent value where it has no such property. */
+template <typename Value>
+[[nodiscard]] Value engine_object_property_value(const EngineObjectProperty<Value>& values,
+                                                 std::uint64_t object) {
+    const auto found = values.find(object);
+    return found == values.end() ? Value{} : found->second;
+}
+
+/** A material slot is never reused, so its index is the object's identity. */
+[[nodiscard]] constexpr std::uint64_t engine_object_identity(MaterialHandle material) noexcept {
+    return material.value;
+}
+/** A reused slot takes the next generation, so the pair names one object. */
+[[nodiscard]] constexpr std::uint64_t engine_object_identity(MeshHandle mesh) noexcept {
+    return (std::uint64_t{mesh.generation} << 32) | mesh.value;
+}
+[[nodiscard]] inline std::uint64_t
+engine_object_identity(const TransformNodeHandle& node) noexcept {
+    return (std::uint64_t{node.generation} << 32) | node.value;
+}
 
 /** A new frame task's handle; handles are never reused. */
 inline TaskHandle append_frame_task(Engine& engine, FrameTaskRecord task) {
@@ -6180,6 +6260,62 @@ render_target_color_texture(const Engine& engine, RenderTargetHandle target) {
     if (!render_target_color_view_set(engine, target))
         return std::nullopt;
     return record.color_texture;
+}
+/**
+ * `published`'s identity for the backend's allocation `allocation`: the one
+ * the attachment had from its first read, kept through its first allocation
+ * and every frame that keeps that allocation, and a fresh one where the
+ * backend replaced it or the device was lost.
+ */
+inline const GpuTextureIdentity&
+published_attachment(Engine& engine, PublishedAttachment& published, std::uint64_t allocation) {
+    if (published.texture.object == 0 || published.texture.generation != engine.device_generation ||
+        (published.allocation != 0 && published.allocation != allocation))
+        published.texture = publish_gpu_texture_identity(engine);
+    published.allocation = allocation;
+    return published.texture;
+}
+/**
+ * `texture.texture` of a render-target or transmission-depth Texture2D: the
+ * `GPUTexture` behind it, a new object per reallocation as the pin's is. A
+ * fixed-size target keeps the one it was created with (the native rebuilds
+ * that reallocate it are not the pin's), a surface-sized one takes one per
+ * resize, a frame-graph target the `_colorTexture` each build publishes, and
+ * the transmission depth snapshot one per extent it is allocated at.
+ */
+inline GpuTextureIdentity render_texture_gpu_texture(Engine& engine,
+                                                     const RenderTextureRef& texture) {
+    if (texture.source == RenderTextureSource::transmission_depth) {
+        auto& task = handle_at(engine.frame_tasks, texture.task);
+        return published_attachment(engine, task.transmission_depth,
+                                    task.transmission_depth_allocation);
+    }
+    if (texture.source != RenderTextureSource::render_target)
+        throw std::runtime_error("Only a render target's or a transmission grab's depth "
+                                 "Texture2D represents the GPUTexture behind it.");
+    auto& record = handle_at(engine.render_targets, texture.target);
+    if (texture.depth_only || !record.has_color)
+        throw std::runtime_error("A render target's depth facade does not represent the "
+                                 "GPUTexture behind it.");
+    if (record.allocation == TargetAllocation::record) {
+        const js::Nullable<GpuTextureIdentity> built =
+            render_target_color_texture(engine, texture.target);
+        if (!built)
+            throw std::runtime_error(
+                "A frame-graph render target has no colour texture before its build.");
+        return *built;
+    }
+    return published_attachment(
+        engine, record.eager_color,
+        record.allocation == TargetAllocation::surface ? record.attachment_allocation : 0);
+}
+/** `texture.texture` of a stored Texture2D: its render source's (`render_texture_gpu_texture`). */
+inline GpuTextureIdentity render_texture_gpu_texture(Engine& engine, const StoredTexture& texture) {
+    const auto* file = std::get_if<FileTexture>(&texture);
+    if (!file || !file->data.render_source)
+        throw std::runtime_error("Only a render target's Texture2D represents the GPUTexture "
+                                 "behind it.");
+    return render_texture_gpu_texture(engine, file->data.render_source->reference);
 }
 /**
  * `rt._colorView`: the one view `buildRenderTarget` creates with each

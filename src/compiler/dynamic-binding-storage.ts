@@ -26,6 +26,7 @@ import {
     isAnyTyped,
 } from "./type-facts.js";
 import { isRebound } from "./binding-rebinds.js";
+import { listsWrappedValues } from "./data-types/handles.js";
 import type { Value } from "./types.js";
 import type { NativeRecordStorageDemand } from "./native-record-storage.js";
 
@@ -133,6 +134,34 @@ export function heldClassInstanceType(
 }
 
 /**
+ * The storage of a binding whose `declared` type lists handles that wrap
+ * their values (`listsWrappedValues`, `Transferable[]`) when its unwrapped
+ * `initializer` has elements of its own type (`[buffer]`): that array's, so
+ * they read back and compare as themselves. Undefined for any other binding,
+ * and for an initializer with none (`[]`), which takes the declared list.
+ */
+export function initializerListStorage(
+    context: DemandedStorageContext,
+    declaration: ts.VariableDeclaration,
+    declared: DataType | undefined,
+    initializer: ts.Expression | undefined,
+): DataType | undefined {
+    if (!initializer || !listsWrappedValues(declared)) return undefined;
+    const represented = demandedStorageType(
+        context,
+        declaration,
+        {
+            nativeType: context.checker.getTypeAtLocation(initializer),
+            node: initializer,
+        },
+        initializer,
+    );
+    return represented?.kind === "vector" && !listsWrappedValues(represented)
+        ? represented
+        : undefined;
+}
+
+/**
  * The native type a declaration is stored as under a demand; undefined
  * when its type has no native storage representation. `initializer` is the
  * declaration's unwrapped initializer.
@@ -151,8 +180,8 @@ export function demandedStorageType(
             ? { ...mapped, identity: true }
             : undefined;
     }
-    if (storage === "array")
-        return dataTypes.withDynamicJsonTypes(true, () => {
+    if (storage === "array") {
+        const declared = dataTypes.withDynamicJsonTypes(true, () => {
             const indexed = arrayElementType(checker, source);
             const element =
                 indexed &&
@@ -160,11 +189,20 @@ export function demandedStorageType(
                     dataTypes.fromSharedReturnType(indexed, declaration));
             return element
                 ? {
-                      kind: "vector",
+                      kind: "vector" as const,
                       element: dataTypes.markStoredObjectReferences(element),
                   }
                 : undefined;
         });
+        return (
+            initializerListStorage(
+                context,
+                declaration,
+                declared,
+                initializer,
+            ) ?? declared
+        );
+    }
     if (storage === "error-array")
         return { kind: "vector", element: { kind: "error" } };
     if (storage === "unassigned") {
@@ -530,18 +568,52 @@ export function requireHeldRecordStorage(
         ? node
         : undefined,
 ): void {
-    if (value.kind !== "record") return;
-    const declaration = context.bindings.recordHolder(value, expression);
-    if (!declaration) return;
     // A parameter's record held as field storage has no object yet; the
     // store copies its fields unless the program could tell that copy from
     // the argument's object.
+    holdRecordObject(
+        context,
+        value,
+        node,
+        expression,
+        (parameter) =>
+            storedCopyObservation(context, expression, parameter) !== undefined,
+    );
+}
+
+/**
+ * A compile-time record an identity comparison (`===`, `!==`) reads at
+ * `expression`: the comparison observes its object, so the binding or
+ * parameter that holds it takes native storage, as a store keeping it does
+ * ({@link requireHeldRecordStorage}). A record that already holds its native
+ * object (`localStorage` read through a `Storage` array) compares that one.
+ */
+export function requireComparedRecordObject(
+    context: HeldRecordContext,
+    value: Value,
+    expression: ts.Expression,
+): void {
+    if (value.cpp) return;
+    holdRecordObject(context, value, expression, expression, () => true);
+}
+
+/**
+ * The binding or parameter holding compile-time record `value` takes native
+ * storage, the parameter only where `observed` says the program could tell
+ * a copy of its record from the argument's object.
+ */
+function holdRecordObject(
+    context: HeldRecordContext,
+    value: Value,
+    node: ts.Node,
+    expression: ts.Expression | undefined,
+    observed: (parameter: ts.ParameterDeclaration) => boolean,
+): void {
+    if (value.kind !== "record") return;
+    const declaration = context.bindings.recordHolder(value, expression);
+    if (!declaration) return;
     if (ts.isParameter(declaration)) {
-        if (
-            !context.parameterObjects.has(declaration) &&
-            storedCopyObservation(context, expression, declaration) !==
-                undefined
-        )
+        if (!context.parameterObjects.has(declaration) && observed(declaration))
             demandOrPlan(new ParameterObjectStorageRequired(declaration));
         return;
     }

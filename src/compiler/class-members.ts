@@ -399,26 +399,32 @@ export function classMethod(
     return declared;
 }
 
+/** Whether a member's name is the library's well-known `[Symbol.iterator]`. */
+export function namesSymbolIterator(
+    checker: ts.TypeChecker,
+    name: ts.DeclarationName | undefined,
+): boolean {
+    return (
+        name !== undefined &&
+        ts.isComputedPropertyName(name) &&
+        ts.isPropertyAccessExpression(name.expression) &&
+        name.expression.name.text === "iterator" &&
+        ts.isIdentifier(name.expression.expression) &&
+        name.expression.expression.text === "Symbol" &&
+        declaredInDefaultLibrary(
+            resolvedSymbol(checker, name.expression.expression),
+        )
+    );
+}
+
 /** The `[Symbol.iterator]` method an instance of `table`'s class sees. */
 export function classIteratorMethod(
     checker: ts.TypeChecker,
     table: ClassMemberTable,
 ): ts.MethodDeclaration | undefined {
     for (const link of classChain(table))
-        for (const method of link.methods.values()) {
-            const name = method.name;
-            if (
-                ts.isComputedPropertyName(name) &&
-                ts.isPropertyAccessExpression(name.expression) &&
-                name.expression.name.text === "iterator" &&
-                ts.isIdentifier(name.expression.expression) &&
-                name.expression.expression.text === "Symbol" &&
-                declaredInDefaultLibrary(
-                    resolvedSymbol(checker, name.expression.expression),
-                )
-            )
-                return method;
-        }
+        for (const method of link.methods.values())
+            if (namesSymbolIterator(checker, method.name)) return method;
     return undefined;
 }
 
@@ -778,6 +784,16 @@ function libraryTypeDeclares(
 }
 
 /**
+ * Each program's subclass edges (`ClassHierarchy.subclasses`): derived
+ * from the program alone, walked once for every hierarchy of it, the
+ * attempts of one compile included.
+ */
+const subclassIndexes = new WeakMap<
+    ts.Program,
+    ReadonlyMap<ts.ClassLikeDeclaration, readonly ts.ClassLikeDeclaration[]>
+>();
+
+/**
  * The program's local class hierarchies: which classes extend which.
  *
  * A class's own table names its base; the reverse edge -- every class that
@@ -788,10 +804,6 @@ function libraryTypeDeclares(
  * classes from here.
  */
 export class ClassHierarchy {
-    /** @unjournaled Derived from the program alone, on first use. */
-    private subclassesByClass:
-        Map<ts.ClassLikeDeclaration, ts.ClassLikeDeclaration[]> | undefined;
-
     public constructor(
         private readonly checker: ts.TypeChecker,
         public readonly program: ts.Program,
@@ -858,7 +870,8 @@ export class ClassHierarchy {
     public subclasses(
         declaration: ts.ClassLikeDeclaration,
     ): readonly ts.ClassLikeDeclaration[] {
-        if (!this.subclassesByClass) {
+        let index = subclassIndexes.get(this.program);
+        if (!index) {
             const found = new Map<
                 ts.ClassLikeDeclaration,
                 ts.ClassLikeDeclaration[]
@@ -878,9 +891,10 @@ export class ClassHierarchy {
                     found.set(base, list);
                 });
             }
-            this.subclassesByClass = found;
+            subclassIndexes.set(this.program, found);
+            index = found;
         }
-        return this.subclassesByClass.get(declaration) ?? [];
+        return index.get(declaration) ?? [];
     }
 
     /** Whether the class takes part in inheritance at all. */

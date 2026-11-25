@@ -57,6 +57,37 @@ int run() {
         auto* raw = runtime.projected_elements.at(svg.value).element;
         assert(raw && raw->GetNumChildren() == 0);
         {
+            // getScreenCTM: the root's viewBox (0 0 24 24 in 96x96) in its content box; a shape
+            // draws in its root's user space; a detached shape has none.
+            static_cast<void>(ui_svg_screen_ctm(engine, svg)); // the first read requests the box
+            pal::update_ui_rml_runtime(runtime, 320, 240);
+            const auto box = ui_get_content_box(engine, svg);
+            const auto ctm = ui_svg_screen_ctm(engine, svg);
+            const auto shape = ui_svg_screen_ctm(engine, circle);
+            if (!ctm || !shape || box.width != 96 || box.height != 96)
+                throw std::runtime_error("SVG screen CTM box");
+            const auto& m = **ctm;
+            if (m.a != 4 || m.d != 4 || m.b != 0 || m.c != 0 || m.e != box.left || m.f != box.top ||
+                (*shape)->a != 4 || (*shape)->e != m.e)
+                throw std::runtime_error("SVG screen CTM: " + std::to_string(m.a) + " " +
+                                         std::to_string(m.e) + " " + std::to_string(m.f));
+            if (ui_svg_screen_ctm(engine, ui_create_svg_element(engine, "circle")))
+                throw std::runtime_error("A detached SVG shape has a screen CTM");
+            // A client point maps to user space through the inverse and back.
+            const auto point = js::dom_point_origin();
+            point->x = box.left + 48;
+            point->y = box.top + 8;
+            const auto user = js::dom_point_matrix_transform(point, js::dom_matrix_inverse(*ctm));
+            const auto back = js::dom_point_matrix_transform(user, *ctm);
+            if (user->x != 12 || user->y != 2 || user->w != 1 || back->x != point->x ||
+                back->y != point->y || user == point)
+                throw std::runtime_error("SVG point mapping");
+            const auto singular = js::dom_matrix_inverse(
+                js::make_ref<js::DomMatrix>(js::DomMatrix{0, 0, 0, 0, 0, 0}));
+            if (!std::isnan(singular->a) || !std::isnan(singular->f))
+                throw std::runtime_error("A singular matrix inverts to NaN");
+        }
+        {
             // Each glyph sits on the arc in the face the UI resolves; the stroke is drawn first.
             const auto labels = ui_get_element_by_id(engine, "labels");
             const auto& markup = runtime.projected_elements.at(labels.value).svg_markup;

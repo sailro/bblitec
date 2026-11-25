@@ -237,6 +237,11 @@ test("a Window extension declared unknown holds a function or a record of functi
         if (debug.ccAudit === undefined || debug.ccFish === undefined) throw new Error("held");
         debug.ccAudit = "off";
         if (debug.ccAudit === undefined) throw new Error("replaced");
+        // A property never written deletes as nothing; a written one is gone.
+        delete debug.ccNever;
+        if (debug.ccNever !== undefined) throw new Error("never written");
+        delete debug.ccFish;
+        if (debug.ccFish !== undefined) throw new Error("deleted");
         globalThis.close();
     `,
         { fileName: resolve(directory, "entry.ts") },
@@ -451,5 +456,44 @@ test("the realm's Window reads an absent File System Access picker as undefined,
             timeoutMs: 10000,
             expectedOutput: "",
         },
+    );
+});
+
+const unwrittenGlobalRead = `
+    const debug = (window as unknown as { dbg?: Record<string, unknown> }).dbg;
+    if (debug !== undefined) throw new Error("unwritten global");
+    document.title = "read";
+`;
+
+test("a program global stays absent beside writes no value holding the global object reaches", () => {
+    // Generic and open receivers hold only what the program gives them: rows,
+    // never the global object; a deletion and an enumeration write nothing.
+    const result = compileSource(`
+        function setCount<T extends { count?: number }>(target: T, value: number): void { target.count = value; }
+        function keep(value: unknown, key: string): void { (value as Record<string, unknown>)[key] = 1; }
+        function clear(target: object): void { delete (target as { count?: number }).count; }
+        const row: { count?: number } = {};
+        setCount(row, 2);
+        keep({ count: 1 }, document.title);
+        clear(row);
+        const named = Object.keys(row).length;
+        // The global object given to a local does not reach the open receivers.
+        function isWindow(event: Event): boolean { const target = event.target as unknown; return target === window; }
+        export { isWindow, named };
+        ${unwrittenGlobalRead}
+    `);
+    assert.doesNotMatch(result.cpp, /unwritten global/);
+});
+
+test("a write through a variable the global object is given to keeps a program global", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                const bag: unknown = window;
+                function store(key: string): void { (bag as Record<string, unknown>)[key] = 1; }
+                store(document.title);
+                ${unwrittenGlobalRead}
+            `),
+        /Browser-dependent condition cannot be determined for native AOT lowering \(browser operands: debug\)/,
     );
 });

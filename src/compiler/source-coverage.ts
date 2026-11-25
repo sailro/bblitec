@@ -236,6 +236,21 @@ export function keepingCoverage(work: () => void): void {
             realm.kept.set(statement, state);
 }
 
+/**
+ * Records `statements` as lowered in the current emission transaction: a
+ * survey's probe that stands on an earlier probe's lowering of them, rolled
+ * back since (`touchProbed`).
+ */
+export function coverLoweredAgain(statements: readonly ts.Statement[]): void {
+    const realm = current;
+    if (!realm) return;
+    for (const statement of statements) {
+        const node = ts.getOriginalNode(statement, ts.isStatement);
+        if (realm.retained.get(node) !== "partial")
+            realm.retained.set(node, "lowered");
+    }
+}
+
 /** Record successful lowering inside its existing emission transaction. */
 export function coverSourceStatement(
     statement: ts.Statement,

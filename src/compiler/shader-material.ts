@@ -86,7 +86,6 @@ export interface ShaderMaterialContext
             | "sceneManifest"
             | "expectObjectLiteral"
             | "expectStaticArrayLiteral"
-            | "expectStaticArrayElements"
             | "staticListItems"
             | "resolveStaticLiteral"
             | "objectProperty"
@@ -728,9 +727,9 @@ function compileShaderStorageBuffers(
     used: Set<string>,
 ): CompiledShaderStorageBuffer[] {
     if (!expression || absentShaderOption(context, expression)) return [];
-    const buffers = context
-        .expectStaticArrayElements(expression)
-        .map((element): CompiledShaderStorageBuffer => {
+    const buffers = context.staticListItems(expression).map((item) =>
+        item.within((): CompiledShaderStorageBuffer => {
+            const element = item.node;
             const resolved = context.resolveStaticLiteral(element);
             if (!ts.isObjectLiteralExpression(resolved)) {
                 context.fail(
@@ -777,7 +776,8 @@ function compileShaderStorageBuffers(
             }
             used.add(name);
             return { name, type };
-        });
+        }),
+    );
     if (buffers.length > MAX_SHADER_STORAGE_BUFFERS) {
         context.fail(
             expression,

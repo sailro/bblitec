@@ -2299,10 +2299,6 @@ function compileArrayFlat({
 function compileArrayJoin(state: ArrayMethodState): Value {
     const lowerer: DataLowerer = state.lowerer;
     const { call, narrowed, dataType } = state;
-    // null and undefined join as empty strings (an unmatched capture among them).
-    const absentString =
-        dataType.element.kind === "optional" &&
-        dataType.element.inner.kind === "string";
     // The text one scalar element joins as.
     const textOf = (element: DataType, cpp: string): string | undefined => {
         switch (element.kind) {
@@ -2330,6 +2326,12 @@ function compileArrayJoin(state: ArrayMethodState): Value {
             boolean: "bool",
         } as Partial<Record<DataType["kind"], string>>
     )[dataType.element.kind];
+    // null and undefined join as empty strings (an unmatched capture among
+    // them, an optional field read); a present one as its scalar does.
+    const presentText =
+        dataType.element.kind === "optional"
+            ? textOf(dataType.element.inner, "*value")
+            : undefined;
     // A union of scalars joins each element as its member does.
     const members =
         dataType.element.kind === "union"
@@ -2338,7 +2340,7 @@ function compileArrayJoin(state: ArrayMethodState): Value {
               )
             : undefined;
     if (
-        (!absentString &&
+        (presentText === undefined &&
             !(members?.every((text) => text !== undefined) ?? false) &&
             !["string", "enum", "number", "boolean", "json"].includes(
                 dataType.element.kind,
@@ -2364,8 +2366,8 @@ function compileArrayJoin(state: ArrayMethodState): Value {
         cpp: `bbl::js::array_join(${narrowed.cpp}, ${
             separator ? separator.cpp : lowerer.context.cppString(",")
         }${
-            absentString
-                ? ", [](const auto& value) { return value.has_value() ? std::string(*value) : std::string{}; }"
+            presentText !== undefined
+                ? `, [](const auto& value) -> std::string { return value.has_value() ? std::string(${presentText}) : std::string{}; }`
                 : dataType.element.kind === "json"
                   ? ", [](const auto& value) { return value.is_null() || value.is_undefined() ? std::string{} : value.to_string(); }"
                   : scalarParameter
@@ -3891,6 +3893,10 @@ function compileArrayUnshift(state: ArrayMethodState): Value {
         !expressionMayRunCode(call.arguments[lastEffect]!)
     )
         --lastEffect;
+    // Each argument is held as the element it becomes, so the inserted list
+    // has one element type whatever storage each argument converts from (a
+    // present handle into an array of optional ones).
+    const element = lowerer.context.dataTypes.cppType(dataType.element);
     const values = call.arguments.map((argument, index) => {
         const cpp = lowerer.compileForRetainedSink(
             argument,
@@ -3901,7 +3907,7 @@ function compileArrayUnshift(state: ArrayMethodState): Value {
             lowerer.context.allocateTemporaryCppName("unshift_argument");
         lowerer.context.emit({
             kind: "declaration",
-            type: index < lastEffect ? "const auto" : "const auto&",
+            type: index < lastEffect ? `const ${element}` : `const ${element}&`,
             name,
             initializer:
                 index < lastEffect ? `bbl::js::snapshot_value(${cpp})` : cpp,

@@ -182,6 +182,13 @@ export interface RefusalSite {
 export interface CompileOptions extends DeploymentOptions {
     /** Generation supplies resource bytes for source-derived loader feature discovery. */
     readAssetBytes?: (source: string, entryFileName: string) => Uint8Array;
+    /** Told one line per lowering attempt a replay ends: a long compile says how it goes. */
+    compileProgress?: (line: string) => void;
+    /**
+     * Before strict lowering, converge storage in at most `passes` survey
+     * passes of the entry's own lowering (`lowerSourceApplication`).
+     */
+    convergeStorage?: { readonly passes: number };
     /** Emit explicit typed runtime failures for registered missing capabilities. */
     deferredCapabilities?: "runtime-throw";
     fileName?: string;
@@ -1703,6 +1710,9 @@ export type ValueKind =
     | "worker-message-event"
     | "worker-error-event"
     | "offscreen-canvas"
+    | "message-port"
+    | "message-channel"
+    | "transferable"
     | "promise"
     | "animation-clip"
     | "animation-group"
@@ -2392,6 +2402,11 @@ export function isStringValue(value: Value): boolean {
     );
 }
 
+/** A boolean as the program sees it: a boolean value or one stored as boolean data. */
+export function isBooleanValue(value: Value): boolean {
+    return value.kind === "boolean" || value.dataType?.kind === "boolean";
+}
+
 /** A boolean-kinded value; a literal `true`/`false` spelling is static. */
 export function booleanValue(cpp: string): Value {
     const known = knownCondition(cpp);
@@ -3051,6 +3066,12 @@ export interface ValueFields {
      */
     optionalFoundCpp?: string;
     /**
+     * Set on a value no run makes `null` or `undefined`, whatever its
+     * storage could hold: `x ?? fallback` with a fallback that is never
+     * nullish. A test of it against either is constant.
+     */
+    neverNullish?: true;
+    /**
      * Whether the value was read from a slot that exists: a key `Map.get`
      * found, the owner an optional chain reached, the element `pop()` or
      * `shift()` removed, an index within the array. The value's own absence
@@ -3429,6 +3450,8 @@ export interface ValueFields {
         | { readonly kind: "null" }
         | { readonly kind: "undefined" }
         | { readonly kind: "dom-rect" }
+        /** A console method read as a value (`log = console.error`): a call through it reports. */
+        | { readonly kind: "console-method" }
         | {
               readonly kind: "object";
               readonly primaryCanvas?: true;
@@ -3660,6 +3683,9 @@ export type Feature =
     | "particle:node"
     | "navigation:recast"
     | "navigation:tile-cache"
+    // A build whose arm generation does not know: both arms, behind the
+    // pin's own run-time test.
+    | "navigation:arm-dispatch"
     | "navigation:crowd"
     | "sprite:animation"
     | "audio:engine"

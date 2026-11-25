@@ -260,6 +260,45 @@ test("a literal lacking what the statements after its declaration define holds i
     );
 });
 
+test("a ? property's definitions keep whether each record owns it", (t) => {
+    // Some records of the type lack `id`; a definition gives the others a
+    // locked one, appended after the keys the copy made own. A getter
+    // defined on a `?` property is own until a delete removes it.
+    const source = `
+        interface Token { readonly key: number }
+        interface Row { readonly id?: Token; s: number }
+        function attach(row: Omit<Row, "id">, id: Token): Row {
+            const item = { ...row } as Row;
+            Object.defineProperty(item, "id", { value: id, enumerable: true, writable: false, configurable: false });
+            return item;
+        }
+        function rewrite(target: { id: Token }, id: Token): void { target.id = id; }
+        function forget(target: { id?: Token }): void { delete target.id; }
+        const first: Token = { key: 1 };
+        const rows: Row[] = [{ s: 1 }];
+        rows.push(attach({ s: 2 }, first));
+        let denied = 0;
+        try { rewrite(rows[1] as { id: Token }, { key: 3 }); } catch (error) { if (error instanceof TypeError) denied++; }
+        try { forget(rows[1]!); } catch (error) { if (error instanceof TypeError) denied++; }
+        const copy = { ...rows[1]! };
+        rewrite(copy as { id: Token }, { key: 4 });
+        const log = \`\${"id" in rows[0]!} \${"id" in rows[1]!} \${rows[1]!.id === first} \${Object.keys(rows[0]!).join()} \${Object.keys(rows[1]!).join()} \${JSON.stringify(rows)} \${denied} \${copy.id?.key}\`;
+        if (log !== 'false true true s s,id [{"s":1},{"s":2,"id":{"key":1}}] 2 4') throw new Error(log);
+        let reads = 0;
+        const gauge: { x?: number; y: number } = { y: 1 };
+        Object.defineProperties(gauge, { x: { get: () => { reads++; return 3; }, enumerable: true, configurable: true } });
+        const before = \`\${"x" in gauge} \${gauge.x} \${Object.keys(gauge).join()} \${JSON.stringify(gauge)} \${reads}\`;
+        delete gauge.x;
+        const after = \`\${"x" in gauge} \${gauge.x} \${Object.keys(gauge).join()} \${JSON.stringify(gauge)}\`;
+        if (before !== 'true 3 y,x {"y":1,"x":3} 2' || after !== 'false undefined y {"y":1}') throw new Error(before + " / " + after);
+    `;
+    runInNewContext('"use strict";' + ts.transpile(source));
+    const result = compileSource(source);
+    const native = optionalNativeFixtureTools(false);
+    if (!native) return t.skip("Native fixture compiler unavailable.");
+    runGeneratedProgram(native, "object-definition-optional-own", result.cpp);
+});
+
 test("Object.assign evaluates owners and arguments before descriptor copy effects", (t) => {
     const source = `
         const locked = {x: 0, y: 0};
@@ -335,14 +374,6 @@ test("property definitions refuse descriptor attributes and layouts without nati
             `),
             message,
         );
-    assert.throws(
-        () =>
-            compileSource(`
-            const target: {x?: number} = {};
-            Object.defineProperties(target, {x: {get: () => 1, enumerable: true, configurable: true}});
-        `),
-        /accessor property that is always own/,
-    );
     assert.throws(
         () =>
             compileSource(`

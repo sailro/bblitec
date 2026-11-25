@@ -38,6 +38,11 @@ const handleCppTypes: Record<HandleKind, string> = {
     "offscreen-canvas": "std::shared_ptr<bbl::pal::OffscreenCanvas>",
     "worker-media-query": "std::shared_ptr<bbl::pal::MediaQueryList>",
     "worker-mutation-observer": "std::shared_ptr<bbl::pal::MutationObserver>",
+    "message-port": "std::shared_ptr<bbl::pal::MessagePort>",
+    "message-channel": "std::shared_ptr<bbl::pal::MessageChannel>",
+    // A transfer list's entry: a MessagePort, an OffscreenCanvas or an
+    // ArrayBuffer (`bbl::js::BufferTransfer`).
+    transferable: "std::shared_ptr<bbl::pal::Transferable>",
     mesh: "bbl::MeshHandle",
     "effect-wrapper": "bbl::EffectWrapperHandle",
     "animation-group": "bbl::AnimationGroupHandle",
@@ -193,6 +198,15 @@ export function isWindowHandleKind(kind: HandleKind): boolean {
 }
 
 /**
+ * Messaging objects (`MessagePort`, `MessageChannel`): the worker runtime
+ * declares them, as their messages are tasks of a realm's event loop, so
+ * storage holding one needs the application realm.
+ */
+export function isWorkerHandleKind(kind: HandleKind): boolean {
+    return kind === "message-port" || kind === "message-channel";
+}
+
+/**
  * Platform input state the native input model answers though the DOM
  * declares it (a gamepad, its buttons, a Touch): never browser-only, and a
  * function parameter keeps it as its handle.
@@ -203,11 +217,16 @@ export function isInputSnapshotHandleKind(kind: HandleKind): boolean {
 
 /**
  * A handle whose value is its runtime identity alone, nothing generation-
- * known: an input snapshot, or a decoded audio buffer. A shared body takes
- * one as a native parameter instead of specializing on its value.
+ * known: an input snapshot, a decoded audio buffer, or an owned DOM event. A
+ * shared body takes one as a native parameter instead of specializing on its
+ * value.
  */
 export function isRuntimeIdentityHandleKind(kind: HandleKind): boolean {
-    return isInputSnapshotHandleKind(kind) || kind === "audio-buffer";
+    return (
+        isInputSnapshotHandleKind(kind) ||
+        kind === "audio-buffer" ||
+        kind === "dom-event"
+    );
 }
 
 /** Whether a data type lists input snapshots, as a TouchEvent's TouchList does. */
@@ -225,6 +244,22 @@ export function isInputSnapshotList(type: DataType | undefined): boolean {
  */
 export function storesOneHandle(kind: HandleKind): boolean {
     return kind !== "texture";
+}
+
+/**
+ * Whether a data type lists handles that wrap values of other kinds and
+ * cannot give them back: a transfer list's entry (`Transferable`) holds a
+ * MessagePort, an OffscreenCanvas or a fresh wrapper of an ArrayBuffer, which
+ * neither compares with the buffer nor reads as it. A binding annotated so
+ * keeps its initializer's own elements, as under an unrepresented annotation;
+ * a transfer list sink converts them.
+ */
+export function listsWrappedValues(type: DataType | undefined): boolean {
+    return (
+        type?.kind === "vector" &&
+        type.element.kind === "handle" &&
+        type.element.handle === "transferable"
+    );
 }
 
 /** The node value kinds a `scene-node` handle slot holds. */

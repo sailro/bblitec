@@ -241,6 +241,35 @@ test("owned DOM events retain payload, routing, identity and listener cleanup", 
         }
         openOverlay();
         if (backdrop !== "Oi") throw new Error("nullable overlay target " + backdrop);
+        // A recursive pair takes a listener's event as an optional runtime
+        // argument: present from the release, absent from the stored terminal.
+        const handle = document.createElement("div");
+        document.body.appendChild(handle);
+        let dragging = false;
+        let released = -1;
+        let ends = 0;
+        const terminals: Array<() => void> = [];
+        const commit = (terminal: () => void, release?: PointerEvent): void => {
+            ends++;
+            if (release) released = release.clientX;
+            terminal();
+        };
+        const endDrag = (release?: PointerEvent): void => {
+            if (!dragging) return;
+            dragging = false;
+            commit(dragTerminal, release);
+        };
+        const dragTerminal = (): void => endDrag();
+        handle.addEventListener("pointerdown", () => { dragging = true; terminals.push(dragTerminal); });
+        handle.addEventListener("pointerup", (event) => endDrag(event));
+        handle.dispatchEvent(new PointerEvent("pointerdown"));
+        handle.dispatchEvent(new PointerEvent("pointerup", {clientX:21}));
+        if (ends !== 1 || released !== 21 || dragging) throw new Error("released drag");
+        released = -1;
+        handle.dispatchEvent(new PointerEvent("pointerdown"));
+        terminals[1]!();
+        if (ends !== 2 || released !== -1 || dragging)
+            throw new Error("optional event through a recursive pair");
         globalThis.close();
     `);
     writeFileSync(join(directory, "program.hpp"), result.cpp);
@@ -256,6 +285,24 @@ test("owned DOM events retain payload, routing, identity and listener cleanup", 
         },
         includeDirectories: [join(directory, "upstream/include")],
     });
+});
+
+test("a listener's event passed on as an owned event needs no JSON runtime", () => {
+    const result = compileSource(`
+        const handle = document.createElement("div");
+        document.body.appendChild(handle);
+        let last = 0;
+        const read = (event?: PointerEvent): void => {
+            last = event ? event.clientX : -1;
+            if (last < -1) terminal();
+        };
+        const terminal = (): void => read();
+        handle.addEventListener("pointerup", (event) => read(event));
+        handle.addEventListener("pointercancel", terminal);
+    `);
+    assert.match(result.cpp, /bbl::OwnedDomEvent\(/);
+    assert.ok(result.manifest.features.includes("input:dom"));
+    assert.ok(!result.manifest.features.includes("data:json"));
 });
 
 test("synthetic event options reject fields without native ownership", () => {

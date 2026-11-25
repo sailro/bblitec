@@ -2150,7 +2150,7 @@ export class PinnedNumericLowerer {
                     );
                     this.bindRecord(
                         declaration.name,
-                        `(${cpp} ? *${cpp} : throw std::runtime_error("Cannot access a nullish object."))`,
+                        `bbl::js::present_pointee(${cpp})`,
                         selectedRecord.record,
                         { cpp: `${cpp} == nullptr`, value: "null" },
                     );

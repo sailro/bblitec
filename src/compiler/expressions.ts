@@ -153,6 +153,7 @@ import {
     localCallback,
     propertyKey,
     selectionArms,
+    thisMember,
     unwrapExpression,
 } from "./syntax.js";
 import {
@@ -298,6 +299,7 @@ import { renderClosure, type NativeExpression } from "./closure-captures.js";
 import { compileWithRuntimeCaseSplit } from "./runtime-case-split.js";
 import { numberToStringCpp } from "../cpp-expressions.js";
 import { activeSurvey } from "./survey.js";
+import { KEYED_COLLECTIONS } from "./receiver-methods.js";
 
 /** The global URI and base64 codecs, each a runtime function of its argument's ToString. */
 const URI_FUNCTIONS: ReadonlyMap<string, string> = new EmissionMap([
@@ -383,6 +385,7 @@ export interface ExpressionContext
             | "resolveStaticExpression"
             | "constantNameValue"
             | "canvasSizeValue"
+            | "generationRead"
             | "propertyAccess"
             | "registerClassInstance"
             | "classOf"
@@ -1140,6 +1143,10 @@ export class ExpressionLowerer {
                 unwrapped,
             );
             if (namespaceMember) return this.compileValue(namespaceMember);
+            // A settled `const x = await f()` member no write reaches reads
+            // its generation data; the run-time storage answers otherwise.
+            const generation = this.context.generationRead(unwrapped);
+            if (generation) return generation;
             if (
                 unwrapped.name.text === "url" &&
                 ts.isMetaProperty(unwrapped.expression) &&
@@ -1147,6 +1154,10 @@ export class ExpressionLowerer {
                     ts.SyntaxKind.ImportKeyword &&
                 unwrapped.expression.name.text === "meta"
             )
+                return this.compileBrowserValue(unwrapped);
+            // A console method read as a value (`log = console.error`) is
+            // browser state: a call through it erases as a direct call does.
+            if (this.context.libraryGlobal(unwrapped.expression) === "console")
                 return this.compileBrowserValue(unwrapped);
             const mathFunction = mathFunctionValue(this.context, unwrapped);
             const arrayFunction = arrayFunctionValue(this.context, unwrapped);
@@ -1747,13 +1758,22 @@ export class ExpressionLowerer {
             if (selected) return selected;
         }
         if (this.context.evaluator.isNumberExpression(unwrapped)) {
+            // Arithmetic over numbers generation knows (literals, constants,
+            // the fields of a known record) is known too; the probe reads
+            // those fields without keeping what reading them emits.
             const staticNumber = ts.isNumericLiteral(unwrapped)
                 ? Number(unwrapped.text)
-                : ts.isPrefixUnaryExpression(unwrapped) &&
-                    (unwrapped.operator === ts.SyntaxKind.PlusToken ||
-                        unwrapped.operator === ts.SyntaxKind.MinusToken) &&
-                    ts.isNumericLiteral(this.context.unwrap(unwrapped.operand))
-                  ? staticNumberValue(this.context, unwrapped)
+                : ts.isPrefixUnaryExpression(unwrapped) ||
+                    ts.isBinaryExpression(unwrapped)
+                  ? unlessRefused(() =>
+                        this.context.probeEmission(
+                            () =>
+                                this.context.evaluator.staticNumberThroughRecords(
+                                    unwrapped,
+                                ),
+                            () => false,
+                        ),
+                    )
                   : undefined;
             return {
                 kind: "number",
@@ -2725,6 +2745,7 @@ export class ExpressionLowerer {
             case "undefined":
                 return undefinedValue();
             case "dom-rect":
+            case "console-method":
             case "object":
             case "search-params":
                 return value;
@@ -2751,6 +2772,10 @@ export class ExpressionLowerer {
                 return { kind: "void", cpp: "" };
             }
 
+            // A run-time delay is a realm's timer: its task queue schedules
+            // any delay the program computes.
+            if (delay === undefined && !this.context.options.workers)
+                throw new ApplicationRealmRequired();
             if (delay === undefined || !Number.isFinite(delay) || delay < 0) {
                 this.context.fail(
                     argumentAt(call, 1),
@@ -4539,6 +4564,25 @@ export class ExpressionLowerer {
                     : field?.expression.kind === ts.SyntaxKind.ThisKeyword
                       ? this.context.resolveThisField(field.name)
                       : undefined;
+            // A collection view the program's own object implements is
+            // that object's record (`collectionViews`): its calls are the
+            // members the object has.
+            const view =
+                member &&
+                this.context.checker.getNonNullableType(
+                    this.context.checker.getTypeAtLocation(member.expression),
+                );
+            if (
+                member &&
+                view &&
+                KEYED_COLLECTIONS.has(libraryName(view) ?? "") &&
+                this.context.dataLowerer.dataTypeAt(member.expression)?.kind ===
+                    "struct"
+            )
+                this.context.fail(
+                    callee,
+                    `The program's own object stored as '${this.context.checker.typeToString(view)}' does not implement '${member.name}', which this call reads.`,
+                );
             this.context.fail(
                 callee,
                 `Unsupported call target '${callee.getText()}'` +
@@ -4834,6 +4878,14 @@ export class ExpressionLowerer {
         if (executedGltf) {
             return executedGltf;
         }
+        // A console method read as a value (`log = console.error`) is
+        // called as a console call: its arguments run, the call erases. Any
+        // other browser function keeps its own call lowering.
+        if (
+            this.context.bindings.lookupOptional(callee)?.browserValue?.kind ===
+            "console-method"
+        )
+            return this.compileBrowserValue(call);
         const userFunction = compileWithRuntimeCaseSplit(
             this.context,
             call,
@@ -5621,7 +5673,20 @@ export class ExpressionLowerer {
             "read",
         );
         if (data) {
-            return data;
+            // `xs[i]!` over optional engine handles is the handle an engine
+            // call takes: an absent one throws the TypeError the callee would
+            // throw reading it. Other storage keeps what `!` leaves at run
+            // time, null and undefined included.
+            const inner =
+                assertedNonNull && data.dataType?.kind === "optional"
+                    ? data.dataType.inner
+                    : undefined;
+            return inner?.kind === "handle"
+                ? this.context.dataLowerer.leafValue(
+                      `bbl::js::present(${data.cpp})`,
+                      inner,
+                  )
+                : data;
         }
         const collectionElement =
             this.context.handleCollections.collectionElementAccess(unwrapped);
@@ -6226,11 +6291,14 @@ export class ExpressionLowerer {
             // falsy while holding it: `flag ? 0 : null` surviving as
             // 0 would fold `if (n)` to true. A data or primitive arm
             // keeps whatever truthiness the ordinary path gives it.
+            // A survivor that is itself `null` or `undefined` (an omitted
+            // argument) is no resource: its absence stands.
             const survivorIsResource =
                 selected.kind !== "number" &&
                 selected.kind !== "string" &&
                 selected.kind !== "boolean" &&
-                selected.kind !== "data";
+                selected.kind !== "data" &&
+                !isAbsentValue(selected);
             if (
                 droppedIsNullish &&
                 survivorIsResource &&
@@ -6538,6 +6606,19 @@ export class ExpressionLowerer {
             const guard = this.context.unwrap(unwrapped.condition);
             const selected = this.context.unwrap(expression);
             const comparison = nullishComparison(this.context.checker, guard);
+            // An arm the program asserts present (`latest!`) reads its
+            // object as present, as the same read outside a selection does;
+            // a number keeps its absence until numeric coercion reads it.
+            if (
+                value.dataType?.kind === "optional" &&
+                value.dataType.inner.kind !== "number" &&
+                hasNonNullAssertion(expression)
+            )
+                return this.context.dataLowerer.narrowOptional(
+                    value,
+                    expression,
+                    true,
+                );
             // The arm where the test failed holds a present value, unless a
             // strict test leaves the other nullish value possible.
             if (
@@ -7398,6 +7479,30 @@ export class ExpressionLowerer {
                     }
                     continue;
                 }
+                // A record of a key union spreads each member's key; a
+                // typed literal lowers it as its struct does.
+                if (
+                    spread.kind === "data" &&
+                    spread.dataType?.kind === "enummap"
+                ) {
+                    if (declines) return undefined;
+                    for (const [
+                        key,
+                        value,
+                    ] of this.context.dataLowerer.enumMapEntries(
+                        spread,
+                        property.expression,
+                    )) {
+                        if (ownKeys.has(key))
+                            replaceWhileOwn(key, value, property);
+                        else
+                            storeProperty(
+                                key,
+                                member(value, index, property.expression),
+                            );
+                    }
+                    continue;
+                }
                 if (
                     spread.kind !== "record" &&
                     spread.recordProperties === undefined
@@ -7426,6 +7531,49 @@ export class ExpressionLowerer {
                     const getter = spread.recordGetters?.[key];
                     const method = spread.recordMethods?.[key];
                     if (method && !getter) {
+                        // A copied method closes over the scope that declared
+                        // it. One that never reads its own `this` is the
+                        // source's method value, as a read of it is; one that
+                        // does runs on the copy, so it needs that scope here.
+                        const readsThis =
+                            !ts.isIdentifier(method) &&
+                            method.body !== undefined &&
+                            someAnalysisNode(
+                                method.body,
+                                (node) =>
+                                    node.kind === ts.SyntaxKind.ThisKeyword &&
+                                    thisMember(node) === method,
+                            );
+                        // A later property of this literal naming the key
+                        // replaces the copy, which no call ever reaches; the
+                        // key keeps the spread's place.
+                        const replacedLater = unwrapped.properties
+                            .slice(unwrapped.properties.indexOf(property) + 1)
+                            .some(
+                                (later) =>
+                                    !ts.isSpreadAssignment(later) &&
+                                    later.name !== undefined &&
+                                    this.context.compilePropertyKey(
+                                        later.name,
+                                    ) === key,
+                            );
+                        if (!readsThis || replacedLater) {
+                            storeProperty(
+                                key,
+                                recordMethodValue(spread, method),
+                            );
+                            continue;
+                        }
+                        const here = this.context.captureRecordScopes();
+                        if (
+                            spread.recordScopes?.some(
+                                (scope) => !here.recordScopes?.includes(scope),
+                            )
+                        )
+                            this.context.fail(
+                                property,
+                                `A spread copies method '${key}', which reads \`this\`, out of the scope that declared it.`,
+                            );
                         storeMethod(key, method);
                         continue;
                     }

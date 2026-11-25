@@ -182,6 +182,56 @@ test("the engine canvas selected into a structural view is stored as its DOM eve
     assert.match(cpp, /bbl::dom_set_pointer_capture\(/);
 });
 
+// `window` is a `Window & typeof globalThis`; a spread copies it into a
+// record whose structural listener field views it, here through a call of a
+// stored function, whose options record is stored as its declared struct.
+test("the window a spread copies into a structural listener view is stored as its DOM event target", () => {
+    mkdirSync(resolve("artifacts/structural-window-spread"), {
+        recursive: true,
+    });
+    writeFileSync(
+        resolve("artifacts/structural-window-spread/worker.ts"),
+        "self.close();",
+    );
+    const source = `
+    const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
+    worker.terminate();
+    interface ChangeEvent { readonly key: string | null; readonly newValue: string | null }
+    interface ChangeEvents {
+        addEventListener(type: "storage", listener: (event: ChangeEvent) => void): void;
+        removeEventListener(type: "storage", listener: (event: ChangeEvent) => void): void;
+    }
+    interface Options { key: string; fallback: boolean; events?: ChangeEvents | null }
+    interface Preference { get(): boolean; dispose(): void }
+    function create(options: Options): Preference {
+        let enabled = options.fallback;
+        const onChange = (event: ChangeEvent): void => { if (event.key === options.key) enabled = event.newValue === "1"; };
+        options.events?.addEventListener("storage", onChange);
+        return { get: () => enabled, dispose: () => options.events?.removeEventListener("storage", onChange) };
+    }
+    const makers: Array<(options: Options) => Preference> = [create];
+    const kept: Preference[] = [];
+    async function main(): Promise<void> {
+        await new Promise<void>((resolve) => setTimeout(resolve, 1));
+        const boundaries = { events: window };
+        const preference = makers[0]!({ key: "shown", fallback: false, ...boundaries });
+        kept.push(preference);
+        console.log(preference.get(), kept.length);
+    }
+    void main();
+    `;
+    const { cpp } = compileSource(source, {
+        fileName: resolve("artifacts/structural-window-spread/entry.ts"),
+    });
+    assert.match(cpp, /bbl::js::Nullable<bbl::DomEventTargetValue> events;/);
+    assert.match(
+        cpp,
+        /->events = bbl::dom_target_value\(bbl::pal::window_document_engine\(\), bbl::DomEventTarget::window\(\)\);/,
+    );
+    assert.match(cpp, /bbl::on_dom_storage\(/);
+    assert.match(cpp, /bbl::off_dom_storage\(/);
+});
+
 test("unrelated markup and stored child collections continue to refuse", () => {
     for (const markup of [
         "<script></script>",

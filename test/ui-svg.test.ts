@@ -40,6 +40,14 @@ test("retained SVG construction preserves namespace, shape mutation and inherite
         if (!(svg instanceof Element)) throw new Error("SVG is an element");
         if (!(stored.child instanceof SVGElement)) throw new Error("SVG interface");
         document.body.append(svg);
+        // A client point in the root's user space: measured, inverted and applied.
+        const ctm = (svg as SVGSVGElement).getScreenCTM();
+        if (!ctm) throw new Error("A connected SVG has a screen CTM");
+        const point = (svg as SVGSVGElement).createSVGPoint();
+        point.x = 3; point.y = 4;
+        const user = point.matrixTransform(ctm.inverse());
+        if (user === point || point.x !== 3 || point.y !== 4 || user.w !== 1 || ctm.b !== 0) throw new Error("SVG point");
+        if ((make("circle") as SVGGraphicsElement).getScreenCTM() !== null) throw new Error("A detached SVG shape has no CTM");
         // A label on an arc: the text follows the path, styled by a class rule.
         const labels = make("svg");
         labels.setAttribute("id", "labels");
@@ -71,6 +79,8 @@ test("retained SVG construction preserves namespace, shape mutation and inherite
     );
     assert.ok(result.manifest.features.includes("ui:inline-svg"));
     assert.match(result.cpp, /ui_create_svg_element/);
+    assert.match(result.cpp, /bbl::ui_svg_screen_ctm\(/);
+    assert.match(result.cpp, /bbl::js::dom_point_matrix_transform\(/);
     writeFileSync(join(directory, "program.hpp"), result.cpp);
     runRmlUiFixture(t, "ui-svg", {
         macros: {
@@ -101,6 +111,29 @@ test("SVG construction refuses foreign namespaces and unsupported SVG elements",
     );
     assert.match(named.cpp, /ui_create_svg_element\([^;]*"text"/);
     assert.match(named.cpp, /"data-group-key", "walls"/);
+});
+
+test("an SVG shape takes a tabindex, ARIA attributes, focus and key listeners", () => {
+    const result = compileSource(
+        `import {createEngine} from "@babylonjs/lite"; await createEngine({}); const ns = "http://www.w3.org/2000/svg"; const svg = document.createElementNS(ns, "svg"); const thumb = document.createElementNS(ns, "circle"); const label = ["Mix", "Blend"][Math.floor(Math.random() * 2)]!; for (const [key, value] of Object.entries({ r: "11", tabindex: "0", role: "slider", "aria-label": label, "aria-valuemin": "0", "aria-valuemax": "1" })) thumb.setAttribute(key, value); svg.append(thumb); document.body.append(svg); let value = 0; thumb.addEventListener("keydown", (e) => { if (e.key === "End") { value = 1; thumb.setAttribute("aria-valuenow", String(value)); e.preventDefault(); } }); thumb.addEventListener("focus", () => thumb.setAttribute("stroke-width", "3")); (thumb as SVGGraphicsElement).focus();`,
+    );
+    assert.match(result.cpp, /ui_set_attribute\([^;]*"tabindex", "0"\)/);
+    assert.match(result.cpp, /ui_set_attribute\([^;]*"role", "slider"\)/);
+    assert.match(result.cpp, /on_dom_keyboard\([^;]*"keydown"/);
+    assert.match(result.cpp, /bbl::ui_focus\(/);
+});
+
+test("SVG geometry refuses DOMMatrix and DOMPoint members it does not lower", () => {
+    const prefix = `const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); document.body.append(svg); const ctm = svg.getScreenCTM()!; const point = svg.createSVGPoint();`;
+    for (const [statement, message] of [
+        ["point.x += 1;", /DOMPoint components support '=' assignments/],
+        [
+            "point.matrixTransform({ a: 2 });",
+            /matrixTransform requires a DOMMatrix; a DOMMatrixInit is not lowered/,
+        ],
+        ["ctm.multiply(ctm);", /DOMMatrix\.multiply is not lowered/],
+    ] as const)
+        assert.throws(() => compileSource(`${prefix} ${statement}`), message);
 });
 
 test("image markup accepts void tags and refuses dynamic sources or unrepresented attributes", () => {

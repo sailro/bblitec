@@ -1,6 +1,7 @@
 import ts from "typescript";
 import { forEachAnalysisNode, identifiersByName } from "./analysis-walk.js";
 import { forEachReturn } from "./loop-control.js";
+import { lengthPreservingArrayMethods } from "./receiver-methods.js";
 import {
     declaredInDefaultLibrary,
     declaredSymbol,
@@ -175,17 +176,7 @@ function onlyPropertyReads(
     checker: ts.TypeChecker,
     declaration: ConstDeclaration,
 ): boolean {
-    const symbol = declaredSymbol(checker, declaration.name);
-    const references =
-        identifiersByName(declaration.getSourceFile()).get(
-            declaration.name.text,
-        ) ?? [];
-    return references.every((reference) => {
-        if (
-            reference === declaration.name ||
-            valueSymbolOf(checker, reference) !== symbol
-        )
-            return true;
+    return otherReferences(checker, declaration).every((reference) => {
         const read = reference.parent;
         return (
             ts.isPropertyAccessExpression(read) &&
@@ -195,6 +186,80 @@ function onlyPropertyReads(
                 ts.isCallExpression(read.parent) &&
                 read.parent.expression === read
             )
+        );
+    });
+}
+
+/** The references to a `const` local's binding but its declaration's name. */
+function otherReferences(
+    checker: ts.TypeChecker,
+    declaration: ConstDeclaration,
+): ts.Identifier[] {
+    const symbol = declaredSymbol(checker, declaration.name);
+    return (
+        identifiersByName(declaration.getSourceFile()).get(
+            declaration.name.text,
+        ) ?? []
+    ).filter(
+        (reference) =>
+            reference !== declaration.name &&
+            valueSymbolOf(checker, reference) === symbol,
+    );
+}
+
+/**
+ * Whether `read` names an unexported `const` local holding a new array
+ * ({@link yieldsNewArray}) that only `read` hands on: every other reference
+ * reads it in place in the activation declaring it -- its elements, a
+ * property, a method called on it whose result is not the array kept
+ * elsewhere -- so nothing else holds the array, and no other code can
+ * change it.
+ */
+export function arrayHeldOnlyByItsLocal(
+    checker: ts.TypeChecker,
+    read: ts.Expression,
+): boolean {
+    const lent = unwrapExpression(read);
+    const declaration = constLocal(checker, lent);
+    if (!declaration || !yieldsNewArray(checker, declaration.initializer))
+        return false;
+    const owner = ts.findAncestor(declaration.parent, ts.isFunctionLike);
+    return otherReferences(checker, declaration).every((reference) => {
+        if (reference === lent) return true;
+        if (ts.findAncestor(reference.parent, ts.isFunctionLike) !== owner)
+            return false;
+        const use = reference.parent;
+        if (
+            ts.isElementAccessExpression(use) &&
+            use.expression === reference &&
+            writeSiteOf(use) === undefined
+        )
+            return true;
+        if (
+            !ts.isPropertyAccessExpression(use) ||
+            use.expression !== reference ||
+            writeSiteOf(use) !== undefined
+        )
+            return false;
+        const call = use.parent;
+        if (
+            !ts.isCallExpression(call) ||
+            call.expression !== use ||
+            !lengthPreservingArrayMethods.has(use.name.text)
+        )
+            return true;
+        // A method returning the array: its result is dropped, or read in
+        // place again.
+        const result = call.parent;
+        return (
+            ts.isExpressionStatement(result) ||
+            (ts.isPropertyAccessExpression(result) &&
+                result.expression === call &&
+                !(
+                    ts.isCallExpression(result.parent) &&
+                    result.parent.expression === result &&
+                    lengthPreservingArrayMethods.has(result.name.text)
+                ))
         );
     });
 }
@@ -308,6 +373,16 @@ function fresh(
     if (ts.isArrowFunction(expression) || ts.isFunctionExpression(expression))
         return returnsOnlyFresh(checker, expression, active);
     if (ts.isCallExpression(expression)) {
+        // `Object.fromEntries` builds a new object of the entries.
+        const callee = namedMember(
+            checker,
+            unwrapExpression(expression.expression),
+        );
+        if (
+            callee?.name === "fromEntries" &&
+            libraryGlobal(checker, callee.expression) === "Object"
+        )
+            return true;
         const declaration = calledFunction(checker, expression);
         return (
             declaration !== undefined &&
@@ -429,6 +504,11 @@ export function yieldsNewArray(
     expression: ts.Expression,
 ): boolean {
     const unwrapped = unwrapExpression(expression);
+    // A selection (`c ? a.map(f) : []`) yields one of its operands.
+    if (isOperandSelection(unwrapped))
+        return valueOperands(unwrapped).every((operand) =>
+            yieldsNewArray(checker, operand),
+        );
     return (
         yieldsFreshObject(checker, unwrapped) ||
         callsFreshArrayBuiltin(checker, unwrapped)

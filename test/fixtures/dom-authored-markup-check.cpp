@@ -102,6 +102,36 @@ int main() {
         send(up);
         assert(ui_element(engine, status).text.ends_with("K"));
         assert(ui_has_attribute(engine, keep, "disabled"));
+        // A markup label activates the control its `for` names.
+        const auto note = ui_get_element_by_id(engine, "note");
+        const auto label_rect =
+            ui_get_client_rect(engine, ui_get_element_by_id(engine, "note-label"));
+        SDL_Event press = down;
+        press.button.x = static_cast<float>(label_rect.left + 20);
+        press.button.y = static_cast<float>(label_rect.top + 10);
+        motion.motion.x = press.button.x;
+        motion.motion.y = press.button.y;
+        send(motion);
+        send(press);
+        SDL_Event release = press;
+        release.type = SDL_EVENT_MOUSE_BUTTON_UP;
+        release.button.down = false;
+        send(release);
+        assert(ui_active_element(engine) == note);
+        // Its maxlength is the control's limit, projected to the RmlUi text area.
+        assert(ui_get_max_length(engine, note) == 5);
+        // A template's runtime text is an attribute value's text.
+        assert(ui_get_attribute(engine, note, "placeholder") == "Up to 5 letters");
+        assert(runtime.projected_elements.at(note.value)
+                   .element->GetAttribute<Rml::String>("maxlength", "") == "5");
+        SDL_Event text{};
+        text.type = SDL_EVENT_TEXT_INPUT;
+        text.text.windowID = SDL_GetWindowID(window);
+        text.text.text = "abcdefg";
+        static_cast<void>(pal::handle_ui_rml_event(runtime, text));
+        pal::update_ui_rml_runtime(runtime, 640, 480);
+        if (ui_get_form_value(engine, note) != "abcde")
+            throw std::runtime_error("maxlength keeps " + ui_get_form_value(engine, note));
     }
     SDL_DestroyWindow(window);
     SDL_Quit();

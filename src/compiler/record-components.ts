@@ -34,10 +34,22 @@ export interface RecordComponent {
      * and every arm of the members that are, each type once.
      */
     readonly shapes: readonly ts.Type[];
+    /**
+     * The shapes that only view the records of the others (a plain record
+     * type only received from plain records declaring all of its
+     * properties): a property one does not declare is not absent.
+     */
+    readonly views: ReadonlySet<ts.Type>;
     /** The shape whose name the layout takes: the widest. */
     readonly named: ts.Type;
     /** The members that are record unions. */
     readonly unions: readonly ts.UnionType[];
+    /**
+     * The instantiations of generic records the component joined beside
+     * its concrete shapes: each lays its own fields out under its
+     * instantiation, in the one layout the shapes' fields take.
+     */
+    readonly instantiated: readonly InstantiatedRecord[];
     /**
      * Member types whose static type can be wrong about a field: storage
      * of the type may hold a record of a member lacking it, put there
@@ -166,6 +178,23 @@ const FIXED_LAYOUT_ORIGINS: ReadonlySet<DeclarationOrigin> = new Set([
  * property declared by the program or the engine.
  */
 export function isPlainRecord(checker: ts.TypeChecker, type: ts.Type): boolean {
+    return recordShape(checker, type, false);
+}
+
+/**
+ * Whether a type is a callable record a component can hold: a plain record
+ * (`isPlainRecord`) but for its call signatures, a function with properties
+ * (`((ent: E) => void) & { halo?: (ent: E) => H }`).
+ */
+function isCallableRecord(checker: ts.TypeChecker, type: ts.Type): boolean {
+    return recordShape(checker, type, true);
+}
+
+function recordShape(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+    callable: boolean,
+): boolean {
     const parts = type.isIntersection() ? type.types : [type];
     if (
         parts.some(
@@ -174,7 +203,7 @@ export function isPlainRecord(checker: ts.TypeChecker, type: ts.Type): boolean {
                 classInstanceDeclaration(part) !== undefined,
         ) ||
         checker.isArrayLikeType(type) ||
-        callSignatures(checker, type, "exact").length > 0 ||
+        callSignatures(checker, type, "exact").length > 0 !== callable ||
         type.getConstructSignatures().length > 0 ||
         checker.getIndexInfosOfType(type).length > 0
     )
@@ -224,6 +253,18 @@ export function isRecordUnion(
 /** Whether a type is a plain record or a union of them. */
 export function isRecordLike(checker: ts.TypeChecker, type: ts.Type): boolean {
     return isPlainRecord(checker, type) || isRecordUnion(checker, type);
+}
+
+/**
+ * Whether a type's records can join a record component when a record of
+ * another type is stored as them: a plain record, a union of them, or a
+ * callable record (`isCallableRecord`).
+ */
+export function isComponentRecord(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): boolean {
+    return isRecordLike(checker, type) || isCallableRecord(checker, type);
 }
 
 /**
@@ -427,10 +468,17 @@ export function recordComponents(
         else groups.set(root, [{ identity, type }]);
     }
     const components = new Map<RecordComponentKey, RecordComponent>();
-    const instantiated = (identity: RecordComponentKey): boolean =>
-        "generic" in identity;
+    const instantiated = (
+        identity: RecordComponentKey,
+    ): identity is InstantiatedRecord => "generic" in identity;
     // A record type only constructed as another lends the layout no shape.
+    // A plain record type only received from other plain records -- never a
+    // join's source, never constructed, retyped or spread as itself, every
+    // record stored as it one of a type declaring all of its properties --
+    // views those records: it lends its declarations, not an absence.
     const shaping = new Set<RecordComponentKey>();
+    const sourced = new Set<RecordComponentKey>();
+    const holding = new Set<RecordComponentKey>();
     for (const {
         source,
         target,
@@ -438,10 +486,25 @@ export function recordComponents(
         targetInstantiation,
         kind,
     } of joins) {
-        shaping.add(targetInstantiation ?? recordIdentity(checker, target));
-        if (kind !== "construction")
-            shaping.add(sourceInstantiation ?? recordIdentity(checker, source));
+        const to = targetInstantiation ?? recordIdentity(checker, target);
+        shaping.add(to);
+        if (kind !== "construction") {
+            const from = sourceInstantiation ?? recordIdentity(checker, source);
+            shaping.add(from);
+            sourced.add(from);
+        }
+        if (
+            (kind !== "value" && kind !== "element") ||
+            !isPlainRecord(checker, source) ||
+            !isPlainRecord(checker, target) ||
+            lacks(source, target)
+        )
+            holding.add(to);
     }
+    const viewOnly = (identity: RecordComponentKey): boolean =>
+        shaping.has(identity) &&
+        !sourced.has(identity) &&
+        !holding.has(identity);
     const constructedOnly = (identity: RecordComponentKey): boolean =>
         !shaping.has(identity) &&
         joins.some(
@@ -454,21 +517,33 @@ export function recordComponents(
     for (const group of groups.values()) {
         if (group.length < 2) continue;
         const members = group.map(({ type }) => type);
-        // An instantiation stands for the concrete shapes it joined.
-        const concrete = group
-            .filter(
-                ({ identity }) =>
-                    !instantiated(identity) && !constructedOnly(identity),
-            )
-            .map(({ type }) => type);
-        const unions = concrete.filter((member): member is ts.UnionType =>
+        // The concrete members are the shapes, and each instantiation beside
+        // them adds its own fields under its instantiation; where only
+        // instantiations joined (two generic records under one call's
+        // instantiation), they are the shapes, laid out under it.
+        const shaped = group.filter(
+            ({ identity }) => !constructedOnly(identity),
+        );
+        const concrete = shaped.filter(
+            ({ identity }) => !instantiated(identity),
+        );
+        const laidOut = (concrete.length > 0 ? concrete : shaped).map(
+            ({ type }) => type,
+        );
+        const beside =
+            concrete.length > 0
+                ? shaped.flatMap(({ identity }) =>
+                      instantiated(identity) ? [identity] : [],
+                  )
+                : [];
+        const unions = laidOut.filter((member): member is ts.UnionType =>
             member.isUnion(),
         );
         // The layout stores the members that are no union and every arm of
         // those that are, each type once.
         const shapes = [
             ...new Map(
-                concrete
+                laidOut
                     .flatMap((member) => unionMembers(member))
                     .map((shape) => [recordIdentity(checker, shape), shape]),
             ).values(),
@@ -488,8 +563,14 @@ export function recordComponents(
             key: `${COMPONENT_KEY}${next++}`,
             members,
             shapes: [named, ...shapes.filter((shape) => shape !== named)],
+            views: new Set(
+                group
+                    .filter(({ identity }) => viewOnly(identity))
+                    .map(({ type }) => type),
+            ),
             named,
             unions,
+            instantiated: beside,
             holdsNarrower,
         };
         for (const { identity } of group) components.set(identity, component);
@@ -670,6 +751,15 @@ function layoutsHoldBoth(
             ),
         );
     }
+    // A field one shape types dynamic and the other as a class instance or
+    // a primitive is one dynamic field: documents hold class instances
+    // boxed (`requireSharedValueViews`) and primitives by value. `unknown`
+    // is tested as declared: without null and undefined it is `{}`.
+    const dynamicHolds = (dynamic: ts.Type, held: ts.Type): boolean =>
+        holdsOnly(dynamic, ["unknown"]) &&
+        (classInstanceDeclaration(held) !== undefined ||
+            holdsOnly(held, ["string", "number", "boolean"]));
+    if (dynamicHolds(left, b) || dynamicHolds(right, a)) return true;
     // A function of one signature is a value of the other: one field holds
     // both where their parameters and results are held alike.
     const signatures = compatibleSignatures(checker, a, b);

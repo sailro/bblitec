@@ -26,10 +26,26 @@ struct TransferredResource {
     virtual ~TransferredResource() = default;
 };
 
+/** A transferred ArrayBuffer's bytes; the receiver's reader holds them as its buffer node. */
+struct TransferredBuffer final : TransferredResource {
+    explicit TransferredBuffer(std::vector<std::uint8_t> value) : bytes(std::move(value)) {}
+    std::vector<std::uint8_t> bytes;
+};
+
+/**
+ * JavaScript objects of different classes never share an identity, although an
+ * owned typed array's element storage is also its ArrayBuffer's storage.
+ */
+enum class CloneIdentitySpace : std::uint8_t { object, buffer, view };
+
 /** Implemented by a realm-owned transferable's shared logical state. */
 struct Transferable {
     virtual ~Transferable() = default;
     virtual std::unique_ptr<TransferredResource> transfer() = 0;
+    /** The identity serialization meets this value by: a platform object, or a buffer's storage. */
+    [[nodiscard]] virtual std::pair<const void*, CloneIdentitySpace> transfer_identity() const {
+        return {this, CloneIdentitySpace::object};
+    }
 };
 
 using CloneId = std::uint32_t;
@@ -85,12 +101,6 @@ using CloneNode =
     std::variant<CloneUndefined, CloneNull, bool, double, std::string, CloneArray, CloneObject,
                  CloneBuffer, CloneTransfer, CloneMap, CloneSet, CloneDate, CloneView, CloneBlob>;
 
-/**
- * JavaScript objects of different classes never share an identity, although an
- * owned typed array's element storage is also its ArrayBuffer's storage.
- */
-enum class CloneIdentitySpace : std::uint8_t { object, buffer, view };
-
 /** Edges are indices: cycles neither share JS ownership nor form native leaks. */
 struct SerializedMessage {
     CloneId root = 0;
@@ -102,12 +112,15 @@ class CloneWriter {
 public:
     explicit CloneWriter(std::span<Transferable* const> transfers = {})
         : transfer_list_(transfers.begin(), transfers.end()) {
-        auto& objects = identities(CloneIdentitySpace::object);
         for (std::size_t index = 0; index < transfer_list_.size(); ++index) {
             auto* value = transfer_list_[index];
-            if (!value || objects.contains(value))
-                throw DataCloneError("Invalid or duplicate transferable.");
-            objects.emplace(value, add(CloneTransfer{index}));
+            if (!value)
+                throw DataCloneError("Invalid transferable.");
+            const auto [identity, space] = value->transfer_identity();
+            auto& known = identities(space);
+            if (known.contains(identity))
+                throw DataCloneError("Duplicate transferable.");
+            known.emplace(identity, add(CloneTransfer{index}));
         }
     }
 
@@ -178,6 +191,18 @@ public:
     explicit CloneReader(SerializedMessage message) : message_(std::move(message)) {
         if (message_.root >= message_.nodes.size())
             throw DataCloneError("Message has no root.");
+        // A transferred buffer is received as the buffer it was: every view
+        // of it decodes as one of a copied buffer does.
+        for (auto& node : message_.nodes) {
+            const auto* transfer = std::get_if<CloneTransfer>(&node);
+            if (!transfer || transfer->index >= message_.transfers.size())
+                continue;
+            auto& resource = message_.transfers[transfer->index];
+            if (auto* buffer = dynamic_cast<TransferredBuffer*>(resource.get())) {
+                node = CloneBuffer{std::move(buffer->bytes)};
+                resource.reset();
+            }
+        }
     }
     CloneReader(const CloneReader&) = delete;
     CloneReader& operator=(const CloneReader&) = delete;

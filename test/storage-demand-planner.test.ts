@@ -11,7 +11,10 @@ import {
     ParameterObjectStorageRequired,
 } from "../src/compiler/dynamic-binding-storage.js";
 import { GenericFunctionStorageRequired } from "../src/compiler/generic-function-storage.js";
-import { NativeRecordStorageRequired } from "../src/compiler/native-record-storage.js";
+import {
+    NativeRecordStorageRequired,
+    type NativeRecordStorageDemand,
+} from "../src/compiler/native-record-storage.js";
 import {
     ReplayStorage,
     type StorageRequest,
@@ -36,6 +39,61 @@ const state = `
     saved.push(()=>state.ready());
     const state=make();
 `;
+
+test("a compile reports each attempt a replay ends", () => {
+    const lines: string[] = [];
+    compileSource(
+        `
+        interface Settings { gain: number }
+        function parsed(text: string): Settings { return JSON.parse(text); }
+        let active: Settings = { gain: 2 };
+        active = parsed('{"gain":3}');
+        console.log(active.gain);
+    `,
+        { compileProgress: (line) => lines.push(line) },
+    );
+    assert.equal(lines.length, 1, lines.join("\n"));
+    assert.match(
+        lines[0]!,
+        /^Compile attempt 1 of .+: NativeRecordStorageRequired: record \(Settings: document\) at .+:2 \(\d+ s\)$/,
+    );
+});
+
+test("converged storage compiles without restarts what strict replays compile", () => {
+    // Three record types each demand document storage, one restart each.
+    const source = `
+        interface A { a: number }
+        interface B { b: number }
+        interface C { c: number }
+        function a(text: string): A { return JSON.parse(text); }
+        function b(text: string): B { return JSON.parse(text); }
+        function c(text: string): C { return JSON.parse(text); }
+        let first: A = { a: 1 };
+        first = a('{"a":2}');
+        let second: B = { b: 1 };
+        second = b('{"b":2}');
+        let third: C = { c: 1 };
+        third = c('{"c":2}');
+        console.log(first.a + second.b + third.c);
+    `;
+    const compile = (convergeStorage?: { passes: number }) => {
+        const lines: string[] = [];
+        const result = compileSource(source, {
+            compileProgress: (line) => lines.push(line),
+            ...(convergeStorage ? { convergeStorage } : {}),
+        });
+        return {
+            restarts: lines.filter((line) => line.startsWith("Compile attempt"))
+                .length,
+            cpp: [...result.cppFiles],
+        };
+    };
+    const strict = compile();
+    const converged = compile({ passes: 4 });
+    assert.ok(strict.restarts > 0);
+    assert.equal(converged.restarts, 0);
+    assert.deepEqual(converged.cpp, strict.cpp);
+});
 
 /**
  * A program compiled in one storage replay (two constructions), run
@@ -305,13 +363,16 @@ type PlannedContext = Parameters<StorageDemandPlanner["attemptStatement"]>[0];
 /**
  * A one-file program, for driving the planner over real statements: its
  * checker, its statements, a lowering context the planner reads, and the
- * declaration of the variable statement at an index.
+ * declaration of the variable statement at an index. With `lib` the
+ * program sees the default library (`Object` and its statics).
  */
-function plannedStatements(source: string) {
+function plannedStatements(source: string, { lib = false } = {}) {
     const options: ts.CompilerOptions = { target: ts.ScriptTarget.ES2022 };
     const host = ts.createCompilerHost(options, true);
     const file = ts.createSourceFile("input.ts", source, options.target!, true);
-    host.getSourceFile = (path) => (path === "input.ts" ? file : undefined);
+    const library = host.getSourceFile.bind(host);
+    host.getSourceFile = (path, target) =>
+        path === "input.ts" ? file : lib ? library(path, target) : undefined;
     const program = ts.createProgram(["input.ts"], options, host);
     const checker = program.getTypeChecker();
     const context = {
@@ -416,6 +477,71 @@ test("one plan collects two independent module-const dynamic demands and stops a
     );
     assert.equal(read, false);
     assert.equal(storagePlanningStatistics().dependent - before.dependent, 1);
+});
+
+test("one plan collects frozen literal bindings' own demands; freezing another object ends discovery", () => {
+    const plan = (source: string, demanding: number) => {
+        const { checker, statements, context, declarationAt } =
+            plannedStatements(source, { lib: true });
+        const planner = new StorageDemandPlanner(checker);
+        const lowered: number[] = [];
+        planner.run(() => {
+            for (const [index, statement] of statements.entries())
+                attemptPlanned(planner, context, statement, () => {
+                    if (index < demanding)
+                        throw new DynamicBindingStorageRequired(
+                            declarationAt(index),
+                            "array",
+                        );
+                    lowered.push(index);
+                });
+        });
+        return {
+            demands: planner.demands.map((request) =>
+                request.kind === "dynamic"
+                    ? request.declaration.name.getText()
+                    : request.kind,
+            ),
+            lowered,
+        };
+    };
+    // Freezing a fresh literal changes no object another holds.
+    assert.deepEqual(
+        plan(
+            `
+            const NO_HOLES: readonly number[] = Object.freeze([]);
+            const NO_SOLIDS: readonly number[] = Object.freeze([1, 2]);
+            const other = 3;
+        `,
+            2,
+        ),
+        { demands: ["NO_HOLES", "NO_SOLIDS"], lowered: [2] },
+    );
+    // Freezing an object another binding holds is a write to it.
+    const held = plannedStatements(
+        `
+        const shared: number[] = [];
+        const frozen: readonly number[] = Object.freeze(shared);
+        const other = 3;
+    `,
+        { lib: true },
+    );
+    const planner = new StorageDemandPlanner(held.checker);
+    let next = false;
+    planner.run(() => {
+        attemptPlanned(planner, held.context, held.statements[1]!, () => {
+            throw new DynamicBindingStorageRequired(
+                held.declarationAt(1),
+                "array",
+            );
+        });
+        next = true;
+    });
+    assert.equal(next, false);
+    assert.deepEqual(
+        planner.demands.map((request) => request.kind),
+        ["dynamic"],
+    );
 });
 
 test("independent literal bindings batch without changing generated storage", () => {
@@ -838,6 +964,93 @@ test("replay storage lays out its records and bindings in an order of the progra
             ]),
         ).records,
         [3, 2, 1],
+    );
+});
+
+test("replay storage holds one document record whichever site and mapping mode met it first", () => {
+    // A stored record's method meets `Report` as a stored document; a plain
+    // use meets it as a document. Either may come first: the storage holds
+    // a document at its declaration, without `stored`.
+    const { checker, statements } = plannedStatements(`
+        interface Report { message: string; detail: unknown }
+        interface Handle { report(): Report | null }
+        const report: Report = { message: "a", detail: 1 };
+    `);
+    const report = checker.getDeclaredTypeOfSymbol(
+        checker.getSymbolAtLocation(
+            (statements[0] as ts.InterfaceDeclaration).name,
+        )!,
+    );
+    const handleMethod = (statements[1] as ts.InterfaceDeclaration).members[0]!;
+    const demand = (node: ts.Node, stored: boolean) =>
+        new NativeRecordStorageRequired({
+            identity: report,
+            type: report,
+            node,
+            frames: [],
+            document: true,
+            ...(stored ? { stored: true as const } : {}),
+        }).request;
+    const held = (requests: readonly StorageRequest[]) => {
+        const storage = new ReplayStorage(checker);
+        for (const request of requests) storage.add(request);
+        return storage.orderedRecords().map((record) => ({
+            node: record.node,
+            stored: record.stored === true,
+            document: record.document === true,
+        }));
+    };
+    const storedFirst = held([
+        demand(handleMethod, true),
+        demand(statements[2]!, false),
+    ]);
+    assert.deepEqual(
+        held([demand(statements[2]!, false), demand(handleMethod, true)]),
+        storedFirst,
+    );
+    assert.deepEqual(storedFirst, [
+        { node: statements[0], stored: false, document: true },
+    ]);
+});
+
+test("converged storage withdraws the record demands that ask only to share their records", () => {
+    // A pass can meet one before the demand that already serves it: the
+    // strict lowering demands again the sharing it needs.
+    const { checker, statements, declarationAt } = plannedStatements(`
+        interface Target { name: string; type: string }
+        const first = { name: "a", type: "f32" };
+        const second = { name: "b", type: "u32" };
+        const third = { name: "c", type: "i32" };
+    `);
+    const typeOf = (index: number) =>
+        checker.getTypeAtLocation(declarationAt(index).name);
+    const target = checker.getDeclaredTypeOfSymbol(
+        checker.getSymbolAtLocation(
+            (statements[0] as ts.InterfaceDeclaration).name,
+        )!,
+    );
+    const storage = new ReplayStorage(checker);
+    const record = (
+        index: number,
+        asks: Partial<NativeRecordStorageDemand>,
+    ): void => {
+        storage.add(
+            new NativeRecordStorageRequired({
+                identity: typeOf(index),
+                type: typeOf(index),
+                node: statements[index]!,
+                frames: [],
+                ...asks,
+            }).request,
+        );
+    };
+    record(1, {});
+    record(2, { stored: true });
+    record(3, { joins: [{ source: typeOf(3), target, kind: "value" }] });
+    storage.withdrawSharedRecords();
+    assert.deepEqual(
+        storage.orderedRecords().map((demand) => demand.type),
+        [typeOf(2), typeOf(3)],
     );
 });
 
@@ -1329,4 +1542,92 @@ test("an array literal of constants an identity read stores by reference replays
                 },
             );
     }
+});
+
+test("a document's record type takes the record types handed where it is declared in the same demand", async (t) => {
+    // `Herd` is read out of a parsed document and holds `Bounds`; `SMALL`'s
+    // own record type is handed where `Bounds` is declared, so the strict
+    // loop would take it as a document one attempt later.
+    const source = `
+        interface Bounds { minX: number; maxX: number; minY: number; maxY: number }
+        interface Herd { bounds: Bounds; scale: number }
+        interface Config { herd: Herd; name: string }
+        const DEFAULTS: Config = { herd: { bounds: { minX: -1, maxX: 1, minY: 0, maxY: 2 }, scale: 1 }, name: "defaults" };
+        function measure(bounds: Readonly<Bounds>, height: number): number { return (bounds.maxY - bounds.minY) * height + bounds.maxX; }
+        const SMALL = { minX: -0.5, maxX: 0.5, minY: 0, maxY: 0.25 };
+        const SMALL_METRIC = measure(SMALL, 4);
+        function load(text: string): Config { return { ...DEFAULTS, ...(JSON.parse(text) as Config) }; }
+        const config = load('{"herd":{"bounds":{"minX":-2,"maxX":3,"minY":1,"maxY":5},"scale":2},"name":"saved"}');
+        if (measure(config.herd.bounds, config.herd.scale) !== 11) throw new Error("document bounds");
+        if (SMALL_METRIC !== 1.5) throw new Error("handed bounds");
+        if (config.name !== "saved") throw new Error("name");
+    `;
+    const lines: string[] = [];
+    compileSource(source, { compileProgress: (line) => lines.push(line) });
+    assert.match(lines[0]!, /record \(Herd: document\)/);
+    assert.ok(
+        !lines.some((line) =>
+            /record \(\{ minX, maxX, minY, maxY \}: document\)/.test(line),
+        ),
+        lines.join("\n"),
+    );
+    await runSelfCheckingProgram(
+        t,
+        "storage-demand-planner/handed-document-records",
+        source,
+    );
+});
+
+test("a demanded record whose field holds an instance of a class no replay shares yet shares the class", async (t) => {
+    // The options literal's record is demanded before any store shares
+    // `Frame` (its instance arrives inside another record), so the record
+    // is mapped while `Frame` has no storage yet: the demand shares it,
+    // as a lowered store of an instance does, rather than refusing.
+    const source = `
+        interface Placement { readonly slot: number; readonly y: number }
+        interface Node3 { position: { y: number }; parent: object | null }
+        class Frame {
+          constructor(private readonly origin: number) {}
+          private readonly entries = new Map<number, number>();
+          private version = 0;
+          place(node: Pick<Node3, "position" | "parent">, placement: Placement): void {
+            this.entries.set(placement.slot, placement.y);
+            this.version++;
+            node.position.y = placement.y + this.origin;
+          }
+          count(): number { return this.entries.size * 10 + this.version; }
+        }
+        interface BatchOptions { name?: string; frame?: Frame; capacity?: number; tint?: [number, number, number]; drift?: number }
+        interface Batch { node: Node3; name: string; add(slot: number, y: number): void; count(): number }
+        function createBatch(opts: BatchOptions = {}): Batch {
+          const node: Node3 = { position: { y: 0 }, parent: null };
+          const frame = opts.frame;
+          return { node, name: \`\${opts.name ?? "batch"}:\${opts.capacity ?? 1}:\${opts.tint?.[0] ?? 0}\`, add: (slot, y) => frame?.place(node, { slot, y }), count: () => frame?.count() ?? -1 };
+        }
+        interface HostRender { frame: Frame }
+        interface TowerOptions { hostRender?: HostRender; tinted: boolean; drift: number }
+        function createTowers(opts: TowerOptions): Batch[] {
+          const nativeOptions = opts.hostRender ? { frame: opts.hostRender.frame } : {};
+          const rail = createBatch({ name: "rail", capacity: 8, drift: opts.drift, ...nativeOptions, ...(opts.tinted ? { tint: [1, 0.5, 0.25] as [number, number, number] } : {}) });
+          const belt = createBatch({ name: "belt", capacity: 4, drift: opts.drift, ...nativeOptions, ...(opts.tinted ? { tint: [0.5, 0.5, 0.5] as [number, number, number] } : {}) });
+          return [rail, belt];
+        }
+        const hosted = Date.now() > 0;
+        const batches = createTowers({ hostRender: hosted ? { frame: new Frame(0.5) } : undefined, tinted: Date.now() < 0, drift: 1 });
+        for (let index = 0; index < batches.length; index++) batches[index]!.add(index, 2);
+        if (batches[0]!.count() !== 22 || batches[1]!.count() !== 22) throw new Error("one shared frame");
+        if (batches[0]!.node.position.y !== 2.5 || batches[1]!.node.position.y !== 2.5) throw new Error("placed nodes");
+        if (batches[0]!.name !== "rail:8:0" || batches[1]!.name !== "belt:4:0") throw new Error("options");
+    `;
+    const lines: string[] = [];
+    compileSource(source, { compileProgress: (line) => lines.push(line) });
+    assert.ok(
+        lines.some((line) => /shared-class/.test(line)),
+        lines.join("\n"),
+    );
+    await runSelfCheckingProgram(
+        t,
+        "storage-demand-planner/demanded-record-unshared-class",
+        source,
+    );
 });

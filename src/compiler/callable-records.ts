@@ -2,14 +2,16 @@ import ts from "typescript";
 import { returnsOnly } from "./fresh-records.js";
 import { callMember, type DataType } from "./data-types.js";
 import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
+import { bindingReferences } from "./binding-references.js";
 import {
     isOperandSelection,
+    outermostWrapper,
     unwrapExpression,
     valueOperands,
 } from "./syntax.js";
 import type { Value } from "./types.js";
 import type { DataSinkHost } from "./data-sinks/contracts.js";
-import { calledFunction } from "./symbols.js";
+import { calledFunction, resolvedSymbol } from "./symbols.js";
 
 /** A function expression, or a call whose source returns only new functions. */
 function freshCallable(
@@ -30,6 +32,47 @@ function freshCallable(
         declaration !== undefined &&
         returnsOnly(declaration, active, (returned) =>
             freshCallable(checker, returned, active),
+        )
+    );
+}
+
+/**
+ * A parameter read only at `expression`, bound to a function expression
+ * written as its argument in the call binding it
+ * (`withHalo((ent) => draw(ent), halo)`): no binding but the parameter
+ * holds that function object, so a record made at `expression` is it.
+ */
+function freshArgument(
+    lowerer: DataSinkHost,
+    value: Value,
+    expression: ts.Expression,
+): boolean {
+    const { checker, program } = lowerer.context;
+    const source = unwrapExpression(expression);
+    const symbol = ts.isIdentifier(source)
+        ? resolvedSymbol(checker, source)
+        : undefined;
+    const parameter = symbol?.valueDeclaration;
+    const callback =
+        value.kind === "callback" ? value.callbackDeclaration : undefined;
+    if (
+        !symbol ||
+        !parameter ||
+        !ts.isParameter(parameter) ||
+        parameter.dotDotDotToken ||
+        !callback ||
+        !(ts.isArrowFunction(callback) || ts.isFunctionExpression(callback))
+    )
+        return false;
+    const argument = outermostWrapper(callback);
+    const call = argument.parent;
+    return (
+        ts.isCallExpression(call) &&
+        call.arguments[parameter.parent.parameters.indexOf(parameter)] ===
+            argument &&
+        calledFunction(checker, call) === parameter.parent &&
+        bindingReferences(program, checker, symbol).every(
+            (reference) => reference === source,
         )
     );
 }
@@ -105,7 +148,13 @@ export function callableRecordValue(
             callable: demand,
         });
     }
-    if (!expression || !freshCallable(lowerer.context.checker, expression))
+    if (
+        !expression ||
+        !(
+            freshCallable(lowerer.context.checker, expression) ||
+            freshArgument(lowerer, value, expression)
+        )
+    )
         lowerer.context.fail(
             node,
             "A callable structural view needs its original lexical function owner or a fresh function result.",

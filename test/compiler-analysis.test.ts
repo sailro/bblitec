@@ -20,6 +20,7 @@ import {
     rebuiltObjectObservation,
 } from "../src/compiler/record-observations.js";
 import {
+    bindingSubtreeIntact,
     parameterIsMutated,
     parameterIsReadOnly,
 } from "../src/compiler/parameter-effects.js";
@@ -142,6 +143,48 @@ test("length facts use binding symbols across shadowed names, writes, aliases an
         false,
         false,
         true,
+    ]);
+});
+
+test("a call of a record's member reaches that member unless it can reach the record as `this`", () => {
+    const { checker, sourceFile } = createCompilerProgram(
+        `
+        function count(n: number): number { return n; }
+        function arrow() { return { fragment: "a", box: (n: number) => n, fade: { bind: (n: number) => n } }; }
+        function named() { return { fragment: "a", box: count }; }
+        function writer() { return { fragment: "a", box(n: number) { this.fragment = "b"; return n; } }; }
+        function first() { const s = arrow(); s.box(1); s.fade.bind(2); return s.fragment; }
+        function second() { const s = named(); s.box(1); return s.fragment; }
+        function third() { const s = writer(); s.box(1); return s.fragment; }
+        function fourth() { const s = arrow(); const other = writer(); s.box = other.box; s.box(1); return s.fragment; }
+        function fifth() { const s = arrow(); replace(s); s.box(1); return s.fragment; }
+        declare function replace(record: { box: (n: number) => number }): void;
+    `,
+        "test/analysis-member-calls.ts",
+    );
+    const intact: Array<[string, boolean, boolean]> = [];
+    forEachAnalysisNode(sourceFile, (node) => {
+        if (
+            ts.isVariableDeclaration(node) &&
+            ts.isIdentifier(node.name) &&
+            node.name.text === "s"
+        ) {
+            const owner = ts.findAncestor(node, ts.isFunctionDeclaration);
+            intact.push([
+                owner?.name?.text ?? "",
+                bindingSubtreeIntact(checker, node, ["fragment"]),
+                bindingSubtreeIntact(checker, node, ["box"]),
+            ]);
+        }
+    });
+    // A this-free member call reaches its member, not `fragment`; a method
+    // writing `this`, or a member something may replace, reaches the record.
+    assert.deepEqual(intact, [
+        ["first", true, false],
+        ["second", true, false],
+        ["third", false, false],
+        ["fourth", false, false],
+        ["fifth", false, false],
     ]);
 });
 

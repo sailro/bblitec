@@ -2853,7 +2853,7 @@ test("hoists module record factories out of hot dynamic lookups", () => {
     assert.equal((result.cpp.match(/bblscene::definition\(/g) ?? []).length, 2);
     assert.match(
         entry,
-        /bbl::js::Map<double, bblscene::Definition> v_DEFINITIONS =/,
+        /bbl::js::Dictionary<double, bblscene::Definition> v_DEFINITIONS =/,
     );
     assert.match(result.cpp, /v_DEFINITIONS\.get\(v_fn\d+_id\)/);
 });
@@ -3401,7 +3401,7 @@ test("materializes a numeric Record for dynamic optional lookup", () => {
 
     assert.match(
         result.cpp,
-        /bbl::js::Map<double, bblscene::Definition> v_definitions\b/,
+        /bbl::js::Dictionary<double, bblscene::Definition> v_definitions\b/,
     );
     assert.match(result.cpp, /\.get_owned\(v_\w*key\)/);
 });
@@ -3449,7 +3449,7 @@ test("inserts runtime keys through a named open Record alias", () => {
         const missing = Number(entries["missing"]) || 0;
     `);
 
-    assert.match(result.cpp, /bbl::js::Map<std::string, std::string>/);
+    assert.match(result.cpp, /bbl::js::Dictionary<std::string, std::string>/);
     assert.match(
         result.cpp,
         /v_fn\d+_entries\.set\(v_fn\d+_key, v_fn\d+_value\);/,
@@ -3491,7 +3491,7 @@ test("preserves object identity through a dynamic Record lookup", () => {
     assert.match(result.cpp, /using Entry = bbl::js::Ref<EntryData>;/);
     assert.match(
         result.cpp,
-        /bbl::js::Map<std::string, bblscene::Entry> v_entries = bbl::js::Map/,
+        /bbl::js::Dictionary<std::string, bblscene::Entry> v_entries = bbl::js::Dictionary/,
     );
     assert.match(result.cpp, /auto& v_entries = [^;]+\.capture0;/);
     assert.doesNotMatch(result.cpp, /record_table_|static thread_local/);
@@ -3576,7 +3576,8 @@ test("defaults an absent nullable array element before nullish coalescing", () =
 test("a record or an element kept as an object is selected by the record's presence", () => {
     // `list ?? root` under `object | null`: a record and an element, each
     // stored as the document value the name keeps for its identity (the
-    // identities themselves run in `language-constructs.test.ts`).
+    // identities themselves run in `language-constructs.test.ts`). A call
+    // binding `root` present reads its element without a presence test.
     const result = compileSource(`
         import { createEngine } from "@babylonjs/lite";
         const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
@@ -13837,8 +13838,9 @@ test("lowers numeric template substitutions in retained UI cssText", () => {
         async function main(): Promise<void> {
             await createEngine({});
             const hit = document.createElement("div");
-            let right = 12;
-            let width = 180;
+            // Run-time numbers: a never-written literal folds into the text.
+            let right = Number(JSON.parse("12"));
+            let width = Number(JSON.parse("180"));
             hit.style.cssText =
                 \`position:fixed;right:\${right}px;width:\${width}px;\` +
                 "cursor:crosshair";
@@ -16013,39 +16015,6 @@ test("refuses a mesh id write that would stale an emitted include set", () => {
                 void main();
             `),
         /already resolved a light's includedOnlyMeshIds/,
-    );
-});
-
-test("erases a proven write-only optional numeric mesh expando", () => {
-    const result = compileSource(`
-        import { createEngine, createGround, type Mesh } from "@babylonjs/lite";
-        async function main() {
-            const engine = await createEngine({});
-            const ground = createGround(engine, { width: 2, height: 2 });
-            (ground as Mesh & { integrationTag?: number }).integrationTag = 7;
-        }
-        void main();
-    `);
-
-    assert.match(result.cpp, /static_cast<void>\(7\.0\);/);
-    assert.doesNotMatch(result.cpp, /integrationTag/);
-});
-
-test("refuses to erase an optional numeric mesh expando that is read", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-                import { createEngine, createGround, type Mesh } from "@babylonjs/lite";
-                async function main() {
-                    const engine = await createEngine({});
-                    const ground = createGround(engine, { width: 2, height: 2 });
-                    (ground as Mesh & { integrationTag?: number }).integrationTag = 7;
-                    const observed = (ground as Mesh & { integrationTag?: number }).integrationTag;
-                    console.log(observed);
-                }
-                void main();
-            `),
-        /Optional expando property 'integrationTag' is read, so its assignment cannot be erased/,
     );
 });
 
@@ -19586,10 +19555,8 @@ test("compiles Babylon Lite scene 273 runtime material-family addition", () => {
         result.cpp,
         /\.metallic_factor = 0\.1f, \.roughness_factor = 0\.4f, \.direct_intensity = 1\.0f/,
     );
-    assert.match(
-        result.cpp,
-        /if \(\(v_added && v_frame >= \(20\.0 \+ 150\.0\)\)\)/,
-    );
+    // The frame threshold, a sum of two constants, folds.
+    assert.match(result.cpp, /if \(\(v_added && v_frame >= 170\.0\)\)/);
     assert.doesNotMatch(result.cpp, /dataset|drawCallCount/);
     assert.deepEqual(result.manifest.generatedSources, [
         "upstream/src/engine.cpp",

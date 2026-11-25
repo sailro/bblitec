@@ -121,6 +121,47 @@ export const PRIMITIVE_KINDS: readonly ValueKind[] = [
     "undefined",
 ];
 
+/**
+ * Whether a value of `type` may be `data`, plain data a generation run
+ * holds: a primitive of a kind a member of the type is; an object where a
+ * member is no primitive and each element, or each member it declares (by
+ * name or index signature), may hold what the data holds there. An open
+ * type admits any.
+ */
+export function typeAdmitsData(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+    data: unknown,
+): boolean {
+    const kind = data === null ? "null" : typeof data;
+    return unionMembers(type).some((member) => {
+        const memberKind = valueKindOf(member);
+        if (memberKind === "unknown") return true;
+        if (typeof data !== "object" || data === null)
+            return memberKind === kind;
+        if (PRIMITIVE_KINDS.includes(memberKind)) return false;
+        if (Array.isArray(data)) {
+            const element = arrayElementType(checker, member);
+            return (
+                element === undefined ||
+                data.every((item: unknown) =>
+                    typeAdmitsData(checker, element, item),
+                )
+            );
+        }
+        return Object.entries(data).every(([key, value]) => {
+            const property = member.getProperty(key);
+            const declared = property
+                ? checker.getTypeOfSymbol(property)
+                : stringIndexType(checker, member);
+            return (
+                declared === undefined ||
+                typeAdmitsData(checker, declared, value)
+            );
+        });
+    });
+}
+
 /** The kinds of value no callee shares: each copies into it. */
 const SCALAR_KINDS: readonly ValueKind[] = [...PRIMITIVE_KINDS, "void"];
 
@@ -180,6 +221,72 @@ export function declaredRecordName(type: ts.Type): string | undefined {
 /** A union's members, or the type itself. */
 export function unionMembers(type: ts.Type): readonly ts.Type[] {
     return type.isUnion() ? type.types : [type];
+}
+
+/**
+ * A type's properties in an order its source fixes. The checker lists
+ * declared properties as they are declared, but the properties a mapped
+ * type makes of a union of literal keys (`Record<"a" | "b", T>`, and a
+ * `Partial` of one) carry no declaration and follow the union's members,
+ * whose order is the order the checker happened to create the key literals
+ * in. Those take the order an alias the type is spelled with declares the
+ * key union in (`type Key = "b" | "a"`), else the keys' names.
+ */
+export function sourceOrderedProperties(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): readonly ts.Symbol[] {
+    const properties = checker.getPropertiesOfType(type);
+    if (
+        properties.length < 2 ||
+        properties.some((property) => property.declarations?.length)
+    )
+        return properties;
+    const names = new Set(properties.map((property) => property.name));
+    const declared = declaredKeyOrder(type, names);
+    const at = (name: string): number => declared?.indexOf(name) ?? -1;
+    return [...properties].sort((left, right) =>
+        declared
+            ? at(left.name) - at(right.name)
+            : left.name < right.name
+              ? -1
+              : left.name > right.name
+                ? 1
+                : 0,
+    );
+}
+
+/**
+ * The keys of `names` in the order an alias of the union of exactly their
+ * literals declares them, found among `type`'s alias arguments (`ToolId`
+ * in `Partial<Record<ToolId, Tool>>`); undefined where none spells them.
+ */
+function declaredKeyOrder(
+    type: ts.Type,
+    names: ReadonlySet<string>,
+    depth = 0,
+): readonly string[] | undefined {
+    const declaration = type.aliasSymbol?.declarations?.find(
+        ts.isTypeAliasDeclaration,
+    );
+    if (declaration && ts.isUnionTypeNode(declaration.type)) {
+        const keys = declaration.type.types.map((member) =>
+            ts.isLiteralTypeNode(member) && ts.isStringLiteral(member.literal)
+                ? member.literal.text
+                : undefined,
+        );
+        if (
+            keys.length === names.size &&
+            keys.every((key) => key !== undefined && names.has(key))
+        )
+            return keys as string[];
+    }
+    if (depth >= 2) return undefined;
+    for (const argument of type.aliasTypeArguments ?? []) {
+        const order = declaredKeyOrder(argument, names, depth + 1);
+        if (order) return order;
+    }
+    return undefined;
 }
 
 /**
@@ -298,7 +405,11 @@ function shortCircuits(
  * - an unchecked lookup (`Value.preserveUncheckedLookup`) misses as
  *   `undefined`, unless its values may be `null` too ("either");
  * - a type that admits only `undefined` is `undefined`, only `null` is
- *   `null`, both is "either"; an optional chain that can short-circuit (a `?.`
+ *   `null`, both is "either" unless the storage knows its absent state is
+ *   `undefined` (`undefinedOnly`: a function stored in a slot whose
+ *   signature admits `null` too returns none) and what it holds has no
+ *   absent state of its own (an iterator's completion around a yielded
+ *   tagged, optional or dynamic value is not); an optional chain that can short-circuit (a `?.`
  *   receiver that may be nullish) admits `undefined`, and so does one whose
  *   type names neither: it is absent only where a receiver's storage is;
  * - a type that names neither leaves the representation to say: a
@@ -344,6 +455,14 @@ export function absenceKind(
     }
     if (value.preserveUncheckedLookup)
         return absent.null ? "either" : "undefined";
+    if (
+        absent.null &&
+        absent.undefined &&
+        value.dataType?.kind === "optional" &&
+        value.dataType.undefinedOnly &&
+        !["optional", "tagged", "json"].includes(value.dataType.inner.kind)
+    )
+        return "undefined";
     return (
         absentValueKind(absent) ??
         (presenceFlagCpp(value) !== undefined ? "undefined" : "unconstrained")
@@ -407,6 +526,47 @@ export function isTypeReference(type: ts.Type): type is ts.TypeReference {
     );
 }
 
+/** Whether a type is declared by a library: a declaration file declares its symbol. */
+export function libraryDeclaredType(type: ts.Type): boolean {
+    return (type.getSymbol()?.declarations ?? []).some(
+        (declaration) => declaration.getSourceFile().isDeclarationFile,
+    );
+}
+
+/**
+ * The types a value of `type` can lead to: its union and intersection
+ * members and, through each, a generic instantiation's or an alias's type
+ * arguments (an array's, a `Promise`'s, a `Record`'s), its index
+ * signatures' value types and the member types of an object type the
+ * program declares. A library type's members are not followed: it holds a
+ * program's values only through its type arguments.
+ */
+export function reachedTypes(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): readonly ts.Type[] {
+    const reached = new Set<ts.Type>();
+    const visit = (candidate: ts.Type): void => {
+        if (reached.has(candidate)) return;
+        reached.add(candidate);
+        if (candidate.isUnionOrIntersection()) {
+            candidate.types.forEach(visit);
+            return;
+        }
+        if ((candidate.flags & ts.TypeFlags.Object) === 0) return;
+        if (isTypeReference(candidate))
+            checker.getTypeArguments(candidate).forEach(visit);
+        candidate.aliasTypeArguments?.forEach(visit);
+        for (const info of checker.getIndexInfosOfType(candidate))
+            visit(info.type);
+        if (libraryDeclaredType(candidate)) return;
+        for (const property of checker.getPropertiesOfType(candidate))
+            visit(checker.getTypeOfSymbol(property));
+    };
+    visit(type);
+    return [...reached];
+}
+
 /**
  * The element type of an array-like type, or undefined for another type.
  */
@@ -418,6 +578,14 @@ export function arrayElementType(
         checker.getNonNullableType(type),
         ts.IndexKind.Number,
     );
+}
+
+/** The value type of a type's string index signature, or undefined without one. */
+export function stringIndexType(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): ts.Type | undefined {
+    return checker.getIndexTypeOfType(type, ts.IndexKind.String);
 }
 
 /** A tuple type's elements: each one's type and its required/optional/rest/variadic flags. */
@@ -501,6 +669,27 @@ export function callableParameterCount(
 }
 
 /** An array or tuple type: its element type, whether writes through it are allowed, and whether it is a tuple. */
+/**
+ * Whether the record type `type` is, or the array it is holds, declares a
+ * member typed `unknown` (`readonly { material?: unknown }[]`): storage
+ * the values written to it settle.
+ */
+export function holdsUnknownMember(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): boolean {
+    const present = checker.getNonNullableType(type);
+    const record = arrayShape(checker, present)?.element ?? present;
+    return record
+        .getProperties()
+        .some(
+            (member) =>
+                (checker.getTypeOfSymbol(member).flags &
+                    ts.TypeFlags.Unknown) !==
+                0,
+        );
+}
+
 export interface ArrayShape {
     readonly element: ts.Type;
     readonly mutable: boolean;
@@ -564,6 +753,35 @@ export function holdsObjectKeyword(type: ts.Type): boolean {
     return (
         present.length === 1 &&
         (present[0]!.flags & ts.TypeFlags.NonPrimitive) !== 0
+    );
+}
+
+/**
+ * Whether a slot of this type may view a record of any declared type:
+ * `any`, `unknown`, `object`, an object type with no member (`{}`, an opaque
+ * interface), a type with a string index signature, or an intersection with
+ * such a part (`object & Record<"texture", unknown>`, what an `in` test
+ * narrows `unknown` to).
+ */
+export function viewsAnyRecord(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): boolean {
+    return unionMembers(type).some(
+        (member) =>
+            (member.isIntersection() &&
+                member.types.some((part) => viewsAnyRecord(checker, part))) ||
+            (member.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0 ||
+            holdsObjectKeyword(member) ||
+            ((member.flags & ts.TypeFlags.Object) !== 0 &&
+                checker.getPropertiesOfType(member).length === 0 &&
+                member.getCallSignatures().length === 0 &&
+                member.getConstructSignatures().length === 0) ||
+            checker
+                .getIndexInfosOfType(member)
+                .some(
+                    (info) => (info.keyType.flags & ts.TypeFlags.String) !== 0,
+                ),
     );
 }
 
@@ -695,6 +913,18 @@ export function stringLiteralValues(
         values.add(member.value);
     }
     return values;
+}
+
+/**
+ * The values of a type of a few scalars: a boolean's two, or the strings of
+ * a literal union; undefined for any other type.
+ */
+export function finiteScalarValues(
+    type: ts.Type,
+): readonly (boolean | string)[] | undefined {
+    if (holdsOnly(type, ["boolean"])) return [true, false];
+    const strings = stringLiteralValues(type);
+    return strings && strings.size > 0 ? [...strings] : undefined;
 }
 
 /**

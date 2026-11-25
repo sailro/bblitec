@@ -501,3 +501,83 @@ test("unsupported library overloads refuse explicitly", () => {
     ] as const)
         assert.throws(() => compileSource(source), message);
 });
+
+check(
+    "array-join-optional-scalars",
+    `
+    interface Placement { handle?: number; y?: number; open?: boolean }
+    const placed: Placement = { handle: 20 };
+    const parts = [placed.handle, placed.y];
+    if (parts.join(',') !== '20,') throw new Error('optional numbers ' + parts.join(','));
+    if ([placed.open, placed.open].join('/') !== '/') throw new Error('absent booleans');
+    placed.y = 0.5;
+    placed.open = false;
+    if ([placed.handle, placed.y].join() !== '20,0.5' || [placed.open, placed.open].join('|') !== 'false|false')
+        throw new Error('present optional scalars');
+    const counts: (number | null)[] = [1, null, 3];
+    if (counts.join('-') !== '1--3') throw new Error('null lanes');
+`,
+);
+
+check(
+    "string-compound-on-optional-lanes",
+    `
+    const rebuilds: string[] = [];
+    function rebuild(sigs: readonly (string | undefined)[]): void { rebuilds.push(sigs.map((s) => s ?? "-").join(";")); }
+    const sigs: string[] = ["a", "b"];
+    const zone = "|az1";
+    for (let i = 0; i < sigs.length; i++) { sigs[i] += zone; }
+    rebuild(sigs);
+    const lanes: (string | undefined)[] = [undefined, "c"];
+    lanes[0] += "x";
+    lanes[1] += "y";
+    rebuild(lanes);
+    if (rebuilds.join("/") !== "a|az1;b|az1/undefinedx;cy") throw new Error(rebuilds.join("/"));
+`,
+);
+
+check(
+    "array-walks-call-a-record-member-callback",
+    `
+    interface Villager { id: number; job: string }
+    interface Deps<V> { humans(): readonly V[]; isFlorist(villager: V): boolean; idOf: (villager: V) => number; log(villager: V): void }
+    function createPublication<V>(deps: Deps<V>) {
+        return {
+            sync: (): string => {
+                const florists = deps.humans().filter(deps.isFlorist);
+                const first = deps.humans().find(deps.isFlorist);
+                const any = deps.humans().some(deps.isFlorist);
+                deps.humans().forEach(deps.log);
+                return florists.map(deps.idOf).join(",") + "|" + (first ? deps.idOf(first) : -1) + "|" + any;
+            },
+        };
+    }
+    const people: Villager[] = [{ id: 1, job: "florist" }, { id: 2, job: "miller" }, { id: 3, job: "florist" }];
+    let logged = "";
+    const publication = createPublication<Villager>({
+        humans: () => people,
+        isFlorist(v) { return v.job === "florist"; },
+        idOf: (v) => v.id * 10,
+        log: (v) => { logged += v.id; },
+    });
+    const seen = publication.sync();
+    if (seen !== "10,30|10|true" || logged !== "123") throw new Error(seen + " " + logged);
+`,
+);
+
+check(
+    "parsed-or-constant-numeric-triple",
+    `
+    type Rgb = [number, number, number];
+    const PALETTE: readonly Rgb[] = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    interface Span { seed: number; color?: Rgb }
+    const spans = JSON.parse('[{"seed":1},{"seed":2,"color":[0.5,0.25,0.75]},{"seed":5}]') as Span[];
+    const colors = new Float32Array(spans.length * 3);
+    spans.forEach((sp, i) => {
+        const rgb = sp.color ?? PALETTE[sp.seed % PALETTE.length]!;
+        colors[i * 3] = rgb[0]; colors[i * 3 + 1] = rgb[1]; colors[i * 3 + 2] = rgb[2];
+    });
+    const seen = Array.from(colors).join(",");
+    if (seen !== "0,1,0,0.5,0.25,0.75,0,0,1") throw new Error(seen);
+`,
+);

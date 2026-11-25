@@ -161,6 +161,11 @@ test("an event target narrowed to an element writes like the retained element it
         for (const [type, handler, options] of table) button.removeEventListener(type, handler, options);
         button.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 9 }));
         origin.setAttribute("data-tabled", tabled);
+        // A constructed wheel event carries its deltas and pointer position.
+        button.addEventListener("wheel", (e) => {
+            origin.setAttribute("data-wheel", e.deltaY + "," + e.clientX + "," + e.deltaMode);
+        });
+        button.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, deltaMode: 0, clientX: 4, clientY: 5 }));
         globalThis.close();
     `);
     writeFileSync(join(directory, "program.hpp"), cpp);

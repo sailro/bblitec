@@ -2024,7 +2024,12 @@ ${lowerThinInstanceSync(context)}
             "upstream/src/navigation.cpp",
             () =>
                 new NavigationLowerer(context).lowerNavigation(
-                    features.includes("navigation:tile-cache"),
+                    features.includes("navigation:arm-dispatch")
+                        ? ["solo", "tileCache"]
+                        : features.includes("navigation:tile-cache")
+                          ? ["tileCache"]
+                          : ["solo"],
+                    features.includes("renderer:scene"),
                 ),
             "upstream/include/bblite/upstream/navigation.hpp",
         );

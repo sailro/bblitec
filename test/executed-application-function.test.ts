@@ -174,6 +174,59 @@ test("reads a stage from the record a helper call returns", () => {
     }
 });
 
+/**
+ * A scene whose stage is a text member of the record `stageSources` builds
+ * at generation (no literal holds it), beside a callback that reaches a
+ * pinned function and writes module state; `use` runs in the helper
+ * before it returns.
+ */
+const pinnedCallbackScene = (use: string): string => `
+    import { createBox, createEngine, createShaderMaterial, wgsl, type EngineContext } from "@babylonjs/lite";
+    const VERTEX = \`${POSITION_VERTEX_WGSL}\`;
+    const boxes = new Map<EngineContext, number>();
+    function stageSources(lit: boolean) {
+        ${use}
+        let fragment = "";
+        for (const part of [lit ? "// lit" : "// flat", "@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(0.25); }"])
+            fragment += fragment === "" ? part : \`\\n\${part}\`;
+        return { fragment, box: (engine: EngineContext) => { boxes.set(engine, (boxes.get(engine) ?? 0) + 1); return createBox(engine); } };
+    }
+    async function main() {
+        const engine = await createEngine({});
+        const sources = stageSources(true);
+        const box = sources.box(engine);
+        box.material = createShaderMaterial({
+            vertexSource: wgsl\`\${VERTEX}\`,
+            fragmentSource: wgsl\`\${sources.fragment}\`,
+            attributes: ["position"],
+            uniforms: ["worldViewProjection"],
+        });
+    }
+`;
+
+test("reads a stage beside a callback the generation run holds without calling", () => {
+    const [program] = compileSource(pinnedCallbackScene("")).manifest
+        .customShaderPrograms;
+    assert.match(program?.fragmentSource ?? "", /^\/\/ lit\n@fragment/);
+});
+
+test("refuses a stage whose generation run uses a pinned function, even under a catch, or writes module state", () => {
+    // The native run creates this material; generation does not.
+    const extra = `{ vertexSource: VERTEX, fragmentSource: "@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }", attributes: ["position"], uniforms: ["worldViewProjection"] }`;
+    for (const use of [
+        `void createShaderMaterial(${extra});`,
+        `try { void createShaderMaterial(${extra}); } catch { /* hidden */ }`,
+        `const create = createShaderMaterial; void create(${extra});`,
+        // A module-scope write the run makes itself.
+        "boxes.clear();",
+    ])
+        assert.match(
+            refusal(pinnedCallbackScene(use), "test/executed-pinned-entry.ts"),
+            /Expected a string literal|without a static string/,
+            use,
+        );
+});
+
 test("reads the arm a settled conditional selects as a stage", () => {
     const [lit, flat] = stageFragments({
         ...heldStages,
@@ -322,8 +375,9 @@ test("selects a material per outcome of a named record's members", (t) => {
 });
 
 test("selects a material per outcome of a parsed document member's presence", () => {
-    // Each arm finds `settings.light` an object or absent, so the callee's
-    // `opts.light !== undefined` and `opts.light ?` settle in both.
+    // Each arm finds `settings.light` an object, null (the document may hold
+    // it whatever the type says) or absent, so the callee's
+    // `opts.light !== undefined` and `opts.light ?` settle in each.
     const compiled = compileSource(`
         import { createEngine, createSceneContext, createShaderMaterial, wgsl } from "@babylonjs/lite";
         interface Settings { light?: { strength: number } }
@@ -351,23 +405,34 @@ test("selects a material per outcome of a parsed document member's presence", ()
                     .join(" "),
             )
             .sort(),
-        ["0 3", "1 2"],
+        ["0 3", "1 2", "1 3"],
     );
 });
 
 test("names the run-time tests a call compiles too many outcomes of", () => {
+    // More tests than are probed for the ones the call depends on.
+    const flags = Array.from("abcdefghi");
     assert.match(
         refusal(
             namedOptionsScene({
-                flags: ["a", "b", "c", "d", "e"],
-                rows: '[{"a":true,"b":false,"c":true,"d":false,"e":true,"gain":null,"warm":false}]',
-                options:
-                    "{ a: row.a, b: row.b, c: row.c, d: row.d, e: row.e, tone: { warm: false } }",
+                flags,
+                rows: JSON.stringify([
+                    {
+                        ...Object.fromEntries(
+                            flags.map((flag, index) => [flag, index % 2 === 0]),
+                        ),
+                        gain: null,
+                        warm: false,
+                    },
+                ]),
+                options: `{ ${flags.map((flag) => `${flag}: row.${flag}`).join(", ")}, tone: { warm: false } }`,
                 after: "if (material) glowing++;",
             }),
             "test/executed-options-entry.ts",
         ),
-        /compiles once per outcome of at most 4 run-time tests; it reads 5: options\.a, options\.b, options\.c, options\.d, options\.e\./,
+        new RegExp(
+            `compiles once per outcome of at most 8 run-time tests; it reads 9: ${flags.map((flag) => `options\\.${flag}`).join(", ")}\\.`,
+        ),
     );
 });
 

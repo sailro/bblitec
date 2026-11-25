@@ -155,5 +155,5 @@ test("conditional record arms with differently shaped dictionary members store i
         panel.finish(!late, !late);
         if (late) panel.clear();
     `);
-    assert.match(result.cpp, /bbl::js::Map<std::string, std::string>/);
+    assert.match(result.cpp, /bbl::js::Dictionary<std::string, std::string>/);
 });

@@ -223,9 +223,10 @@ test("an entry program compares an optional stored handle with a plain one by it
 });
 
 test("an array of elements stored in a record field stays the caller's one array", (t) => {
-    // `mapped` holds elements that keep their engine, so the field does,
-    // and the arrays the caller still changes keep them too: each tab's
-    // rows are the array the caller holds.
+    // `keep` is called once per caller and specializes on each caller's
+    // elements, which keep their engine: the field does, and so do the
+    // arrays the caller still changes, so each tab's rows are the array the
+    // caller holds.
     const source = `
         interface Tab { readonly name: string; readonly rows: readonly HTMLElement[]; }
         const tabs: Tab[] = [];
@@ -263,6 +264,10 @@ test("an array of elements stored in a record field stays the caller's one array
     assert.match(
         cpp,
         /bbl::js::Array<std::pair<bbl::StoredEngine, bbl::UiElementHandle>> rows;/,
+    );
+    assert.match(
+        cpp,
+        /bbl::js::Array<std::pair<bbl::StoredEngine, bbl::UiElementHandle>> v_grown = /,
     );
     const tools = optionalNativeFixtureTools(false);
     if (!tools) return t.skip("Native fixture compiler unavailable.");

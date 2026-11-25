@@ -179,8 +179,9 @@ test("worker message shapes without a native clone codec refuse at generation", 
         /'message\.format' is an Intl\.DateTimeFormat/,
     );
     refuses(
-        `worker.addEventListener("message", (event: MessageEvent<{ pair: [string, number] }>) => { if (event.data.pair[1] === 1) worker.terminate(); });`,
-        /'event\.data\.pair\[\]' is a mixed union/,
+        // A union two of whose members clone to one node kind (arrays).
+        `worker.addEventListener("message", (event: MessageEvent<{ value: number | number[] | string[] }>) => { if (event.data.value) worker.terminate(); });`,
+        /'event\.data\.value' is a mixed union/,
     );
     // A browser clones a class instance into a plain object of its own data
     // fields: no prototype, methods or #private fields survive the copy.

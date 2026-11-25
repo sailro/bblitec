@@ -1,4 +1,9 @@
 import { domRectProperty } from "./dom-rects.js";
+import {
+    compileDomGeometryMethod,
+    compileDomPointAssignment,
+    domGeometryProperty,
+} from "./dom-geometry.js";
 import { requestInitProperty } from "./http.js";
 import ts from "typescript";
 import {
@@ -68,6 +73,8 @@ const METHOD_OWNERS: ReadonlyMap<DataType["kind"], MethodLowerer> = new Map([
     ["image-bitmap", compileImageBitmapMethod],
     ["offscreen-canvas-2d", compileOffscreenContextMethod],
     ["idle-deadline", compileIdleDeadlineMethod],
+    ["dom-matrix", compileDomGeometryMethod],
+    ["dom-point", compileDomGeometryMethod],
     ["uninhabited-object", compileUninhabitedMethod],
     ...INDEXED_DB_KINDS.map((kind) => [kind, compileIndexedDbMethod] as const),
     // Blob reads and its stream; other Blob members keep the browser file bridge.
@@ -99,6 +106,7 @@ export function compileWebPlatformAssignment(
 ): Value | undefined {
     return (
         compileUrlAssignment(lowerer, expression) ??
+        compileDomPointAssignment(lowerer, expression) ??
         compileIndexedDbAssignment(lowerer, expression)
     );
 }
@@ -116,6 +124,7 @@ export function webPlatformProperty(
         urlProperty(lowerer, owner, property) ??
         imageBitmapProperty(lowerer, owner, property) ??
         domRectProperty(lowerer, owner, property) ??
+        domGeometryProperty(lowerer, owner, property) ??
         idleDeadlineProperty(lowerer, owner, property) ??
         uninhabitedProperty(lowerer, owner, property, access) ??
         indexedDbProperty(lowerer, owner, property, access) ??

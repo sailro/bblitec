@@ -68,6 +68,23 @@ test("scroll behavior retains axis longhands, shorthand order and live style wri
         assert.throws(() => compileSheet(`.panel{${css}}`), /style property/);
 });
 
+test("proximity scroll snapping is an inert hint and mandatory snapping refuses", () => {
+    const result = compileSheet(
+        ".list{overflow-y:auto;scroll-snap-type:y proximity}.row{scroll-snap-align:start;margin-left:2px}",
+    );
+    // The retained rule holds what lowers; the hint leaves no declaration.
+    assert.match(result.cpp, /"margin-left:2px"/);
+    assert.doesNotMatch(result.cpp, /"[^"]*scroll-snap[^"]*", \./);
+    for (const css of [
+        "scroll-snap-type:y mandatory",
+        "scroll-snap-align:start end",
+    ])
+        assert.throws(
+            () => compileSheet(`.list{${css}}`),
+            /scroll-snap-(type|align)' is not lowered: only /,
+        );
+});
+
 test("native scroll containment and media cascades retain layout and axis behavior", (t) =>
     runRmlUiFixture(t, "ui-scroll-media"));
 

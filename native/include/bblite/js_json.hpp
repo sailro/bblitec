@@ -23,7 +23,9 @@
 // Included only by a scene that reaches JSON (`jsonReached`), so the
 // plain-data header every scene includes carries no parser for it.
 
+#include <bblite/js_blob.hpp>
 #include <bblite/js_data.hpp>
+#include <bblite/js_structured_clone.hpp>
 
 #include <cmath>
 #include <charconv>
@@ -226,47 +228,6 @@ inline void json_write(JsonWriter& writer, const JsonValue& value);
 template <typename... T>
 inline void json_write(JsonWriter& writer, const std::variant<T...>& value);
 
-/** A record key: a string is itself, a numeric key is its own spelling. */
-[[nodiscard]] inline const std::string& json_object_key(const std::string& key) { return key; }
-/** A temporary key would leave the returned reference dangling. */
-const std::string& json_object_key(std::string&&) = delete;
-
-[[nodiscard]] inline std::string json_object_key(double key) { return number_to_string(key); }
-
-[[nodiscard]] inline std::optional<std::uint32_t> json_property_index(std::string_view name) {
-    if (name.empty() || (name.size() > 1 && name.front() == '0'))
-        return std::nullopt;
-    std::uint32_t index = 0;
-    const auto parsed = std::from_chars(name.data(), name.data() + name.size(), index);
-    if (parsed.ec != std::errc{} || parsed.ptr != name.data() + name.size() ||
-        index == std::numeric_limits<std::uint32_t>::max())
-        return std::nullopt;
-    return index;
-}
-
-[[nodiscard]] inline bool json_property_key_less(std::string_view left, std::string_view right) {
-    const auto a = json_property_index(left), b = json_property_index(right);
-    return a && (!b || *a < *b);
-}
-
-/**
- * A dictionary's own entries in property order: array-index names ascending,
- * then the other names as they were inserted.
- */
-template <typename Map, typename Visitor>
-inline void for_each_property_entry(const Map& map, Visitor&& visitor) {
-    using Entry = std::remove_cvref_t<decltype(*map.begin())>;
-    std::vector<std::pair<std::string, const Entry*>> ordered;
-    ordered.reserve(map.size());
-    for (const auto& entry : map)
-        ordered.emplace_back(json_object_key(entry.first), &entry);
-    std::stable_sort(ordered.begin(), ordered.end(), [](const auto& left, const auto& right) {
-        return json_property_key_less(left.first, right.first);
-    });
-    for (const auto& [name, entry] : ordered)
-        visitor(name, entry->second);
-}
-
 /** A dictionary's own property names, in property order. */
 template <typename Map>
 [[nodiscard]] inline bbl::js::Array<std::string> property_names(const Map& map) {
@@ -274,18 +235,6 @@ template <typename Map>
     for_each_property_entry(map,
                             [&](const std::string& name, const auto&) { names.push_back(name); });
     return names;
-}
-
-/**
- * The number a number-keyed dictionary stores property `name` under: the
- * number whose string `name` is, or none when no number spells it (its
- * `get` then misses).
- */
-[[nodiscard]] inline Nullable<double> number_property_key(const std::string& name) {
-    const double key = number_from_string(name);
-    if (number_to_string(key) != name)
-        return Nullable<double>{std::nullopt};
-    return Nullable<double>{key};
 }
 
 /** Whether a number-keyed dictionary owns property `name`. */
@@ -524,28 +473,40 @@ public:
     /**
      * Defines an enumerable accessor property on an owned object: a new key
      * is appended, an existing one keeps its place. A non-configurable
-     * accessor cannot be redefined.
+     * property refuses a definition that changes it (`Accessor::define`).
      */
     void define_accessor(std::string_view key, Callback<JsonValue()> getter,
                          Callback<void(JsonValue)> setter, bool configurable) const;
 
     /**
-     * Defines a writable, enumerable, configurable data property on an owned
-     * object, replacing an accessor of the key in its place.
+     * Defines an enumerable data property on an owned object, as
+     * `define_accessor` does an accessor. A read-only one throws on
+     * assignment; a non-configurable one on deletion.
      */
-    void define_value(std::string_view key, JsonValue value) const;
+    void define_value(std::string_view key, JsonValue value, bool writable = true,
+                      bool configurable = true) const;
 
-    /** A property's value: an accessor slot's getter result, else the stored value. */
+    /** A property's value: a slot's getter result or data, else the stored value. */
     [[nodiscard]] JsonValue property_value() const;
-    /** An accessor slot's setter for a write, true when this value is a slot. */
-    bool set_accessor(std::string_view key, const JsonValue& value) const;
-    /** Throws for a non-configurable accessor slot. */
-    void check_accessor_removal(std::string_view key) const;
-    /** Throws when this value is a non-configurable accessor slot. */
-    void check_redefinition(std::string_view key) const;
-    [[nodiscard]] bool nonconfigurable_accessor() const;
-    /** Whether this value is an accessor slot, read through `property_value`. */
-    [[nodiscard]] bool is_accessor_slot() const;
+    /** A write through a property slot, true when this value is one. */
+    bool set_slot(const JsonValue& value) const;
+    /** Throws for a non-configurable property slot. */
+    void check_slot_removal(std::string_view key) const;
+    /**
+     * Applies a definition (`replacement`, a value or a property slot) to
+     * this non-configurable property slot, true when it did: false leaves a
+     * plain value or a configurable slot for the caller to replace.
+     */
+    bool redefine_slot(const JsonValue& replacement) const;
+    [[nodiscard]] bool nonconfigurable_slot() const;
+    /** Whether this value is a property slot, read through `property_value`. */
+    [[nodiscard]] bool is_property_slot() const;
+
+    /** An own object's definition of `key`, in the place of one it replaces. */
+    void define_entry(std::string_view key, JsonValue value) const;
+    /** A property slot holding `replacement` with these attributes. */
+    [[nodiscard]] static JsonValue property_slot(Accessor<JsonValue> replacement, bool configurable,
+                                                 bool writable);
 
     [[nodiscard]] static JsonValue from_proxy_view(JsonValue target,
                                                    Callback<JsonValue(std::string)> read,
@@ -636,12 +597,19 @@ public:
         case Kind::string:
             return static_cast<std::size_t>(hash_bytes(string_.data(), string_.size()));
         case Kind::array:
-            return reinterpret_cast<std::uintptr_t>(array_identity());
         case Kind::object:
-            return reinterpret_cast<std::uintptr_t>(
-                native_ ? native_->identity() : static_cast<const void*>(object_.get()));
+            return reinterpret_cast<std::uintptr_t>(reference_identity());
         }
         return 0;
+    }
+
+    /** The array or object this value refers to, which every reference to it shares; null for a primitive. */
+    [[nodiscard]] const void* reference_identity() const {
+        if (kind_ == Kind::array)
+            return array_identity();
+        if (kind_ == Kind::object)
+            return native_ ? native_->identity() : static_cast<const void*>(object_.get());
+        return nullptr;
     }
 
     /** The key Map.prototype.set and Set.prototype.add store: -0 becomes +0. */
@@ -805,7 +773,7 @@ public:
                 visitor(key, native_->get(key));
         } else if (kind_ == Kind::object) {
             json_for_each_object_entry(*object_, [&](const auto& key, const JsonValue& value) {
-                if (value.is_accessor_slot())
+                if (value.is_property_slot())
                     visitor(key, value.property_value());
                 else
                     visitor(key, value);
@@ -834,7 +802,7 @@ public:
         for (Entry& entry : *object_) {
             if (entry.first != key)
                 continue;
-            if (!entry.second.set_accessor(key, value))
+            if (!entry.second.set_slot(value))
                 entry.second = std::move(value);
             return;
         }
@@ -853,7 +821,7 @@ public:
                                         [&](const Entry& entry) { return entry.first == key; });
         if (found == object_->end())
             return;
-        found->second.check_accessor_removal(key);
+        found->second.check_slot_removal(key);
         object_->erase(found);
     }
 
@@ -872,7 +840,7 @@ public:
             if (source.kind_ == Kind::object && !source.native_)
                 json_for_each_object_entry(*source.object_,
                                            [&](const auto& key, const JsonValue& value) {
-                                               if (value.is_accessor_slot())
+                                               if (value.is_property_slot())
                                                    copy_entry(key, value.property_value());
                                                else
                                                    copy_entry(key, value);
@@ -1336,6 +1304,16 @@ template <typename T>
     const std::string name(key);
     return value.has(name) ? json_value(value.at(name)) : JsonValue{};
 }
+/** A Blob held in a dynamic value, viewed dynamically: `size` and `type`, no own keys. */
+[[nodiscard]] inline JsonValue json_value_property(const Blob& blob, std::string_view key) {
+    if (key == "size")
+        return JsonValue::from_number(static_cast<double>(blob.size()));
+    if (key == "type")
+        return JsonValue::from_string(blob.type());
+    return {};
+}
+[[nodiscard]] inline bbl::js::Array<std::string> json_value_keys(const Blob&) { return {}; }
+
 template <typename T>
 [[nodiscard]] bbl::js::Array<std::string> json_value_keys(const Map<std::string, T>& value) {
     return map_keys(value);
@@ -1344,6 +1322,7 @@ template <typename T>
 /** Whether `T` is a string-keyed dictionary. */
 template <typename T> inline constexpr bool is_dictionary_v = false;
 template <typename T> inline constexpr bool is_dictionary_v<Map<std::string, T>> = true;
+template <typename T> inline constexpr bool is_dictionary_v<Dictionary<std::string, T>> = true;
 
 template <typename T> struct JsonNativeBox final : JsonNativeObject {
     T value;
@@ -1366,7 +1345,7 @@ template <typename T> struct JsonNativeBox final : JsonNativeObject {
     void set(std::string_view key, const JsonValue& member) override {
         if constexpr (std::is_same_v<T, Map<std::string, JsonValue>>) {
             const std::string name(key);
-            if (!value.has(name) || !value.at(name).set_accessor(key, member))
+            if (!value.has(name) || !value.at(name).set_slot(member))
                 value.set(name, member);
         } else
             JsonNativeObject::set(key, member);
@@ -1375,7 +1354,7 @@ template <typename T> struct JsonNativeBox final : JsonNativeObject {
         if constexpr (std::is_same_v<T, Map<std::string, JsonValue>>) {
             const std::string name(key);
             if (value.has(name))
-                value.at(name).check_accessor_removal(key);
+                value.at(name).check_slot_removal(key);
             static_cast<void>(value.erase(name));
         } else
             JsonNativeObject::remove(key);
@@ -1383,9 +1362,8 @@ template <typename T> struct JsonNativeBox final : JsonNativeObject {
     void define(std::string_view key, const JsonValue& member) override {
         if constexpr (std::is_same_v<T, Map<std::string, JsonValue>>) {
             const std::string name(key);
-            if (value.has(name))
-                value.at(name).check_redefinition(key);
-            value.set(name, member);
+            if (!value.has(name) || !value.at(name).redefine_slot(member))
+                value.set(name, member);
         } else
             JsonNativeObject::define(key, member);
     }
@@ -1541,9 +1519,31 @@ inline JsonValue json_value(const U8Array& value) { return JsonValue::from_nativ
  * where JavaScript throws only once a private member of the class is read.
  */
 template <typename T> const T& JsonValue::asserted_instance() const {
-    if (!instance_of<T>())
-        throw_not_an_instance();
-    return static_cast<const JsonNativeBox<T>&>(*native_).value;
+    if (instance_of<T>())
+        return static_cast<const JsonNativeBox<T>&>(*native_).value;
+    // An authored Error record is held as the Error it is (`json_authored_error`).
+    if constexpr (is_ref_v<T> && requires(const T& record) {
+                      record->message;
+                      record->name;
+                  })
+        if (instance_of<Error>())
+            if (const auto object = std::dynamic_pointer_cast<TypedErrorObject<T>>(
+                    static_cast<const JsonNativeBox<Error>&>(*native_).value.object()))
+                return object->value;
+    throw_not_an_instance();
+}
+
+/**
+ * An authored Error record a document holds: the Error it is, whose own
+ * properties other than its name and message read through the record's
+ * view (`json_value_property`).
+ */
+template <typename T>
+[[nodiscard]] JsonValue json_authored_error(const Ref<T>& record, std::string base) {
+    if (!record)
+        return JsonValue::null_value();
+    return JsonValue::from_native(
+        make_object_error(record, std::move(base), make_gc_shared<JsonNativeBox<Ref<T>>>(record)));
 }
 
 template <typename Getter> struct JsonRecordView final : JsonNativeObject {
@@ -1619,67 +1619,85 @@ inline JsonValue JsonValue::from_proxy_view(JsonValue target, Callback<JsonValue
     return value;
 }
 
-/** An own accessor property of a dynamic object, held as the entry's value. */
-struct JsonAccessorSlot final : JsonNativeObject {
-    mutable Callback<JsonValue()> getter;
-    mutable Callback<void(JsonValue)> setter;
-    bool configurable;
-    JsonAccessorSlot(Callback<JsonValue()> get, Callback<void(JsonValue)> set, bool keep)
-        : getter(std::move(get)), setter(std::move(set)), configurable(keep) {}
+/**
+ * An own property of a dynamic object, held as the entry's value, whose
+ * attributes a plain entry does not keep: an accessor, or a data property
+ * that is read-only or non-configurable. Its `Accessor` applies the
+ * descriptor rules a native record's property slot does.
+ */
+struct JsonPropertySlot final : JsonNativeObject {
+    mutable Accessor<JsonValue> property;
+    explicit JsonPropertySlot(Accessor<JsonValue> defined) : property(std::move(defined)) {}
     JsonValue get(std::string_view) const override { return {}; }
     bbl::js::Array<std::string> own_keys() const override { return {}; }
-    const std::type_info& type() const override { return typeid(JsonAccessorSlot); }
+    const std::type_info& type() const override { return typeid(JsonPropertySlot); }
     const void* identity() const override { return this; }
-    void gc_trace(const TraceVisitor& visitor) const override {
-        visitor(getter);
-        visitor(setter);
-    }
+    void gc_trace(const TraceVisitor& visitor) const override { property.gc_trace(visitor); }
 };
 
-inline bool JsonValue::is_accessor_slot() const { return instance_of<JsonAccessorSlot>(); }
+inline bool JsonValue::is_property_slot() const { return instance_of<JsonPropertySlot>(); }
 
 inline JsonValue JsonValue::property_value() const {
-    if (!is_accessor_slot())
+    if (!is_property_slot())
         return *this;
-    return static_cast<const JsonAccessorSlot&>(*native_).getter();
+    return static_cast<const JsonPropertySlot&>(*native_).property.get();
 }
 
-inline bool JsonValue::set_accessor(std::string_view key, const JsonValue& value) const {
-    if (!is_accessor_slot())
+inline bool JsonValue::set_slot(const JsonValue& value) const {
+    if (!is_property_slot())
         return false;
-    const auto& slot = static_cast<const JsonAccessorSlot&>(*native_);
-    if (!slot.setter)
-        throw NamedError("TypeError", "Cannot set property " + std::string(key) +
-                                          " of #<Object> which has only a getter");
-    slot.setter(value);
+    static_cast<const JsonPropertySlot&>(*native_).property.set(value);
     return true;
 }
 
-inline bool JsonValue::nonconfigurable_accessor() const {
-    return is_accessor_slot() && !static_cast<const JsonAccessorSlot&>(*native_).configurable;
+inline bool JsonValue::nonconfigurable_slot() const {
+    return is_property_slot() &&
+           !static_cast<const JsonPropertySlot&>(*native_).property.configurable();
 }
 
-inline void JsonValue::check_accessor_removal(std::string_view key) const {
-    if (nonconfigurable_accessor())
+inline void JsonValue::check_slot_removal(std::string_view key) const {
+    if (nonconfigurable_slot())
         throw NamedError("TypeError",
                          "Cannot delete property '" + std::string(key) + "' of #<Object>");
 }
 
-inline void JsonValue::define_accessor(std::string_view key, Callback<JsonValue()> getter,
-                                       Callback<void(JsonValue)> setter, bool configurable) const {
+inline JsonValue JsonValue::property_slot(Accessor<JsonValue> replacement, bool configurable,
+                                          bool writable) {
+    Accessor<JsonValue> defined;
+    defined.define(std::move(replacement), configurable, false, writable);
     JsonValue slot;
     slot.kind_ = Kind::object;
-    slot.native_ =
-        make_gc_shared<JsonAccessorSlot>(std::move(getter), std::move(setter), configurable);
-    define_value(key, std::move(slot));
+    slot.native_ = make_gc_shared<JsonPropertySlot>(std::move(defined));
+    return slot;
 }
 
-inline void JsonValue::check_redefinition(std::string_view key) const {
-    if (nonconfigurable_accessor())
-        throw NamedError("TypeError", "Cannot redefine property: " + std::string(key));
+inline void JsonValue::define_accessor(std::string_view key, Callback<JsonValue()> getter,
+                                       Callback<void(JsonValue)> setter, bool configurable) const {
+    define_entry(key, property_slot(Accessor<JsonValue>(std::move(getter), std::move(setter)),
+                                    configurable, true));
 }
 
-inline void JsonValue::define_value(std::string_view key, JsonValue value) const {
+inline bool JsonValue::redefine_slot(const JsonValue& replacement) const {
+    if (!nonconfigurable_slot())
+        return false;
+    const Accessor<JsonValue> defined =
+        replacement.is_property_slot()
+            ? static_cast<const JsonPropertySlot&>(*replacement.native_).property
+            : Accessor<JsonValue>(replacement);
+    static_cast<const JsonPropertySlot&>(*native_).property.define(defined, defined.configurable(),
+                                                                   false, defined.writable());
+    return true;
+}
+
+inline void JsonValue::define_value(std::string_view key, JsonValue value, bool writable,
+                                    bool configurable) const {
+    define_entry(
+        key, writable && configurable
+                 ? std::move(value)
+                 : property_slot(Accessor<JsonValue>(std::move(value)), configurable, writable));
+}
+
+inline void JsonValue::define_entry(std::string_view key, JsonValue value) const {
     if (kind_ != Kind::object)
         throw std::runtime_error("Dynamic property definition requires an object.");
     if (native_) {
@@ -1689,8 +1707,8 @@ inline void JsonValue::define_value(std::string_view key, JsonValue value) const
     for (Entry& entry : *object_) {
         if (entry.first != key)
             continue;
-        entry.second.check_redefinition(key);
-        entry.second = std::move(value);
+        if (!entry.second.redefine_slot(value))
+            entry.second = std::move(value);
         return;
     }
     object_->emplace_back(std::string(key), std::move(value));
@@ -1733,6 +1751,13 @@ inline void json_write(JsonWriter& writer, const JsonValue& value) {
         json_write(writer, entry);
     });
     writer.end_object();
+}
+
+/** `JSON.stringify(value)`: `undefined` for an undefined or callable value, its text otherwise. */
+[[nodiscard]] inline JsonValue json_stringify_value(const JsonValue& value, int indent = 0) {
+    if (value.is_undefined() || value.is_callable())
+        return {};
+    return json_value(indent > 0 ? json_stringify(value, indent) : json_stringify(value));
 }
 
 class JsonValueParser {
@@ -1995,5 +2020,127 @@ template <typename T>
 [[nodiscard]] inline std::string legacy_null_dom_string(const JsonValue& value) {
     return value.is_null() ? std::string{} : value.to_string();
 }
+
+/** Each typed array class a document holds as itself (`json_value`), with the clone kind it is written as. */
+template <typename Visitor> bool for_json_clone_view(Visitor&& visitor) {
+    return visitor.template operator()<I8Array>(pal::CloneViewKind::int8) ||
+           visitor.template operator()<U8Array>(pal::CloneViewKind::uint8) ||
+           visitor.template operator()<I16Array>(pal::CloneViewKind::int16) ||
+           visitor.template operator()<U16Array>(pal::CloneViewKind::uint16) ||
+           visitor.template operator()<I32Array>(pal::CloneViewKind::int32) ||
+           visitor.template operator()<U32Array>(pal::CloneViewKind::uint32) ||
+           visitor.template operator()<F32Array>(pal::CloneViewKind::float32) ||
+           visitor.template operator()<F64Array>(pal::CloneViewKind::float64) ||
+           visitor.template operator()<TypedArray<ClampedByte>>(pal::CloneViewKind::uint8_clamped);
+}
+
+/**
+ * A dynamic document clones as the JavaScript value it holds, aliases and
+ * cycles kept, a typed array or a Blob it holds as itself included; it is
+ * received as an owned document. A function throws DataCloneError, as does a Map, Set,
+ * Date, ArrayBuffer or DataView received into one.
+ */
+template <> struct CloneCodec<JsonValue> {
+    static pal::CloneId write(pal::CloneWriter& writer, const JsonValue& value) {
+        switch (value.kind()) {
+        case JsonValue::Kind::undefined:
+            return writer.add(pal::CloneUndefined{});
+        case JsonValue::Kind::null:
+            return writer.add(pal::CloneNull{});
+        case JsonValue::Kind::boolean:
+            return writer.add(value.truthy());
+        case JsonValue::Kind::number:
+            return writer.add(value.to_number());
+        case JsonValue::Kind::string:
+            return writer.add(value.string_value());
+        case JsonValue::Kind::array: {
+            const auto [id, fresh] = writer.remember(value.reference_identity());
+            if (!fresh)
+                return id;
+            pal::CloneArray array;
+            const auto length = static_cast<std::size_t>(value.length());
+            array.elements.reserve(length);
+            for (std::size_t index = 0; index < length; ++index)
+                array.elements.push_back(clone_write(writer, value.at(static_cast<double>(index))));
+            writer.replace(id, std::move(array));
+            return id;
+        }
+        case JsonValue::Kind::object:
+            break;
+        }
+        if (value.is_callable())
+            throw pal::DataCloneError("A function cannot be structured-cloned.");
+        if (value.is_array_buffer_view()) {
+            std::optional<pal::CloneId> view;
+            for_json_clone_view([&]<typename View>(pal::CloneViewKind) {
+                if (!value.instance_of<View>())
+                    return false;
+                view = clone_write(writer, value.asserted_instance<View>());
+                return true;
+            });
+            if (!view)
+                throw pal::DataCloneError("This document view has no structured-clone codec.");
+            return *view;
+        }
+        if (value.instance_of<Blob>())
+            return clone_write(writer, value.asserted_instance<Blob>());
+        const auto [id, fresh] = writer.remember(value.reference_identity());
+        if (!fresh)
+            return id;
+        pal::CloneObject object;
+        value.for_each_entry([&](const auto& key, const JsonValue& member) {
+            object.properties.emplace_back(std::string(key), clone_write(writer, member));
+        });
+        writer.replace(id, std::move(object));
+        return id;
+    }
+    static JsonValue read(pal::CloneReader& reader, pal::CloneId id) {
+        const auto& node = reader.node(id);
+        if (std::holds_alternative<pal::CloneUndefined>(node))
+            return {};
+        if (std::holds_alternative<pal::CloneNull>(node))
+            return JsonValue::null_value();
+        if (const auto* boolean = std::get_if<bool>(&node))
+            return JsonValue::from_boolean(*boolean);
+        if (const auto* number = std::get_if<double>(&node))
+            return JsonValue::from_number(*number);
+        if (const auto* text = std::get_if<std::string>(&node))
+            return JsonValue::from_string(*text);
+        // A view is remembered as its own class: the document boxes it.
+        if (const auto* view = std::get_if<pal::CloneView>(&node)) {
+            std::optional<JsonValue> value;
+            for_json_clone_view([&]<typename View>(pal::CloneViewKind kind) {
+                if (kind != view->kind)
+                    return false;
+                value = json_value(clone_read<View>(reader, id));
+                return true;
+            });
+            if (value)
+                return *value;
+        }
+        if (std::holds_alternative<pal::CloneBlob>(node))
+            return JsonValue::from_native(clone_read<Blob>(reader, id));
+        if (const auto* recalled = reader.recalled<JsonValue>(id))
+            return *recalled;
+        if (const auto* array = std::get_if<pal::CloneArray>(&node)) {
+            const auto elements = array->elements;
+            auto value = JsonValue::from_array({});
+            reader.remember(id, value);
+            for (std::size_t index = 0; index < elements.size(); ++index)
+                value.set(std::to_string(index), clone_read<JsonValue>(reader, elements[index]));
+            return value;
+        }
+        if (const auto* object = std::get_if<pal::CloneObject>(&node)) {
+            const auto properties = object->properties;
+            auto value = JsonValue::from_object({});
+            reader.remember(id, value);
+            for (const auto& [key, member] : properties)
+                value.set(key, clone_read<JsonValue>(reader, member));
+            return value;
+        }
+        throw pal::DataCloneError(
+            "A dynamic document receives no Map, Set, Date, ArrayBuffer or DataView.");
+    }
+};
 
 } // namespace bbl::js

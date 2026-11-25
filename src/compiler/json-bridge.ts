@@ -19,11 +19,24 @@ import ts from "typescript";
 import { undefinedValue, absenceOfNull } from "./values/model.js";
 import { argumentAt, accessKey } from "./syntax.js";
 import { functionUsesDynamicThis } from "./user-functions.js";
-import { isNullishLiteral, namedMember } from "./symbols.js";
-import { holdsOnly, PRIMITIVE_KINDS } from "./type-facts.js";
+import { calledSignature, isNullishLiteral, namedMember } from "./symbols.js";
+import {
+    absenceKind,
+    holdsOnly,
+    isVoid,
+    nullability,
+    PRIMITIVE_KINDS,
+    signatureParameterTypes,
+    type Nullability,
+} from "./type-facts.js";
 
 import type { DataType, DataTypeRegistry } from "./data-types.js";
-import { optionalPresentCpp, optionalValueCpp, type Value } from "./types.js";
+import {
+    isBooleanValue,
+    optionalPresentCpp,
+    optionalValueCpp,
+    type Value,
+} from "./types.js";
 
 /** The narrow slice of the expression context this bridge needs. */
 interface JsonBridgeContext extends Pick<
@@ -50,6 +63,7 @@ interface JsonBridgeContext extends Pick<
 
 interface JsonStrictComparisonContext extends Pick<
     LoweringServices,
+    | "checker"
     | "compileValue"
     | "compileNumber"
     | "conditions"
@@ -117,8 +131,7 @@ export function compileJsonPropertyKey(
         return value.cpp;
     if (value.kind === "number" || value.dataType?.kind === "number")
         return `bbl::js::number_to_string(${context.castNumber(value, "double")})`;
-    if (value.kind === "boolean" || value.dataType?.kind === "boolean")
-        return `(${value.cpp} ? "true" : "false")`;
+    if (isBooleanValue(value)) return `(${value.cpp} ? "true" : "false")`;
     if (value.kind === "json-null")
         return context.cppString(absenceOfNull(value));
     if (isJsonValue(value)) return `${value.cpp}.to_string()`;
@@ -290,6 +303,17 @@ function compileStringify(
         dataType,
         argument,
     );
+    // A document value the program types as possibly undefined serializes
+    // to `undefined` where it is (`bbl::js::json_stringify_value`).
+    if (
+        isJsonValue(represented) &&
+        nullability(context.checker.getTypeAtLocation(argument)).undefined
+    )
+        return jsonValue(
+            indent > 0
+                ? `bbl::js::json_stringify_value(${value}, ${indent})`
+                : `bbl::js::json_stringify_value(${value})`,
+        );
     // A closed Record is written by its own helper, keys in its union's order.
     const writer = indent > 0 ? `writer(${indent})` : "writer";
     return {
@@ -365,10 +389,38 @@ export function compileJsonMemberCall(
         holdsOnly(declaredReceiver, PRIMITIVE_KINDS)
     )
         return undefined;
-    const declared = context.dataTypes.fromStoredTsType(
+    const stored = (type: ts.Type): DataType | undefined =>
+        context.dataTypes.fromStoredTsType(type, call.expression) ??
+        context.dataTypes.dynamicJsonType(type);
+    let declared = context.dataTypes.fromStoredTsType(
         checker.getTypeAtLocation(call.expression),
         call.expression,
     );
+    // A signature generic in a dynamic parameter (`(other: unknown) => R`)
+    // is the one this call reaches: each parameter as its argument's type,
+    // a dynamic one a document, as the document holds it.
+    if (declared?.kind === "function" && declared.generic) {
+        const resolved = calledSignature(checker, call);
+        if (!resolved) return undefined;
+        const parameters: DataType[] = [];
+        for (const parameterType of signatureParameterTypes(
+            checker,
+            resolved,
+            call,
+        )) {
+            const type = stored(parameterType);
+            if (!type) return undefined;
+            parameters.push(type);
+        }
+        const returned = resolved.getReturnType();
+        const result = isVoid(returned) ? undefined : stored(returned);
+        if (!isVoid(returned) && !result) return undefined;
+        declared = {
+            kind: "function",
+            parameters,
+            ...(result ? { result } : {}),
+        };
+    }
     if (declared?.kind !== "function" || declared.generic) return undefined;
     const parameters = declared.parameters;
     if (call.arguments.length > parameters.length)
@@ -543,7 +595,8 @@ export function hasDynamicObjectSpread(
  * Only descent is handled here, because descent is what has no static type
  * to consult: `file.parts[0].s` is three reads over a document whose shape
  * the source has not proven yet. Everything the chain reaches is another
- * dynamic value, including an object's own `length` property.
+ * dynamic value, including an object's own `length` property, except a
+ * record that stays native (`documentMemberRead`).
  */
 export function compileJsonRead(
     context: JsonBridgeContext,
@@ -572,7 +625,11 @@ export function compileJsonRead(
             );
         return ts.isOptionalChain(unwrapped)
             ? context.dataLowerer.optionalAccess(owner, unwrapped, read)
-            : (context.dataLowerer.packagedPrimitive(unwrapped) ?? read(owner));
+            : (context.dataLowerer.packagedPrimitive(unwrapped) ??
+                  context.dataLowerer.documentMemberRead(
+                      read(owner),
+                      unwrapped,
+                  ));
     }
     if (ts.isElementAccessExpression(unwrapped)) {
         const owner = compileJsonRead(context, unwrapped.expression);
@@ -589,7 +646,7 @@ export function compileJsonRead(
             );
         return ts.isOptionalChain(unwrapped)
             ? context.dataLowerer.optionalAccess(owner, unwrapped, read)
-            : read(owner);
+            : context.dataLowerer.documentMemberRead(read(owner), unwrapped);
     }
     if (ts.isCallExpression(unwrapped)) {
         const parsed = compileJsonCall(context, unwrapped);
@@ -635,6 +692,8 @@ export function compileJsonStrictComparison(
     otherIsNullish: boolean,
     compileString: (expression: ts.Expression) => string,
     retainValue: (value: Value, expression: ts.Expression) => string,
+    /** The absences the document's own type admits, where its expression is known. */
+    documentAbsence?: Pick<Nullability, "null" | "undefined">,
 ): string | undefined {
     if (otherIsNullish) {
         return other.kind === ts.SyntaxKind.NullKeyword
@@ -645,7 +704,7 @@ export function compileJsonStrictComparison(
     if (value.kind === "number" || value.dataType?.kind === "number") {
         return `${documentCpp}.strict_equals(${context.compileNumber(other, "double")})`;
     }
-    if (value.kind === "boolean" || value.dataType?.kind === "boolean") {
+    if (isBooleanValue(value)) {
         return `${documentCpp}.strict_equals(${context.conditions.compileCondition(other)})`;
     }
     if (value.kind === "string" || value.dataType?.kind === "string") {
@@ -653,6 +712,24 @@ export function compileJsonStrictComparison(
     }
     if (isJsonValue(value)) {
         return `${documentCpp}.strict_equals(${value.cpp})`;
+    }
+    // An optional scalar whose absence may be null or undefined (a storage
+    // that keeps one absent state) has no document form; it compares its
+    // value where present, and absent equals no document that cannot be
+    // absent.
+    const inner =
+        value.kind === "data" && value.dataType?.kind === "optional"
+            ? value.dataType.inner.kind
+            : undefined;
+    if (
+        (inner === "string" || inner === "number" || inner === "boolean") &&
+        documentAbsence &&
+        !documentAbsence.null &&
+        !documentAbsence.undefined &&
+        absenceKind(context.checker, value, other) === "either"
+    ) {
+        const held = optionalValueCpp("held");
+        return `([&](const auto& held) { return ${optionalPresentCpp("held")} && ${documentCpp}.strict_equals(${inner === "number" ? `static_cast<double>(${held})` : held}); }(${value.cpp}))`;
     }
     const error = authoredErrorValue(context, value) ?? value;
     if (error.dataType?.kind === "error")

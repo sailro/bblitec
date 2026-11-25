@@ -105,6 +105,139 @@ test("a survey records every refusal it reaches and continues past each", () => 
     for (const refusal of report.refusals) assert.equal(refusal.occurrences, 1);
 });
 
+test("a shared body a statement refuses lowers inline, as a compile lowers it", () => {
+    // Shared, `css` is the body's parameter, whose text a stylesheet must
+    // know; a compile refuses the shared body and lowers each call inline,
+    // where it is the caller's literal. The survey reports what that meets.
+    const source = `
+    function installUiStyle(id: string, css: string): HTMLStyleElement {
+        let style = document.getElementById(id) as HTMLStyleElement | null;
+        if (!style) {
+            style = document.createElement("style");
+            style.id = id;
+            style.textContent = css;
+            document.head.appendChild(style);
+        }
+        return style;
+    }
+    installUiStyle("a", ".a { color: red; }");
+    installUiStyle("b", ".b { color: blue; }");
+    installUiStyle("c", ".c { color: green; }");`;
+    const fileName = resolve("survey-shared-inline.ts");
+    compileSource(source, { fileName });
+    for (const roots of [true, false]) {
+        const { report } = surveySource(source, { fileName }, { roots });
+        assert.equal(report.refusals.length, 0, listed(report));
+    }
+});
+
+test("a later call of a text helper gives the text a compile gives", () => {
+    // The second call's result is a decoder URL generation must know: empty
+    // storage in its place would refuse what a compile lowers.
+    const source = `
+    import { setDracoBaseUrl } from "@babylonjs/lite";
+    const BASE = "/app/";
+    const appUrl = (path: string): string => BASE + path.replace(/^\\/+/, "");
+    console.log(appUrl(location.hash));
+    setDracoBaseUrl(appUrl("/decoders/draco/"));`;
+    const options = {
+        fileName: resolve("survey-repeated-text.ts"),
+        publicUrl: "https://cdn.example.invalid/",
+    };
+    compileSource(source, options);
+    for (const roots of [true, false]) {
+        const { report } = surveySource(source, options, { roots });
+        assert.equal(report.refusals.length, 0, listed(report));
+    }
+});
+
+test("a later call of another argument shape lowers its body again", () => {
+    // The first, argument-less call lowers the body with `label` absent, its
+    // branch dead; the second supplies it, and a compile refuses there.
+    const source = `
+    let total = 0;
+    function track(label?: string): void {
+        if (label !== undefined) {
+            const registry = new FinalizationRegistry(() => {});
+            if (registry) total += label.length;
+        }
+        total += 1;
+    }
+    track();
+    track("named");
+    localStorage.setItem("t", String(total));`;
+    const fileName = resolve("survey-argument-shape.ts");
+    assert.throws(
+        () => compileSource(source, { fileName }),
+        /Unsupported constructor expression/,
+    );
+    const { report } = surveySource(source, { fileName }, { roots: false });
+    assert.match(
+        listed(report),
+        /^5: Unsupported constructor expression\./m,
+        listed(report),
+    );
+});
+
+test("an entry-only survey lowers a body its probes reach, which no root lowers later", () => {
+    // `defaults` is called only from a conditional arm and a catch block, which
+    // the survey lowers inside probes; with roots a later root lowers its body,
+    // without them the probe must, or its refusal (and its storage demands)
+    // waits for the compile.
+    const helper = `
+    function defaults(): number {
+        const registry = new FinalizationRegistry(() => {});
+        return registry ? 1 : 0;
+    }`;
+    const sources = [
+        `${helper}
+    function load(): number {
+        const raw = localStorage.getItem("k");
+        return raw ? Number(raw) : defaults();
+    }
+    localStorage.setItem("t", String(load()));`,
+        `${helper}
+    function load(): number {
+        try { return Number(JSON.parse(localStorage.getItem("k") ?? "0")); } catch { return defaults(); }
+    }
+    localStorage.setItem("t", String(load()));`,
+    ];
+    for (const source of sources) {
+        const { report } = surveySource(
+            source,
+            { fileName: resolve("survey-probe-body.ts") },
+            { roots: false },
+        );
+        assert.match(
+            listed(report),
+            /^3: Unsupported constructor expression\./m,
+            listed(report),
+        );
+    }
+});
+
+test("an entry-only survey reports the entry's own refusals, without roots", () => {
+    // `unused` is never called: only a root reaches its refusal.
+    const source = `${refusing}
+    function unused(): void { const q = new FinalizationRegistry(() => {}); if (q) total += 5; }
+    console.log(typeof unused);`;
+    const fileName = resolve("survey-entry-only.ts");
+    const unusedLine =
+        source
+            .split("\n")
+            .findIndex((line) => line.includes("function unused")) + 1;
+    const sites = (report: SurveyReport): number[] =>
+        report.refusals.map((refusal) => refusal.site.line).sort();
+    const rooted = surveySource(source, { fileName }).report;
+    const entry = surveySource(source, { fileName }, { roots: false }).report;
+    assert.ok(sites(rooted).includes(unusedLine), listed(rooted));
+    assert.deepEqual(
+        sites(entry),
+        sites(rooted).filter((line) => line !== unusedLine),
+        listed(entry),
+    );
+});
+
 test("a survey reports its progress and the statement it lowers", () => {
     const lines: string[] = [];
     const { report } = surveySource(
@@ -148,9 +281,12 @@ test("a survey pass rolls back a storage demand's statement and the next pass re
         { fileName: resolve("survey-restart.ts") },
         { progress: { report: (line) => lines.push(line), intervalMs: 0 } },
     );
-    assert.deepEqual(
-        lines.filter((line) => line.startsWith("Survey pass")),
-        ["Survey pass 1: 1 demand added for the next pass"],
+    // The pass names the demand it took and the site it rose at.
+    const passes = lines.filter((line) => line.startsWith("Survey pass"));
+    assert.equal(passes.length, 1, passes.join(" | "));
+    assert.match(
+        passes[0]!,
+        /^Survey pass 1: 1 demand added for the next pass: record \(Settings: document\) at \S*survey-restart\.ts:2$/,
     );
     assert.match(
         lines.filter((line) => line.startsWith("Survey progress: ")).at(-1)!,
@@ -187,9 +323,11 @@ test("one survey pass meets every independent demand", () => {
         { progress: { report: (line) => lines.push(line), intervalMs: 0 } },
     );
     assert.equal(report.complete, true);
-    assert.deepEqual(
-        lines.filter((line) => line.startsWith("Survey pass")),
-        ["Survey pass 1: 3 demands added for the next pass"],
+    const passes = lines.filter((line) => line.startsWith("Survey pass"));
+    assert.equal(passes.length, 1, passes.join(" | "));
+    assert.match(
+        passes[0]!,
+        /^Survey pass 1: 3 demands added for the next pass: record \(A: document\) at \S*survey-plan\.ts:2; record \(B: document\) at \S*survey-plan\.ts:3; record \(C: document\) at \S*survey-plan\.ts:4$/,
     );
     assert.equal(report.statements.demanded, 0);
     assert.equal(report.passes, 2);
@@ -212,6 +350,140 @@ test("one survey pass meets every independent demand", () => {
             .sort((a, b) => a - b),
         [9, 11, 13],
     );
+});
+
+test("a survey pass meets every demand and refusal of an awaited call a run-time test splits", () => {
+    // `wide ? 2 : 3` is a run-time test the call could split on, so a
+    // compile probes the unsplit call; a survey lowers it where `build`'s
+    // statements recover: both document demands are met in the first pass,
+    // and the refusal stands at its own statement, not at the call's.
+    const lines: string[] = [];
+    const { report } = surveySource(
+        `
+        interface A { a: number }
+        interface B { b: number }
+        function a(text: string): A { return JSON.parse(text); }
+        function b(text: string): B { return JSON.parse(text); }
+        async function build(scale: number): Promise<number> {
+            await new Promise<void>((resolve) => setTimeout(resolve, 0));
+            let first: A = { a: 1 };
+            first = a('{"a":2}');
+            let second: B = { b: 1 };
+            second = b('{"b":2}');
+            const registry = new FinalizationRegistry(() => {});
+            return first.a + second.b + scale;
+        }
+        async function main(): Promise<void> {
+            const wide = localStorage.getItem("wide") === "1";
+            const total = await build(wide ? 2 : 3);
+            localStorage.setItem("total", String(total));
+        }
+        void main();
+    `,
+        { fileName: resolve("survey-case-split.ts") },
+        {
+            roots: false,
+            progress: { report: (line) => lines.push(line), intervalMs: 0 },
+        },
+    );
+    assert.equal(report.complete, true);
+    const passes = lines.filter((line) => line.startsWith("Survey pass"));
+    assert.equal(passes.length, 1, passes.join(" | "));
+    assert.match(
+        passes[0]!,
+        /^Survey pass 1: 2 demands added for the next pass: record \(A: document\) at \S*survey-case-split\.ts:2; record \(B: document\) at \S*survey-case-split\.ts:3$/,
+    );
+    assert.equal(report.passes, 2);
+    const [refusal, ...others] = report.refusals;
+    assert.equal(others.length, 0, listed(report));
+    assert.equal(refusal?.message, "Unsupported constructor expression.");
+    assert.equal(refusal.statement.line, 12);
+    assert.equal(refusal.statement.function, "build");
+});
+
+test("a root's refusal through a parameter it holds empty cascades from the parameter", () => {
+    // No call passes `base`: the root holds it as empty storage, so the
+    // URL generation must know is a caller's, not a gap of the function.
+    const { report } = surveySource(
+        `
+        import { setDracoBaseUrl } from "@babylonjs/lite";
+        function configure(base: { url: string }): void {
+            setDracoBaseUrl(base.url);
+        }
+        console.log(typeof configure);
+    `,
+        {
+            fileName: resolve("survey-root-parameter.ts"),
+            publicUrl: "https://cdn.example.invalid/",
+        },
+    );
+    const [refusal, ...others] = report.refusals;
+    assert.equal(others.length, 0, listed(report));
+    assert.ok(refusal, listed(report));
+    assert.match(refusal.message, /Asset decoder URLs must be known/);
+    assert.equal(refusal.rootOccurrences, refusal.occurrences);
+    assert.ok(refusal.cascade, listed(report));
+    assert.deepEqual([refusal.cascade.line, refusal.cascade.column], [3, 28]);
+});
+
+test("a read of a refused loop's binding cascades from the loop's refusal", () => {
+    // The iterable refuses through the root's empty `identity`: the body's
+    // reads of `reference` are that refusal's, not gaps of their own.
+    const { report } = surveySource(
+        `
+        function references(identity: { kin?: unknown }): unknown[] {
+            return [...(Array.isArray(identity.kin) ? identity.kin : [])];
+        }
+        function reserved(items: { lc?: { kin?: unknown } }[]): number {
+            const ids = new Set<number>();
+            for (const item of items) {
+                if (!item.lc) continue;
+                for (const reference of references(item.lc)) {
+                    if (typeof reference === "number" && !ids.has(reference)) ids.add(reference);
+                }
+            }
+            return ids.size;
+        }
+        console.log(typeof reserved);
+    `,
+        { fileName: resolve("survey-loop-cascade.ts") },
+    );
+    const reads = report.refusals.filter((refusal) =>
+        /^Unknown or unsupported variable 'reference'\./.test(refusal.message),
+    );
+    assert.ok(reads.length > 0, listed(report));
+    for (const read of reads) assert.ok(read.cascade, listed(report));
+});
+
+test("a binding a demand left without storage cascades from its declaration", () => {
+    // The destructuring reads a record that demands document storage: the
+    // capped survey rolls it back for the next pass, and `rest`, whose
+    // type has no empty storage yet, is unbound where it is read.
+    const { report } = surveySource(
+        `
+        interface A { a: number }
+        function parsed(text: string): A { return JSON.parse(text); }
+        let held: A = { a: 1 };
+        function run(text: string): number {
+            held = parsed(text);
+            const { a, ...rest } = held;
+            return a + Object.keys(rest).length;
+        }
+        localStorage.setItem("t", String(run('{"a":2}')));
+    `,
+        { fileName: resolve("survey-demand-cascade.ts") },
+        { passLimit: 1 },
+    );
+    assert.equal(report.statements.demanded, 2);
+    const [read, ...others] = report.refusals;
+    assert.equal(others.length, 0, listed(report));
+    assert.ok(read, listed(report));
+    assert.match(read.message, /^Unknown or unsupported variable 'rest'\./);
+    assert.equal(read.site.line, 8);
+    // The site the read cascades from is the name its declaration binds.
+    assert.ok(read.cascade, listed(report));
+    assert.match(read.cascade.file, /survey-demand-cascade\.ts$/);
+    assert.deepEqual([read.cascade.line, read.cascade.column], [7, 27]);
 });
 
 test("a member call through a refused binding is a cascade of its declaration", () => {
@@ -586,6 +858,67 @@ test("a survey lowers every function the program never reached as a root", () =>
     // Every statement of the program was attempted.
     assert.ok(report.program);
     assert.equal(report.program.attempted, report.program.statements);
+});
+
+test("a repeated call's empty result is the event its body constructs", () => {
+    // The second interlock's call of `keyupFor` takes empty storage of its
+    // result: the event the body constructs (an owned one, which dispatch
+    // takes), not the borrowed event its declared `Event` would be.
+    const { report } = surveySource(
+        `
+        const released = new WeakSet<Event>();
+        function keyupFor(key: string): Event {
+            const event = new KeyboardEvent("keyup", { key, bubbles: true });
+            released.add(event);
+            return event;
+        }
+        function createInterlock(target: EventTarget) {
+            let held = "";
+            target.addEventListener("keydown", (event) => { held = (event as KeyboardEvent).key; });
+            return {
+                release(): void { if (held) target.dispatchEvent(keyupFor(held)); },
+            };
+        }
+        const first = createInterlock(window);
+        const second = createInterlock(document);
+        window.addEventListener("pointerdown", () => { first.release(); second.release(); });
+    `,
+        { fileName: resolve("survey-repeated-event.ts") },
+    );
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
+test("a root's runtime query state leaves the deployment's folds to the entry", () => {
+    // The empty deployment query folds `query.has("x")` away, so only a
+    // root lowers `lab`. The `strip` root mutates a bag it cannot tell from
+    // the deployment's; its replay must not make the next pass lower the
+    // entry with runtime query state, which would reach `lab` itself.
+    const { report } = surveySource(
+        `
+        let total = 0;
+        function lab(mode: string): void {
+            total += new FinalizationRegistry<string>(() => {}).unregister({ mode }) ? 1 : 0;
+        }
+        export function strip(params: URLSearchParams): void {
+            params.delete("q");
+        }
+        const query = new URLSearchParams(location.search);
+        if (query.has("x")) lab(query.get("x")!);
+        localStorage.setItem("total", String(total));
+    `,
+        { fileName: resolve("survey-root-query.ts") },
+    );
+    assert.equal(report.complete, true);
+    assert.deepEqual(
+        report.refusals.map((refusal) => [
+            refusal.statement.function,
+            refusal.occurrences,
+            refusal.rootOccurrences,
+        ]),
+        [["lab", 1, 1]],
+        listed(report),
+    );
+    assert.equal(report.passes, 1);
 });
 
 test("a root held by its own storage demand lowers in the same pass", () => {
@@ -2055,4 +2388,46 @@ test("a survey root calls a dependency whose signature has an undefined-only par
     assert.ok(report.program);
     assert.equal(report.program.attempted, report.program.statements);
     assert.deepEqual(report.refusals, [], listed(report));
+});
+
+test("a survey records an invalid reached shader material's WGSL at the statement that reached it", () => {
+    // The check of reached shader materials runs after the entry lowered: a
+    // compile refuses there, and a survey's census lists it and goes on.
+    const fileName = "corpus/babylon-lite/lab/lite/src/lite/scene163.ts";
+    const source = readFileSync(resolve(fileName), "utf8").replace(
+        "if(distance(input.uv,vec2<f32>(0.5,0.5))<0.18)",
+        "if()",
+    );
+    const { report } = surveySource(source, { fileName }, { roots: false });
+    assert.equal(report.complete, true, report.terminal);
+    assert.match(
+        listed(report),
+        /^\d+: Invalid reached shader material WGSL:/m,
+        listed(report),
+    );
+});
+
+test("a survey records a deferred admission's refusal at the statement that noted it", () => {
+    // TAA's tracked-camera admission is decided once the program lowered: a
+    // compile refuses there, and a survey's census lists it and goes on.
+    const { report } = surveySource(
+        `import {createEngine,createSceneContext,createArcRotateCamera,createRenderTarget,createRenderTask,
+            createTaaPostProcessTask} from "babylon-lite";
+        const engine=await createEngine({}); const scene=createSceneContext(engine,{defaultRenderTask:false});
+        const camera=createArcRotateCamera(0,1,5,{x:0,y:0,z:0}); scene.camera=camera;
+        const rt=createRenderTarget({format:engine.format,dFormat:"depth24plus-stencil8",size:engine,samples:1});
+        const source=createRenderTask({rt},engine,scene);
+        const target=camera.target;Object.assign(target,{x:2});
+        const taa=createTaaPostProcessTask({sourceTexture:rt,sourceRenderTask:source,targetTexture:engine.scRT},engine,scene);
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-taa-admission.ts") },
+        { roots: false },
+    );
+    assert.equal(report.complete, true, report.terminal);
+    assert.match(
+        listed(report),
+        /^\d+: TAA requires tracked camera mutations:/m,
+        listed(report),
+    );
 });

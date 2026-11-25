@@ -65,6 +65,8 @@ export const scalarKinds: DataKindOperations<
     | "image-bitmap"
     | "offscreen-canvas-2d"
     | "dom-rect"
+    | "dom-matrix"
+    | "dom-point"
     | "gpu"
     | "gpu-adapter"
     | "gpu-adapter-info"
@@ -186,6 +188,8 @@ export const scalarKinds: DataKindOperations<
         ),
         opaqueReference: true,
     },
+    "dom-matrix": opaqueLeaf("bbl::js::DomMatrixHandle", "dom_matrix"),
+    "dom-point": opaqueLeaf("bbl::js::DomPointHandle", "dom_point"),
     gpu: {
         ...reseatingLeaf("const void*", "gpu"),
         opaqueReference: true,

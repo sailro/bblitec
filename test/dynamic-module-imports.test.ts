@@ -74,6 +74,38 @@ test("finite imports retain namespace identity, live exports and asynchronous re
     });
 });
 
+test("a lazily imported module's pure default export initializes like a static one", (t) => {
+    // A raw-text import is such a module (`export default rawText;`).
+    const directory = resolve("artifacts/dynamic-module-default-export");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        join(directory, "text.ts"),
+        `const label = "dynamic-label"; export default label;`,
+    );
+    writeFileSync(
+        join(directory, "lib.ts"),
+        `import label from "./text"; export function labelLength(): number { return label.length; }`,
+    );
+    const result = compileSource(
+        `
+        async function run(){
+            const { labelLength } = await import("./lib");
+            if (labelLength() !== 13) throw new Error("default export");
+        }
+        run().then(()=>globalThis.close());
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(tools, "dynamic-module-default-export", result.cpp, {
+        flags: ["/DBBLITE_WORKERS=1"],
+    });
+});
+
 test("unrepresented lazy initialization remains an explicit refusal", () => {
     const directory = resolve("artifacts/dynamic-module-refusals");
     mkdirSync(directory, { recursive: true });

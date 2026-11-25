@@ -190,8 +190,17 @@ export interface ShaderModule {
     bindings?: ShaderBinding[];
     /** Module-scope constants, in declaration order. */
     constants?: ShaderConstant[];
+    /** Module-scope `var<private>` variables, in declaration order: each invocation's own, with no binding. */
+    privates?: ShaderPrivate[];
     /** The helper functions the module declares, in declaration order. */
     functions?: ShaderFunction[];
+}
+
+/** A module-scope `var<private>`: its type and, where it has one, its initializer. */
+export interface ShaderPrivate {
+    name: string;
+    type: string;
+    value?: ShaderExpression;
 }
 
 interface ShaderComputeModule {
@@ -2165,6 +2174,7 @@ function shaderModules(
     const structs: ShaderStruct[] = [];
     const bindings: ShaderBinding[] = [];
     const constants: ShaderConstant[] = [];
+    const privates: ShaderPrivate[] = [];
     const functions: ShaderFunction[] = [];
     const entryPoints: ShaderEntryPoint[] = [];
     for (const declaration of syntax.declarations) {
@@ -2173,7 +2183,20 @@ function shaderModules(
                 structs.push(shaderStruct(declaration));
                 continue;
             case "var":
-                bindings.push(shaderBinding(declaration));
+                if (declaration.addressSpace !== "private") {
+                    bindings.push(shaderBinding(declaration));
+                    continue;
+                }
+                if (!options.helpers) break;
+                if (!declaration.type)
+                    throw new Error(
+                        `WGSL private variable '${declaration.name}' needs a type.`,
+                    );
+                privates.push({
+                    name: declaration.name,
+                    type: declaration.type.text,
+                    ...(declaration.value ? { value: declaration.value } : {}),
+                });
                 continue;
             case "const":
                 if (!options.helpers || !declaration.value) break;
@@ -2213,6 +2236,7 @@ function shaderModules(
         structs,
         ...(bindings.length ? { bindings } : {}),
         ...(constants.length ? { constants } : {}),
+        ...(privates.length ? { privates } : {}),
         ...(functions.length ? { functions } : {}),
         entryPoint,
     }));
@@ -2546,6 +2570,7 @@ export function mapShaderModule(
 ): ShaderModule {
     const globals = new Set([
         ...(module.constants ?? []).map(({ name }) => name),
+        ...(module.privates ?? []).map(({ name }) => name),
         ...(module.bindings ?? []).map(({ name }) => name),
     ]);
     const functionNames = (fn: ShaderFunction): string[] => [
@@ -2562,6 +2587,21 @@ export function mapShaderModule(
                           rewrite(value, globals),
                       ),
                   })),
+              }
+            : {}),
+        ...(module.privates
+            ? {
+                  privates: module.privates.map((variable) =>
+                      variable.value
+                          ? {
+                                ...variable,
+                                value: mapShaderExpression(
+                                    variable.value,
+                                    (value) => rewrite(value, globals),
+                                ),
+                            }
+                          : variable,
+                  ),
               }
             : {}),
         ...(module.functions

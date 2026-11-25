@@ -153,6 +153,11 @@ export class FiniteArraySources {
             });
     }
 
+    /** The declaration whose array a node names: itself, the binding it reads, or the field a literal property writes. */
+    public declarationOf(node: ts.Node): ts.Declaration | undefined {
+        return this.slot(node);
+    }
+
     private slot(node: ts.Node): Slot | undefined {
         while (ts.isTypeNode(node)) node = node.parent;
         if (

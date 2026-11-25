@@ -54,10 +54,11 @@ test("Canvas2D transforms, image source rectangles and readbacks lower to native
     ])
         assert.match(cpp, new RegExp(`bbl::${call}\\(`), call);
     assert.equal(cpp.match(/bbl::ui_canvas_reset_transform\(/g)?.length, 2);
-    // drawImage's three forms keep their arities.
+    // drawImage's three forms keep their arities; `size` is a parameter
+    // or the constant its one call passes, as `paint` is shared or not.
     assert.match(
         cpp,
-        /ui_canvas_draw_image\(v_\w+, v_\w+, v_icon, 1\.0, 1\.0, 2\.0, 2\.0, 0\.0, 0\.0, \(v_\w+ \/ 2\.0\), \(v_\w+ \/ 2\.0\)\);/,
+        /ui_canvas_draw_image\(v_\w+, v_\w+, v_icon, 1\.0, 1\.0, 2\.0, 2\.0, 0\.0, 0\.0, \([^,()]+ \/ 2\.0\), \([^,()]+ \/ 2\.0\)\);/,
     );
     assert.match(
         cpp,
@@ -65,7 +66,7 @@ test("Canvas2D transforms, image source rectangles and readbacks lower to native
     );
     assert.match(
         cpp,
-        /ui_canvas_draw_image\(v_\w+, v_\w+, v_canvas, 0\.0, 0\.0, v_\w+, v_\w+\);/,
+        /ui_canvas_draw_image\(v_\w+, v_\w+, v_\w*canvas, 0\.0, 0\.0, [^,()]+, [^,()]+\);/,
     );
     for (const attributes of ["{ alpha: false }", "{ colorSpace: 'srgb' }"])
         assert.throws(

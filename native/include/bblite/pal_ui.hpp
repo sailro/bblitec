@@ -4,6 +4,7 @@
 #include <bblite/features/workers.hpp>
 
 #include <bblite/js_data.hpp>
+#include <bblite/js_dom_geometry.hpp>
 #include <bblite/runtime.hpp>
 #include <bblite/pal_canvas_pixels.hpp>
 #if BBLITE_WORKERS
@@ -44,6 +45,13 @@ double ui_image_height(Engine&, UiElementHandle);
 js::Promise<js::PromiseVoid> ui_decode_image(Engine&, UiElementHandle);
 #endif
 UiElementHandle ui_create_text_node(Engine& engine, std::string text);
+/**
+ * `node.cloneNode(deep)`: a detached copy of an authored node's tag, text, attributes, inline
+ * style, checkedness and stylesheet rules, without its listeners; `deep` clones its children.
+ * innerHTML content refuses; a canvas, script, file input or object-URL link throws
+ * NotSupportedError.
+ */
+UiElementHandle ui_clone_node(Engine& engine, UiElementHandle node, bool deep);
 // An invalid parent denotes the document root.
 void ui_append_text(Engine& engine, UiElementHandle parent, std::string text);
 js::Nullable<UiElementHandle> ui_find_element_by_id(Engine& engine, std::string_view id);
@@ -106,6 +114,13 @@ void ui_set_selected(Engine& engine, UiElementHandle element, bool selected);
 void ui_set_selection(Engine& engine, UiElementHandle select, UiElementHandle option);
 void ui_set_form_value(Engine& engine, UiElementHandle element, std::string value);
 UiClientRect ui_get_client_rect(Engine& engine, UiElementHandle element);
+/** The element's content box as `ui_get_client_rect` measures its border box, in CSS pixels. */
+UiContentBox ui_get_content_box(Engine& engine, UiElementHandle element);
+/**
+ * `getScreenCTM()` of an SVG element: its root's user space (viewBox, xMidYMid meet) in viewport
+ * CSS pixels; none for an element outside the document.
+ */
+js::Nullable<js::DomMatrixHandle> ui_svg_screen_ctm(Engine& engine, UiElementHandle element);
 /**
  * `document.elementFromPoint(x, y)`: the topmost element at a viewport point in CSS pixels,
  * laid out now; the canvas where the page lays nothing over it, and nothing outside the

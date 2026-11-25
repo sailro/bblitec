@@ -5,8 +5,10 @@ import { rootIdentifier, argumentAt } from "./syntax.js";
 import {
     isGlobalUndefined,
     isSymbolPropertyKey,
+    libraryName,
     namedMember,
     resolvedSymbol,
+    type NamedMember,
 } from "./symbols.js";
 import {
     validateObjectProperties,
@@ -17,6 +19,7 @@ import type { Value } from "./types.js";
 import { resolvedBuiltinConstructor } from "./builtin-constructors.js";
 import { isNullable } from "./type-facts.js";
 import { isHostAccessor } from "./host-globals.js";
+import { ApplicationRealmRequired } from "./worker-modules.js";
 
 export interface WorkerLoweringContext
     extends
@@ -62,8 +65,8 @@ const nativeRealmFunctions = new Set([
 /**
  * The first position in a message shape without a native structured-clone
  * codec (js_structured_clone.hpp), described for a refusal. An OffscreenCanvas
- * crosses by transfer; every other handle, like a browser's platform objects,
- * has no serialization. A class instance has no faithful native copy: the
+ * or a MessagePort crosses by transfer; every other handle, like a browser's
+ * platform objects, has no serialization. A class instance has no faithful native copy: the
  * browser delivers a plain object of its own data fields, without its
  * prototype, methods or private fields.
  */
@@ -96,6 +99,7 @@ function uncloneablePosition(
         case "u8clampedarray":
         case "f32array":
         case "f64array":
+        case "json": // A document clones as the value it holds (js_json.hpp).
             return undefined;
         case "optional":
             return uncloneablePosition(
@@ -193,7 +197,8 @@ function uncloneablePosition(
             return undefined;
         }
         case "handle":
-            return type.handle === "offscreen-canvas"
+            return type.handle === "offscreen-canvas" ||
+                type.handle === "message-port"
                 ? undefined
                 : refuse(`a native ${type.handle} handle`);
         case "error":
@@ -208,6 +213,10 @@ function uncloneablePosition(
             return refuse("a GPUAdapterInfo");
         case "idle-deadline":
             return refuse("an IdleDeadline");
+        case "dom-matrix":
+            return refuse("a DOMMatrix");
+        case "dom-point":
+            return refuse("a DOMPoint");
         case "search-params":
             return refuse("a URLSearchParams");
         case "promise":
@@ -246,10 +255,27 @@ function uncloneablePosition(
         case "function":
             // structuredClone throws DataCloneError where it meets one.
             return functions === "throw" ? undefined : refuse("a function");
-        case "json":
-            return refuse("a dynamic JSON value");
-        case "union":
-            return refuse("a mixed union");
+        case "union": {
+            // A member is received by the node kind it clones to.
+            const shapes = type.members.map(cloneShape);
+            if (
+                shapes.includes(undefined) ||
+                new Set(shapes).size !== shapes.length
+            )
+                return refuse("a mixed union");
+            for (const member of type.members) {
+                const found = uncloneablePosition(
+                    context,
+                    member,
+                    path,
+                    node,
+                    seen,
+                    functions,
+                );
+                if (found) return found;
+            }
+            return undefined;
+        }
         case "iterator":
             return refuse("an iterator");
         case "span":
@@ -260,6 +286,47 @@ function uncloneablePosition(
             return refuse("an enum-keyed record");
         case "table":
             return refuse("a constant table");
+    }
+}
+
+/**
+ * The message node kind a union member clones to (`CloneShape`,
+ * js_structured_clone.hpp); undefined for a member a union does not carry.
+ */
+function cloneShape(type: DataType): string | undefined {
+    switch (type.kind) {
+        case "number":
+        case "boolean":
+        case "undefined":
+        case "null":
+        case "set":
+        case "date":
+        case "struct":
+            return type.kind;
+        case "map":
+            // A dictionary is a plain object, as a record is.
+            return type.dictionary ? "struct" : "map";
+        case "string":
+        case "enum":
+            return "string";
+        case "vector":
+        case "tuple":
+            return "array";
+        case "arraybuffer":
+            return "buffer";
+        case "dataview":
+        case "u8array":
+        case "i8array":
+        case "u16array":
+        case "i16array":
+        case "u32array":
+        case "i32array":
+        case "u8clampedarray":
+        case "f32array":
+        case "f64array":
+            return `view ${type.kind}`;
+        default:
+            return undefined;
     }
 }
 
@@ -357,10 +424,473 @@ function messageDataType(
     context: WorkerLoweringContext,
     node: ts.Expression,
 ): DataType | undefined {
-    return context.dataTypes.fromStoredTsType(
-        context.checker.getTypeAtLocation(node),
-        node,
+    const type = context.checker.getTypeAtLocation(node);
+    // An `unknown` position holds any value: a dynamic document, whose
+    // codec clones the value it holds.
+    return (
+        context.dataTypes.fromStoredTsType(type, node) ??
+        ((type.flags & ts.TypeFlags.Unknown) !== 0
+            ? context.dataTypes.dynamicJsonType(type)
+            : undefined)
     );
+}
+
+const errorPositions = new Map([
+    ["lineno", "line"],
+    ["colno", "column"],
+]);
+
+/**
+ * A message or error event's property: `event.data` deserializes the message
+ * as the type of `expression`, the read as the source spells it (a type
+ * assertion included).
+ */
+export function readWorkerEventProperty(
+    context: WorkerLoweringContext,
+    owner: Value,
+    access: ts.PropertyAccessExpression,
+    expression: ts.Expression = access,
+): Value | undefined {
+    if (owner.kind === "worker-message-event" && access.name.text === "data") {
+        const type = messageDataType(context, expression);
+        if (!type)
+            return context.fail(
+                expression,
+                "MessageEvent.data requires a supported data type at its read boundary.",
+            );
+        requireCloneable(context, type, "event.data", expression);
+        const cppType = context.dataTypes.cppType(type);
+        if (type.kind === "tagged") {
+            // A read that may be `null` or `undefined` is decoded once; its
+            // value and its absence are read off that.
+            const decoded = context.allocateTemporaryCppName("message_data");
+            context.emit({
+                kind: "declaration",
+                type: "auto",
+                name: decoded,
+                initializer: `${owner.cpp}->data<${cppType}>()`,
+            });
+            return {
+                ...context.dataLowerer.leafValue(decoded, type),
+                freshData: true,
+            };
+        }
+        return {
+            kind:
+                type.kind === "number" ||
+                type.kind === "boolean" ||
+                type.kind === "string"
+                    ? type.kind
+                    : "data",
+            cpp: `${owner.cpp}->data<${cppType}>()`,
+            dataType: type,
+            // Deserialization returns an owning value, including when the
+            // source spells the read as a property access.
+            freshData: true,
+        };
+    }
+    if (
+        owner.kind === "worker-error-event" &&
+        ["message", "filename"].includes(access.name.text)
+    )
+        return { kind: "string", cpp: `${owner.cpp}.${access.name.text}` };
+    // A native failure has no source position: both read 0, as an
+    // ErrorEvent without one does.
+    const position = errorPositions.get(access.name.text);
+    if (owner.kind === "worker-error-event" && position)
+        return {
+            kind: "number",
+            cpp: `static_cast<double>(${owner.cpp}.${position})`,
+            dataType: { kind: "number" },
+        };
+    return undefined;
+}
+
+/**
+ * `postMessage(message, transfer?)` of a Worker, a worker global or a
+ * MessagePort: the message's snapshot, then its transfer list, in source
+ * order. A transfer list is an array literal of OffscreenCanvas, MessagePort
+ * and ArrayBuffer values (`bbl::js::BufferTransfer` detaches a buffer), or a
+ * run-time `Transferable[]` of them.
+ */
+function compileMessagePost(
+    context: WorkerLoweringContext,
+    node: ts.CallExpression,
+): { snapshot: string; transfer: string } {
+    if (node.arguments.length < 1 || node.arguments.length > 2)
+        return context.fail(
+            node,
+            "Worker postMessage requires a message and optional transfer list.",
+        );
+    const argument = argumentAt(node, 0);
+    const type = messageDataType(context, argument);
+    if (!type)
+        return context.fail(
+            argument,
+            "Worker messages require a supported structured-clone data shape.",
+        );
+    requireCloneable(context, type, "message", argument);
+    const data = context.dataLowerer.compileForSink(argument, type);
+    const snapshot = context.allocateTemporaryCppName("message_value");
+    context.emit({
+        kind: "declaration",
+        type: "auto",
+        name: snapshot,
+        initializer: data,
+    });
+    const transfer = node.arguments[1];
+    if (!transfer) return { snapshot, transfer: "" };
+    const list = context.unwrap(transfer);
+    if (!ts.isArrayLiteralExpression(list)) {
+        // A run-time `Transferable[]`: its entries hold their transfer.
+        if (isNullable(context.checker.getTypeAtLocation(transfer)))
+            return context.fail(
+                transfer,
+                "A run-time transfer list must be present; pass `list ?? []`.",
+            );
+        const listName = context.allocateTemporaryCppName("transfer_list");
+        context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: listName,
+            initializer: `bbl::js::transfer_list(${context.dataLowerer.compileForSink(
+                transfer,
+                {
+                    kind: "vector",
+                    element: { kind: "handle", handle: "transferable" },
+                },
+            )})`,
+        });
+        return { snapshot, transfer: `, ${listName}` };
+    }
+    const entries = list.elements.map((element) => {
+        if (ts.isSpreadElement(element) || ts.isOmittedExpression(element))
+            return context.fail(
+                element,
+                "Worker transfer list entries must be explicit values.",
+            );
+        const temporary = context.allocateTemporaryCppName("transfer_value");
+        // An `ArrayBufferLike` is a SharedArrayBuffer at run time only where
+        // the transfer then throws its DataCloneError.
+        if (context.dataLowerer.dataTypeAt(element)?.kind === "arraybuffer") {
+            context.emit({
+                kind: "declaration",
+                type: "bbl::js::BufferTransfer",
+                name: temporary,
+                initializer: context.dataLowerer.compileForSink(element, {
+                    kind: "arraybuffer",
+                }),
+                initialization: "direct",
+            });
+            return `&${temporary}`;
+        }
+        const value = context.compileValue(element);
+        if (value.kind !== "offscreen-canvas" && value.kind !== "message-port")
+            return context.fail(
+                element,
+                `Transfer of '${value.kind}' is not implemented.`,
+            );
+        context.emit({
+            kind: "declaration",
+            type: "auto",
+            name: temporary,
+            initializer: value.cpp,
+        });
+        return `${temporary}.get()`;
+    });
+    const listName = context.allocateTemporaryCppName("transfer_list");
+    context.emit({
+        kind: "declaration",
+        type: `const std::array<bbl::pal::Transferable*, ${entries.length}>`,
+        name: listName,
+        initializer: entries.join(", "),
+        initialization: "direct",
+    });
+    return { snapshot, transfer: `, ${listName}` };
+}
+
+/**
+ * `addEventListener` / `removeEventListener` of a message target: one of
+ * `events`, its callback and a static `once`. `refusedError` refuses an
+ * `error` listener the target does not admit yet.
+ */
+function compileMessageListener(
+    context: WorkerLoweringContext,
+    node: ts.CallExpression,
+    member: "addEventListener" | "removeEventListener",
+    receiver: string,
+    events: readonly ("message" | "error" | "messageerror")[],
+    refusedError?: string,
+): Value {
+    const event = node.arguments[0];
+    const callback = node.arguments[1];
+    const name =
+        event && ts.isStringLiteralLike(event)
+            ? events.find((admitted) => admitted === event.text)
+            : undefined;
+    if (!name || !callback || node.arguments.length > 3) {
+        return context.fail(
+            node,
+            "Worker listeners require an admitted event name and callback.",
+        );
+    }
+    if (name === "error" && refusedError)
+        return context.fail(node, refusedError);
+    let once = false;
+    const options = node.arguments[2];
+    if (options) {
+        if (!ts.isObjectLiteralExpression(options))
+            return context.fail(
+                options,
+                "Worker listener options must be a static record.",
+            );
+        for (const property of options.properties) {
+            if (
+                !ts.isPropertyAssignment(property) ||
+                context.propertyName(property.name) !== "once" ||
+                ![
+                    ts.SyntaxKind.TrueKeyword,
+                    ts.SyntaxKind.FalseKeyword,
+                ].includes(property.initializer.kind)
+            ) {
+                return context.fail(
+                    property,
+                    "Only static once is admitted in Worker listener options.",
+                );
+            }
+            once = property.initializer.kind === ts.SyntaxKind.TrueKeyword;
+        }
+    }
+    // A messageerror event is a MessageEvent, as a message event is.
+    const compiled = context.asyncActivations.compileWorkerCallback(
+        callback,
+        name === "error" ? "error" : "message",
+    );
+    return {
+        kind: "void",
+        cpp: `${receiver}${member === "addEventListener" ? "add" : "remove"}_${name}_listener(${compiled}${member === "addEventListener" ? `, ${once}` : ""})`,
+    };
+}
+
+/** Whether an expression's declared type, present, is the DOM's `MessagePort` or `MessageChannel`. */
+function messagingType(
+    context: WorkerLoweringContext,
+    expression: ts.Expression,
+): "MessagePort" | "MessageChannel" | undefined {
+    const name = libraryName(
+        context.checker.getNonNullableType(
+            context.checker.getTypeAtLocation(expression),
+        ),
+    );
+    return name === "MessagePort" || name === "MessageChannel"
+        ? name
+        : undefined;
+}
+
+const messagePortHandlers = new Set(["onmessage", "onmessageerror"]);
+const messageHandlers = new Set([...messagePortHandlers, "onerror"]);
+
+/**
+ * `new MessageChannel()`, its `port1` / `port2`, and a MessagePort's
+ * `postMessage`, listeners, `start()` and `close()`
+ * (`bbl::pal::MessagePort`). Messages are tasks of the receiving port's
+ * realm; a port crosses realms in a message's transfer list.
+ */
+function compileMessagingValue(
+    context: WorkerLoweringContext,
+    node: ts.Expression,
+): Value | undefined {
+    if (ts.isNewExpression(node)) {
+        if (context.libraryGlobal(node.expression) !== "MessageChannel")
+            return undefined;
+        if (node.arguments?.length)
+            return context.fail(node, "MessageChannel takes no arguments.");
+        return {
+            kind: "message-channel",
+            dataType: { kind: "handle", handle: "message-channel" },
+            cpp: "bbl::pal::create_message_channel()",
+            impure: true,
+        };
+    }
+    if (ts.isPropertyAccessExpression(node)) {
+        const owner = messagingType(context, node.expression);
+        if (owner === "MessagePort" && messagePortHandlers.has(node.name.text))
+            return context.fail(
+                node,
+                `MessagePort.${node.name.text} is written natively, not read.`,
+            );
+        if (owner !== "MessageChannel") return undefined;
+        const name = node.name.text;
+        if (name !== "port1" && name !== "port2")
+            return context.fail(
+                node,
+                `MessageChannel member '${name}' is not lowered.`,
+            );
+        const read = (present: Value): Value | undefined =>
+            present.kind === "message-channel"
+                ? {
+                      kind: "message-port",
+                      dataType: { kind: "handle", handle: "message-port" },
+                      cpp: `${present.cpp}->${name}()`,
+                  }
+                : undefined;
+        const channel = context.compileValue(node.expression);
+        return (
+            (node.questionDotToken
+                ? context.dataLowerer.optionalAccess(channel, node, read)
+                : read(
+                      context.dataLowerer.narrowOptional(
+                          channel,
+                          node.expression,
+                      ),
+                  )) ??
+            context.fail(node, "MessageChannel ports require a native channel.")
+        );
+    }
+    if (!ts.isCallExpression(node)) return undefined;
+    const member = namedMember(
+        context.checker,
+        context.unwrap(node.expression),
+    );
+    if (!member || messagingType(context, member.expression) !== "MessagePort")
+        return undefined;
+    const call = (present: Value): Value | undefined =>
+        present.kind === "message-port"
+            ? compileMessagePortCall(context, node, member, present)
+            : undefined;
+    return (
+        context.dataLowerer.chainReceiverCall(
+            context.compileValue(member.expression),
+            member.access,
+            node,
+            call,
+        ) ?? context.fail(node, "MessagePort calls require a native port.")
+    );
+}
+
+function compileMessagePortCall(
+    context: WorkerLoweringContext,
+    node: ts.CallExpression,
+    member: NamedMember,
+    port: Value,
+): Value {
+    // The receiver is evaluated before the arguments.
+    const receiver = context.bindings.pinValueToTemporary(
+        port,
+        "message_port",
+    ).cpp;
+    switch (member.name) {
+        case "postMessage": {
+            const { snapshot, transfer } = compileMessagePost(context, node);
+            return {
+                kind: "void",
+                cpp: `${receiver}->post_message(${snapshot}${transfer})`,
+            };
+        }
+        case "addEventListener":
+        case "removeEventListener":
+            return compileMessageListener(
+                context,
+                node,
+                member.name,
+                `${receiver}->`,
+                ["message", "messageerror"],
+            );
+        case "start":
+        case "close":
+            if (node.arguments.length)
+                return context.fail(
+                    node,
+                    `MessagePort.${member.name} takes no arguments.`,
+                );
+            return { kind: "void", cpp: `${receiver}->${member.name}()` };
+    }
+    return context.fail(
+        node,
+        `MessagePort member '${member.name}' is not lowered.`,
+    );
+}
+
+/**
+ * The message target an `on…` handler assignment writes: a Worker or a
+ * MessagePort, by its declared type or, through an interface the program
+ * declares (`{ onerror?: … }`), by the value its name holds.
+ */
+function messageHandlerTarget(
+    context: WorkerLoweringContext,
+    owner: ts.Expression,
+): boolean {
+    const unwrapped = context.unwrap(owner);
+    const bound = ts.isIdentifier(unwrapped)
+        ? context.bindings.lookupOptional(unwrapped)
+        : undefined;
+    return (
+        bound?.kind === "worker" ||
+        bound?.kind === "message-port" ||
+        messagingType(context, owner) === "MessagePort" ||
+        libraryName(
+            context.checker.getNonNullableType(
+                context.checker.getTypeAtLocation(owner),
+            ),
+        ) === "Worker"
+    );
+}
+
+/**
+ * `target.onmessage`, `target.onmessageerror` and a Worker's `onerror`
+ * written with a handler: the target's event handler, replaced in place;
+ * `null` or `undefined` removes it. Setting a port's `onmessage` enables its
+ * message queue, as `start()` does.
+ */
+export function emitMessageHandler(
+    context: WorkerLoweringContext,
+    expression: ts.BinaryExpression,
+): boolean {
+    const target = context.unwrap(expression.left);
+    if (
+        !ts.isPropertyAccessExpression(target) ||
+        !messageHandlers.has(target.name.text) ||
+        !messageHandlerTarget(context, target.expression)
+    )
+        return false;
+    const name = target.name.text;
+    if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken)
+        return context.fail(
+            expression,
+            `The ${name} handler supports direct assignment.`,
+        );
+    const owner = context.dataLowerer.narrowOptional(
+        context.compileValue(target.expression),
+        target.expression,
+    );
+    if (owner.kind !== "worker" && owner.kind !== "message-port")
+        return context.fail(
+            target.expression,
+            "Message handlers require a native Worker or MessagePort.",
+        );
+    if (owner.kind === "message-port" && name === "onerror")
+        return context.fail(
+            target,
+            "A MessagePort has no error event; only a Worker reports errors.",
+        );
+    const receiver = context.bindings.pinValueToTemporary(
+        owner,
+        "message_target",
+    ).cpp;
+    const handler = context.unwrap(expression.right);
+    const callback =
+        handler.kind === ts.SyntaxKind.NullKeyword ||
+        isGlobalUndefined(context.checker, handler)
+            ? "{}"
+            : context.asyncActivations.compileWorkerCallback(
+                  expression.right,
+                  name === "onerror" ? "error" : "message",
+              );
+    context.emit({
+        kind: "expression",
+        code: `${receiver}->set_${name.slice(2)}_handler(${callback});`,
+    });
+    return true;
 }
 
 /**
@@ -412,6 +942,7 @@ export function isNativeWorkerExpression(
             return true;
     }
     if (member && isRuntimeLocationMember(context, member)) return true;
+    if (member && messagingType(context, member.expression)) return true;
     const globalMember = context.libraryGlobal(node);
     if (
         globalMember !== undefined &&
@@ -421,6 +952,7 @@ export function isNativeWorkerExpression(
             [
                 "Worker",
                 "OffscreenCanvas",
+                "MessageChannel",
                 "ResizeObserver",
                 "isSecureContext",
             ].includes(globalMember))
@@ -430,14 +962,22 @@ export function isNativeWorkerExpression(
     if (!root) return false;
     const bound = context.bindings.lookupOptional(root);
     if (bound?.hostFunction || bound?.builtinConstructor) return true;
-    if (bound?.kind.startsWith("worker") || bound?.kind === "offscreen-canvas")
+    if (
+        bound?.kind.startsWith("worker") ||
+        bound?.kind.startsWith("message-") ||
+        bound?.kind === "offscreen-canvas"
+    )
         return true;
     return (
         context.libraryGlobal(root) !== undefined &&
         (nativeRealmFunctions.has(root.text) ||
-            ["Worker", "OffscreenCanvas", "ResizeObserver", "self"].includes(
-                root.text,
-            ))
+            [
+                "Worker",
+                "OffscreenCanvas",
+                "MessageChannel",
+                "ResizeObserver",
+                "self",
+            ].includes(root.text))
     );
 }
 
@@ -499,8 +1039,18 @@ export function compileWorkerValue(
     context: WorkerLoweringContext,
     expression: ts.Expression,
 ): Value | undefined {
-    if (!context.options.workers) return undefined;
     const node = context.unwrap(expression);
+    if (!context.options.workers) {
+        // A port's messages are tasks of a realm's event loop.
+        if (
+            ts.isNewExpression(node) &&
+            context.libraryGlobal(node.expression) === "MessageChannel"
+        )
+            throw new ApplicationRealmRequired();
+        return undefined;
+    }
+    const messaging = compileMessagingValue(context, node);
+    if (messaging) return messaging;
     const scope = (value: ts.Expression): Value | undefined => {
         const unwrapped = context.unwrap(value);
         if (!ts.isIdentifier(unwrapped)) return undefined;
@@ -559,38 +1109,9 @@ export function compileWorkerValue(
     }
     if (ts.isPropertyAccessExpression(node)) {
         const owner = scope(node.expression);
-        if (
-            owner?.kind === "worker-message-event" &&
-            node.name.text === "data"
-        ) {
-            const type = messageDataType(context, expression);
-            if (!type)
-                return context.fail(
-                    expression,
-                    "MessageEvent.data requires a supported data type at its read boundary.",
-                );
-            requireCloneable(context, type, "event.data", expression);
-            const cppType = context.dataTypes.cppType(type);
-            return {
-                kind:
-                    type.kind === "number" ||
-                    type.kind === "boolean" ||
-                    type.kind === "string"
-                        ? type.kind
-                        : "data",
-                cpp: `${owner.cpp}->data<${cppType}>()`,
-                dataType: type,
-                // Deserialization returns an owning value, including when the
-                // source spells the read as a property access.
-                freshData: true,
-            };
-        }
-        if (
-            owner?.kind === "worker-error-event" &&
-            ["message", "filename"].includes(node.name.text)
-        ) {
-            return { kind: "string", cpp: `${owner.cpp}.${node.name.text}` };
-        }
+        const event =
+            owner && readWorkerEventProperty(context, owner, node, expression);
+        if (event) return event;
         if (owner?.kind === "worker-scope" && node.name.text === "name")
             return { kind: "string", cpp: `${realm}.name()` };
         return undefined;
@@ -622,132 +1143,26 @@ export function compileWorkerValue(
         (global && context.options.workers.namespace !== undefined);
     const receiver = worker ? `${owner.cpp}->` : `${realm}.`;
     if ((worker || workerScope) && member === "postMessage") {
-        if (node.arguments.length < 1 || node.arguments.length > 2)
-            return context.fail(
-                node,
-                "Worker postMessage requires a message and optional transfer list.",
-            );
-        const argument = argumentAt(node, 0);
-        const type = messageDataType(context, argument);
-        if (!type)
-            return context.fail(
-                argument,
-                "Worker messages require a supported structured-clone data shape.",
-            );
-        requireCloneable(context, type, "message", argument);
-        const data = context.dataLowerer.compileForSink(argument, type);
-        const snapshot = context.allocateTemporaryCppName("message_value");
-        context.emit({
-            kind: "declaration",
-            type: "auto",
-            name: snapshot,
-            initializer: data,
-        });
-        const transfer = node.arguments[1];
-        let transferCpp = "";
-        if (transfer) {
-            const list = context.unwrap(transfer);
-            if (!ts.isArrayLiteralExpression(list))
-                return context.fail(
-                    list,
-                    "Worker transfer lists currently require an explicit array of supported transferable values.",
-                );
-            const entries = list.elements.map((element) => {
-                if (
-                    ts.isSpreadElement(element) ||
-                    ts.isOmittedExpression(element)
-                )
-                    return context.fail(
-                        element,
-                        "Worker transfer list entries must be explicit values.",
-                    );
-                const value = context.compileValue(element);
-                if (value.kind !== "offscreen-canvas")
-                    return context.fail(
-                        element,
-                        `Transfer of '${value.kind}' is not implemented.`,
-                    );
-                const temporary =
-                    context.allocateTemporaryCppName("transfer_value");
-                context.emit({
-                    kind: "declaration",
-                    type: "auto",
-                    name: temporary,
-                    initializer: value.cpp,
-                });
-                return `${temporary}.get()`;
-            });
-            const listName = context.allocateTemporaryCppName("transfer_list");
-            context.emit({
-                kind: "declaration",
-                type: `const std::array<bbl::pal::Transferable*, ${entries.length}>`,
-                name: listName,
-                initializer: entries.join(", "),
-                initialization: "direct",
-            });
-            transferCpp = `, ${listName}`;
-        }
+        const { snapshot, transfer } = compileMessagePost(context, node);
         return {
             kind: "void",
-            cpp: `${receiver}post_message(bbl::js::serialize_message(${snapshot}${transferCpp}))`,
+            cpp: `${receiver}post_message(bbl::js::serialize_message(${snapshot}${transfer}))`,
         };
     }
     if (
         (worker || workerScope) &&
         (member === "addEventListener" || member === "removeEventListener")
     ) {
-        const event = node.arguments[0];
-        const callback = node.arguments[1];
-        if (
-            !event ||
-            !ts.isStringLiteralLike(event) ||
-            !["message", "error"].includes(event.text) ||
-            !callback ||
-            node.arguments.length > 3
-        ) {
-            return context.fail(
-                node,
-                "Worker listeners require an admitted event name and callback.",
-            );
-        }
-        if (workerScope && event.text === "error")
-            return context.fail(
-                node,
-                "WorkerGlobalScope error listeners are not yet admitted.",
-            );
-        let once = false;
-        const options = node.arguments[2];
-        if (options) {
-            if (!ts.isObjectLiteralExpression(options))
-                return context.fail(
-                    options,
-                    "Worker listener options must be a static record.",
-                );
-            for (const property of options.properties) {
-                if (
-                    !ts.isPropertyAssignment(property) ||
-                    context.propertyName(property.name) !== "once" ||
-                    ![
-                        ts.SyntaxKind.TrueKeyword,
-                        ts.SyntaxKind.FalseKeyword,
-                    ].includes(property.initializer.kind)
-                ) {
-                    return context.fail(
-                        property,
-                        "Only static once is admitted in Worker listener options.",
-                    );
-                }
-                once = property.initializer.kind === ts.SyntaxKind.TrueKeyword;
-            }
-        }
-        const compiled = context.asyncActivations.compileWorkerCallback(
-            callback,
-            event.text as "message" | "error",
+        return compileMessageListener(
+            context,
+            node,
+            member,
+            receiver,
+            ["message", "error"],
+            workerScope
+                ? "WorkerGlobalScope error listeners are not yet admitted."
+                : undefined,
         );
-        return {
-            kind: "void",
-            cpp: `${receiver}${member === "addEventListener" ? "add" : "remove"}_${event.text}_listener(${compiled}${member === "addEventListener" ? `, ${once}` : ""})`,
-        };
     }
     if (worker && member === "terminate" && node.arguments.length === 0)
         return { kind: "void", cpp: `${receiver}terminate()` };

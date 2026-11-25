@@ -5,6 +5,9 @@ export type HandleKind =
     | "dom-event-identity"
     | "worker-media-query"
     | "worker-mutation-observer"
+    | "message-port"
+    | "message-channel"
+    | "transferable"
     | AudioHandleKind
     | "engine"
     | "asset"
@@ -152,6 +155,10 @@ interface DataKinds {
     "offscreen-canvas-2d": { kind: "offscreen-canvas-2d" };
     /** A DOMRect an element's `getBoundingClientRect` measured (`dom-rects.ts`). */
     "dom-rect": { kind: "dom-rect" };
+    /** A 2D DOMMatrix, read only (`dom-geometry.ts`). */
+    "dom-matrix": { kind: "dom-matrix" };
+    /** A DOMPoint (`dom-geometry.ts`). */
+    "dom-point": { kind: "dom-point" };
     gpu: { kind: "gpu" };
     "gpu-adapter": { kind: "gpu-adapter" };
     "gpu-adapter-info": { kind: "gpu-adapter-info" };

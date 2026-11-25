@@ -25,6 +25,8 @@ export type UiAuthoredMarkupNode =
     | {
           readonly kind: "element";
           readonly tag: string;
+          /** An SVG element, created as createElementNS creates it. */
+          readonly svg?: true;
           readonly attributes: ReadonlyArray<{
               readonly name: string;
               readonly value: string;
@@ -49,7 +51,8 @@ const TAG_ATTRIBUTES: ReadonlyMap<string, ReadonlySet<string>> = new Map(
         h2: [],
         b: [],
         strong: [],
-        label: [],
+        // A label activates the control its `for` names, as `htmlFor` does.
+        label: ["for"],
         nav: [],
         // A link's activation navigates this browsing context only.
         a: ["href", "target"],
@@ -64,12 +67,20 @@ const TAG_ATTRIBUTES: ReadonlyMap<string, ReadonlySet<string>> = new Map(
             "max",
             "step",
             "placeholder",
+            "maxlength",
             "checked",
             "disabled",
         ],
         select: ["name", "disabled"],
         option: ["value", "selected", "disabled"],
-        textarea: ["name", "placeholder", "rows", "cols", "disabled"],
+        textarea: [
+            "name",
+            "placeholder",
+            "rows",
+            "cols",
+            "maxlength",
+            "disabled",
+        ],
     }).map(([tag, names]) => [tag, new Set(names)]),
 );
 
@@ -207,4 +218,84 @@ export function parseAuthoredMarkup(
         return result;
     };
     return convert(parseHtmlFragment(markup), undefined, false);
+}
+
+/** The SVG elements retained SVG holds: its root, shapes, texts and images. */
+export const RETAINED_SVG_TAGS: ReadonlySet<string> = new Set([
+    "svg",
+    "path",
+    "rect",
+    "circle",
+    "line",
+    "ellipse",
+    "polyline",
+    "polygon",
+    "text",
+    "textPath",
+    "image",
+]);
+
+const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
+
+/**
+ * The document an SVG element's innerHTML parses in: the markup inside an
+ * `<svg>`, which Chromium parses in that element's context. Content that
+ * breaks out of it (an HTML element) becomes the svg's sibling.
+ */
+export function svgContentDocument(markup: string): string {
+    return `<svg>${markup}</svg>`;
+}
+
+/**
+ * Markup assigned to an SVG element's innerHTML: the retained SVG children
+ * createElementNS and setAttribute would build, whose attributes the
+ * retained SVG checks as it does theirs. Whitespace between shapes renders
+ * nothing and is not retained; other text belongs to a text.
+ */
+export function parseAuthoredSvgMarkup(
+    markup: string,
+    fail: (message: string) => never,
+): UiAuthoredMarkupNode[] {
+    const parsed = parseHtmlFragment(svgContentDocument(markup));
+    const root = parsed.length === 1 ? parsed[0] : undefined;
+    if (
+        root === undefined ||
+        !("namespace" in root) ||
+        root.namespace !== SVG_NAMESPACE
+    )
+        fail("on an SVG element holds HTML content, which retained SVG lacks.");
+    const convert = (
+        nodes: readonly HtmlFragmentNode[],
+        parent: string | undefined,
+    ): UiAuthoredMarkupNode[] => {
+        const result: UiAuthoredMarkupNode[] = [];
+        const inText = parent === "text" || parent === "textPath";
+        for (const node of nodes) {
+            if ("comment" in node)
+                fail(
+                    "on an SVG element has comments, which retained elements do not hold.",
+                );
+            if (node.tag === undefined) {
+                if (inText) result.push({ kind: "text", text: node.text });
+                else if (node.text.trim().length > 0)
+                    fail("on an SVG element has text outside a <text>.");
+                continue;
+            }
+            if (node.tag === "svg" || !RETAINED_SVG_TAGS.has(node.tag))
+                fail(
+                    `tag '<${node.tag}>' is outside the retained SVG shape, text and image subset.`,
+                );
+            result.push({
+                kind: "element",
+                tag: node.tag,
+                svg: true,
+                attributes: Object.entries(node.attributes ?? {}).map(
+                    ([name, value]) => ({ name, value }),
+                ),
+                children: convert(node.children ?? [], node.tag),
+            });
+        }
+        return result;
+    };
+    return convert(root.children ?? [], undefined);
 }

@@ -9,7 +9,7 @@ import { BIGINT_ARRAY_KINDS } from "./data-types/typed-arrays.js";
 import { pinOperand } from "./evaluation-order.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { expressionMayRunCode, isUpdateExpression } from "./syntax.js";
-import { isStringValue, type Value } from "./types.js";
+import { isBooleanValue, isStringValue, type Value } from "./types.js";
 import { valueKinds } from "./type-facts.js";
 import { libraryStaticMember } from "./symbols.js";
 
@@ -236,7 +236,7 @@ function compileBigIntCall(
     if (value.dataType?.kind === "bigint") return value;
     if (value.kind === "number" || value.dataType?.kind === "number")
         return context.dataValue(bigintFromNumberCpp(value.cpp), bigintType);
-    if (value.kind === "boolean" || value.dataType?.kind === "boolean")
+    if (isBooleanValue(value))
         return context.dataValue(
             `bbl::js::BigInt(std::int64_t{(${value.cpp}) ? 1 : 0})`,
             bigintType,

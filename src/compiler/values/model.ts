@@ -2,8 +2,11 @@ import type ts from "typescript";
 import { cppIdentifierPattern, stringLiteral } from "../../cpp-literals.js";
 import { writable } from "../emission-transaction.js";
 import { isHandleKind } from "../data-types/handles.js";
-import type { DataType } from "../data-types/model.js";
-import { isUndefinedDataType } from "../data-types/operations.js";
+import type { DataType, HandleKind } from "../data-types/model.js";
+import {
+    isUndefinedDataType,
+    presentDataType,
+} from "../data-types/operations.js";
 import type { ValueBase, ValueFields, ValueKind } from "../types.js";
 import type { ValuePayloads } from "./payloads.js";
 import {
@@ -96,6 +99,29 @@ export function scalarFacts(
             ? { staticBoolean: value.staticBoolean }
             : {}),
     };
+}
+
+/**
+ * Whether a value is never `null` or `undefined`: one carrying that fact
+ * (`neverNullish`), or a number, string or boolean generation knows.
+ */
+export function neverNullish(value: Value): boolean {
+    return value.neverNullish === true || hasScalarFacts(value);
+}
+
+/**
+ * Whether an argument binds a parameter as present: a value never nullish
+ * (`neverNullish`), or a number, string or boolean whose storage has no
+ * absent state, which converting it to the parameter keeps.
+ */
+export function bindsPresent(value: Value): boolean {
+    const kind = value.kind === "data" ? value.dataType?.kind : value.kind;
+    return (
+        neverNullish(value) ||
+        kind === "number" ||
+        kind === "string" ||
+        kind === "boolean"
+    );
 }
 
 /** Whether a value carries a generation-known string, number or boolean. */
@@ -496,6 +522,15 @@ export function isAbsentValue(value: Value): boolean {
 }
 
 /**
+ * Whether generation has proven a value present where its storage could
+ * hold an absence (a parsed document's member): a case split's arm found it,
+ * or the value is never nullish (`neverNullish`, `doc.v ?? 0.2`).
+ */
+export function valueProvenPresent(value: Value): boolean {
+    return value.optionalFoundCpp === "true" || neverNullish(value);
+}
+
+/**
  * A value that cannot be absent: an element the host holds, whatever storage
  * it was kept in, or a value with no presence to test that is not `null`.
  */
@@ -560,6 +595,34 @@ export function nativeDataMetadata(value: Value | undefined): ValueFields {
         ...metadata
     } = value;
     return metadata;
+}
+
+/** The engine handle a value holds: its present handle storage, or its own handle kind. */
+export function heldHandle(value: {
+    readonly kind: string;
+    readonly dataType?: DataType | undefined;
+}): DataType<"handle"> | undefined {
+    const stored = presentDataType(value.dataType);
+    if (stored?.kind === "handle") return stored;
+    return isHandleKind(value.kind)
+        ? { kind: "handle", handle: value.kind }
+        : undefined;
+}
+
+/** The engine object a value holds (`heldHandle`). */
+export function heldHandleKind(value: {
+    readonly kind: string;
+    readonly dataType?: DataType | undefined;
+}): HandleKind | undefined {
+    return heldHandle(value)?.handle;
+}
+
+/** Whether a value holds a material: a material itself, or a material handle stored as data. */
+export function holdsMaterial(value: {
+    readonly kind: string;
+    readonly dataType?: DataType | undefined;
+}): boolean {
+    return heldHandleKind(value) === "material";
 }
 
 /** Whether a material value is a PBR material's: a scene creation or a loaded asset's. */

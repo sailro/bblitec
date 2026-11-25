@@ -16,6 +16,7 @@ import {
     libraryName,
     calledDeclaration,
     calledFunction,
+    calledOrigin,
     namedMember,
     libraryStaticMember,
 } from "./symbols.js";
@@ -42,6 +43,7 @@ import {
     testsTruthinessOnly,
     functionOfDeclaration,
     hasExportModifier,
+    isFunctionWithBody,
     isSupportedFunction,
     isValueReference,
     type SupportedFunction,
@@ -51,12 +53,14 @@ import {
     yieldedOperands,
     ANY_KEY,
     jsonScalarLiteral,
+    wrappedParent,
     notJson,
 } from "./syntax.js";
 import { pathStartsWith, type KeyPath } from "./projections.js";
 import {
     isTypeReference,
     nullability,
+    presentMembers,
     stringLiteralValues,
     typeCanCarryReference,
     unionMembers,
@@ -381,21 +385,52 @@ function patternSource(element: ts.BindingElement):
     }
 }
 
-/** Whether a member read is of a member that may be absent, where TypeScript proves it present. */
-function narrowedPresent(
-    checker: ts.TypeChecker,
-    node: ts.PropertyAccessExpression,
-): boolean {
-    const symbol = resolvedSymbol(checker, node.name);
+/**
+ * Whether a binding or member read may be absent where TypeScript proves it
+ * present: its declared type is nullable or optional, or some member of its
+ * receiver's declared union lacks it, while the read's type is neither null
+ * nor undefined and each member of the receiver's narrowed type declares it.
+ */
+function narrowedPresent(checker: ts.TypeChecker, node: ts.Node): boolean {
+    const member = ts.isPropertyAccessExpression(node) ? node : undefined;
+    if (!member && !ts.isIdentifier(node)) return false;
+    const symbol = resolvedSymbol(checker, member ? member.name : node);
     if (!symbol) return false;
-    const declared = nullability(checker.getTypeOfSymbol(symbol));
     const read = nullability(checker.getTypeAtLocation(node));
+    if (read.undefined || read.null) return false;
+    const declared = nullability(checker.getTypeOfSymbol(symbol));
+    if (
+        declared.undefined ||
+        declared.null ||
+        (symbol.flags & ts.SymbolFlags.Optional) !== 0
+    )
+        return true;
+    if (!member) return false;
+    // A discriminant test (`if (p.kind === "a") p.icon`) leaves out the
+    // members of the receiver's union that lack the member; a cast proves
+    // nothing.
+    const receiver = member.expression;
+    const reference =
+        ts.isIdentifier(receiver) || ts.isPropertyAccessExpression(receiver)
+            ? resolvedSymbol(
+                  checker,
+                  ts.isIdentifier(receiver) ? receiver : receiver.name,
+              )
+            : undefined;
+    const name = member.name.text;
+    const declares = (type: ts.Type): boolean => {
+        const property = type.getProperty(name);
+        return (
+            property !== undefined &&
+            (property.flags & ts.SymbolFlags.Optional) === 0
+        );
+    };
     return (
-        (declared.undefined ||
-            declared.null ||
-            (symbol.flags & ts.SymbolFlags.Optional) !== 0) &&
-        !read.undefined &&
-        !read.null
+        reference !== undefined &&
+        presentMembers(checker.getTypeOfSymbol(reference)).some(
+            (type) => !declares(type),
+        ) &&
+        presentMembers(checker.getTypeAtLocation(receiver)).every(declares)
     );
 }
 
@@ -1335,6 +1370,15 @@ class StringDomain {
     /** @unjournaled Traversal budget for one domain query, discarded with that query. */
     private remaining = 16384;
     /**
+     * @unjournaled The calls through function values one domain query reads
+     * (`calledValue`), discarded with that query: each by the projection step
+     * standing for it, with the environment of its arguments.
+     */
+    private readonly callSteps = new Map<
+        string,
+        { readonly call: ts.CallExpression; readonly environment: Environment }
+    >();
+    /**
      * @unjournaled The projection lengths where an enclosing `??` replaces
      * the value read: an inner one (`queue.shift() ?? null`) leaves the
      * outer ones replacing what they read. Operands of string operations
@@ -1594,6 +1638,25 @@ class StringDomain {
     }
 
     /**
+     * Whether `key` is a member no shape of `node`'s type, as narrowed
+     * there, declares: each shape is an object type without an index
+     * signature, and none an array.
+     */
+    private lacksMember(node: ts.Expression, key: string): boolean {
+        const checker = this.context.checker;
+        const type = checker.getNonNullableType(
+            checker.getTypeAtLocation(node),
+        );
+        return unionMembers(type).every(
+            (shape) =>
+                (shape.flags & ts.TypeFlags.Object) !== 0 &&
+                !checker.isArrayLikeType(shape) &&
+                checker.getIndexInfosOfType(shape).length === 0 &&
+                !shape.getProperty(key),
+        );
+    }
+
+    /**
      * The closed set of names a run-time key holds, each a member it reads;
      * undefined for an unknown or open key, or one that may be an index.
      */
@@ -1683,6 +1746,23 @@ class StringDomain {
             const deployed = browserDeploymentValue(this.context, node);
             if (typeof deployed === "string") return [deployed];
         }
+        // A binding or member TypeScript narrows to present where it is read
+        // (`if (icon) img.src = icon`, `opts.url ? load(opts.url) : none`,
+        // `if (p.kind === "a") use(p.icon)`) is not undefined there: an
+        // omitted argument, a nullish literal or a record lacking it never
+        // reaches the read, as under `??`.
+        if (
+            !this.nullishDepths.includes(projection.length) &&
+            narrowedPresent(this.context.checker, node)
+        ) {
+            const nullishDepths = this.nullishDepths;
+            this.nullishDepths = [...nullishDepths, projection.length];
+            try {
+                return this.value(node, projection, environment);
+            } finally {
+                this.nullishDepths = nullishDepths;
+            }
+        }
         if (ts.isIdentifier(node)) {
             const symbol = resolvedSymbol(this.context.checker, node);
             if (!symbol) return undefined;
@@ -1734,37 +1814,34 @@ class StringDomain {
                 ts.isIdentifier(test) &&
                 resolvedSymbol(this.context.checker, test);
             const narrows = tested && !this.truthy.has(tested);
+            // An arm whose type, as the condition narrows it, declares the
+            // member read in no shape holds no string there: it adds
+            // nothing, whatever its own source. (A call step reads what a
+            // function value returns, not a member.)
+            // A spread arm lacking the member leaves the value an earlier
+            // member gave it in place instead, so a spread operand reads both.
+            const [key] = projection;
+            const consumer = wrappedParent(node);
+            const spread =
+                ts.isSpreadAssignment(consumer) || ts.isSpreadElement(consumer);
+            const arm = (expression: ts.Expression): Domain =>
+                key !== undefined &&
+                !spread &&
+                !this.callSteps.has(key) &&
+                this.lacksMember(expression, key)
+                    ? nothing
+                    : this.read(expression, projection, environment);
             return this.union([
                 () => {
                     if (narrows) this.truthy.add(tested);
                     try {
-                        return this.read(
-                            node.whenTrue,
-                            projection,
-                            environment,
-                        );
+                        return arm(node.whenTrue);
                     } finally {
                         if (narrows) this.truthy.delete(tested);
                     }
                 },
-                () => this.read(node.whenFalse, projection, environment),
+                () => arm(node.whenFalse),
             ]);
-        }
-        // An optional member TypeScript narrows to present where it is read
-        // (`opts.url ? load(opts.url) : none`) is not undefined there: a
-        // record lacking it never reaches the read, as under `??`.
-        if (
-            ts.isPropertyAccessExpression(node) &&
-            !this.nullishDepths.includes(projection.length) &&
-            narrowedPresent(this.context.checker, node)
-        ) {
-            const nullishDepths = this.nullishDepths;
-            this.nullishDepths = [...nullishDepths, projection.length];
-            try {
-                return this.member(node, projection, environment);
-            } finally {
-                this.nullishDepths = nullishDepths;
-            }
         }
         return this.member(node, projection, environment);
     }
@@ -2187,7 +2264,9 @@ class StringDomain {
                 }),
             );
         }
-        return undefined;
+        return declaration && isFunctionWithBody(declaration)
+            ? this.calledAt(declaration, projection, environment)
+            : undefined;
     }
 
     private member(
@@ -2235,6 +2314,8 @@ class StringDomain {
                 environment,
             );
         }
+        if (isFunctionLiteral(node) && projection.length)
+            return this.calledAt(node, projection, environment);
         const key = projection[0];
         if (
             ts.isObjectLiteralExpression(node) &&
@@ -2257,7 +2338,14 @@ class StringDomain {
                     break;
             }
             const writer = members[last];
-            if (writer && (writer.key === undefined || !writer.value))
+            const method =
+                writer?.kind === "method" && ts.isMethodDeclaration(writer.node)
+                    ? writer.node
+                    : undefined;
+            if (
+                writer &&
+                (writer.key === undefined || (!writer.value && !method))
+            )
                 return undefined;
             const spreads = members
                 .slice(last + 1)
@@ -2266,19 +2354,21 @@ class StringDomain {
                 );
             const value = writer?.value;
             const written = (): Domain =>
-                value
-                    ? this.inSpreadSource(false, () =>
-                          this.read(value, projection.slice(1), environment),
-                      )
-                    : // A record without the member reads undefined, so a
-                      // read through it throws (or, spread, supplies nothing).
-                      // A member the record's type requires is a spread's.
-                      this.spreadSource ||
-                        (projection.length > 1 && !this.optionalProjection) ||
-                        this.nullishDepths.includes(projection.length - 1) ||
-                        (spreads.length > 0 && this.requiredMember(node, key))
-                      ? nothing
-                      : undefined;
+                method
+                    ? this.calledAt(method, projection.slice(1), environment)
+                    : value
+                      ? this.inSpreadSource(false, () =>
+                            this.read(value, projection.slice(1), environment),
+                        )
+                      : // A record without the member reads undefined, so a
+                        // read through it throws (or, spread, supplies nothing).
+                        // A member the record's type requires is a spread's.
+                        this.spreadSource ||
+                          (projection.length > 1 && !this.optionalProjection) ||
+                          this.nullishDepths.includes(projection.length - 1) ||
+                          (spreads.length > 0 && this.requiredMember(node, key))
+                        ? nothing
+                        : undefined;
             return spreads.length
                 ? this.union([
                       written,
@@ -2495,14 +2585,19 @@ class StringDomain {
         );
     }
 
-    /** What a call of `declaration` returns, its parameters reading the call's arguments. */
+    /**
+     * What a call of `declaration` returns, its parameters reading the call's
+     * arguments in `environment` and its other names in `scope`, the
+     * environment the function value was read in.
+     */
     private invoked(
         declaration: SupportedFunction,
         call: ts.CallExpression,
         projection: KeyPath,
         environment: Environment,
+        scope: Environment = environment,
     ): Domain {
-        const nested = new Map(environment);
+        const nested = new Map(scope);
         for (const [index, parameter] of declaration.parameters.entries()) {
             // A pattern's names read what every call passes (`patternSource`).
             if (!ts.isIdentifier(parameter.name)) continue;
@@ -2541,6 +2636,45 @@ class StringDomain {
                 });
         }
         return this.returned(declaration, projection, nested);
+    }
+
+    /**
+     * A call through a function value (a parameter, a record's member): the
+     * callee is read with a call step first, so each function it can hold
+     * returns what the call reads (`calledAt`).
+     */
+    private calledValue(
+        call: ts.CallExpression,
+        projection: KeyPath,
+        environment: Environment,
+    ): Domain {
+        const step = `\u0002call${this.callSteps.size}`;
+        this.callSteps.set(step, { call, environment });
+        return this.read(call.expression, [step, ...projection], environment);
+    }
+
+    /**
+     * What `fn` returns where the read calls it (`calledValue`); undefined
+     * for any other read of a function.
+     */
+    private calledAt(
+        fn: SupportedFunction,
+        projection: KeyPath,
+        environment: Environment,
+    ): Domain {
+        const step =
+            projection[0] === undefined
+                ? undefined
+                : this.callSteps.get(projection[0]);
+        return step
+            ? this.invoked(
+                  fn,
+                  step.call,
+                  projection.slice(1),
+                  step.environment,
+                  environment,
+              )
+            : undefined;
     }
 
     /**
@@ -2655,11 +2789,15 @@ class StringDomain {
                 ? this.throughReceiver(entered.expression, invoked)
                 : (invoked() ?? this.executed(call, projection, environment));
         }
+        const authored = calledOrigin(this.context.checker, call) === "program";
         const callee = namedMember(
             this.context.checker,
             unwrapExpression(call.expression),
         );
-        if (!callee) return undefined;
+        if (!callee)
+            return authored
+                ? this.calledValue(call, projection, environment)
+                : undefined;
         const method = callee.name;
         // A method of a record a call built is that record's own.
         const built = this.builtRecordMethods(
@@ -2674,6 +2812,7 @@ class StringDomain {
                         this.invoked(own, call, projection, environment),
                 ),
             );
+        if (authored) return this.calledValue(call, projection, environment);
         if (
             method === "get" &&
             isLibraryMap(this.context.checker, callee.expression)
@@ -2715,9 +2854,12 @@ class StringDomain {
         const receiverType = this.context.checker.getTypeAtLocation(
             callee.expression,
         );
+        // `xs?.map(f)` maps the array it reads when one is there.
+        const presentReceiver =
+            this.context.checker.getNonNullableType(receiverType);
         const array =
-            this.context.checker.isArrayType(receiverType) ||
-            this.context.checker.isTupleType(receiverType);
+            this.context.checker.isArrayType(presentReceiver) ||
+            this.context.checker.isTupleType(presentReceiver);
         if (array && ["find", "at", "pop", "shift"].includes(method))
             return this.read(
                 callee.expression,

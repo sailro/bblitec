@@ -45,6 +45,53 @@ test("decoder setup preserves application locations for packaging", () => {
     );
 });
 
+test("decoder URLs spread from a closed call run at generation", () => {
+    // A helper builds the transcoder table in a loop (`??=` then an element
+    // write) and returns the URL and table as the call's arguments.
+    const directory = resolve("artifacts/decoder-configuration/public");
+    const result = compileSource(
+        `
+        import {setKtx2DecoderUrl} from "@babylonjs/lite";
+        const FILES: readonly { file: string; module?: readonly [string, string] }[] = [
+            { file: "ktx2.js" },
+            { file: "basis.wasm", module: ["MSCTranscoder", "WasmModuleURL"] },
+            { file: "zstd.wasm", module: ["ZSTDDecoder", "WasmModuleURL"] },
+        ];
+        function decoder(url: (file: string) => string): [string, Record<string, Record<string, string>>] {
+            const modules: Record<string, Record<string, string>> = {};
+            for (const { file, module } of FILES) if (module) (modules[module[0]] ??= {})[module[1]] = url(file);
+            return [url("ktx2.js"), modules];
+        }
+        setKtx2DecoderUrl(...decoder((file) => "/decoders/" + file));
+    `,
+        { publicDir: directory },
+    );
+    assert.deepEqual(result.manifest.assetDecoders, {
+        ktx2: {
+            javascript: resolve(directory, "decoders/ktx2.js"),
+            wasmUrls: {
+                MSCTranscoder: {
+                    WasmModuleURL: resolve(directory, "decoders/basis.wasm"),
+                },
+                ZSTDDecoder: {
+                    WasmModuleURL: resolve(directory, "decoders/zstd.wasm"),
+                },
+            },
+        },
+    });
+    // A spread beside other arguments, or of a non-call, is refused.
+    assert.throws(
+        () =>
+            compileSource(
+                `import {setKtx2DecoderUrl} from "@babylonjs/lite";
+                const urls: [string] = ["/decoder.js"];
+                setKtx2DecoderUrl(...urls);`,
+                { publicUrl: "https://cdn.example.invalid/" },
+            ),
+        /from a call generation can run/,
+    );
+});
+
 test("decoder setup refuses runtime selection and retained mutable overrides", () => {
     const imports =
         'import {setKtx2DecoderUrl,setDracoBaseUrl} from "@babylonjs/lite";';

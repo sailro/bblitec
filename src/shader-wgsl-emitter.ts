@@ -6,6 +6,7 @@ import type {
     ShaderExpression,
     ShaderFunction,
     ShaderIrProgram,
+    ShaderPrivate,
     ShaderStage,
     ShaderStatement,
     ShaderStruct,
@@ -224,11 +225,18 @@ function emitConstant(constant: ShaderConstant): string {
     return `const ${constant.name}${constant.type ? `: ${constant.type}` : ""} = ${emitExpression(constant.value)};`;
 }
 
-/** A module's constants and helper functions, each block followed by a blank line. */
+function emitPrivate(variable: ShaderPrivate): string {
+    return `var<private> ${variable.name}: ${variable.type}${variable.value ? ` = ${emitExpression(variable.value)}` : ""};`;
+}
+
+/** A module's constants, private variables and helper functions, each block followed by a blank line. */
 function emitHelpers(module: ShaderModule): string[] {
     return [
         ...(module.constants?.length
             ? [...module.constants.map(emitConstant), ""]
+            : []),
+        ...(module.privates?.length
+            ? [...module.privates.map(emitPrivate), ""]
             : []),
         ...(module.functions ?? []).flatMap((fn) => [emitWgslFunction(fn), ""]),
     ];

@@ -198,8 +198,7 @@ check(
 test("property union admission does not conflate absent keys with empty payloads", () => {
     const frontend = createCompilerProgram(
         `type Nullable={value:null}|{next:Nullable};
-         type Undefined={value:undefined}|{next:Undefined};
-         type Optional={value?:number}|{next:Optional};`,
+         type Undefined={value:undefined}|{next:Undefined};`,
         resolve("property-union-presence.ts"),
     );
     const registry = new DataTypeRegistry(
@@ -226,6 +225,29 @@ test("property union admission does not conflate absent keys with empty payloads
         definitions: [],
     });
 });
+
+// An optional key one member lacks is absent in its empty slot.
+check(
+    "recursive-optional-key-union-presence",
+    `
+    type Optional={value?:number}|{next:Optional};
+    const list:Optional[]=[];
+    const count=Math.random()<2?4:0;
+    for(let i=0;i<count;i++){
+        if(i===0)list.push({});
+        else if(i===1)list.push({value:2});
+        else if(i===2)list.push({next:{}});
+        else list.push({next:{next:{value:1}}});
+    }
+    let own=0,nexts=0,total=0;
+    for(let item of list){
+        if('value' in item)own++;
+        while('next' in item){nexts++;item=item.next;}
+        if('value' in item)total+=item.value??0;
+    }
+    if(own!==1||nexts!==3||total!==3)throw new Error('optional key presence '+own+' '+nexts+' '+total);
+`,
+);
 
 test("declined recursive layouts roll back provisional identities and nested definitions", () => {
     const frontend = createCompilerProgram(

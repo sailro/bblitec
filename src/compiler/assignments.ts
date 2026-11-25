@@ -35,7 +35,14 @@ interface DirectPropertyAssignment {
 type RecordFieldAssignment = (
     | {
           kind: "material";
-          materialFamily: "standard" | "pbr" | "standard-or-pbr";
+          /** The families whose records the write is the pin's member of; `any` keeps it for every family. */
+          materialFamily: "standard" | "pbr" | "standard-or-pbr" | "any";
+          /**
+           * The record lane keeping the material's own property as the
+           * program sees it (absent until written), beside the `field` the
+           * family's writer reads, where the program can read it back.
+           */
+          source?: string;
       }
     | {
           kind: "camera-ortho" | "mesh" | "shadow-generator-config";
@@ -202,11 +209,14 @@ const recordFieldAssignments: readonly RecordFieldAssignment[] = [
         value: "number",
     },
     {
+        // Every material keeps its own `environmentIntensity`; a PBR draw
+        // reads the writer's `?? 1` of it.
         kind: "material",
-        materialFamily: "pbr",
+        materialFamily: "any",
         property: "environmentIntensity",
         collection: "materials",
         field: "environment_intensity",
+        source: "source_environment_intensity",
         value: "number",
     },
     {
@@ -671,6 +681,7 @@ export interface AssignmentContext
             | "isInRuntimeControlFlow"
             | "checker"
             | "program"
+            | "engineObjectProperties"
             | "expectStaticArrayElements"
             | "classLowerer"
             | "classOf"
@@ -1264,130 +1275,6 @@ function emitSpriteLayerViewAssignment(
     return true;
 }
 
-function optionalNumberPropertyInAssertion(
-    type: ts.TypeNode,
-    property: string,
-): boolean {
-    if (ts.isParenthesizedTypeNode(type)) {
-        return optionalNumberPropertyInAssertion(type.type, property);
-    }
-    if (ts.isIntersectionTypeNode(type)) {
-        return type.types.some((member) =>
-            optionalNumberPropertyInAssertion(member, property),
-        );
-    }
-    if (!ts.isTypeLiteralNode(type)) return false;
-    return type.members.some((member) => {
-        if (
-            !ts.isPropertySignature(member) ||
-            !member.questionToken ||
-            member.type?.kind !== ts.SyntaxKind.NumberKeyword
-        ) {
-            return false;
-        }
-        return propertyKey(member.name) === property;
-    });
-}
-
-function explicitOptionalNumberExpandoOwner(
-    expression: ts.Expression,
-    property: string,
-): ts.Expression | undefined {
-    const asserted = wrappersUnder(expression).find(isTypeAssertion);
-    if (!asserted) return undefined;
-    if (!optionalNumberPropertyInAssertion(asserted.type, property)) {
-        return undefined;
-    }
-    return asserted.expression;
-}
-
-function propertyAccessName(node: ts.Node): string | undefined {
-    return ts.isPropertyAccessExpression(node) ||
-        ts.isElementAccessExpression(node)
-        ? accessKey(node)
-        : undefined;
-}
-
-function isSimplePropertyWrite(node: ts.Node): boolean {
-    return (
-        ts.isBinaryExpression(node.parent) &&
-        node.parent.left === node &&
-        node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
-    );
-}
-
-/**
- * Erase an explicitly declared optional expando that the source only writes.
- *
- * A TypeScript intersection may widen a pinned resource with a JavaScript-own
- * property that Babylon Lite neither declares nor reads. Native handles are
- * not general JavaScript objects, so retaining arbitrary property bags would
- * give every resource a run-time dictionary for a value with no observer.
- * The fold is valid only when all of the following are proven from the source:
- * the assertion spells the optional numeric member directly, the pinned owner
- * type does not declare it, and no property access with that name is read.
- * The right-hand side is still compiled and discarded so its evaluation is
- * not lost.
- */
-function emitWriteOnlyNumberExpandoAssignment(
-    context: AssignmentContext,
-    expression: ts.BinaryExpression,
-    left: ts.PropertyAccessExpression,
-): boolean {
-    const property = left.name.text;
-    const assertedOwner = explicitOptionalNumberExpandoOwner(
-        left.expression,
-        property,
-    );
-    if (!assertedOwner) return false;
-
-    const ownerExpression = context.unwrap(assertedOwner);
-    if (!ts.isIdentifier(ownerExpression)) return false;
-    const owner = context.bindings.lookup(ownerExpression);
-    if (owner.kind !== "mesh") return false;
-
-    // This is an expando only when the type before the assertion did not expose
-    // the member. A cast that merely widens or re-spells a real pinned property
-    // must continue through its ordinary lowering contract.
-    if (
-        context.checker.getTypeAtLocation(ownerExpression).getProperty(property)
-    ) {
-        return false;
-    }
-
-    let observed: ts.Node | undefined;
-    const visit = (node: ts.Node): void => {
-        if (observed) return;
-        if (
-            node !== left &&
-            propertyAccessName(node) === property &&
-            !isSimplePropertyWrite(node)
-        ) {
-            observed = node;
-            return;
-        }
-        ts.forEachChild(node, visit);
-    };
-    visit(expression.getSourceFile());
-    if (observed) {
-        context.fail(
-            observed,
-            `Optional expando property '${property}' is read, so its assignment cannot be erased.`,
-        );
-    }
-
-    requireSimpleAssignment(
-        context,
-        expression,
-        `optional expando ${property}`,
-    );
-    context.emit({
-        kind: "expression",
-        code: `static_cast<void>(${context.compileNumber(expression.right, "double")});`,
-    });
-    return true;
-}
-
 /**
  * The one refusal a second write to an already-wired class field takes.
  *
@@ -1714,9 +1601,6 @@ export function emitPropertyAssignment(
             });
             return;
         }
-    }
-    if (emitWriteOnlyNumberExpandoAssignment(context, expression, left)) {
-        return;
     }
     if (operator === "=") {
         const owner =
@@ -2536,6 +2420,9 @@ export function emitPropertyAssignment(
         return;
     }
 
+    // A property nothing above claims is, on an engine object, one the
+    // program adds to it.
+    if (context.engineObjectProperties.assign(expression)) return;
     requireWrittenRecordStorage(context, left);
     context.fail(left, `Unsupported property assignment '${left.getText()}'.`);
 }
@@ -2943,10 +2830,6 @@ import {
 import {
     argumentAt,
     expressionHasEffects,
-    isTypeAssertion,
-    wrappersUnder,
-    accessKey,
-    propertyKey,
     unwrapExpression,
     outermostWrapper,
     valueConsumer,
@@ -3489,9 +3372,10 @@ function emitTargetPropertyAssignment(
                 return true;
             }
             if (
-                !family ||
-                (recordField.materialFamily !== "standard-or-pbr" &&
-                    recordField.materialFamily !== family)
+                recordField.materialFamily !== "any" &&
+                (!family ||
+                    (recordField.materialFamily !== "standard-or-pbr" &&
+                        recordField.materialFamily !== family))
             ) {
                 context.fail(
                     left,
@@ -3514,6 +3398,42 @@ function emitTargetPropertyAssignment(
             `${context.requireEngine(target, expression)}.${recordField.collection}`,
             target.cpp,
         );
+        if (
+            recordField.kind === "material" &&
+            recordField.source &&
+            typeof recordField.field === "string" &&
+            !propertyNeverRead(
+                context.program,
+                context.checker,
+                recordField.property,
+            )
+        ) {
+            // The number the property holds after the write, an absent one
+            // reading as undefined (NaN to a compound operator), stored in
+            // the lane and, at the writer's width, in its field.
+            const lane = `${record}.${recordField.source}`;
+            const field = recordField.field;
+            const store = (value: string): string =>
+                `${record}.${field} = static_cast<float>(*(${lane} = ${value}));`;
+            if (operator === "=")
+                context.emit({
+                    kind: "expression",
+                    code: store(
+                        context.compileNumber(expression.right, "double"),
+                    ),
+                });
+            else
+                context.dataLowerer.emitNumericCompound(
+                    expression.left,
+                    expression.right,
+                    operator,
+                    lane,
+                    `${lane}.value_or(std::numeric_limits<double>::quiet_NaN())`,
+                    store,
+                    false,
+                );
+            return true;
+        }
         if (recordField.value === "number2") {
             const elements = context.unwrap(
                 context.resolveStaticExpression(expression.right),

@@ -76,8 +76,8 @@ inline void ui_validate_svg_attribute(const UiElementRecord& record, std::string
     const bool common =
         one_of({"id", "class", "fill", "stroke", "stroke-width", "stroke-linecap",
                 "stroke-linejoin", "stroke-opacity", "fill-opacity", "paint-order", "opacity"});
-    const bool root = record.tag == "svg" && one_of({"viewBox", "width", "height", "xmlns", "style",
-                                                     "aria-hidden", "hidden"});
+    const bool root =
+        record.tag == "svg" && one_of({"viewBox", "width", "height", "xmlns", "style", "hidden"});
     const bool path = record.tag == "path" && name == "d";
     const bool rectangle =
         record.tag == "rect" && one_of({"x", "y", "width", "height", "rx", "ry"});
@@ -85,15 +85,18 @@ inline void ui_validate_svg_attribute(const UiElementRecord& record, std::string
     const bool line = record.tag == "line" && one_of({"x1", "y1", "x2", "y2"});
     const bool ellipse = record.tag == "ellipse" && one_of({"cx", "cy", "rx", "ry"});
     const bool polygon = (record.tag == "polyline" || record.tag == "polygon") && name == "points";
+    const bool image = record.tag == "image" &&
+                       one_of({"href", "x", "y", "width", "height", "preserveAspectRatio"});
     const bool typeset =
         (record.tag == "text" || record.tag == "textPath") &&
         one_of({"font-size", "font-family", "font-weight", "letter-spacing", "text-anchor"});
     const bool text = record.tag == "text" && one_of({"x", "y", "dx", "dy"});
     const bool text_path = record.tag == "textPath" && one_of({"href", "startOffset"});
-    // Data attributes carry no rendering.
+    // Data and accessibility attributes carry no rendering; tabindex orders focus.
     const bool data = name.starts_with("data-");
-    if (!(common || root || path || rectangle || circle || line || ellipse || polygon || typeset ||
-          text || text_path || data))
+    const bool interaction = name == "tabindex" || name == "role" || name.starts_with("aria-");
+    if (!(common || root || path || rectangle || circle || line || ellipse || polygon || image ||
+          typeset || text || text_path || data || interaction))
         throw std::runtime_error("Unsupported retained SVG attribute '" + std::string(name) +
                                  "' on <" + record.tag + ">.");
     if (name == "fill" || name == "stroke") {
@@ -109,6 +112,12 @@ inline void ui_validate_svg_attribute(const UiElementRecord& record, std::string
     }
     if (name == "xmlns" && value != "http://www.w3.org/2000/svg")
         throw std::runtime_error("Retained SVG xmlns cannot change namespace.");
+    if (image && name == "href") {
+        const auto lower = js::string_lower(std::string(value));
+        if (lower.find_first_of(":?#") != std::string::npos ||
+            !(lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg")))
+            throw std::runtime_error("A retained SVG <image> href is a packaged PNG or JPEG path.");
+    }
 }
 
 /** The retained matcher inspects shape styles without inventing RmlUi child elements. */
@@ -303,6 +312,8 @@ inline UiSvgMarkup ui_svg_markup(const Engine& engine, UiElementHandle root_hand
         Presentation values;
         std::function<std::string(const std::string&)> element;
         UiSvgHitShape hit;
+        // A raster image takes no paint: it is a literal paint currentColor cannot tint.
+        bool raster = false;
     };
     // pointer-events: auto is visiblePainted (SVG 1.1 §16.6), the one painted form represented.
     // As for HTML elements, a reached pointer listener opts an element in unless a declaration
@@ -490,9 +501,15 @@ inline UiSvgMarkup ui_svg_markup(const Engine& engine, UiElementHandle root_hand
                 names.push_back(name);
         }
         std::sort(names.begin(), names.end());
-        for (const auto& name : names)
-            geometry += " " + name + "=\"" + ui_escape_rml(child.attributes.at(name)) + "\"";
         const std::string tag = child.tag;
+        const bool raster = tag == "image";
+        if (raster && !(child.attributes.contains("href") && child.attributes.contains("width") &&
+                        child.attributes.contains("height")))
+            throw std::runtime_error("A retained SVG <image> requires an href, width and height.");
+        // The UI PAL inlines a packaged image's bytes where `data-bbl-href` names it.
+        for (const auto& name : names)
+            geometry += " " + (raster && name == "href" ? std::string("data-bbl-href") : name) +
+                        "=\"" + ui_escape_rml(child.attributes.at(name)) + "\"";
         // Painted geometry: a fill area (a line has none) and a stroke band of its width.
         UiSvgHitShape hit;
         hit.target = handle;
@@ -506,6 +523,20 @@ inline UiSvgMarkup ui_svg_markup(const Engine& engine, UiElementHandle root_hand
                                      "> taking the pointer needs geometry its hit test "
                                      "flattens (M/L/H/V/A/C/S/Q/T/Z paths, numeric points).");
         hit.outline = std::move(outline).value_or(UiSvgPolylines{});
+        if (raster) {
+            hit.fill = true;
+            // Of the presentation properties, only opacity applies to an image.
+            const auto& opacity = values[8];
+            drawn.push_back(
+                {values,
+                 [geometry, opacity](const std::string&) {
+                     return "<image" + geometry +
+                            (opacity.empty() ? "" : " opacity=\"" + ui_escape_rml(opacity) + "\"") +
+                            "/>";
+                 },
+                 std::move(hit), true});
+            continue;
+        }
         hit.fill = tag != "line" && ui_svg_paint_keyword(values[0]) != "none";
         if (ui_svg_paint_keyword(values[1]) != "none")
             hit.stroke_width = values[2].empty() ? 1.0 : ui_svg_pixels(values[2], "stroke-width");
@@ -519,6 +550,10 @@ inline UiSvgMarkup ui_svg_markup(const Engine& engine, UiElementHandle root_hand
     bool literal = false;
     for (const Drawn& item : drawn)
         for (std::size_t index : {std::size_t{0}, std::size_t{1}}) {
+            if (item.raster) {
+                literal = true;
+                continue;
+            }
             const auto keyword = ui_svg_paint_keyword(item.values[index]);
             if (keyword == "currentcolor")
                 current = true;

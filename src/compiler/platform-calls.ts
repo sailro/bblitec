@@ -1,10 +1,15 @@
 import { domRectSnapshotCpp } from "./dom-rects.js";
+import { domPointOrigin, domScreenCtm } from "./dom-geometry.js";
 import { compileWebPlatformCall } from "./web-platform.js";
 import { journaled } from "./emission-transaction.js";
 import { deferredCapabilityDescriptor } from "./deferred-capabilities.js";
 import ts from "typescript";
-import { namedMember, type NamedMember } from "./symbols.js";
-import { uiComputedStyleRead } from "./properties.js";
+import { namedMember, resolvedDomApi, type NamedMember } from "./symbols.js";
+import { DOCUMENT_ELEMENT_FROM_POINT } from "./dom-lowerings.js";
+import {
+    uiComputedStyleRead,
+    unrepresentedComputedStyle,
+} from "./properties.js";
 import { compileSyntheticEventDispatch } from "./synthetic-events.js";
 import { registerUiImageAsset } from "./assets.js";
 import {
@@ -44,6 +49,7 @@ import { compileFullscreenCall } from "./fullscreen.js";
 import { compileCanvasCaptureStream } from "./media-streams.js";
 import { timerCancellation } from "./workers.js";
 import { isDocumentReceiver } from "./dom-targets.js";
+import { RETAINED_SVG_TAGS } from "./ui-authored-markup.js";
 import {
     isPinnedType,
     platformHandleKind,
@@ -1471,7 +1477,7 @@ export class PlatformCalls {
             if (!read)
                 this.context.fail(
                     argumentAt(call, 0),
-                    `Computed style '${written}' is not represented; display, opacity, transform, visibility, z-index and custom properties are.`,
+                    unrepresentedComputedStyle(written, "property"),
                 );
             return read;
         }
@@ -1590,7 +1596,8 @@ export class PlatformCalls {
         // The display hit-tests the page it lays out now. The engine
         // canvas has no element handle, so the answer is a DOM event target.
         if (
-            callee.name === "elementFromPoint" &&
+            resolvedDomApi(this.context.checker, call) ===
+                DOCUMENT_ELEMENT_FROM_POINT &&
             isDocumentReceiver(this.context, callee.expression)
         ) {
             this.context.expectArgumentCount(call, 2, 2);
@@ -1660,24 +1667,10 @@ export class PlatformCalls {
                 argumentAt(call, svg ? 1 : 0),
             );
             const normalizedTag = svg ? tag : tag.toLowerCase();
-            if (
-                svg &&
-                ![
-                    "svg",
-                    "path",
-                    "rect",
-                    "circle",
-                    "line",
-                    "ellipse",
-                    "polyline",
-                    "polygon",
-                    "text",
-                    "textPath",
-                ].includes(tag)
-            )
+            if (svg && !RETAINED_SVG_TAGS.has(tag))
                 this.context.fail(
                     call,
-                    `Native SVG element '${tag}' is outside the bounded svg/shape/text subset.`,
+                    `Native SVG element '${tag}' is outside the bounded svg/shape/text/image subset.`,
                 );
             if (!/^[a-z][a-z0-9-]*$/i.test(tag)) {
                 this.context.fail(
@@ -1693,6 +1686,8 @@ export class PlatformCalls {
             }
             this.context.reachFeature("ui:rml", call);
             if (svg) this.context.reachFeature("ui:inline-svg", call);
+            if (svg && tag === "image")
+                this.context.reachFeature("ui:svg-image", call);
             const uiStaticId = this.ui.createUiStaticElement(normalizedTag);
             this.ui.uiStaticIdsByCreation.set(call, uiStaticId);
             return {
@@ -1742,6 +1737,8 @@ export class PlatformCalls {
                   ? undefined
                   : [
                           "getBoundingClientRect",
+                          "getScreenCTM",
+                          "createSVGPoint",
                           "querySelector",
                           "querySelectorAll",
                           "matches",
@@ -2379,8 +2376,8 @@ export class PlatformCalls {
             }
             const staticValue = this.ui.tryUiStaticString(argumentAt(call, 1));
             if (
-                element.uiTag === "img" &&
-                name === "src" &&
+                ((element.uiTag === "img" && name === "src") ||
+                    (element.uiTag === "image" && name === "href")) &&
                 staticValue !== undefined
             )
                 this.ui.registerImageSource(staticValue);
@@ -2747,6 +2744,22 @@ export class PlatformCalls {
                 ),
             };
         }
+        if (element && callee.name === "cloneNode") {
+            this.context.expectArgumentCount(call, 0, 1);
+            const engine = this.context.requireEngine(element, call);
+            const deep = call.arguments[0]
+                ? this.context.compileBoolean(call.arguments[0])
+                : "false";
+            // A detached copy no static element describes: the parent it
+            // joins holds children of unknown shape.
+            return {
+                kind: "ui-element",
+                cpp: `bbl::ui_clone_node(${engine}, ${element.cpp}, ${deep})`,
+                engineCpp: engine,
+                ...(element.uiTag ? { uiTag: element.uiTag } : {}),
+                impure: true,
+            };
+        }
         if (element && callee.name === "getBoundingClientRect") {
             this.context.expectArgumentCount(call, 0, 0);
             const engine = this.context.requireEngine(element, call);
@@ -2770,6 +2783,18 @@ export class PlatformCalls {
                     ),
                 ],
             };
+        }
+        if (element && callee.name === "getScreenCTM") {
+            this.context.expectArgumentCount(call, 0, 0);
+            return domScreenCtm(
+                this.context.dataLowerer,
+                this.context.requireEngine(element, call),
+                element.cpp,
+            );
+        }
+        if (element && callee.name === "createSVGPoint") {
+            this.context.expectArgumentCount(call, 0, 0);
+            return domPointOrigin(this.context.dataLowerer);
         }
         if (element && callee.name === "animate") {
             this.context.expectArgumentCount(call, 2, 2);

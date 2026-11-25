@@ -572,6 +572,169 @@ check(
     `,
 );
 
+// A record mapped through Partial, Required or Readonly over a substituted
+// parameter is its instantiation's mapped record, one per instantiation.
+check(
+    "mapped-modifier-records-under-instantiation",
+    `
+    interface Channel<U extends object> {
+        name: string;
+        capture?: () => Partial<U>;
+        sample?: Partial<U>;
+        fixed?: Readonly<U>;
+        complete?: () => Required<U>;
+    }
+    interface Undo { elevation: number[]; tick: number; note?: string }
+    interface Mark { label: string }
+    function create<U extends object>() {
+        const channels: Channel<U>[] = [];
+        return {
+            register(channel: Channel<U>): void { channels.push(channel); },
+            captured: () => channels.map((channel) => channel.capture?.()),
+            completed: () => channels.map((channel) => channel.complete?.()),
+            first: () => channels[0],
+        };
+    }
+    const undo = create<Undo>();
+    const tick: Channel<Undo> = {
+        name: "tick",
+        capture: () => ({ tick: 3 }),
+        sample: { elevation: [1, 2] },
+        fixed: { elevation: [], tick: 4 },
+        complete: () => ({ elevation: [5], tick: 6, note: "n" }),
+    };
+    undo.register(tick);
+    undo.register({ name: "empty" });
+    const marks = create<Mark>();
+    marks.register({ name: "mark", capture: () => ({ label: "m" }), complete: () => ({ label: "c" }) });
+    const captured = undo.captured();
+    if (undo.first() !== tick || captured[0]?.tick !== 3 || captured[0]?.elevation !== undefined || captured[1] !== undefined)
+        throw new Error("captured");
+    if (undo.first()?.sample?.elevation?.length !== 2 || undo.first()?.sample?.tick !== undefined || undo.first()?.fixed?.tick !== 4)
+        throw new Error("stored");
+    const completed = undo.completed()[0];
+    if (completed?.note.length !== 1 || completed.tick !== 6 || completed.elevation[0] !== 5) throw new Error("completed");
+    if (marks.captured()[0]?.label !== "m" || marks.completed()[0]?.label !== "c") throw new Error("second instantiation");
+    `,
+);
+
+// A conditional's arms, a generic rest (`Omit<T & Scaled, "scale">`) and
+// that rest spread with the omitted field, are one record per instantiation.
+check(
+    "omitted-field-arm-under-instantiation",
+    `
+    interface Scaled { readonly scale?: number }
+    function withScale<T extends object>(value: T, scale: number): T & Scaled {
+        const clamped = Math.max(0.01, Math.min(1, Number.isFinite(scale) ? scale : 1));
+        const { scale: _old, ...rest } = value as T & Scaled;
+        return (clamped >= 1 - 1e-9 ? rest : { ...rest, scale: clamped }) as T & Scaled;
+    }
+    interface Panel { readonly depth: number; readonly scale?: number }
+    interface Frame { readonly side: number; readonly scale?: number; readonly panel?: Panel }
+    const previous: Frame = { side: 1, scale: 0.8 };
+    const panel: Panel = { depth: 0.4 };
+    const frame = withScale({ ...previous, panel: withScale(panel, 0.75) }, 1);
+    const shrunk = withScale(previous, 0.5);
+    if (frame.scale !== undefined || frame.panel?.scale !== 0.75 || frame.panel.depth !== 0.4 || frame.side !== 1 ||
+        Object.keys(frame).join() !== "side,panel" || Object.keys(frame.panel).join() !== "depth,scale")
+        throw new Error("full frame");
+    if (shrunk.scale !== 0.5 || shrunk.side !== 1 || Object.keys(shrunk).join() !== "side,scale")
+        throw new Error("shrunk frame");
+    `,
+);
+
+// A base record type holding a generic record's instantiations, each read back
+// through an assertion under its own instantiation, holds their own fields in
+// one layout: a plan of one session read by the other reads what JavaScript does.
+check(
+    "instantiations-held-as-one-base-record",
+    `
+    interface Plan { readonly signature: string }
+    interface Move<S> { readonly id: number; readonly state: S }
+    interface SessionPlan<S> extends Plan { readonly moves: readonly Move<S>[] }
+    interface Session { plan(count: number): Plan | null; apply(plan: Plan | null): string }
+    function createSession<S>(states: readonly S[], show: (state: S) => string): Session {
+        return {
+            plan(count) {
+                if (count <= 0) return null;
+                const moves: Move<S>[] = states.slice(0, count).map((state, id) => ({ id, state }));
+                const plan: SessionPlan<S> = { signature: moves.map((move) => move.id).join("|"), moves };
+                return plan;
+            },
+            apply(plan) {
+                const moves = (plan as SessionPlan<S> | null)?.moves ?? [];
+                return moves.map((move) => move.id + ":" + show(move.state)).join(",");
+            },
+        };
+    }
+    interface House { u: number; v: number }
+    interface Tower { a: number; r: number }
+    const house = createSession<House>([{ u: 1, v: 2 }, { u: 3, v: 4 }], (state) => state.u + "/" + state.v);
+    const tower = createSession<Tower>([{ a: 5, r: 6 }], (state) => state.a + "/" + state.r);
+    const sessions: Session[] = [house, tower];
+    const plans = sessions.map((session, index) => session.plan(2 - index));
+    const applied = sessions.map((session, index) => session.apply(plans[index] ?? null));
+    if (applied.join(";") !== "0:1/2,1:3/4;0:5/6" || plans[0]?.signature !== "0|1" || house.apply(null) !== "")
+        throw new Error("plans " + applied.join(";"));
+    if (house.apply(plans[1] ?? null) !== "0:undefined/undefined") throw new Error("crossed " + house.apply(plans[1] ?? null));
+    `,
+);
+
+// A generic callable record stored as its registry's instantiation is the one
+// function object JavaScript keeps, its optional property read through it.
+check(
+    "callable-record-under-instantiation",
+    `
+    interface Context<Req> { x: number; open: (req: Req) => void }
+    type Builder<E, Req, H> = ((ent: E, ctx: Context<Req>) => void) & { halo?: (ent: E) => H };
+    interface Registry<Ent extends { kind: string }, Req, H> {
+        register<K extends Ent["kind"]>(kind: K, builder: Builder<Extract<Ent, { kind: K }>, Req, H>): void;
+        haloOf(ent: Ent): H | null;
+        openFor(ent: Ent, x: number): void;
+        holds(kind: string, builder: unknown): boolean;
+    }
+    function createRegistry<Ent extends { kind: string }, Req, H>(handler: () => ((req: Req) => void) | null): Registry<Ent, Req, H> {
+        const builders = new Map<string, Builder<Ent, Req, H>>();
+        return {
+            register(kind, builder) {
+                if (builders.has(kind)) throw new Error("duplicate " + kind);
+                builders.set(kind, builder as Builder<Ent, Req, H>);
+            },
+            haloOf(ent) {
+                const halo = builders.get(ent.kind)?.halo;
+                return halo ? halo(ent) : null;
+            },
+            openFor(ent, x) {
+                const open = handler();
+                builders.get(ent.kind)?.(ent, { x, open: open ?? (() => {}) });
+            },
+            holds: (kind, builder) => builders.get(kind) === builder,
+        };
+    }
+    interface Person { id: number }
+    interface Tree { seed: number }
+    type Hit = { kind: "person"; person: Person } | { kind: "tree"; tree: Tree };
+    let log = "";
+    const registry = createRegistry<Hit, string, readonly number[]>(() => (req) => { log += "open " + req + ";"; });
+    const personBuilder = (ent: { kind: "person"; person: Person }, ctx: Context<string>): void => {
+        log += "p" + ent.person.id + "@" + ctx.x + ";";
+        ctx.open("person");
+    };
+    registry.register("person", personBuilder);
+    const treeBuilder: Builder<{ kind: "tree"; tree: Tree }, string, readonly number[]> = Object.assign(
+        (ent: { kind: "tree"; tree: Tree }, ctx: Context<string>) => { log += "t" + ent.tree.seed + "@" + ctx.x + ";"; },
+        { halo: (ent: { kind: "tree"; tree: Tree }): readonly number[] => [ent.tree.seed] },
+    );
+    registry.register("tree", treeBuilder);
+    registry.openFor({ kind: "person", person: { id: 4 } }, 1);
+    registry.openFor({ kind: "tree", tree: { seed: 3 } }, 2);
+    const halo = registry.haloOf({ kind: "tree", tree: { seed: 7 } });
+    if (log !== "p4@1;open person;t3@2;" || halo?.[0] !== 7 || registry.haloOf({ kind: "person", person: { id: 1 } }) !== null ||
+        !registry.holds("tree", treeBuilder) || !registry.holds("person", personBuilder))
+        throw new Error("registry " + log);
+    `,
+);
+
 check(
     "nested-instantiation-intersection-fields",
     `

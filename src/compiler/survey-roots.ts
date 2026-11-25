@@ -457,14 +457,19 @@ function emitSurveyRoot(
             const parameters = declaration.parameters.slice(0, passed);
             // A string parameter holds a generation-known string a call
             // passes, where one does: a source the body composes stays
-            // generation-known (an asset URL, a shader).
-            const arguments_ = parameters.map((parameter, index) =>
-                ts.isIdentifier(parameter.name)
-                    ? (stringParameter(context.checker, parameter) &&
-                          staticArgument(context, files, declaration, index)) ||
-                      bound(parameter.name, parameter)
-                    : site(parameter, "parameter"),
-            );
+            // generation-known (an asset URL, a shader). Any other holds
+            // empty storage, which no call passes: what refuses through it
+            // needs a caller's value and cascades from the parameter.
+            const arguments_ = parameters.map((parameter, index) => {
+                if (!ts.isIdentifier(parameter.name))
+                    return site(parameter, "parameter");
+                const passedString =
+                    stringParameter(context.checker, parameter) &&
+                    staticArgument(context, files, declaration, index);
+                if (passedString) return passedString;
+                survey.emptyBinding(context.checker, parameter.name);
+                return bound(parameter.name, parameter);
+            });
             if (arguments_.every((value) => value !== undefined)) {
                 context.userFunctions.compileSurveyRoot(
                     context,

@@ -126,7 +126,8 @@ test("RegExp call effects refuse state, mutation, escaped methods and coercion",
         ["const names = /a/; names.exec = () => null;", "name"],
         ["const names = /a/; names.test = () => true;", "name"],
         ["const names = /a/; const held = {names};", "name"],
-        // A `test` that is no RegExp's: it writes its own record.
+        // A `test` that is no RegExp's: it writes its own record, through
+        // the `this` a run of the function alone does not have.
         [
             "const names = {count: 0, test(name: string) { this.count++; return !!name; }};",
             "name",
@@ -140,7 +141,7 @@ test("RegExp call effects refuse state, mutation, escaped methods and coercion",
             function first(name: string): string { return names.test(${argument}) ? name : ''; }`);
         assert.throws(
             () => checked.execute("first", "a"),
-            /writes a module-scope binding|module-scope 'let'/,
+            /writes a module-scope binding|module-scope 'let'|reads 'this'/,
             declarations,
         );
     }
