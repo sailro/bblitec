@@ -4,6 +4,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
+import { runSelfCheckingProgram } from "./self-checking-program.js";
 import ts from "typescript";
 import {
     FunctionSpecializations,
@@ -474,6 +475,40 @@ test("escaping recursive groups share their traced callable within one scope", (
         result.cpp.match(/make_gc_shared<bbl::js::Callback<void\(\)>>/g)
             ?.length,
         1,
+    );
+});
+
+test("a callback's group, keyed by its enclosing invocation's locals, leaves a parameter's record to its caller", async (t) => {
+    // The `map` callback reads `record` and `path` of the `canonical` call
+    // it is created in, so each invocation keys its own group. An inlined
+    // call's local alias of the record its parameter holds is no owner:
+    // storage demanded for it would hold every other specialization's
+    // document too.
+    const canonical = `
+        function canonical(value: unknown, path = "root"): string {
+            if (typeof value !== "object" || value === null) return JSON.stringify(value);
+            if (Array.isArray(value)) return \`[\${value.map((item, index) => canonical(item, \`\${path}[\${index}]\`)).join(",")}]\`;
+            const record = value as Record<string, unknown>;
+            return \`{\${Object.keys(record).sort().map((key) => \`\${JSON.stringify(key)}:\${canonical(record[key], \`\${path}.\${key}\`)}\`).join(",")}}\`;
+        }
+    `;
+    const written = `
+        const written = canonical({ z: 1, y: [true, "t"] });
+        if (written !== '{"y":[true,"t"],"z":1}') throw new Error(written);
+    `;
+    const parsed = `
+        const parsed = canonical(JSON.parse('{"b":[1,{"c":null}],"a":"x"}'));
+        if (parsed !== '{"a":"x","b":[1,{"c":null}]}') throw new Error(parsed);
+    `;
+    await runSelfCheckingProgram(
+        t,
+        "function-specializations/parameter-record-written",
+        canonical + written,
+    );
+    await runSelfCheckingProgram(
+        t,
+        "function-specializations/parameter-record-parsed-first",
+        canonical + parsed + written,
     );
 });
 

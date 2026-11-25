@@ -466,7 +466,10 @@ export class BindingScopes {
     /**
      * The earliest live declaration whose binding `holds` the aggregate: an
      * initialized variable, followed through its const aliases, or where
-     * `parameters` allows, a parameter.
+     * `parameters` allows, a parameter. Where it does not, an aggregate a
+     * parameter holds first is its caller's: no variable declares it, and
+     * a local alias of it is no owner whose storage another invocation of
+     * the same code shares.
      */
     private aggregateHolder(
         holds: (value: Value) => boolean,
@@ -478,6 +481,8 @@ export class BindingScopes {
             for (const [symbol, binding] of scope) {
                 if (!holds(binding.value)) continue;
                 const declaration = symbol.valueDeclaration;
+                if (!parameters && declaration && ts.isParameter(declaration))
+                    return undefined;
                 if (
                     declaration &&
                     ((ts.isVariableDeclaration(declaration) &&
