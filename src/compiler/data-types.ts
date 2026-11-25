@@ -10569,8 +10569,7 @@ export class DataTypeRegistry {
                 });
         } else {
             const demand = this.documentRecordDemand(structName);
-            if (demand && !demand.type.isUnion())
-                throw new NativeRecordStorageRequired(demand);
+            if (demand) throw new NativeRecordStorageRequired(demand);
         }
         this.refuseAmbiguousPresence(field, node);
     }

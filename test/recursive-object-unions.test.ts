@@ -66,17 +66,21 @@ check(
     `,
 );
 
-test("tagged fields whose arms disagree on own-key presence refuse membership", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-                type Item={kind:'a';x?:number}|{kind:'b';x:number|undefined}|{kind:'c'};
-                const items:Item[]=[{kind:'a'},{kind:'b',x:undefined},{kind:'c'}];
-                const has=items.map((item)=>'x' in item);
-            `),
-        /Own-property presence of 'x' is not represented/,
-    );
-});
+check(
+    "tagged-fields-whose-arms-disagree-on-own-key-presence-decide-membership",
+    `
+    type Item={kind:'a';x?:number}|{kind:'b';x:number|undefined}|{kind:'c'};
+    const items:Item[]=[{kind:'a'},{kind:'b',x:undefined},{kind:'c'}];
+    const has=items.map((item)=>'x' in item);
+    if(has.join()!=='false,true,false')throw new Error(has.join());
+    const first=items[0]!;
+    if(first.kind==='a')first.x=undefined;
+    const second=items[1]!;
+    if(second.kind==='b')second.x=2;
+    if(items.map((item)=>'x' in item).join()!=='true,true,false')throw new Error('written');
+    if(JSON.stringify(items)!=='[{"kind":"a"},{"kind":"b","x":2},{"kind":"c"}]')throw new Error(JSON.stringify(items));
+    `,
+);
 
 check(
     "tagged-array-optional-and-callback-cycles",
