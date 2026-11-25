@@ -13,6 +13,10 @@ import { eventTargetCpp } from "./dom-targets.js";
 import { isAbsentWindowMember } from "./browser-erasure.js";
 import { boundRecordValue } from "./bound-record-value.js";
 import { isTypeAssertion, wrappersAround } from "./syntax.js";
+import {
+    addedPropertyStorage,
+    unknownPropertyValue,
+} from "./added-properties.js";
 
 type Context = Pick<
     LoweringServices,
@@ -194,20 +198,15 @@ export class WindowProperties {
 
     /** A property declared `unknown` and never written reads as a document. */
     private unknownField(target: ts.PropertyAccessExpression) {
-        return (this.context.checker.getTypeAtLocation(target).flags &
-            ts.TypeFlags.Unknown) !==
-            0
-            ? this.createField(target.name.text, { kind: "json" })
-            : undefined;
+        const document = unknownPropertyValue(
+            this.context.checker.getTypeAtLocation(target),
+        );
+        return document && this.createField(target.name.text, document);
     }
 
     private createField(name: string, valueType: DataType) {
         const context = this.context;
-        const type = context.dataTypes.markStoredObjectReferences(
-            valueType.kind === "optional"
-                ? valueType
-                : { kind: "optional", inner: valueType, undefinedOnly: true },
-        );
+        const type = addedPropertyStorage(context.dataTypes, valueType);
         const cppType = context.dataTypes.cppType(type);
         const cppName = context.allocateTemporaryCppName("window_property");
         context.nativeEmission.registerNativeFunction(
@@ -276,11 +275,9 @@ export class WindowProperties {
                     context.checker.getTypeAtLocation(expression.right),
                     expression.right,
                 ) ??
-                ((context.checker.getTypeAtLocation(expression.left).flags &
-                    ts.TypeFlags.Unknown) !==
-                0
-                    ? ({ kind: "json" } as const)
-                    : undefined);
+                unknownPropertyValue(
+                    context.checker.getTypeAtLocation(expression.left),
+                );
             if (!valueType)
                 return context.fail(
                     expression.right,

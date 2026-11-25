@@ -4,7 +4,11 @@ import type { Value } from "./types.js";
 import type { DataType } from "./data-types/model.js";
 import { EmissionMap } from "./emission-transaction.js";
 import { pinnedHandleTypeNames } from "./data-types.js";
-import { propertyRules } from "./properties.js";
+import { hasPropertyRule } from "./properties.js";
+import {
+    addedPropertyStorage,
+    unknownPropertyValue,
+} from "./added-properties.js";
 import { declaredIn, pinnedInterfaceType } from "./symbols.js";
 import { optionalPresentCpp, optionalValueCpp } from "./values/model.js";
 
@@ -34,13 +38,12 @@ type Context = Pick<
  * handle names one object for that object's whole life
  * (`bbl::engine_object_identity`).
  */
-const OBJECT_KINDS: ReadonlySet<string> = new Set([
-    "material",
-    "mesh",
-    "transform-node",
-]);
+const OBJECT_KINDS = ["material", "mesh", "transform-node"] as const;
 
-type ObjectKind = "material" | "mesh" | "transform-node";
+type ObjectKind = (typeof OBJECT_KINDS)[number];
+
+/** A value that is an engine object taking added properties. */
+type EngineObject = Value & { kind: ObjectKind };
 
 /** The run-time families of a material record (`bbl::material_family_name`). */
 type MaterialFamily = "shader" | "standard" | "pbr" | "node";
@@ -95,11 +98,11 @@ export class EngineObjectProperties {
 
     constructor(private readonly context: Context) {}
 
-    /** The object `owner` is, where it is an engine object that takes added properties. */
-    private object(owner: Value): (Value & { kind: ObjectKind }) | undefined {
-        return OBJECT_KINDS.has(owner.kind) && owner.cpp
-            ? (owner as Value & { kind: ObjectKind })
-            : undefined;
+    /** Whether `owner` is an engine object that takes added properties. */
+    private object(owner: Value): owner is EngineObject {
+        return (
+            OBJECT_KINDS.some((kind) => kind === owner.kind) && owner.cpp !== ""
+        );
     }
 
     /**
@@ -126,32 +129,22 @@ export class EngineObjectProperties {
     }
 
     /** Which storage `name` is on the engine object `owner`. */
-    private membership(
-        owner: Value & { kind: ObjectKind },
-        name: string,
-    ): Membership {
+    private membership(owner: EngineObject, name: string): Membership {
+        const engineIf = (declared: boolean): Membership => ({
+            kind: declared ? "engine" : "added",
+        });
+        const declaresAny = (types: readonly string[]): boolean =>
+            types.some((type) => this.declares(type, name));
         // A member the engine's record keeps (a material's own
         // `environmentIntensity`, whatever its family), or one the pin
         // spells as its internal (`_uniformVersion`): its typings erase
         // those, so the object may well have it.
-        if (
-            name.startsWith("_") ||
-            propertyRules.some(
-                (rule) => rule.owner === owner.kind && rule.property === name,
-            )
-        )
+        if (name.startsWith("_") || hasPropertyRule(owner.kind, name))
             return { kind: "engine" };
         if (owner.kind !== "material")
-            return pinnedHandleTypeNames(owner.kind).some((type) =>
-                this.declares(type, name),
-            )
-                ? { kind: "engine" }
-                : { kind: "added" };
+            return engineIf(declaresAny(pinnedHandleTypeNames(owner.kind)));
         const known = this.family(owner);
-        if (known)
-            return this.declares(FAMILY_TYPES[known], name)
-                ? { kind: "engine" }
-                : { kind: "added" };
+        if (known) return engineIf(this.declares(FAMILY_TYPES[known], name));
         const all = Object.keys(FAMILY_TYPES) as MaterialFamily[];
         const families = all.filter((family) =>
             this.declares(FAMILY_TYPES[family], name),
@@ -159,11 +152,24 @@ export class EngineObjectProperties {
         if (families.length === all.length) return { kind: "engine" };
         if (families.length > 0) return { kind: "families", families };
         // A member every material or view carries, whatever its family.
-        return pinnedHandleTypeNames("material").some((type) =>
-            this.declares(type, name),
-        )
-            ? { kind: "engine" }
-            : { kind: "added" };
+        return engineIf(declaresAny(pinnedHandleTypeNames("material")));
+    }
+
+    /**
+     * The engine object `owner` is, where `name` on it is a property the
+     * program adds: neither the pin's member on the type the program gives
+     * `receiver` nor one on the object.
+     */
+    private addedObject(
+        owner: Value,
+        name: string,
+        receiver: ts.Expression,
+    ): EngineObject | undefined {
+        return this.object(owner) &&
+            !this.declaredByReceiver(receiver, name) &&
+            this.membership(owner, name).kind === "added"
+            ? owner
+            : undefined;
     }
 
     /**
@@ -175,9 +181,8 @@ export class EngineObjectProperties {
         owner: Value,
         expression: ts.PropertyAccessExpression,
     ): string | undefined {
-        const object = this.object(owner);
-        const membership = object
-            ? this.membership(object, expression.name.text)
+        const membership = this.object(owner)
+            ? this.membership(owner, expression.name.text)
             : undefined;
         return membership?.kind === "families"
             ? `'${expression.name.text}' is the pin's own member of a ${membership.families.join(" or ")} material, and a property the program adds to any other; this material's family is decided at run time, and its own member is not lowered for a material of a family generation does not know.`
@@ -196,20 +201,15 @@ export class EngineObjectProperties {
         if (existing) return existing;
         const context = this.context;
         const valueType =
-            declared && (declared.flags & ts.TypeFlags.Unknown) !== 0
-                ? ({ kind: "json" } as const)
-                : declared &&
-                  context.dataTypes.fromStoredTsType(declared, site);
+            declared &&
+            (unknownPropertyValue(declared) ??
+                context.dataTypes.fromStoredTsType(declared, site));
         if (!valueType)
             return context.fail(
                 site,
                 `A property the program adds to a ${kind} holds a value of a represented type.`,
             );
-        const type = context.dataTypes.markStoredObjectReferences(
-            valueType.kind === "optional"
-                ? valueType
-                : { kind: "optional", inner: valueType, undefinedOnly: true },
-        );
+        const type = addedPropertyStorage(context.dataTypes, valueType);
         const cppType = context.dataTypes.cppType(type);
         const cppName = context.allocateTemporaryCppName("object_property");
         const signature = `bbl::EngineObjectProperty<${cppType}>& ${cppName}(bbl::Engine& engine)`;
@@ -236,20 +236,17 @@ export class EngineObjectProperties {
         return declaredIn(type.getProperty(name), "babylon");
     }
 
-    /** The type the program declares the property with where `access` reads or writes it. */
-    private declaredType(access: ts.Expression): ts.Type {
-        return this.context.checker.getTypeAtLocation(access);
-    }
-
+    /** The engine object `object`, a `kind` one, held for one access of `name`. */
     private target(
-        object: Value & { kind: ObjectKind },
+        kind: ObjectKind,
+        object: Value,
         name: string,
         declared: ts.Type | undefined,
         site: ts.Expression,
     ): Target {
-        const field = this.field(object.kind, name, declared, site);
+        const field = this.field(kind, name, declared, site);
         return {
-            kind: object.kind,
+            kind,
             field,
             valuesCpp: `${field.functionCpp}(${this.context.requireEngine(object, site)})`,
             identityCpp: `bbl::engine_object_identity(${object.cpp})`,
@@ -261,18 +258,14 @@ export class EngineObjectProperties {
         owner: Value,
         expression: ts.PropertyAccessExpression,
     ): Value | undefined {
-        const object = this.object(owner);
         const name = expression.name.text;
-        if (
-            !object ||
-            this.declaredByReceiver(expression.expression, name) ||
-            this.membership(object, name).kind !== "added"
-        )
-            return undefined;
+        const object = this.addedObject(owner, name, expression.expression);
+        if (!object) return undefined;
         const target = this.target(
+            object.kind,
             object,
             name,
-            this.declaredType(expression),
+            this.context.checker.getTypeAtLocation(expression),
             expression,
         );
         // A copy of what the object holds now: no place a write stores
@@ -308,9 +301,9 @@ export class EngineObjectProperties {
                 context.compileValue(receiver),
                 receiver,
             );
-            const object = this.object(value);
-            return object && this.membership(object, name).kind === "added"
-                ? object
+            return this.object(value) &&
+                this.membership(value, name).kind === "added"
+                ? value
                 : undefined;
         });
         if (!object) return undefined;
@@ -319,16 +312,33 @@ export class EngineObjectProperties {
             object,
             "property_object",
             receiver,
-        ) as Value & { kind: ObjectKind };
-        const target = this.target(held, name, this.declaredType(node), node);
-        const values = context.allocateTemporaryCppName("object_properties");
-        context.emit({
+        );
+        const target = this.target(
+            object.kind,
+            held,
+            name,
+            context.checker.getTypeAtLocation(node),
+            node,
+        );
+        return {
+            ...target,
+            valuesCpp: this.heldReference(
+                "object_properties",
+                target.valuesCpp,
+            ),
+        };
+    }
+
+    /** A new `auto&` named for `label`, bound to `initializer`. */
+    private heldReference(label: string, initializer: string): string {
+        const name = this.context.allocateTemporaryCppName(label);
+        this.context.emit({
             kind: "declaration",
             type: "auto&",
-            name: values,
-            initializer: target.valuesCpp,
+            name,
+            initializer,
         });
-        return { ...target, valuesCpp: values };
+        return name;
     }
 
     /** `object.name op= value` for a property the program adds. */
@@ -353,17 +363,12 @@ export class EngineObjectProperties {
             // `&&=` stores nothing where the object has no such property,
             // so it must not make one.
             const emitLogical = (): void => {
-                const held =
-                    context.allocateTemporaryCppName("object_property");
-                context.emit({
-                    kind: "declaration",
-                    type: "auto&",
-                    name: held,
-                    initializer: slot,
-                });
                 context.dataLowerer.emitLogicalSlotAssignment(
                     expression,
-                    context.dataLowerer.leafValue(held, target.field.type),
+                    context.dataLowerer.leafValue(
+                        this.heldReference("object_property", slot),
+                        target.field.type,
+                    ),
                 );
             };
             if (operator !== ts.SyntaxKind.AmpersandAmpersandEqualsToken) {
@@ -391,13 +396,7 @@ export class EngineObjectProperties {
                 expression.operatorToken,
                 `'${expression.operatorToken.getText()}' on a property the program adds to a ${target.kind} combines a number property.`,
             );
-        const held = context.allocateTemporaryCppName("object_property");
-        context.emit({
-            kind: "declaration",
-            type: "auto&",
-            name: held,
-            initializer: slot,
-        });
+        const held = this.heldReference("object_property", slot);
         const storage = context.dataTypes.cppType(type);
         // An absent property reads as undefined, which is NaN as a number.
         context.dataLowerer.emitNumericCompound(
@@ -429,17 +428,13 @@ export class EngineObjectProperties {
         name: string,
         site: ts.Expression,
     ): string | undefined {
-        const object = this.object(owner);
-        if (
-            !object ||
-            this.declaredByReceiver(site, name) ||
-            this.membership(object, name).kind !== "added"
-        )
-            return undefined;
+        const object = this.addedObject(owner, name, site);
+        if (!object) return undefined;
         const declared = this.context.checker
             .getNonNullableType(this.context.checker.getTypeAtLocation(site))
             .getProperty(name);
         const target = this.target(
+            object.kind,
             object,
             name,
             declared &&

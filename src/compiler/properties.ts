@@ -401,6 +401,8 @@ const handleCollections: readonly HandleCollectionRead[] = [
     },
 ];
 
+const handleCollectionsByKey = indexRules(handleCollections);
+
 /** Whether any handle owner can expose a collection with this source name. */
 export function isHandleCollectionProperty(property: string): boolean {
     return handleCollections.some(
@@ -420,16 +422,31 @@ const AUDIO_PARAM_RULES: readonly PropertyRule[] = AUDIO_PARAM_NAMES.map(
     }),
 );
 
-/** The rule in a table claiming this (owner kind, property) pair. */
-function ruleFor<Rule extends { owner: ValueKind; property: string }>(
+/** A table's rules by (owner kind, property): the first claiming each pair. */
+type RuleIndex<Rule> = ReadonlyMap<string, Rule>;
+
+function ruleKey(owner: ValueKind, property: string): string {
+    return `${owner}:${property}`;
+}
+
+function indexRules<Rule extends { owner: ValueKind; property: string }>(
     table: readonly Rule[],
+): RuleIndex<Rule> {
+    const index = new Map<string, Rule>();
+    for (const rule of table) {
+        const key = ruleKey(rule.owner, rule.property);
+        if (!index.has(key)) index.set(key, rule);
+    }
+    return index;
+}
+
+/** The rule in a table claiming this (owner kind, property) pair. */
+function ruleFor<Rule>(
+    index: RuleIndex<Rule>,
     owner: Pick<Value, "kind">,
     property: string,
 ): Rule | undefined {
-    return table.find(
-        (candidate) =>
-            candidate.owner === owner.kind && candidate.property === property,
-    );
+    return index.get(ruleKey(owner.kind, property));
 }
 
 /**
@@ -460,7 +477,7 @@ export function readHandleCollection(
     owner: Value,
     property: string,
 ): HandleCollectionRead | undefined {
-    return ruleFor(handleCollections, owner, property);
+    return ruleFor(handleCollectionsByKey, owner, property);
 }
 
 /**
@@ -2007,6 +2024,13 @@ export const propertyRules: readonly PropertyRule[] = [
     })),
 ];
 
+const propertyRulesByKey = indexRules(propertyRules);
+
+/** Whether a rule claims `property` on `owner` objects. */
+export function hasPropertyRule(owner: ValueKind, property: string): boolean {
+    return propertyRulesByKey.has(ruleKey(owner, property));
+}
+
 /**
  * The native field a camera property stores into, or undefined when the
  * property is not one of them.
@@ -2060,7 +2084,7 @@ export function isDirectDataProperty(
     owner: ValueKind,
     property: string,
 ): boolean {
-    const rule = ruleFor(propertyRules, { kind: owner }, property);
+    const rule = ruleFor(propertyRulesByKey, { kind: owner }, property);
     return (
         rule !== undefined &&
         "field" in rule &&
@@ -2097,7 +2121,7 @@ export function readCallableProperty(
     property: string,
     expression: ts.Node,
 ): Value | undefined {
-    const rule = ruleFor(propertyRules, owner, property);
+    const rule = ruleFor(propertyRulesByKey, owner, property);
     if (!rule || !("dataType" in rule) || rule.dataType?.kind !== "function")
         return undefined;
     return readProperty(context, owner, property, expression);
@@ -2165,7 +2189,7 @@ export function readProperty(
             };
         }
     }
-    const rule = ruleFor(propertyRules, owner, property);
+    const rule = ruleFor(propertyRulesByKey, owner, property);
     if (!rule) {
         return undefined;
     }
