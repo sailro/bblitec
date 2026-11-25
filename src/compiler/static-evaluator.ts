@@ -101,7 +101,7 @@ import {
     resolveFunctionDeclaration,
     type AliasedMutationScan,
 } from "./user-functions.js";
-import { heldReferenceBases } from "./kept-values.js";
+import { heldReferenceBases, keptArguments } from "./kept-values.js";
 import { isJsonValue } from "./json-bridge.js";
 import {
     absenceKind,
@@ -115,7 +115,11 @@ import {
     valueKindOf,
 } from "./type-facts.js";
 import { conditionComparison } from "./comparisons.js";
-import { parameterIsReadOnly } from "./parameter-effects.js";
+import {
+    callArgumentEffect,
+    libraryWrittenArgument,
+    parameterIsReadOnly,
+} from "./parameter-effects.js";
 import type { EvaluationOrder } from "./evaluation-order.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { DataLowerer } from "./data-lowering.js";
@@ -1864,14 +1868,8 @@ export class StaticEvaluator {
             )
         )
             return false;
-        // A name holding the object or a member of it: the binding, an
-        // alias, a destructured or iterated leaf, a literal holding one.
-        const holds = (
-            expression: ts.Expression,
-            scan: AliasedMutationScan,
-        ): boolean =>
-            heldReferenceBases(this.checker, expression).some(scan.namesAlias);
-        // A member at any depth: `p.a.b = 1`, `[p.n] = v`, `p.list.push(x)`.
+        // A member at any depth: `p.a.b = 1`, `[p.n] = v`, `p.list.push(x)`,
+        // `f(p).n = 1` through a call that may return the object.
         const throughAlias = (
             expression: ts.Expression,
             scan: AliasedMutationScan,
@@ -1879,9 +1877,48 @@ export class StaticEvaluator {
             const target = unwrapExpression(expression);
             return (
                 isMemberAccess(target) &&
-                referenceBases(target).some(scan.namesAlias)
+                referenceBases(target).some(
+                    (base) =>
+                        scan.namesAlias(base) ||
+                        (ts.isCallExpression(base) &&
+                            handed(base, scan).includes("returned")),
+                )
             );
         };
+        // The arguments of a program call that hold the object or one of its
+        // objects (`holds`: a scalar member is copied in), with what the call
+        // does to each (`callArgumentEffect`).
+        const handed = (
+            call: ts.CallExpression,
+            scan: AliasedMutationScan,
+        ): ReturnType<typeof callArgumentEffect>[] =>
+            this.callReachesABody(call)
+                ? call.arguments.flatMap((argument, index) =>
+                      holds(argument, scan)
+                          ? [callArgumentEffect(this.checker, call, index, [])]
+                          : [],
+                  )
+                : [];
+        // A name holding the object or a member of it: the binding, an
+        // alias, a destructured or iterated leaf, a literal holding one, or
+        // a call that may return one it is handed.
+        const holds = (
+            expression: ts.Expression,
+            scan: AliasedMutationScan,
+        ): boolean => {
+            const unwrapped = unwrapExpression(expression);
+            return (
+                heldReferenceBases(this.checker, expression).some(
+                    scan.namesAlias,
+                ) ||
+                (ts.isCallExpression(unwrapped) &&
+                    handed(unwrapped, scan).includes("returned"))
+            );
+        };
+        const holdsWritten = (
+            argument: ts.Expression | undefined,
+            scan: AliasedMutationScan,
+        ): boolean => argument !== undefined && holds(argument, scan);
         return aliasedMutationScan(
             declaration.name,
             (identifier) => declaredSymbol(this.checker, identifier),
@@ -1894,22 +1931,22 @@ export class StaticEvaluator {
                     (writeSites(node).some(({ target }) =>
                         throughAlias(target, scan),
                     ) ||
+                        // A call or construction keeping the object where the
+                        // scan does not follow it (`keptArguments`), or a
+                        // library call writing into it (`Object.assign`).
+                        ((ts.isCallExpression(node) ||
+                            ts.isNewExpression(node)) &&
+                            keptArguments(this.checker, node).some((argument) =>
+                                holds(argument, scan),
+                            )) ||
+                        (ts.isCallExpression(node) &&
+                            holdsWritten(
+                                libraryWrittenArgument(this.checker, node),
+                                scan,
+                            )) ||
                         (ts.isCallExpression(node) &&
                             (throughAlias(node.expression, scan) ||
-                                (node.arguments.some(
-                                    (argument) =>
-                                        scan.namesAlias(
-                                            unwrapExpression(argument),
-                                        ) ||
-                                        // A scalar member is copied in.
-                                        (throughAlias(argument, scan) &&
-                                            typeCanCarryReference(
-                                                this.checker.getTypeAtLocation(
-                                                    argument,
-                                                ),
-                                            )),
-                                ) &&
-                                    this.callReachesABody(node))))),
+                                handed(node, scan).includes("changed")))),
             },
         );
     }
