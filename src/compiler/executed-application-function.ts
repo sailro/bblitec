@@ -255,13 +255,15 @@ export function runApplicationFunction(
                     `${label} writes a module-scope binding at ${moduleWrite}, so one execution would not describe every call.`,
                 )
               : undefined;
-    const realm = vm.createContext(
-        Object.fromEntries(GENERATION_HOST_GLOBALS),
-        {
-            name: `generation function ${label}`,
-            microtaskMode: "afterEvaluate",
-        },
-    );
+    // The realm's global object is this fresh record (`vm.createContext`
+    // contextifies it in place), which the realm's own globals extend.
+    const globals: Record<string, unknown> = {
+        ...Object.fromEntries(GENERATION_HOST_GLOBALS),
+    };
+    const realm = vm.createContext(globals, {
+        name: `generation function ${label}`,
+        microtaskMode: "afterEvaluate",
+    });
     const realmGlobals: unknown = vm.runInContext(
         GENERATION_REALM_GLOBALS,
         realm,
@@ -272,7 +274,7 @@ export function runApplicationFunction(
     // is the deployment's, not the build's: the run then describes no run.
     let unpackaged: string | undefined;
     Object.assign(
-        realm,
+        globals,
         Reflect.apply(realmGlobals, undefined, [
             {
                 read: (url: string): string | undefined => {
