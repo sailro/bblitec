@@ -132,6 +132,11 @@ test("RegExp call effects refuse state, mutation, escaped methods and coercion",
             "const names = {count: 0, test(name: string) { this.count++; return !!name; }};",
             "name",
         ],
+        // ... or through its module binding, which the run guards.
+        [
+            "const names = {count: 0, test(name: string) { names.count++; return !!name; }};",
+            "name",
+        ],
         [
             "const names = /a/; const text = {toString() { names.lastIndex++; return 'a'; }};",
             "text as unknown as string",

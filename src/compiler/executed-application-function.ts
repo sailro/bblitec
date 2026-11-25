@@ -966,8 +966,9 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
 
     /**
      * Whether an identifier names a binding outside `root` (module scope or
-     * an enclosing function) that a write could reach: a primitive has no
-     * state a method call could change.
+     * an enclosing function), or one the module-scope statement `root`
+     * declares (`names.count++` in a method of the `names` record), that a
+     * write could reach: a primitive has no state a method call could change.
      */
     private namesClosureBinding(
         identifier: ts.Identifier,
@@ -980,7 +981,8 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
         const declaration = symbol?.declarations?.[0];
         return (
             declaration !== undefined &&
-            !contains(root, declaration) &&
+            (!contains(root, declaration) ||
+                moduleScopeStatement(declaration) === root) &&
             declarationOrigin(declaration) === "program" &&
             typeCanCarryReference(checker.getTypeAtLocation(identifier))
         );
