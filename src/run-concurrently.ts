@@ -1,3 +1,17 @@
+import { availableParallelism, totalmem } from "node:os";
+
+/**
+ * How many compiler processes (MSVC, clang-tidy) run at once: hardware
+ * threads, and roughly 2 GB per process, which the heaviest translation
+ * unit here wants (clang-tidy peaks near 1.7 GB), whichever binds first.
+ */
+export function compilerProcessBudget(): number {
+    return Math.max(
+        1,
+        Math.min(availableParallelism(), Math.floor(totalmem() / 2e9)),
+    );
+}
+
 interface ConcurrentRunOptions {
     /** Positive verdict printed after a multi-item run. */
     completed?: string;

@@ -1,6 +1,5 @@
 import { execFile, execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { availableParallelism } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import {
@@ -35,9 +34,9 @@ import {
     ninjaDependencies,
 } from "./lint-cache.js";
 import { findRepositoryRoot } from "./repository-root.js";
-import { runConcurrently } from "./run-concurrently.js";
+import { compilerProcessBudget, runConcurrently } from "./run-concurrently.js";
 import { sceneAggregateSources } from "./native-scene-sources.js";
-import { scenes } from "./scene-registry.js";
+import { applicationScenes, scenes } from "./scene-registry.js";
 import { flagNumber, isMainModule, parseFlags } from "./tooling/flags.js";
 import { runLoggedProcess } from "./tooling/logged-process.js";
 import { artifactDirectory } from "./tooling/artifacts.js";
@@ -412,7 +411,7 @@ async function lintCommand(args: readonly string[]): Promise<void> {
     );
     if (parsed.flags.has("--help")) {
         console.log(
-            "code-quality lint <scene|build-directory|all> [...] [--generated] [--backend sdl_gpu|dawn|both] [--file <source>] [--jobs <count>] [--no-cache]",
+            "code-quality lint <scene|build-directory|demos|all> [...] [--generated] [--backend sdl_gpu|dawn|both] [--file <source>] [--jobs <count>] [--no-cache]",
         );
         return;
     }
@@ -424,14 +423,19 @@ async function lintCommand(args: readonly string[]): Promise<void> {
                 "Build with Ninja first; pass additional build directories for other feature/backend configurations.",
         );
     }
-    if (parsed.positionals.includes("all") && parsed.positionals.length !== 1) {
+    // `demos`: the registered application demos, the routine scope;
+    // `all`: every registered scene, a manual full pass.
+    const group = (["demos", "all"] as const).find((name) =>
+        parsed.positionals.includes(name),
+    );
+    if (group && parsed.positionals.length !== 1) {
         throw new Error(
-            "'all' cannot be combined with individual lint targets.",
+            `'${group}' cannot be combined with other lint targets.`,
         );
     }
     const jobs =
         flagNumber(parsed, "--jobs", "code-quality lint") ??
-        Math.min(4, availableParallelism());
+        compilerProcessBudget();
     if (!Number.isSafeInteger(jobs) || jobs < 1) {
         throw new Error("--jobs must be a positive integer.");
     }
@@ -451,8 +455,10 @@ async function lintCommand(args: readonly string[]): Promise<void> {
     const selected = parsed.values.get("--file");
     const selectedKey =
         selected === undefined ? undefined : pathKey(resolve(selected));
-    const targets = parsed.positionals.includes("all")
-        ? scenes
+    const targets = group
+        ? group === "demos"
+            ? applicationScenes
+            : scenes
         : parsed.positionals.map(
               (target) => scenes.find((scene) => scene.id === target) ?? target,
           );
