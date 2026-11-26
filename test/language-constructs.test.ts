@@ -16060,6 +16060,23 @@ check(
 `,
 );
 
+check(
+    "a-spread-of-a-class-instance-copies-the-fields-its-own-class-declares",
+    `
+    class Base { a = 1; }
+    class Left extends Base { b = 2; }
+    const items: Base[] = [];
+    items.push(new Base());
+    items.push(new Left());
+    let out = "";
+    for (const item of items) {
+        const copy: Record<string, unknown> = { ...item, z: 9 };
+        out += JSON.stringify(copy) + Object.keys(copy).join() + ";";
+    }
+    if (out !== '{"a":1,"z":9}a,z;{"a":1,"b":2,"z":9}a,b,z;') throw new Error("spread " + out);
+`,
+);
+
 test("union arms holding an undefined field another arm makes optional refuse its own-key presence", () => {
     assert.throws(
         () =>

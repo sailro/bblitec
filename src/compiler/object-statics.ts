@@ -297,7 +297,8 @@ export function structOwnEntries(
         context.dataTypes.structField(dataType.name, accessor.sourceName, node);
     // The union arms the checker narrowed a spread operand to decide the
     // keys the record's tags would: own where every arm declares the key
-    // present, absent where none declares it.
+    // present, absent where none declares it. An instance's class tag is
+    // its own: a value typed as a class may be of any class extending it.
     const arms =
         ts.isSpreadAssignment(node) || ts.isSpreadElement(node)
             ? unionMembers(context.checker.getTypeAtLocation(node.expression))
@@ -305,7 +306,11 @@ export function structOwnEntries(
     const armPresence = (
         field: DataStructField,
     ): "present" | "absent" | undefined => {
-        if (!arms || !context.dataTypes.presenceByTags(dataType.name, field))
+        if (
+            !arms ||
+            field.ownForClassTags !== undefined ||
+            !context.dataTypes.presenceByTags(dataType.name, field)
+        )
             return undefined;
         const declared = arms.map((arm) =>
             context.checker.getPropertyOfType(arm, field.sourceName),
