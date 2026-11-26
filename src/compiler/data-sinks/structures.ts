@@ -1256,6 +1256,15 @@ function refuseClassRecordCopy(
         declaration,
     );
     if (view) throw new NativeRecordStorageRequired(view);
+    // An enumerated copy has the instance's own keys, which only a document
+    // of the record type holds.
+    const document =
+        !observed &&
+        lowerer.context.dataTypes.documentRecordDemand(
+            dataType.name,
+            lowerer.convertedExpression(node),
+        );
+    if (document) throw new NativeRecordStorageRequired(document);
     lowerer.context.fail(
         node,
         `A '${symbol.name}' instance stored as '${target ? checker.typeToString(target) : dataType.name}' would be a copy of the one object JavaScript keeps, and ${observed ?? enumerated}.`,
