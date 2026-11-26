@@ -33,7 +33,7 @@
     "test:native": "npm run build && node dist/test/run-suites.js native",
     "test:shaders": "npm run build && node dist/test/run-suites.js shaders",
     "test:scenes": "npm run sweep",
-    "test:upstream": "npm run build && node dist/src/api-command.js check && node --test \"dist/test/upstream.test.js\" \"dist/test/compiler-architecture.test.js\" \"dist/test/compiler.test.js\"",
+    "test:upstream": "npm run build && node dist/src/api-command.js check && node --test \"dist/test/upstream.test.js\" \"dist/test/compiler-architecture.test.js\" \"dist/test/compiler-data.test.js\" \"dist/test/compiler-materials.test.js\" \"dist/test/compiler-modules-assets.test.js\" \"dist/test/compiler-scenes.test.js\" \"dist/test/compiler-ui.test.js\"",
     "api": "npm run build && node dist/src/api-command.js",
     "scene": "npm run build && node dist/src/scene-command.js",
     "doctor": "npm run scene -- doctor",
