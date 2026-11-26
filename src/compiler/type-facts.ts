@@ -823,7 +823,15 @@ export function holdsAnyPresentValue(
         only !== undefined &&
         isEmptyObjectType(checker, only) &&
         // An empty object literal is a value, not a slot for any.
-        ((only as ts.ObjectType).objectFlags & ts.ObjectFlags.ObjectLiteral) ===
+        !isObjectLiteralType(only)
+    );
+}
+
+/** Whether `type` is an object literal's type (or a spread of them). */
+export function isObjectLiteralType(type: ts.Type): boolean {
+    return (
+        (type.flags & ts.TypeFlags.Object) !== 0 &&
+        ((type as ts.ObjectType).objectFlags & ts.ObjectFlags.ObjectLiteral) !==
             0
     );
 }

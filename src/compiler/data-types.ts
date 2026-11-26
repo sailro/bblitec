@@ -214,6 +214,7 @@ import {
     declaredRecordName,
     holdsAnyPresentValue,
     isEmptyObjectType,
+    isObjectLiteralType,
     holdsObjectKeyword,
     sourceOrderedProperties,
     valueKindOf,
@@ -6260,11 +6261,7 @@ export class DataTypeRegistry {
     private holdsOnlyDynamicValues(type: ts.Type): boolean {
         return presentMembers(type).every(
             (member) =>
-                (member.flags & ts.TypeFlags.Object) !== 0 &&
-                ((member as ts.ObjectType).objectFlags &
-                    ts.ObjectFlags.ObjectLiteral) !==
-                    0 &&
-                this.isNonNullConstraint(member),
+                isObjectLiteralType(member) && this.isNonNullConstraint(member),
         );
     }
 

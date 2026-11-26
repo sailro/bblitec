@@ -11,6 +11,7 @@ import {
     callSignatures,
     classInstanceDeclaration,
     declaredRecordName,
+    isObjectLiteralType,
     unionMembers,
 } from "./type-facts.js";
 
@@ -210,12 +211,7 @@ function recordShape(
     )
         return false;
     const properties = checker.getPropertiesOfType(type);
-    const literal = parts.every(
-        (part) =>
-            ((part as ts.ObjectType).objectFlags &
-                ts.ObjectFlags.ObjectLiteral) !==
-            0,
-    );
+    const literal = parts.every(isObjectLiteralType);
     return (
         properties.length > 0 &&
         properties.every(

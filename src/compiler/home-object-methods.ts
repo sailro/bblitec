@@ -12,6 +12,7 @@ import {
 } from "./syntax.js";
 import {
     declaredContextualType,
+    isObjectLiteralType,
     unionMembers,
     valueKindOf,
 } from "./type-facts.js";
@@ -96,8 +97,7 @@ function homeObjectType(
     return type &&
         !type.isUnion() &&
         (type.flags & ts.TypeFlags.Object) !== 0 &&
-        ((type as ts.ObjectType).objectFlags & ts.ObjectFlags.ObjectLiteral) ===
-            0
+        !isObjectLiteralType(type)
         ? type
         : undefined;
 }
