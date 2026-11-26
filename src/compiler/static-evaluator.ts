@@ -2059,9 +2059,10 @@ export class StaticEvaluator {
 
     /**
      * What a call of a local function generation cannot run returns, read
-     * without running it: `values` evaluates its arguments once (undefined
-     * declines them), and the body is read `within` a scope binding the
-     * callee's parameters to those values. Its body is `return`s, `if`
+     * without running it: `values`, given the callee's parameter names,
+     * evaluates its arguments once (undefined declines them), and the body
+     * is read `within` a scope binding the callee's parameters to those
+     * values. Its body is `return`s, `if`
      * statements whose pure conditions generation knows over those bindings
      * (a known-false one skipped, a known-true one entered), and `const`
      * declarations, whose initializers stand for their names (`aliases`). A
@@ -2070,20 +2071,27 @@ export class StaticEvaluator {
      */
     public returnedExpression(
         call: ts.CallExpression,
-        values: (callee: FunctionWithBody) => readonly Value[] | undefined,
+        values: (
+            callee: FunctionWithBody,
+            names: readonly ts.Identifier[],
+        ) => readonly Value[] | undefined,
     ): ReturnedExpression | undefined {
         if (call.questionDotToken) return undefined;
         const callee = calledFunction(this.checker, call);
         const body = callee?.body;
+        const names =
+            callee?.parameters
+                .map(({ name }) => name)
+                .filter(ts.isIdentifier) ?? [];
         if (
             !callee ||
             !body ||
             callee.getSourceFile().isDeclarationFile ||
             call.arguments.length !== callee.parameters.length ||
+            names.length !== callee.parameters.length ||
             call.arguments.some(ts.isSpreadElement) ||
             !callee.parameters.every(
                 (parameter, index) =>
-                    ts.isIdentifier(parameter.name) &&
                     !parameter.dotDotDotToken &&
                     (!parameter.initializer ||
                         !nullability(
@@ -2091,11 +2099,11 @@ export class StaticEvaluator {
                                 call.arguments[index]!,
                             ),
                         ).undefined) &&
-                    parameterIsReadOnly(this.checker, callee, parameter.name),
+                    parameterIsReadOnly(this.checker, callee, names[index]!),
             )
         )
             return undefined;
-        const bound = values(callee);
+        const bound = values(callee, names);
         if (!bound) return undefined;
         const within = this.bindParameters(callee, call, bound);
         if (!ts.isBlock(body))
@@ -2108,7 +2116,7 @@ export class StaticEvaluator {
         ): ts.Expression | "none" | undefined => {
             for (const statement of statements) {
                 if (ts.isReturnStatement(statement))
-                    return statement.expression ?? undefined;
+                    return statement.expression;
                 if (ts.isVariableStatement(statement)) {
                     if (variableKind(statement.declarationList) !== "const")
                         return undefined;
@@ -2174,14 +2182,14 @@ export class StaticEvaluator {
             : undefined;
         if (!symbol || resolving.has(symbol)) return undefined;
         const substitutions = new Map<ts.Symbol, ts.Expression>();
-        const site = this.returnedExpression(call, (declaration) => {
+        const site = this.returnedExpression(call, (declaration, names) => {
             if (
                 functionKind(declaration) !== "plain" ||
                 !isModuleScopeFunction(declaration)
             )
                 return undefined;
             const values: Value[] = [];
-            for (const [index, parameter] of declaration.parameters.entries()) {
+            for (const [index, name] of names.entries()) {
                 const argument = call.arguments[index]!;
                 if (
                     this.evaluationOrder.writesStorage(argument) ||
@@ -2194,9 +2202,7 @@ export class StaticEvaluator {
                     : (value.staticString ??
                       value.staticBoolean ??
                       value.staticNumber);
-                const binding = this.resolveSymbol(
-                    parameter.name as ts.Identifier,
-                );
+                const binding = this.resolveSymbol(name);
                 if (
                     !binding ||
                     scalar === undefined ||

@@ -169,23 +169,11 @@ export class PinnedProgramSources {
         );
         const exports = new Map<string, string>();
         for (const name of exportedDeclarations(declarations).keys()) {
-            const value = this.store.findPublicExport(name)?.modulePath;
             // A type the package's barrel cannot name is the export of the
             // one qualifying module declaring it.
-            const owners =
-                value === undefined
-                    ? this.store
-                          .declaringModules(name)
-                          .filter((module) => this.qualifies(module))
-                    : [];
-            const module =
-                value !== undefined
-                    ? this.qualifies(value)
-                        ? value
-                        : undefined
-                    : owners.length === 1
-                      ? owners[0]
-                      : undefined;
+            const module = this.store.exportModule(name, (candidate) =>
+                this.qualifies(candidate),
+            );
             if (module) exports.set(name, module);
         }
         const program = new Set<string>();

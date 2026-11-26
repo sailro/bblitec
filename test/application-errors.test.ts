@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
+import { errorMessage } from "../src/executed-module-graph.js";
 import {
     headlessRealmHost,
     optionalNativeFixtureTools,
@@ -323,12 +324,7 @@ async function runAsJavaScript(source: string): Promise<void> {
             failures,
             (error) => {
                 // The program's Error is its own realm's.
-                const message =
-                    typeof error === "object" &&
-                    error !== null &&
-                    "message" in error
-                        ? String(error.message)
-                        : String(error);
+                const message = errorMessage(error);
                 report(new ErrorEvent("error", error, message), message);
             },
         );

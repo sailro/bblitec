@@ -25,7 +25,36 @@ import {
     type UpstreamSourceStore,
 } from "./upstream-source.js";
 
+/**
+ * Each module's typings, once per process: a program's host reads them
+ * for every file lookup, and the bake key hashes every pinned source
+ * (`pinnedSourceInputs`).
+ */
 const typings = new Map<string, string>();
+
+/** The names each store's entry (`index.d.ts`) exports, parsed once. */
+const entryExports = new WeakMap<UpstreamSourceStore, ReadonlySet<string>>();
+
+function entryExportNames(store: UpstreamSourceStore): ReadonlySet<string> {
+    let names = entryExports.get(store);
+    if (!names) {
+        names = new Set(
+            exportedDeclarations(
+                ts.createSourceFile(
+                    "index.d.ts",
+                    readFileSync(
+                        resolve(store.packageRoot, "index.d.ts"),
+                        "utf8",
+                    ),
+                    ts.ScriptTarget.Latest,
+                    false,
+                ),
+            ).keys(),
+        );
+        entryExports.set(store, names);
+    }
+    return names;
+}
 
 /** A pinned module's typings (see the module comment), by its source path (`src/shader/wgsl.ts`). */
 export function pinnedModuleTypings(module: string): string {
@@ -67,14 +96,7 @@ function writeTypings(store: UpstreamSourceStore, module: string): string {
         ts.ScriptTarget.Latest,
         false,
     );
-    const entry = exportedDeclarations(
-        ts.createSourceFile(
-            "index.d.ts",
-            readFileSync(resolve(store.packageRoot, "index.d.ts"), "utf8"),
-            ts.ScriptTarget.Latest,
-            false,
-        ),
-    );
+    const entry = entryExportNames(store);
     const shared = [...exportedDeclarations(file)].filter(
         ([name, statements]) =>
             entry.has(name) &&
@@ -85,7 +107,7 @@ function writeTypings(store: UpstreamSourceStore, module: string): string {
                     ts.isClassDeclaration(statement) ||
                     ts.isEnumDeclaration(statement),
             ) &&
-            entryModule(store, name) === module,
+            store.exportModule(name) === module,
     );
     if (!shared.length) return text;
     let result = text;
@@ -101,20 +123,11 @@ function writeTypings(store: UpstreamSourceStore, module: string): string {
         .map(([name]) => name)
         .sort()
         .join(", ");
+    // The package's scoped spelling (`@babylonjs/lite`).
+    const [, entryPackage] = babylonPackages;
     return [
         result,
-        `import { ${list} } from "${babylonPackages[1]}";`,
+        `import { ${list} } from "${entryPackage}";`,
         `export { ${list} };`,
     ].join("\n");
-}
-
-/** The pinned module that declares an export of the entry, when one does. */
-function entryModule(
-    store: UpstreamSourceStore,
-    name: string,
-): string | undefined {
-    const value = store.findPublicExport(name)?.modulePath;
-    if (value !== undefined) return value;
-    const owners = store.declaringModules(name);
-    return owners.length === 1 ? owners[0] : undefined;
 }

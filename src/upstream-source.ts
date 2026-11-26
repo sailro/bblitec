@@ -336,6 +336,22 @@ export class UpstreamSourceStore {
         return this.publicExports.get(name);
     }
 
+    /**
+     * The module that owns the export `name` among those `qualifies`
+     * admits: its public export's module, else the one admitted source
+     * declaring it (`declaringModules`). Undefined when the public export's
+     * module is not admitted, or when no source or several declare it.
+     */
+    public exportModule(
+        name: string,
+        qualifies: (module: string) => boolean = () => true,
+    ): string | undefined {
+        const value = this.findPublicExport(name)?.modulePath;
+        if (value !== undefined) return qualifies(value) ? value : undefined;
+        const owners = this.declaringModules(name).filter(qualifies);
+        return owners.length === 1 ? owners[0] : undefined;
+    }
+
     public resolvePublicExport(name: string): PublicExport {
         const entry = this.findPublicExport(name);
         if (!entry)

@@ -354,23 +354,22 @@ export function createCompilerProgram(
         module: string,
     ): ts.ResolvedModuleWithFailedLookupLocations => {
         const source = pinnedSources?.pinnedPath(module);
-        const target =
-            source && pinnedSources!.module(source)
-                ? source
-                : sharedUpstreamStore().hasSource(module)
-                  ? pinnedModuleTypingsPath(module)
-                  : undefined;
+        if (source && pinnedSources?.module(source))
+            return {
+                resolvedModule: {
+                    resolvedFileName: source,
+                    extension: ts.Extension.Ts,
+                    isExternalLibraryImport: false,
+                },
+            };
+        if (!sharedUpstreamStore().hasSource(module))
+            return { resolvedModule: undefined };
         return {
-            resolvedModule: target
-                ? {
-                      resolvedFileName: target,
-                      extension:
-                          target === source
-                              ? ts.Extension.Ts
-                              : ts.Extension.Dts,
-                      isExternalLibraryImport: target !== source,
-                  }
-                : undefined,
+            resolvedModule: {
+                resolvedFileName: pinnedModuleTypingsPath(module),
+                extension: ts.Extension.Dts,
+                isExternalLibraryImport: true,
+            },
         };
     };
     const options: ts.CompilerOptions = {
@@ -533,9 +532,7 @@ export function createCompilerProgram(
                 const subpathModule = babylonSubpathModule(moduleName);
                 if (subpathModule !== undefined)
                     return pinnedModule(subpathModule);
-                if (isBabylonModule(moduleName)) {
-                    return entryTypings;
-                }
+                if (isBabylonModule(moduleName)) return entryTypings;
                 if (moduleName.endsWith(RAW_TEXT_QUERY))
                     return carriedFileModule(
                         resolve(

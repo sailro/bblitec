@@ -278,15 +278,19 @@ export async function executeModuleGraph(
 /** A pass folded to its JSON document, or why generation cannot fold it. */
 export type ModuleJsonOutcome = { value: unknown } | { declined: string };
 
-/** The decline a pass that threw (or refused an import) reports. */
-function thrownAtGeneration(error: unknown): { declined: string } {
-    const message =
-        typeof error === "object" &&
+/** What a thrown value says: an error's message, else the value as text. */
+export function errorMessage(error: unknown): string {
+    return typeof error === "object" &&
         error !== null &&
         "message" in error &&
         typeof error.message === "string"
-            ? error.message
-            : String(error);
+        ? error.message
+        : String(error);
+}
+
+/** The decline a pass that threw (or refused an import) reports. */
+function thrownAtGeneration(error: unknown): { declined: string } {
+    const message = errorMessage(error);
     return {
         declined: message.startsWith("Executed module ")
             ? message

@@ -1314,8 +1314,9 @@ export function copyEnumerated(
 ): boolean {
     const observations = programObservations(context.program);
     const copies = copyTypes(context.checker, observations, target);
-    const holds = holderTest(context.checker);
-    return [...observations.enumerations].some((type) => holds(type, copies));
+    for (const type of observations.enumerations)
+        if (holdsRecord(context.checker, type, copies)) return true;
+    return false;
 }
 
 /** The types a copy of `target` type has: its own and each an assertion retypes it to. */

@@ -46,11 +46,13 @@ import {
     propertyKey,
     variableKind,
     hasDeclareModifier,
+    isDeclaredInside,
 } from "./syntax.js";
 import { typeCanCarryReference, unionMembers } from "./type-facts.js";
 import { writesThroughTrackedRoot } from "./user-functions.js";
 import { writtenOnlyInDeadFunctions } from "./string-domain.js";
 import { pinnedModuleBinding } from "../lowering/pinned-shader-builders.js";
+import { errorMessage } from "../executed-module-graph.js";
 import { syntaxKindName } from "../source-location.js";
 import { transpileCommonJs } from "../typescript-transpile.js";
 import { sharedUpstreamStore } from "../upstream-source.js";
@@ -505,23 +507,6 @@ function settledResult(realm: vm.Context, result: unknown): unknown {
     return settlement.value;
 }
 
-function errorMessage(error: unknown): string {
-    return typeof error === "object" &&
-        error !== null &&
-        "message" in error &&
-        typeof error.message === "string"
-        ? error.message
-        : String(error);
-}
-
-function contains(outer: ts.Node, inner: ts.Node): boolean {
-    return (
-        outer.getSourceFile() === inner.getSourceFile() &&
-        inner.pos >= outer.pos &&
-        inner.end <= outer.end
-    );
-}
-
 /** The class whose instance a `this` reads, through arrow functions. */
 function thisClass(node: ts.Node): ts.ClassDeclaration | undefined {
     for (let current = node.parent; current; current = current.parent) {
@@ -885,7 +870,7 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
                     !(
                         owner &&
                         carriedClass(owner) &&
-                        !contains(this.target, node)
+                        !isDeclaredInside(node, this.target)
                     )
                 ) {
                     this.context.fail(
@@ -981,7 +966,7 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
         const declaration = symbol?.declarations?.[0];
         return (
             declaration !== undefined &&
-            (!contains(root, declaration) ||
+            (!isDeclaredInside(declaration, root) ||
                 moduleScopeStatement(declaration) === root) &&
             declarationOrigin(declaration) === "program" &&
             typeCanCarryReference(checker.getTypeAtLocation(identifier))
@@ -1046,7 +1031,7 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
                 `${this.label} reads '${identifier.text}' from the ${origin === "babylon" ? "pinned engine" : "host"}, which generation does not run.`,
             );
         }
-        if (contains(root, declaration)) return;
+        if (isDeclaredInside(declaration, root)) return;
         const opaque = this.opaqueBinding(identifier);
         const statement = moduleScopeStatement(declaration);
         if (statement) {
