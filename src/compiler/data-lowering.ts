@@ -21,6 +21,7 @@ import {
 } from "./types.js";
 import { stringConcatPart } from "./expressions.js";
 import { BranchState } from "./branch-state.js";
+import { conditionComparison } from "./comparisons.js";
 import { clusteredLightProperty } from "./clustered-light-surface.js";
 import { FunctionStorageFlow } from "./function-storage-flow.js";
 import {
@@ -21303,7 +21304,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         requireObservedPromise(this.context, expression);
         const equality = equalityOperator(expression.operatorToken.kind);
         if (!equality) return undefined;
-        const { negated, loose } = equality;
+        const { negated } = equality;
+        // Same-type loose equality is strict, including object identity.
+        const loose =
+            equality.loose &&
+            conditionComparison(this.context.checker, expression) ===
+                "coercing";
         const left = this.context.unwrapValue(expression.left);
         const right = this.context.unwrapValue(expression.right);
         if (!loose && this.context.options.workers) {

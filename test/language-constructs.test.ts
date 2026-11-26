@@ -3769,6 +3769,26 @@ check(
 );
 
 check(
+    "loose equality between objects compares identity without coercion",
+    `
+    const notes = new WeakMap<object, string[]>();
+    const other = new WeakMap<object, string[]>();
+    const alias = notes;
+    if (notes == other || notes != alias) throw new Error("weak map identity");
+    const seen = new WeakSet<object>();
+    if (seen != seen || seen == new WeakSet<object>()) throw new Error("weak set identity");
+    const maps = new Map<string, number>();
+    const same = maps;
+    if (maps != same || maps == new Map<string, number>()) throw new Error("map identity");
+    const record = { value: 1 }, sameRecord = record, different = { value: 1 };
+    if (record != sameRecord || record == different) throw new Error("record identity");
+    let calls = 0;
+    function get(): WeakMap<object, string[]> { calls++; return notes; }
+    if (get() != get() || calls !== 2) throw new Error("evaluation order");
+    `,
+);
+
+check(
     "fresh class instances are the only handle of their interface views",
     `
     const log: string[] = [];

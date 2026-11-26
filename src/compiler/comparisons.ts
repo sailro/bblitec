@@ -39,25 +39,26 @@ interface ConditionComparison {
     readonly cpp: string;
 }
 
-/** The one primitive type every member of `type` has, if it has one. */
-function primitiveKind(
+/** The one represented equality type every member of `type` has, if it has one. */
+function equalityKind(
     type: ts.Type,
-): "number" | "string" | "boolean" | "bigint" | undefined {
+): "number" | "string" | "boolean" | "bigint" | "object" | undefined {
     const kinds = valueKinds(type);
     const [kind] = kinds;
     return kinds.size === 1 &&
         (kind === "number" ||
             kind === "string" ||
             kind === "boolean" ||
-            kind === "bigint")
+            kind === "bigint" ||
+            kind === "object")
         ? kind
         : undefined;
 }
 
 /**
  * The comparison `expression` performs, or undefined when its operator is
- * not a comparison. A loose equality between operands of one primitive type
- * is the strict one (ECMAScript IsLooseEqual, step 1); across types it
+ * not a comparison. A loose equality between operands of one primitive type,
+ * or between two objects, is strict (ECMAScript IsLooseEqual, step 1); across types it
  * coerces, which `"coercing"` reports so the caller can refuse it.
  */
 export function conditionComparison(
@@ -67,10 +68,10 @@ export function conditionComparison(
     const token = expression.operatorToken.kind;
     const strict = STRICT_EQUALITY.get(token);
     if (strict !== undefined) {
-        const left = primitiveKind(checker.getTypeAtLocation(expression.left));
+        const left = equalityKind(checker.getTypeAtLocation(expression.left));
         if (
             left === undefined ||
-            left !== primitiveKind(checker.getTypeAtLocation(expression.right))
+            left !== equalityKind(checker.getTypeAtLocation(expression.right))
         )
             return "coercing";
     }
