@@ -27,6 +27,24 @@ check(
 `,
 );
 
+// A subpath of the pinned package types its names from its own module:
+// `WgslSource` exists only there, and an options interface the entry also
+// exports stays the entry's one type.
+check(
+    "a-pinned-subpath-types-its-names-from-its-own-module",
+    `
+    import type { WgslSource } from "babylon-lite/shader/wgsl.js";
+    import type { DdsEnvironmentBackgroundOptions } from "babylon-lite/material/pbr/background-dds-environment.js";
+    function mark(text: string): WgslSource { return text as WgslSource; }
+    const parts: WgslSource[] = [mark("fn a() {}"), mark("fn b() {}")];
+    const joined: string = parts.join("|");
+    if (joined !== "fn a() {}|fn b() {}" || !parts[1]!.startsWith("fn b")) throw new Error("wgsl source " + joined);
+    const options: DdsEnvironmentBackgroundOptions = { skyboxUrl: "sky.dds", groundTextureUrl: "ground.png", skyboxSize: 400 };
+    options.enableNoise ??= false;
+    if (options.skyboxSize / 2 !== 200 || options.enableNoise || options.skyboxUrl + options.groundTextureUrl !== "sky.ddsground.png") throw new Error("options");
+`,
+);
+
 check(
     "a-binding-pattern-binds-alike-in-every-position",
     `
@@ -5311,6 +5329,8 @@ function check(
                 },
             }).outputText,
             {
+                // A source with imports (type-only) transpiles as a module.
+                exports: {},
                 location: { search },
                 URLSearchParams,
                 TextDecoder,

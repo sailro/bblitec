@@ -1011,6 +1011,15 @@ test("refuses imports of names the pinned package does not export", () => {
             "missingHelper",
         ],
         [`export { NoSuchType } from "babylon-lite";`, "NoSuchType"],
+        // A subpath exports what its own module does.
+        [
+            `import { wgsl, createEngine } from "babylon-lite/shader/wgsl.js";`,
+            "createEngine",
+        ],
+        [
+            `import { type WgslSource, wgsl } from "babylon-lite/shader/no-such-module.js";`,
+            "WgslSource",
+        ],
     ] as const)
         assert.throws(
             () =>
@@ -1029,7 +1038,10 @@ test("refuses imports of names the pinned package does not export", () => {
     // A subpath's module, not the entry's typings, says what it exports.
     compileSource(`
         import { installPbrTracking } from "babylon-lite/material/tracking/pbr-tracking";
+        import { type WgslSource, wgsl } from "babylon-lite/shader/wgsl.js";
+        const source: WgslSource = wgsl\`fn main() {}\`;
         void installPbrTracking;
+        void source;
     `);
 });
 

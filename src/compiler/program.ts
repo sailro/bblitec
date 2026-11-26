@@ -1,7 +1,13 @@
 import { compilerRepositoryRoot } from "../repository-root.js";
 import { dirname, resolve } from "node:path";
 import ts from "typescript";
-import { compilerPackageTypings, isBabylonModule } from "./symbols.js";
+import {
+    babylonSubpathModule,
+    compilerPackageTypings,
+    isBabylonModule,
+    pinnedModuleTypingsPath,
+    pinnedTypingsModule,
+} from "./symbols.js";
 import type { HostPage } from "./types.js";
 import { hostPageServedFile } from "../host-page.js";
 import { sharedPinnedContext } from "../lowering/context.js";
@@ -9,7 +15,12 @@ import {
     isInstalledPackageFile,
     libraryTypingFile,
 } from "../typescript-library-files.js";
-import { repositoryRelativePath } from "../upstream-source.js";
+import {
+    repositoryRelativePath,
+    sharedUpstreamStore,
+} from "../upstream-source.js";
+import { pinnedModuleTypings } from "../pinned-module-typings.js";
+import { isRelativeSpecifier } from "../typescript-module-specifiers.js";
 import { specifierSourceName } from "./syntax.js";
 import {
     pinnedProgramExportNames,
@@ -317,9 +328,51 @@ export function createCompilerProgram(
               : (inlineStartup.get(absolute) ??
                 pinnedSources?.module(absolute)?.text);
     };
+    // The pinned module whose typings a path holds
+    // (`pinned-module-typings.ts`), when the pin has that module.
+    const typingsModule = (path: string): string | undefined => {
+        const module = pinnedTypingsModule(path);
+        return module !== undefined && sharedUpstreamStore().hasSource(module)
+            ? module
+            : undefined;
+    };
     const repositoryRoot = compilerRepositoryRoot();
     const { babylon: babylonTypes, webGpu: webGpuTypes } =
         compilerPackageTypings();
+    const entryTypings: ts.ResolvedModuleWithFailedLookupLocations = {
+        resolvedModule: {
+            resolvedFileName: babylonTypes,
+            extension: ts.Extension.Dts,
+            isExternalLibraryImport: true,
+        },
+    };
+    // A pinned module a program names itself (a subpath, or a module its
+    // typings import): the module's source where the program compiles it
+    // (`pinned-program-sources.ts`), else its typings; nothing for a module
+    // the pin does not have.
+    const pinnedModule = (
+        module: string,
+    ): ts.ResolvedModuleWithFailedLookupLocations => {
+        const source = pinnedSources?.pinnedPath(module);
+        const target =
+            source && pinnedSources!.module(source)
+                ? source
+                : sharedUpstreamStore().hasSource(module)
+                  ? pinnedModuleTypingsPath(module)
+                  : undefined;
+        return {
+            resolvedModule: target
+                ? {
+                      resolvedFileName: target,
+                      extension:
+                          target === source
+                              ? ts.Extension.Ts
+                              : ts.Extension.Dts,
+                      isExternalLibraryImport: target !== source,
+                  }
+                : undefined,
+        };
+    };
     const options: ts.CompilerOptions = {
         target: ts.ScriptTarget.ES2022,
         module: ts.ModuleKind.NodeNext,
@@ -343,11 +396,18 @@ export function createCompilerProgram(
         fileExists: (path) =>
             virtualSource(path) !== undefined ||
             carriedFile(path) !== undefined ||
+            typingsModule(path) !== undefined ||
             defaultHost.fileExists(path),
-        readFile: (path) =>
-            virtualSource(path) ??
-            carriedFileModuleSource(path, defaultHost) ??
-            defaultHost.readFile(path),
+        readFile: (path) => {
+            const typings = typingsModule(path);
+            return (
+                virtualSource(path) ??
+                carriedFileModuleSource(path, defaultHost) ??
+                (typings === undefined
+                    ? defaultHost.readFile(path)
+                    : pinnedModuleTypings(typings))
+            );
+        },
         getSourceFile: (
             path,
             languageVersion,
@@ -363,6 +423,17 @@ export function createCompilerProgram(
                     true,
                 );
             }
+            const typedModule = typingsModule(path);
+            if (typedModule !== undefined)
+                return libraryTypingFile(path, () =>
+                    ts.createSourceFile(
+                        resolve(path),
+                        pinnedModuleTypings(typedModule),
+                        languageVersion,
+                        true,
+                        ts.ScriptKind.TS,
+                    ),
+                );
             const carried = carriedFileModuleSource(path, defaultHost);
             if (carried !== undefined) {
                 return ts.createSourceFile(
@@ -440,6 +511,17 @@ export function createCompilerProgram(
                                 resolve(target) === babylonTypes,
                         },
                     };
+                // A module pinned typings import relatively is the module
+                // the pin's own program reads: the store's, or the entry
+                // where the store carries none (`PinnedProgram`).
+                const importing = typingsModule(containingFile);
+                if (importing && isRelativeSpecifier(moduleLiteral.text)) {
+                    const imported = sharedUpstreamStore().resolveImport(
+                        importing,
+                        moduleLiteral.text,
+                    );
+                    return imported ? pinnedModule(imported) : entryTypings;
+                }
                 // The page's site serves a root-relative specifier, and the
                 // page loader's, as the page's own module script loads it.
                 const moduleName =
@@ -448,14 +530,11 @@ export function createCompilerProgram(
                             resolve(containingFile) === loaderName) &&
                         hostPageServedFile(page, moduleLiteral.text)) ||
                     moduleLiteral.text;
+                const subpathModule = babylonSubpathModule(moduleName);
+                if (subpathModule !== undefined)
+                    return pinnedModule(subpathModule);
                 if (isBabylonModule(moduleName)) {
-                    return {
-                        resolvedModule: {
-                            resolvedFileName: babylonTypes,
-                            extension: ts.Extension.Dts,
-                            isExternalLibraryImport: true,
-                        },
-                    };
+                    return entryTypings;
                 }
                 if (moduleName.endsWith(RAW_TEXT_QUERY))
                     return carriedFileModule(

@@ -83,6 +83,26 @@ export function readUpstreamPin(
     };
 }
 
+/**
+ * The bytes that fix what a store reads, for a bake over pinned sources to
+ * key on: the package lock (which fixes the package installed, and the
+ * vendored packages beside it), the pin, and the corpus's pinned
+ * type-only sources.
+ */
+export function pinnedSourceInputs(
+    repositoryRoot = compilerRepositoryRoot(),
+): Uint8Array[] {
+    const corpus = readPinFile(
+        "upstream/babylon-lite-corpus.json",
+        repositoryRoot,
+    ) as Partial<BabylonLiteCorpusManifest>;
+    return [
+        readFileSync(resolve(repositoryRoot, "package-lock.json")),
+        readFileSync(resolve(repositoryRoot, "upstream/babylon-lite.json")),
+        new TextEncoder().encode(JSON.stringify(corpus.packageSources ?? [])),
+    ];
+}
+
 /** Where the pinned package is installed (`node_modules/<package>`), from the pin file alone. */
 export function pinnedPackageRoot(
     repositoryRoot = compilerRepositoryRoot(),

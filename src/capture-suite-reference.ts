@@ -465,8 +465,8 @@ export function suiteBrowserModuleDigest(
  * SUBPATH for an entry point the index does not re-export — the PBR
  * tracking installer and the DDS background builder are both written that
  * way. A browser resolves neither, so both are rewritten to the published
- * module, and a subpath keeps its own path under `lib/` with the `.js` the
- * package ships (a specifier that already carries one keeps it).
+ * module: a subpath to the one the package emits for its pinned module
+ * (`babylonSubpathModule`), under `lib/`.
  *
  * The shared module AST rewriter preserves quote styles and leaves ordinary
  * strings and comments untouched.
@@ -475,7 +475,11 @@ export function pinnedPackageSpecifiers(
     source: string,
     entryUrl = pinnedBrowserEntryUrl,
 ): string {
-    const { babylonPackages, physicsEngineModulePackage } = compilerSymbols();
+    const {
+        babylonPackages,
+        babylonSubpathModule,
+        physicsEngineModulePackage,
+    } = compilerSymbols();
     const entries: Readonly<Record<string, string>> = {
         [physicsEngineModulePackage]: `/node_modules/${physicsEngineModulePackage}/lib/esm/HavokPhysics_es.js`,
         "@recast-navigation/core":
@@ -486,17 +490,13 @@ export function pinnedPackageSpecifiers(
             "/node_modules/@recast-navigation/wasm/dist/recast-navigation.wasm.js",
     };
     return rewriteModuleSpecifiers(source, "reference.js", ({ text }) => {
-        const packageName = babylonPackages.find(
-            (name) => text === name || text.startsWith(`${name}/`),
-        );
-        if (packageName) {
-            const subpath = text.slice(packageName.length);
+        const module = babylonSubpathModule(text);
+        if (module !== undefined)
             return {
-                specifier: subpath
-                    ? `/node_modules/@babylonjs/lite/lib${subpath.endsWith(".js") ? subpath : `${subpath}.js`}`
-                    : entryUrl,
+                specifier: `/node_modules/@babylonjs/lite/lib/${module.slice("src/".length, -".ts".length)}.js`,
             };
-        }
+        if ((babylonPackages as readonly string[]).includes(text))
+            return { specifier: entryUrl };
         const specifier = Object.hasOwn(entries, text)
             ? entries[text]
             : undefined;
