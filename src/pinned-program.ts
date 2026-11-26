@@ -335,6 +335,10 @@ export class PinnedProgram implements PinnedNames {
                 noEmit: false,
                 declaration: true,
                 emitDeclarationOnly: true,
+                // The host resolves every import (`resolveModuleNameLiterals`);
+                // without this, the emit tries a package `imports` specifier
+                // for a module it names and needs a base path the pin lacks.
+                resolvePackageJsonImports: false,
             },
         );
         const file = program.getSourceFile(modulePath);
