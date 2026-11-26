@@ -22,6 +22,7 @@ import {
     bindingElementKey,
     classBaseExpression,
     functionOfDeclaration,
+    isDeclaredInside,
     isSupportedFunction,
 } from "./syntax.js";
 import {
@@ -31,28 +32,30 @@ import {
     protocolClassMembers,
     runTimeKeyMayRunClassCode,
 } from "./class-members.js";
+import { sharedGenerationStateFields } from "./values/model.js";
 
-/** AST nodes, checker types and symbols are immutable compiler inputs. */
-function isCompilerInput(value: object): boolean {
-    return (
-        ("kind" in value &&
-            typeof value.kind === "number" &&
-            "pos" in value &&
-            typeof value.pos === "number" &&
-            "end" in value &&
-            typeof value.end === "number") ||
-        ("getFlags" in value && typeof value.getFlags === "function")
-    );
+function isObject(value: unknown): value is object {
+    return typeof value === "object" && value !== null;
 }
 
 /** A parsed or factory syntax node. */
 function isSyntaxNode(value: unknown): value is ts.Node {
     return (
-        typeof value === "object" &&
-        value !== null &&
+        isObject(value) &&
         "kind" in value &&
         typeof value.kind === "number" &&
-        "getSourceFile" in value
+        "pos" in value &&
+        typeof value.pos === "number" &&
+        "end" in value &&
+        typeof value.end === "number"
+    );
+}
+
+/** AST nodes, checker types and symbols are immutable compiler inputs. */
+function isCompilerInput(value: object): boolean {
+    return (
+        isSyntaxNode(value) ||
+        ("getFlags" in value && typeof value.getFlags === "function")
     );
 }
 
@@ -64,20 +67,6 @@ function ownData(value: object, name: string): unknown {
 
 /** What a key reads code with: the program the code is in. */
 export type SpecializationReads = Pick<LoweringServices, "checker" | "program">;
-
-/**
- * The fields through which a value shares generation state with another:
- * the aggregates the scope-wide searches of a lowering match a binding by
- * (its holder, its collection facts, its callback's owner).
- */
-const sharedStateFields = [
-    "tupleElements",
-    "staticElements",
-    "staticElementsOwner",
-    "collectionCardinality",
-    "callbackRecordOwner",
-    "recordProperties",
-] as const;
 
 export interface FunctionEmissionScope {
     readonly lexical: object;
@@ -211,9 +200,9 @@ export class FunctionSpecializations<T> {
             tokens.push("]");
         };
         const held = (value: unknown): boolean =>
-            typeof value === "object" && value !== null && seen.has(value);
+            isObject(value) && seen.has(value);
         const sharesValueState = (value: unknown): boolean => {
-            if (typeof value !== "object" || value === null) return false;
+            if (!isObject(value)) return false;
             if (seen.has(value)) return true;
             const cpp = ownData(value, "cpp");
             if (typeof cpp === "string" && cpps.has(cpp)) return true;
@@ -221,26 +210,24 @@ export class FunctionSpecializations<T> {
             const dataType = ownData(value, "dataType");
             if (
                 ownData(value, "kind") === "engine" ||
-                (typeof dataType === "object" &&
-                    dataType !== null &&
-                    ownData(dataType, "handle") === "engine")
+                (isObject(dataType) && ownData(dataType, "handle") === "engine")
             )
                 return true;
-            return sharedStateFields.some((name) => held(ownData(value, name)));
+            return sharedGenerationStateFields.some((name) =>
+                held(ownData(value, name)),
+            );
         };
         const sharesState = (binding: unknown): boolean => {
-            if (typeof binding !== "object" || binding === null) return false;
-            if (seen.has(binding)) return true;
+            if (!isObject(binding)) return false;
             const value = ownData(binding, "value");
-            if (sharesValueState(value)) return true;
-            const members =
-                typeof value === "object" && value !== null
-                    ? ownData(value, "recordProperties")
-                    : undefined;
+            const members = isObject(value)
+                ? ownData(value, "recordProperties")
+                : undefined;
             return (
-                typeof members === "object" &&
-                members !== null &&
-                Object.values(members).some(sharesValueState)
+                held(binding) ||
+                sharesValueState(value) ||
+                (isObject(members) &&
+                    Object.values(members).some(sharesValueState))
             );
         };
         const encode = (value: unknown): void => {
@@ -376,10 +363,9 @@ export class FunctionSpecializations<T> {
             // A callback runs its declaration in its owner's scopes.
             const declaration = ownData(value, "callbackDeclaration");
             const owner = ownData(value, "callbackRecordOwner");
-            const chain =
-                typeof owner === "object" && owner !== null
-                    ? ownData(owner, "recordScopes")
-                    : undefined;
+            const chain = isObject(owner)
+                ? ownData(owner, "recordScopes")
+                : undefined;
             if (isSyntaxNode(declaration) && Array.isArray(chain)) {
                 tokens.push(",callbackScopes:");
                 projectScopes(chain, [declaration]);
@@ -555,8 +541,11 @@ function codeReads(reads: SpecializationReads, root: ts.Node): CodeReads {
                     ))
                         follow(accessor);
                     // A namespace member reads its module's binding.
-                    if (ts.isPropertyAccessExpression(node))
-                        if (ts.isIdentifier(node.name)) name(node.name);
+                    if (
+                        ts.isPropertyAccessExpression(node) &&
+                        ts.isIdentifier(node.name)
+                    )
+                        name(node.name);
                     dispatch(
                         staticAccessKey(checker, node),
                         node.expression,
@@ -595,16 +584,12 @@ function dependencyIdentifiers(
     root: ts.FunctionLikeDeclaration,
 ): readonly ts.Identifier[] {
     const { names, code } = codeReads(reads, root);
-    const contains = (outer: ts.Node, inner: ts.Node): boolean =>
-        outer.getSourceFile() === inner.getSourceFile() &&
-        outer.pos <= inner.pos &&
-        outer.end >= inner.end;
     // A local of code the root is nested in is the root's free variable.
     const inside = (declaration: ts.Declaration): boolean =>
         [...code].some(
             (walked) =>
-                contains(walked, declaration) &&
-                (walked === root || !contains(walked, root)),
+                isDeclaredInside(declaration, walked) &&
+                (walked === root || !isDeclaredInside(root, walked)),
         );
     return [...names].flatMap(([symbol, identifier]) =>
         symbol.declarations?.some(inside) ? [] : [identifier],
@@ -622,10 +607,6 @@ function scopeBindings(
     reads: SpecializationReads,
     roots: readonly ts.Node[],
 ): ReadonlySet<ts.Symbol> | undefined {
-    if (roots.length === 1) {
-        const only = codeReads(reads, roots[0]!);
-        return only.unfollowed ? undefined : only.bindings;
-    }
     const union = new Set<ts.Symbol>();
     for (const root of roots) {
         const { bindings, unfollowed } = codeReads(reads, root);
@@ -640,7 +621,7 @@ function ownCode(value: object): ts.Node[] {
     return ["recordMethods", "recordGetters", "recordSetters"].flatMap(
         (name) => {
             const members = ownData(value, name);
-            return typeof members === "object" && members !== null
+            return isObject(members)
                 ? Object.values(members).filter(isSyntaxNode)
                 : [];
         },

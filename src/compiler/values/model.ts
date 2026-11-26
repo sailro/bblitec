@@ -35,6 +35,20 @@ export type Value<K extends ValueKind = ValueKind> = Readonly<
           >)
 >;
 
+/**
+ * The fields through which a value shares generation state with another:
+ * the aggregates the scope-wide searches of a lowering match a binding by
+ * (its holder, its collection facts, its callback's owner).
+ */
+export const sharedGenerationStateFields = [
+    "tupleElements",
+    "staticElements",
+    "staticElementsOwner",
+    "collectionCardinality",
+    "callbackRecordOwner",
+    "recordProperties",
+] as const satisfies readonly (keyof ValueFields)[];
+
 /** Stored data type, or the intrinsic scalar storage of an unannotated value. */
 export function valueDataType(value: Value): DataType | undefined {
     return (
