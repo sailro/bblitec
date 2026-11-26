@@ -14802,12 +14802,23 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * identity, so a struct's native field storage (read through one copy)
      * and a plain compile-time record's members are enumerated without
      * boxing an unowned root record. Undefined for any other source, and
-     * for a record with a symbol key no document key can hold.
+     * for a record with a symbol key no document key can hold. A class
+     * whose classes create their keys in different orders gives each
+     * class's entries in its order (`classKeyOrders`), read through
+     * `classOwnerCpp`.
      */
     private spreadOwnEntries(
         source: Value,
         property: ts.SpreadAssignment,
-    ): OwnEntry[] | undefined {
+    ):
+        | {
+              readonly entries: readonly OwnEntry[];
+              readonly byClass?: {
+                  readonly classOwnerCpp: string;
+                  readonly orders: readonly (readonly OwnEntry[])[];
+              };
+          }
+        | undefined {
         if (source.kind === "record") {
             if (
                 source.cpp ||
@@ -14817,7 +14828,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 )
             )
                 return undefined;
-            return ownEntries(this.ownObjectContext(), source, property);
+            return {
+                entries: ownEntries(this.ownObjectContext(), source, property)!,
+            };
         }
         if (source.kind !== "data" || source.dataType?.kind !== "struct")
             return undefined;
@@ -14828,12 +14841,29 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             name: snapshot,
             initializer: source.cpp,
         });
-        return structOwnEntries(
+        const entries = structOwnEntries(
             this.ownObjectContext(),
             { ...source, cpp: snapshot },
             source.dataType,
             property,
         );
+        const dataTypes = this.context.dataTypes;
+        const orders = dataTypes.classKeyOrders(
+            source.dataType.name,
+            entries,
+            (entry) => entry.key,
+        );
+        return {
+            entries,
+            ...(orders
+                ? {
+                      byClass: {
+                          classOwnerCpp: `${snapshot}${dataTypes.memberAccess(source.dataType.name)}`,
+                          orders,
+                      },
+                  }
+                : {}),
+        };
     }
 
     /**
@@ -14916,23 +14946,47 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         dataType.value.kind === "json"
                     ) {
                         this.context.reachJson();
-                        const entries = this.spreadOwnEntries(source, property);
-                        if (entries) {
+                        const spread = this.spreadOwnEntries(source, property);
+                        if (spread) {
                             // A `?` field, or a key a conditional spread
                             // wrote, is copied while it is own.
-                            for (const { key, value, presence } of entries) {
-                                const cpp = this.compileKnownValueForSink(
+                            const copy = (
+                                entries: readonly OwnEntry[],
+                            ): void => {
+                                for (const {
+                                    key,
                                     value,
-                                    dataType.value,
-                                    property,
-                                );
-                                this.emitWhileOwn(presence?.ownCpp, () =>
-                                    this.context.emit({
-                                        kind: "expression",
-                                        code: `${result}.set(${this.context.cppString(key)}, ${cpp});`,
-                                    }),
-                                );
-                            }
+                                    presence,
+                                } of entries) {
+                                    const cpp = this.compileKnownValueForSink(
+                                        value,
+                                        dataType.value,
+                                        property,
+                                    );
+                                    this.emitWhileOwn(presence?.ownCpp, () =>
+                                        this.context.emit({
+                                            kind: "expression",
+                                            code: `${result}.set(${this.context.cppString(key)}, ${cpp});`,
+                                        }),
+                                    );
+                                }
+                            };
+                            // A class copies its keys in the order its
+                            // instances create them.
+                            const byClass = spread.byClass;
+                            if (!byClass) copy(spread.entries);
+                            else
+                                for (const line of this.context.dataTypes.classTagBranches(
+                                    byClass.classOwnerCpp,
+                                    byClass.orders.map((entries) =>
+                                        this.context
+                                            .captureEmittedLines(() =>
+                                                copy(entries),
+                                            )
+                                            .map((line) => `    ${line}`),
+                                    ),
+                                ))
+                                    this.context.emit(line);
                             continue;
                         }
                         const value = this.compileKnownValueForSink(

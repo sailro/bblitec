@@ -468,9 +468,10 @@ export function ownArray(
     const arrayType =
         resultType ?? ownArrayType(context, entries, projection, node);
     const element = arrayType.element;
-    const pushes: string[] = [];
+    const pushes = new Map<OwnEntry, string>();
     const emitted = context.captureEmittedLines(() => {
-        for (const { key, value, presence } of entries) {
+        for (const entry of entries) {
+            const { key, value, presence } = entry;
             const keyValue = staticStringValue(key, (text) =>
                 context.cppString(text),
             );
@@ -485,7 +486,10 @@ export function ownArray(
                             tupleElements: [keyValue, value],
                         };
             const push = `own.push_back(${context.dataLowerer.compileKnownValueForSink(projected, element, node)});`;
-            pushes.push(presence ? `if (${presence.ownCpp}) ${push}` : push);
+            pushes.set(
+                entry,
+                presence ? `if (${presence.ownCpp}) ${push}` : push,
+            );
         }
     });
     if (emitted.length > 0)
@@ -493,7 +497,26 @@ export function ownArray(
             node,
             `A ${struct ? "struct" : "record"}'s own properties enumerate as an array when each value converts to its element in place.`,
         );
-    const build = `${context.dataTypes.cppType(arrayType)} own; ${pushes.join(" ")} return own;`;
+    const pushed = (ordered: readonly OwnEntry[]): string =>
+        ordered.map((entry) => pushes.get(entry)!).join(" ");
+    // A class pushes its keys in the order its instances create them.
+    const orders =
+        struct &&
+        context.dataTypes.classKeyOrders(
+            owner.dataType.name,
+            entries,
+            (entry) => entry.key,
+        );
+    const build = `${context.dataTypes.cppType(arrayType)} own; ${
+        orders
+            ? context.dataTypes
+                  .classTagBranches(
+                      `own_owner${context.dataTypes.memberAccess(owner.dataType.name)}`,
+                      orders.map((ordered) => [pushed(ordered)]),
+                  )
+                  .join(" ")
+            : pushed(entries)
+    } return own;`;
     return {
         kind: "data",
         cpp: struct
@@ -544,12 +567,18 @@ function fixedOwnEntries(
     node: ts.Node,
 ): Array<[string, Value]> | undefined {
     const entries = ownEntries(context, owner, node);
-    if (entries?.some((entry) => entry.presence !== undefined))
+    if (
+        entries &&
+        (entries.some((entry) => entry.presence !== undefined) ||
+            !ownKeysKnown(context, owner, node))
+    )
         context.fail(
             node,
             owner.kind === "record"
                 ? "Enumerating a record whose keys a conditional spread decides as a fixed list requires known own keys; its keys and values enumerate as arrays."
-                : "Enumerating a struct with optional properties as a fixed list requires known own keys; its keys and values enumerate as arrays.",
+                : entries.some((entry) => entry.presence !== undefined)
+                  ? "Enumerating a struct with optional properties as a fixed list requires known own keys; its keys and values enumerate as arrays."
+                  : "Enumerating a class hierarchy instance whose classes create their keys in different orders as a fixed list requires one order; its keys and values enumerate as arrays.",
         );
     return entries?.map(({ key, value }) => [key, value]);
 }

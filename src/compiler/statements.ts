@@ -3412,12 +3412,32 @@ export class StatementLowerer {
                 )?.ownCpp,
             }));
             const optional = presence.filter(({ present }) => present);
-            const pushes = presence.map(({ field, present }) => {
-                const push = `own.push_back(${context.cppString(field.sourceName)});`;
-                return present ? `if (${present}) ${push}` : push;
-            });
+            const pushes = (
+                ordered: readonly (typeof presence)[number][],
+            ): string =>
+                ordered
+                    .map(({ field, present }) => {
+                        const push = `own.push_back(${context.cppString(field.sourceName)});`;
+                        return present ? `if (${present}) ${push}` : push;
+                    })
+                    .join(" ");
+            // A class lists its keys in the order its instances create them.
+            const orders = context.dataTypes.classKeyOrders(
+                dataType.name,
+                presence,
+                ({ field }) => field.sourceName,
+            );
             return {
-                keysCpp: `[&] { bbl::js::Array<std::string> own; ${pushes.join(" ")} return own; }()`,
+                keysCpp: `[&] { bbl::js::Array<std::string> own; ${
+                    orders
+                        ? context.dataTypes
+                              .classTagBranches(
+                                  `${object}${access}`,
+                                  orders.map((ordered) => [pushes(ordered)]),
+                              )
+                              .join(" ")
+                        : pushes(presence)
+                } return own; }()`,
                 ...(optional.length
                     ? {
                           presentCpp: (key: string) =>

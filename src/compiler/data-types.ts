@@ -571,6 +571,11 @@ interface DataStructDefinition {
     /** One struct for a class hierarchy: it stores which class each object is. */
     classTag?: true;
     /**
+     * A hierarchy whose classes create their keys in orders no one layout
+     * takes: each class tag's fields, in the order its instances create them.
+     */
+    classKeyOrders?: readonly (readonly string[])[];
+    /**
      * A function object with properties (`(() => T) & { dispose(): void }`):
      * the record's own call, held beside its properties as `callMember`.
      */
@@ -10567,10 +10572,12 @@ export class DataTypeRegistry {
     }
 
     /**
-     * Whether every field of a struct is always an own key of its records:
-     * neither its storage nor the record's tags (`ownPresence`) decide it.
+     * Whether every field of a struct is always an own key of its records,
+     * in field order: neither its storage, the record's tags (`ownPresence`)
+     * nor its class's key order (`classKeyOrders`) decide it.
      */
     public ownKeysDecided(structName: string, node: ts.Node): boolean {
+        if (this.structsByName.get(structName)?.classKeyOrders) return false;
         return this.structFields(structName, node, "accessors").every(
             (field) =>
                 !this.presenceByTags(structName, field) &&
@@ -11036,14 +11043,33 @@ export class DataTypeRegistry {
             }
         });
         // An instance owns the fields its own class and the classes it
-        // extends declare, not those only another class of the hierarchy does.
+        // extends declare, not those only another class of the hierarchy
+        // does, created base class first.
         const concrete = this.classHierarchy.concreteClasses(root);
         const declaredBy = concrete.map((member) =>
-            classChain(this.classHierarchy.table(member)).flatMap(
-                (link) =>
-                    layouts[classes.indexOf(link.declaration)]?.fields ?? [],
-            ),
+            classChain(this.classHierarchy.table(member))
+                .reverse()
+                .flatMap(
+                    (link) =>
+                        layouts[classes.indexOf(link.declaration)]?.fields ??
+                        [],
+                ),
         );
+        // The struct lists its fields in the order every class creates
+        // them; where classes disagree, each enumerates in its own.
+        const classKeyOrders = declaredBy.map((declared) =>
+            ownKeyOrder(declared.map((field) => field.sourceName)),
+        );
+        const agreed = agreedKeyOrder(
+            classKeyOrders,
+            fields.map((field) => field.sourceName),
+        );
+        if (agreed)
+            fields.sort(
+                (left, right) =>
+                    agreed.indexOf(left.sourceName) -
+                    agreed.indexOf(right.sourceName),
+            );
         for (const field of fields) {
             const tags = concrete.flatMap((_, tag) =>
                 declaredBy[tag]!.some(
@@ -11058,8 +11084,51 @@ export class DataTypeRegistry {
             name,
             fields,
             classTag: true,
+            ...(agreed ? {} : { classKeyOrders }),
         });
         return { kind: "struct", name };
+    }
+
+    /**
+     * The orders records of struct `name` list `items` (fields or entries,
+     * keyed by `key`) in when its classes create their keys in different
+     * orders: by class tag, the items that class owns in its order.
+     * Undefined where the items' own order is every record's.
+     */
+    public classKeyOrders<T>(
+        name: string,
+        items: readonly T[],
+        key: (item: T) => string,
+    ): readonly (readonly T[])[] | undefined {
+        return this.structsByName
+            .get(name)
+            ?.classKeyOrders?.map((order) =>
+                order.flatMap((owned) =>
+                    items.filter((item) => key(item) === owned),
+                ),
+            );
+    }
+
+    /** The test that the record `ownerCpp` names (its member operator included) is of class `tag`. */
+    public classTagTestCpp(ownerCpp: string, tag: number): string {
+        return `${ownerCpp}${classTagMember} == ${tag}`;
+    }
+
+    /**
+     * Lines branching on the class of the record `ownerCpp` names (its
+     * member operator included): each class runs its arm's lines.
+     */
+    public classTagBranches(
+        ownerCpp: string,
+        arms: readonly (readonly string[])[],
+    ): string[] {
+        return [
+            ...arms.flatMap((arm, tag) => [
+                `${tag === 0 ? "" : "} else "}if (${this.classTagTestCpp(ownerCpp, tag)}) {`,
+                ...arm,
+            ]),
+            "}",
+        ];
     }
 
     /** Whether a class-backed struct stands for a hierarchy and stores a class tag. */
@@ -13228,7 +13297,23 @@ export class DataTypeRegistry {
                 ...fields.map((field) => field.sourceName),
                 ...(this.ownErrorNames.has(name) ? ["name"] : []),
             ];
-            if (presences.every((presence) => presence === undefined))
+            // A class lists its keys in the order its instances create them.
+            const indices = fields.map((_, index) => index);
+            const orders = this.classKeyOrders(
+                name,
+                indices,
+                (index) => fields[index]!.sourceName,
+            );
+            const pushes = (ordered: readonly number[]): string[] =>
+                ordered.map((index) => {
+                    const push = `keys.push_back(${stringLiteral(fields[index]!.sourceName)});`;
+                    const presence = presences[index];
+                    return presence ? `if (${presence.ownCpp}) ${push}` : push;
+                });
+            if (
+                !orders &&
+                presences.every((presence) => presence === undefined)
+            )
                 lines.push(
                     `inline bbl::js::Array<std::string> json_value_keys([[maybe_unused]] const ${name}& value) {`,
                     `    return {${keys.map(stringLiteral).join(", ")}};`,
@@ -13239,13 +13324,15 @@ export class DataTypeRegistry {
                 lines.push(
                     `inline bbl::js::Array<std::string> json_value_keys(const ${name}& value) {`,
                     "    bbl::js::Array<std::string> keys;",
-                    ...fields.map((field, index) => {
-                        const push = `keys.push_back(${stringLiteral(field.sourceName)});`;
-                        const presence = presences[index];
-                        return presence
-                            ? `    if (${presence.ownCpp}) ${push}`
-                            : `    ${push}`;
-                    }),
+                    ...(orders
+                        ? this.classTagBranches(
+                              "value->",
+                              orders.map((ordered) =>
+                                  pushes(ordered).map((line) => `    ${line}`),
+                              ),
+                          )
+                        : pushes(indices)
+                    ).map((line) => `    ${line}`),
                     ...keys
                         .slice(fields.length)
                         .map(
@@ -13472,8 +13559,24 @@ export class DataTypeRegistry {
                       ]
                     : written;
             };
-            for (const field of definition?.fields ?? [])
-                lines.push(...fieldLines(field));
+            // A class writes its keys in the order its instances create them.
+            const orders = this.classKeyOrders(
+                name,
+                fields,
+                (field) => field.sourceName,
+            );
+            if (orders)
+                lines.push(
+                    ...this.classTagBranches(
+                        "value.",
+                        orders.map((ordered) =>
+                            ordered
+                                .flatMap(fieldLines)
+                                .map((line) => `    ${line}`),
+                        ),
+                    ).map((line) => `    ${line}`),
+                );
+            else for (const field of fields) lines.push(...fieldLines(field));
             lines.push("    writer.end_object();", "}", "");
         }
         return lines;

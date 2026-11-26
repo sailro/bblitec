@@ -16077,6 +16077,41 @@ check(
 `,
 );
 
+check(
+    "class-hierarchy-instances-list-their-keys-in-their-own-class-order",
+    `
+    class A { a = 1; }
+    class B extends A { b = 2; }
+    class C extends A { c = 3; b = 4; }
+    const agreed: A[] = [new B(), new C()];
+    if (JSON.stringify(agreed) !== '[{"a":1,"b":2},{"a":1,"c":3,"b":4}]') throw new Error("agreed order " + JSON.stringify(agreed));
+    class P { p = 0; }
+    class Q extends P { x = 1; y = 2; }
+    class R extends P { y = 3; x = 4; }
+    const items: P[] = [new Q(), new R(), new P()];
+    let out = JSON.stringify(items) + ";";
+    for (const item of items) {
+        out += Object.keys(item).join() + "|";
+        for (const key in item) out += key;
+        out += "|" + Object.entries(item).map(([k, v]) => k + v).join() + "|" + Object.values(item).join();
+        const copy: Record<string, unknown> = { ...item, z: 9 };
+        out += "|" + JSON.stringify(copy) + ";";
+    }
+    if (out !== '[{"p":0,"x":1,"y":2},{"p":0,"y":3,"x":4},{"p":0}];p,x,y|pxy|p0,x1,y2|0,1,2|{"p":0,"x":1,"y":2,"z":9};p,y,x|pyx|p0,y3,x4|0,3,4|{"p":0,"y":3,"x":4,"z":9};p|p|p0|0|{"p":0,"z":9};') throw new Error("class orders " + out);
+    const boxed: unknown[] = [JSON.parse("7")];
+    boxed.push(new Q());
+    boxed.push(new R());
+    let viewed = "";
+    for (const value of boxed) {
+        const record = value as Record<string, unknown>;
+        viewed += Object.keys(record).join() + "|";
+        for (const key in record) viewed += key;
+        viewed += "|" + JSON.stringify(value) + ";";
+    }
+    if (viewed !== '||7;p,x,y|pxy|{"p":0,"x":1,"y":2};p,y,x|pyx|{"p":0,"y":3,"x":4};') throw new Error("views " + viewed);
+`,
+);
+
 test("union arms holding an undefined field another arm makes optional refuse its own-key presence", () => {
     assert.throws(
         () =>
