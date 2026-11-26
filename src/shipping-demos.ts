@@ -1,5 +1,4 @@
 import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
-import { availableParallelism, totalmem } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -13,7 +12,7 @@ import {
 } from "./build-options.js";
 import { holdDistLock } from "./dist-lock.js";
 import { applicationScenes, type SceneDefinition } from "./scene-registry.js";
-import { runConcurrently } from "./run-concurrently.js";
+import { compilerProcessBudget, runConcurrently } from "./run-concurrently.js";
 import { flagNumber, isMainModule, parseFlags } from "./tooling/flags.js";
 import {
     installVcpkgManifest,
@@ -278,10 +277,7 @@ async function main(): Promise<void> {
         return value;
     };
     const selected = selectShippingScenes(flags.values.get("--scene"));
-    const budget = Math.max(
-        1,
-        Math.floor(Math.min(availableParallelism(), totalmem() / 2e9)),
-    );
+    const budget = compilerProcessBudget();
     const workers = positive(
         "--workers",
         Math.max(

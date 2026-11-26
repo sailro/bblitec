@@ -176,14 +176,15 @@ npm run patches:check
 npm run format
 npm run format:check
 npm run lint -- scene1
-npm run lint:cpp -- all --generated --backend both
+npm run lint:cpp -- demos --generated --backend both
 ```
 
 - `lint:ts` (`-- --fix` for safe fixes): type-aware ESLint. `lint:tools`: strict `checkJs` over tools and plugins
   (`tsconfig.tools.json`) and browser init scripts (`tsconfig.browser.json`). `lint:exports` is advisory.
   Functions invoked by generated child scripts declare `@dynamicEntryPoint` for that inventory.
 - Native: LLVM 22 clang-tidy/clang-format (PATH or Visual Studio; `CLANG_TIDY`, `CLANG_FORMAT` override).
-- `lint:cpp` takes scene IDs, Ninja build dirs or `all`; `--backend`, `--file`, `--jobs`, `--generated`, `--no-cache`. It
+- `lint:cpp` takes scene IDs, Ninja build dirs, `demos` (the registered application demos) or `all`; `--backend`,
+  `--file`, `--jobs`, `--generated`, `--no-cache`. Validation lints `demos`; `all` is a manual, separate full pass. It
   never builds: build the scenes first, on both backends. A PCH older than its inputs is refused. Results:
   `artifacts/code-quality/`; clean units are cached in `artifacts/code-quality-cache/` (30 days).
 - Corpus, references, pins, vendored and generated code are excluded from formatting; fixes are never applied to generated files.
@@ -213,7 +214,7 @@ npm run format:check
 npm run simplify:verify
 npm test
 npm run sweep
-npm run lint:cpp -- all --generated --backend both
+npm run lint:cpp -- demos --generated --backend both
 node dist/src/scene-command.js neutrality <saved-baseline-directory>
 ```
 

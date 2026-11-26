@@ -9,7 +9,7 @@ import {
     pruneNativeCache,
     pruneResultCache,
 } from "./native-cache-clean.js";
-import { availableParallelism, totalmem } from "node:os";
+import { availableParallelism } from "node:os";
 import {
     cpSync,
     existsSync,
@@ -179,7 +179,7 @@ import {
     installVcpkgManifest,
     type VcpkgManifestInstall,
 } from "./vcpkg-install.js";
-import { runConcurrently } from "./run-concurrently.js";
+import { compilerProcessBudget, runConcurrently } from "./run-concurrently.js";
 import {
     buildConditionsEnvironment,
     COMPILER_NODE_FLAGS,
@@ -842,14 +842,9 @@ function buildConcurrency(): {
     // while a second scene always does. Threads beat cores by 9%, which
     // is real but much smaller than getting the split right.
     const jobsPerScene = override("BBLITE_SCENE_BUILD_JOBS") ?? 1;
-    // Two limits, whichever binds first: hardware threads, and roughly
-    // 2 GB per compiler process, which is what MSVC wants for the
-    // heaviest translation unit here. Free memory never moved on the
-    // host above, so the memory term is there for smaller machines.
-    const compilerBudget = Math.min(
-        availableParallelism(),
-        Math.floor(totalmem() / 2e9),
-    );
+    // Free memory never moved on the host above, so the memory term is
+    // there for smaller machines.
+    const compilerBudget = compilerProcessBudget();
     const scenesInFlight =
         override("BBLITE_PARALLEL_SCENES") ??
         Math.max(1, Math.floor(compilerBudget / jobsPerScene));
