@@ -30,7 +30,10 @@ import {
     type LiteralSelf,
 } from "../home-object-methods.js";
 import { unaliasedDataRecord, unaliasedValue } from "./aliasing.js";
-import { recordCopyObservation } from "../record-observations.js";
+import {
+    copyEnumerated,
+    recordCopyObservation,
+} from "../record-observations.js";
 import { classHandsOutThis } from "../kept-values.js";
 import {
     yieldsFreshObject,
@@ -38,7 +41,8 @@ import {
 } from "../fresh-records.js";
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
-import { ANY_KEY } from "../syntax.js";
+import { ANY_KEY, sameKeys } from "../syntax.js";
+import { ownKeyOrder } from "../record-key-orders.js";
 import { storeMembers } from "../json-record-views.js";
 import {
     arrayElementType,
@@ -1229,7 +1233,22 @@ function refuseClassRecordCopy(
                   : "shared",
           )
         : "its record type has no checked source";
-    if (!observed) return;
+    // A copy lists the record type's keys; the instance lists its own
+    // fields, as its class creates them.
+    const listed = lowerer.context.dataTypes
+        .structFields(dataType.name, node, "accessors")
+        .map((field) => field.sourceName)
+        .filter((key) => record.recordProperties?.[key] !== undefined);
+    const enumerated =
+        target !== undefined &&
+        !sameKeys(
+            ownKeyOrder(Object.keys(record.recordProperties ?? {})),
+            listed,
+        ) &&
+        copyEnumerated(lowerer.context, target)
+            ? "the program enumerates properties of such records"
+            : undefined;
+    if (!observed && !enumerated) return;
     // The instance has every property the record type declares: stored
     // as itself, there is no copy.
     const view = lowerer.context.dataTypes.classViewDemand(
@@ -1239,7 +1258,7 @@ function refuseClassRecordCopy(
     if (view) throw new NativeRecordStorageRequired(view);
     lowerer.context.fail(
         node,
-        `A '${symbol.name}' instance stored as '${target ? checker.typeToString(target) : dataType.name}' would be a copy of the one object JavaScript keeps, and ${observed}.`,
+        `A '${symbol.name}' instance stored as '${target ? checker.typeToString(target) : dataType.name}' would be a copy of the one object JavaScript keeps, and ${observed ?? enumerated}.`,
     );
 }
 
@@ -1322,8 +1341,10 @@ function viewedInstance(
     if (
         value.dataType?.kind === "struct" &&
         dataTypes.isClassStruct(value.dataType.name)
-    )
+    ) {
+        dataTypes.noteInstanceView(dataType.name, value.dataType.name);
         return { cpp: value.cpp, struct: value.dataType.name };
+    }
     const message = `A '${declaration.name?.text ?? "class"}' instance viewed as '${dataType.name}' is a compile-time record; its view needs the one object JavaScript keeps.`;
     const demand = dataTypes.sharedClassDemand(declaration);
     if (demand) lowerer.context.refuseWithDemand(node, message, demand);

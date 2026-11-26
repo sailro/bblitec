@@ -123,9 +123,9 @@ const arrayIdentityAnswers = new WeakMap<ts.Type, string | null>();
  * program can. `fields` are the properties the copy keeps; `carries` says
  * whether the source records have other properties the copy drops; an
  * `argument` handed to a callee that only reads it needs only the writes
- * of the code the call runs. A class instance's `view` lists only the
- * record type's members when enumerated (fidelity.md), and as its object's
- * only handle (`"sole"`) cannot be told apart by identity.
+ * of the code the call runs. A class instance's `view` lists the keys its
+ * caller compares (`copyEnumerated`), and as its object's only handle
+ * (`"sole"`) cannot be told apart by identity.
  */
 export function recordCopyObservation(
     context: RecordObservationContext,
@@ -1302,6 +1302,20 @@ function assertionRetypes(
         checker.isTypeAssignableTo(assertion.asserted, copy) ||
         assertion.from.some((from) => checker.isTypeAssignableTo(copy, from))
     );
+}
+
+/**
+ * Whether the program enumerates a record stored as `target`, or as a type
+ * an assertion retypes it to: its keys tell a copy listing others apart.
+ */
+export function copyEnumerated(
+    context: RecordObservationContext,
+    target: ts.Type,
+): boolean {
+    const observations = programObservations(context.program);
+    const copies = copyTypes(context.checker, observations, target);
+    const holds = holderTest(context.checker);
+    return [...observations.enumerations].some((type) => holds(type, copies));
 }
 
 /** The types a copy of `target` type has: its own and each an assertion retypes it to. */

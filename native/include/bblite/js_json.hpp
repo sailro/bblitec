@@ -1216,6 +1216,17 @@ template <typename T> [[nodiscard]] JsonValue json_value(const Ref<T>& value) {
     return value ? JsonValue::from_native(value) : JsonValue::null_value();
 }
 
+template <typename T> JsonValue viewed_document(const ViewedObject& viewed) {
+    return json_value(viewed.object<T>());
+}
+
+inline JsonValue ViewedObject::document() const {
+    if (!document_)
+        throw std::logic_error(
+            "A view enumerates as an instance whose class has no document view.");
+    return document_(*this);
+}
+
 /** `value === object` for a record stored by reference: whether `value` boxes that very record. */
 template <typename T>
 [[nodiscard]] bool json_holds_object(const JsonValue& value, const Ref<T>& object) {

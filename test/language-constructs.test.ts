@@ -3399,19 +3399,17 @@ check(
 `,
 );
 
-test("a spread of a record holding a class's prototype accessor refuses", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-            interface Flag { readonly on: boolean; }
-            class Switch { count = 0; get on(): boolean { return this.count > 0; } view(): Flag { return this; } }
-            const flags: Flag[] = [{ on: false }, new Switch().view()];
-            const copies = flags.map((flag) => ({ ...flag }));
-            if (copies.length !== 2) throw new Error("copies");
-            `),
-        /Property 'on' is an accessor; this use reads and writes stored record fields only/,
-    );
-});
+check(
+    "a spread of a record holding a class instance copies the instance's own fields, not its prototype accessor",
+    `
+    interface Flag { readonly on: boolean; }
+    class Switch { count = 0; get on(): boolean { return this.count > 0; } view(): Flag { return this; } }
+    const flags: Flag[] = [{ on: false }, new Switch().view()];
+    const copies = flags.map((flag) => ({ ...flag }));
+    const seen = copies.map((copy) => JSON.stringify(copy) + Object.keys(copy).join()).join(";");
+    if (seen !== '{"on":false}on;{"count":0}count' || copies[0]!.on !== false) throw new Error(seen);
+    `,
+);
 
 check(
     "a class instance keeps one object under an interface-typed binding",
@@ -3698,6 +3696,62 @@ check(
     for (const counter of counters) { counter.count *= 2; total += counter.count; }
     const out = String(tally.count) + "," + counters[1]!.count + "," + tally.extra + tally.label + tally.note + counters[1]!.note + total;
     if (out !== "18,12,1txnm30") throw new Error(out);
+    `,
+);
+
+check(
+    "a class instance's interface view enumerates and serializes as the instance",
+    `
+    interface Rec { a: number; b: string }
+    class Tally { constructor(public a: number, public b: string, private c = 3) {} bump(): number { return this.c; } }
+    class Other { z = 0; a = 5; b = "o"; }
+    const rs: Rec[] = [{ a: 1, b: "x" }];
+    const t = new Tally(2, "y");
+    rs.push(t);
+    rs.push(new Other());
+    let out = "";
+    for (const r of rs) {
+        out += JSON.stringify(r) + Object.keys(r).join() + "|";
+        for (const key in r) out += key;
+        out += "|" + Object.entries(r).map(([k, v]) => k + "=" + v).join() + "|" + Object.values(r).join();
+        const copy: Record<string, unknown> = { ...r, w: 1 };
+        out += "|" + JSON.stringify(copy) + ";";
+    }
+    rs[1]!.a = 7;
+    out += t.a + JSON.stringify(rs[1]) + t.bump();
+    const boxed: unknown[] = [JSON.parse("1")];
+    boxed.push(rs[1]);
+    for (const value of boxed) {
+        const record = value as Record<string, unknown>;
+        out += "|" + Object.keys(record).join() + JSON.stringify(value);
+    }
+    const literal: Rec[] = [{ a: 1, b: "x" }, new Tally(2, "y")];
+    out += "|" + JSON.stringify(literal);
+    const want = '{"a":1,"b":"x"}a,b|ab|a=1,b=x|1,x|{"a":1,"b":"x","w":1};{"a":2,"b":"y","c":3}a,b,c|abc|a=2,b=y,c=3|2,y,3|{"a":2,"b":"y","c":3,"w":1};{"z":0,"a":5,"b":"o"}z,a,b|zab|z=0,a=5,b=o|0,5,o|{"z":0,"a":5,"b":"o","w":1};7{"a":7,"b":"y","c":3}3|1|a,b,c{"a":7,"b":"y","c":3}|[{"a":1,"b":"x"},{"a":2,"b":"y","c":3}]';
+    if (out !== want) throw new Error(out);
+    `,
+);
+
+check(
+    "a copy of a class instance's interface view has the instance's own keys",
+    `
+    interface Rec { a: number; b: string }
+    class Tally { constructor(public a: number, public b: string, private c = 3) {} bump(): number { return this.c; } }
+    const rs: Rec[] = [{ a: 1, b: "x" }, new Tally(2, "y")];
+    let out = "";
+    for (const r of rs) {
+        const narrow: { a: number } = { ...r };
+        const same: Rec = { ...r };
+        same.a += 10;
+        const assigned = Object.assign({}, r);
+        out += JSON.stringify(narrow) + Object.keys(narrow).join() + JSON.stringify(same) + r.a + JSON.stringify(assigned) + ";";
+    }
+    out += JSON.stringify(rs.map((r) => ({ ...r })));
+    interface Opt { a?: number; b: string }
+    const os: Opt[] = [{ a: 1, b: "x" }, { b: "y" }];
+    for (const o of os) { const copied = Object.assign({}, o); out += "|" + JSON.stringify(copied) + Object.keys(copied).join(); }
+    const want = '{"a":1,"b":"x"}a,b{"a":11,"b":"x"}1{"a":1,"b":"x"};{"a":2,"b":"y","c":3}a,b,c{"a":12,"b":"y","c":3}2{"a":2,"b":"y","c":3};[{"a":1,"b":"x"},{"a":2,"b":"y","c":3}]|{"a":1,"b":"x"}a,b|{"b":"y"}b';
+    if (out !== want) throw new Error(out);
     `,
 );
 
@@ -6860,6 +6914,20 @@ checkInRealm(
     const plain: Holder = { n: 3 };
     if (structuredClone(plain).n !== 3) failed += "absent function;";
     if (failed) throw new Error(failed);
+    globalThis.close();
+`,
+);
+
+checkInRealm(
+    "structured-clone-of-an-interface-view-copies-the-instance",
+    `
+    interface Rec { a: number; b: string }
+    class Tally { constructor(public a: number, public b: string, private c = 3) {} bump(): number { return this.c; } }
+    const rs: Rec[] = [{ a: 1, b: "x" }, new Tally(2, "y")];
+    let out = "";
+    for (const r of rs) { const clone = structuredClone(r); out += JSON.stringify(clone) + Object.keys(clone).join() + ";"; }
+    out += JSON.stringify(structuredClone(rs));
+    if (out !== '{"a":1,"b":"x"}a,b;{"a":2,"b":"y","c":3}a,b,c;[{"a":1,"b":"x"},{"a":2,"b":"y","c":3}]') throw new Error(out);
     globalThis.close();
 `,
 );

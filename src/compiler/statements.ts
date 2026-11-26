@@ -3392,7 +3392,8 @@ export class StatementLowerer {
             if (
                 fields.some(
                     (field) => field.accessor && !field.accessorReceiver,
-                )
+                ) &&
+                context.dataTypes.holdsPrototypeAccessors(dataType.name)
             )
                 context.dataTypes.structFields(dataType.name, node);
             const access = context.dataTypes.memberAccess(dataType.name);
@@ -3427,8 +3428,15 @@ export class StatementLowerer {
                 presence,
                 ({ field }) => field.sourceName,
             );
+            // A view lists the keys of the instance it stands for.
+            const view = context.dataTypes.viewedDocument(
+                dataType.name,
+                `${object}${access}`,
+                node,
+            );
+            if (view) context.reachJson();
             return {
-                keysCpp: `[&] { bbl::js::Array<std::string> own; ${
+                keysCpp: `[&] { ${view ? `if (${view.viewCpp}) return ${view.documentCpp}.own_keys(); ` : ""}bbl::js::Array<std::string> own; ${
                     orders
                         ? context.dataTypes
                               .classTagBranches(

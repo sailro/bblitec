@@ -6947,7 +6947,8 @@ export class ExpressionLowerer {
                 );
             },
         );
-        if (type?.kind === "map" || dynamicSpread) {
+        // A document's keys are the dictionary of its members.
+        if (type?.kind === "map" || type?.kind === "json" || dynamicSpread) {
             const dictionary: DataType<"map"> =
                 type?.kind === "map"
                     ? type
@@ -7405,8 +7406,21 @@ export class ExpressionLowerer {
                     spread.dataType?.kind === "struct"
                 ) {
                     const known = ownKeysKnown(this.context, spread, property);
-                    if (!known && declines === "run-time-keys")
+                    // A class instance's view has the instance's keys,
+                    // which no compile-time record names.
+                    const viewed = this.context.dataTypes.viewsInstances(
+                        spread.dataType.name,
+                    );
+                    if (
+                        !known &&
+                        (declines === "run-time-keys" || (viewed && declines))
+                    )
                         return undefined;
+                    if (viewed)
+                        this.context.fail(
+                            property,
+                            "A record that may be a class instance's view spreads into a dictionary, a document or a struct; a compile-time record needs keys known at generation.",
+                        );
                     // A `?` field whose storage says whether it is own
                     // becomes a key the record holds while it is present.
                     const entries = structOwnEntries(

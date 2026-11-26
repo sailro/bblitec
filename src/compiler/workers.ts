@@ -164,6 +164,11 @@ function uncloneablePosition(
                 );
             if (seen.has(type.name)) return undefined;
             seen.add(type.name);
+            context.dataTypes.requireViewCopyStorage(
+                type.name,
+                type.name,
+                node,
+            );
             for (const field of context.dataTypes.structFields(
                 type.name,
                 node,

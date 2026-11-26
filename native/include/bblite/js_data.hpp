@@ -784,10 +784,18 @@ template <typename T, typename... Args> [[nodiscard]] Ref<T> make_ref(Args&&... 
     return result;
 }
 
+class JsonValue;
+class ViewedObject;
+
+/** The instance `viewed` stands for, of class struct `T`, as a document; defined beside documents. */
+template <typename T> JsonValue viewed_document(const ViewedObject& viewed);
+
 /**
  * The class instance a record type's view stands for (`instance_view`): a
  * counted, traced reference to an object of any class, whose address is the
- * view's identity. Empty in a record that is no view.
+ * view's identity. Empty in a record that is no view. A view enumerates and
+ * serializes as the instance (`document`) where the instance's class has a
+ * document view (`json_value_keys`).
  */
 class ViewedObject {
 public:
@@ -795,11 +803,14 @@ public:
     template <typename T>
     explicit ViewedObject(const Ref<T>& object)
         : node_(object.block_), object_(object.get()), identity_(object.weak_identity()) {
+        if constexpr (requires { json_value_keys(object); })
+            document_ = &viewed_document<T>;
         if (node_)
             node_->pin();
     }
     ViewedObject(const ViewedObject& other)
-        : node_(other.node_), object_(other.object_), identity_(other.identity_) {
+        : node_(other.node_), object_(other.object_), identity_(other.identity_),
+          document_(other.document_) {
         if (node_)
             node_->pin();
     }
@@ -807,6 +818,7 @@ public:
         std::swap(node_, other.node_);
         std::swap(object_, other.object_);
         std::swap(identity_, other.identity_);
+        std::swap(document_, other.document_);
         return *this;
     }
     ~ViewedObject() {
@@ -817,12 +829,21 @@ public:
     [[nodiscard]] const void* get() const noexcept { return object_; }
     /** The instance's weak-collection key (`Ref::weak_identity`). */
     [[nodiscard]] const std::weak_ptr<const void>& identity() const noexcept { return identity_; }
+    /** The instance as a document: its own keys in its class's order, and their values. */
+    [[nodiscard]] JsonValue document() const;
+    /** The instance, of class struct `T`. */
+    template <typename T> [[nodiscard]] Ref<T> object() const {
+        auto* block = static_cast<typename Ref<T>::Block*>(node_);
+        block->retain();
+        return Ref<T>(block);
+    }
     void gc_trace(const TraceVisitor& visitor) const { visitor.reference(node_); }
 
 private:
     gc::Node* node_ = nullptr;
     const void* object_ = nullptr;
     std::weak_ptr<const void> identity_;
+    JsonValue (*document_)(const ViewedObject&) = nullptr;
 };
 
 /** The object a record that may be an instance's view is: that instance, or the record itself. */

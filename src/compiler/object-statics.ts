@@ -429,13 +429,14 @@ export function ownEntries(
  * or a struct as a fresh array, built at run time so a key joins it only
  * while it is own. Undefined when every key is known (a fixed list).
  * Without a `resultType` (the checker types the values `any`), the values
- * share the lane their own storages join to (`ownedArrayType`).
+ * share the lane their own storages join to (`ownedArrayType`); a view's
+ * are the documents of the instance it stands for (`viewedDocument`).
  */
 export function ownArray(
     context: OwnEntryContext &
         Pick<
             ObjectStaticContext,
-            "cppString" | "captureEmittedLines" | "reachJsData"
+            "cppString" | "captureEmittedLines" | "reachJsData" | "reachJson"
         >,
     owner: Value,
     resultType: DataType<"vector"> | undefined,
@@ -465,32 +466,72 @@ export function ownArray(
         node,
     )!;
     context.reachJsData();
+    const access = struct
+        ? context.dataTypes.memberAccess(owner.dataType.name)
+        : "";
+    // A view lists the keys and values of the instance it stands for.
+    const view =
+        struct &&
+        context.dataTypes.viewedDocument(
+            owner.dataType.name,
+            `own_owner${access}`,
+            node,
+        );
+    if (view) context.reachJson();
+    const document: DataType = { kind: "json" };
     const arrayType =
-        resultType ?? ownArrayType(context, entries, projection, node);
+        resultType ??
+        ownArrayType(
+            context,
+            view
+                ? [document]
+                : entries.map(
+                      ({ key, value }) =>
+                          valueDataType(value) ??
+                          context.fail(
+                              node,
+                              `Enumerating own property '${key}' as an array element requires a stored value.`,
+                          ),
+                  ),
+            projection,
+        );
     const element = arrayType.element;
+    const push = (keyValue: Value, value: Value): string => {
+        const projected: Value =
+            projection === "keys"
+                ? keyValue
+                : projection === "values"
+                  ? value
+                  : {
+                        kind: "tuple",
+                        cpp: "",
+                        tupleElements: [keyValue, value],
+                    };
+        return `own.push_back(${context.dataLowerer.compileKnownValueForSink(projected, element, node)});`;
+    };
     const pushes = new Map<OwnEntry, string>();
+    let viewed = "";
     const emitted = context.captureEmittedLines(() => {
         for (const entry of entries) {
-            const { key, value, presence } = entry;
-            const keyValue = staticStringValue(key, (text) =>
-                context.cppString(text),
+            const pushed = push(
+                staticStringValue(entry.key, (text) => context.cppString(text)),
+                entry.value,
             );
-            const projected: Value =
-                projection === "keys"
-                    ? keyValue
-                    : projection === "values"
-                      ? value
-                      : {
-                            kind: "tuple",
-                            cpp: "",
-                            tupleElements: [keyValue, value],
-                        };
-            const push = `own.push_back(${context.dataLowerer.compileKnownValueForSink(projected, element, node)});`;
             pushes.set(
                 entry,
-                presence ? `if (${presence.ownCpp}) ${push}` : push,
+                entry.presence
+                    ? `if (${entry.presence.ownCpp}) ${pushed}`
+                    : pushed,
             );
         }
+        if (view)
+            viewed = `if (${view.viewCpp}) { const auto own_document = ${view.documentCpp}; for (const std::string& own_key : own_document.own_keys()) ${push(
+                context.dataLowerer.leafValue("own_key", { kind: "string" }),
+                context.dataLowerer.leafValue(
+                    "own_document.get(own_key)",
+                    document,
+                ),
+            )} return own; } `;
     });
     if (emitted.length > 0)
         context.fail(
@@ -507,11 +548,11 @@ export function ownArray(
             entries,
             (entry) => entry.key,
         );
-    const build = `${context.dataTypes.cppType(arrayType)} own; ${
+    const build = `${context.dataTypes.cppType(arrayType)} own; ${viewed}${
         orders
             ? context.dataTypes
                   .classTagBranches(
-                      `own_owner${context.dataTypes.memberAccess(owner.dataType.name)}`,
+                      `own_owner${access}`,
                       orders.map((ordered) => [pushed(ordered)]),
                   )
                   .join(" ")
@@ -527,32 +568,22 @@ export function ownArray(
     };
 }
 
-/** The array an own-property projection stores: its values share one lane. */
+/** The array an own-property projection of values of `values` stores: they share one lane. */
 function ownArrayType(
     context: OwnEntryContext,
-    entries: readonly OwnEntry[],
+    values: readonly DataType[],
     projection: "keys" | "values" | "entries",
-    node: ts.Node,
 ): DataType<"vector"> {
     if (projection === "keys")
         return { kind: "vector", element: { kind: "string" } };
-    const values = context.dataTypes.ownedArrayType(
-        entries.map(
-            ({ key, value }) =>
-                valueDataType(value) ??
-                context.fail(
-                    node,
-                    `Enumerating own property '${key}' as an array element requires a stored value.`,
-                ),
-        ),
-    );
+    const lane = context.dataTypes.ownedArrayType([...values]);
     return projection === "values"
-        ? values
+        ? lane
         : {
               kind: "vector",
               element: context.dataTypes.tupleStorage([
                   { kind: "string" },
-                  values.element,
+                  lane.element,
               ]),
           };
 }
@@ -567,20 +598,32 @@ function fixedOwnEntries(
     node: ts.Node,
 ): Array<[string, Value]> | undefined {
     const entries = ownEntries(context, owner, node);
-    if (
-        entries &&
-        (entries.some((entry) => entry.presence !== undefined) ||
-            !ownKeysKnown(context, owner, node))
-    )
+    if (entries && !ownKeysFixed(context, owner, entries, node))
         context.fail(
             node,
             owner.kind === "record"
                 ? "Enumerating a record whose keys a conditional spread decides as a fixed list requires known own keys; its keys and values enumerate as arrays."
                 : entries.some((entry) => entry.presence !== undefined)
                   ? "Enumerating a struct with optional properties as a fixed list requires known own keys; its keys and values enumerate as arrays."
-                  : "Enumerating a class hierarchy instance whose classes create their keys in different orders as a fixed list requires one order; its keys and values enumerate as arrays.",
+                  : owner.dataType?.kind === "struct" &&
+                      context.dataTypes.viewsInstances(owner.dataType.name)
+                    ? "Enumerating a record that may be a class instance's view as a fixed list requires the instance's keys; its keys and values enumerate as arrays."
+                    : "Enumerating a class hierarchy instance whose classes create their keys in different orders as a fixed list requires one order; its keys and values enumerate as arrays.",
         );
     return entries?.map(({ key, value }) => [key, value]);
+}
+
+/** Whether `owner`'s own `entries` are the same keys on every run. */
+function ownKeysFixed(
+    context: OwnEntryContext,
+    owner: Value,
+    entries: readonly OwnEntry[],
+    node: ts.Node,
+): boolean {
+    return (
+        entries.every((entry) => entry.presence === undefined) &&
+        ownKeysKnown(context, owner, node)
+    );
 }
 
 /** Common own-property projection for Object keys, values, entries and assign. */
@@ -934,13 +977,61 @@ function compileObjectAssign(
         context.fail(call, "Object.assign takes a target and its sources.");
     }
     const targetExpression = context.unwrap(argumentAt(call, 0));
+    const sources = call.arguments.slice(1);
+    // A source whose own keys only the run decides (a document, an optional
+    // property, a class instance's view) onto a fresh literal: the literal
+    // is built as the call's record type, each source spread onto it, or
+    // as the document that type is.
+    let document: Value | undefined;
+    if (
+        ts.isObjectLiteralExpression(targetExpression) &&
+        !targetExpression.properties.some(ts.isAccessor) &&
+        context.probeEmission(() =>
+            sources.some((source) => {
+                const value = context.compileValue(source);
+                if (isJsonValue(value)) return true;
+                const entries = ownEntries(context, value, source);
+                return (
+                    entries !== undefined &&
+                    !ownKeysFixed(context, value, entries, source)
+                );
+            }),
+        )
+    ) {
+        const stored = context.dataTypes.fromStoredTsType(
+            context.checker.getTypeAtLocation(call),
+            call,
+        );
+        if (stored?.kind === "json")
+            document = context.dataLowerer.leafValue(
+                context.dataLowerer.compileForSink(targetExpression, stored),
+                stored,
+            );
+        else if (stored?.kind !== "struct")
+            return context.fail(
+                call,
+                "Object.assign onto a literal from a source whose own keys the run decides requires a record type for its result.",
+            );
+        else {
+            const cpp = context.allocateTemporaryCppName("assigned");
+            context.dataLowerer.emitSpreadStructDeclaration(
+                cpp,
+                targetExpression,
+                stored,
+                sources,
+            );
+            context.dataLowerer.registerLocal(cpp, "owned");
+            return context.dataLowerer.leafValue(cpp, stored);
+        }
+    }
     // A bound record is written in place, so its later reads see the
     // stores; reading it as a value would write into a copy.
     let target =
+        document ??
         context.probeEmission(() =>
             context.resolveRecordValue(targetExpression),
-        ) ?? context.compileValue(targetExpression);
-    const sources = call.arguments.slice(1);
+        ) ??
+        context.compileValue(targetExpression);
     // A function given properties is a callable record: a fresh record
     // whose call is that function, filled below as a struct target is. It
     // is built as the callable type its result is stored as, when it has

@@ -2522,6 +2522,13 @@ export class DataTypeRegistry {
     >();
     /** The structs of those record types: each keeps the instance a view stands for (`viewedMember`). */
     private readonly instanceViewStructs = new EmissionSet<string>();
+    /** The class structs whose instances each such struct views (`noteInstanceView`). */
+    private readonly viewedClassStructs = new EmissionMap<
+        string,
+        readonly string[]
+    >();
+    /** Such structs whose records enumerate, with the first node enumerating each (`viewedDocument`). */
+    private readonly enumeratedViewStructs = new EmissionMap<string, ts.Node>();
     private readonly proxyTargets = new EmissionSet<
         NativeRecordStorageDemand["identity"]
     >();
@@ -2798,6 +2805,70 @@ export class DataTypeRegistry {
     /** Whether struct `name` stores class instances as views (`instanceViewsDemand`). */
     public viewsInstances(name: string): boolean {
         return this.instanceViewStructs.has(name);
+    }
+
+    /**
+     * A copy of struct `source`'s records (a spread, `Object.assign`, an
+     * object rest, a structured clone) stored in struct `target`, met at
+     * `node`: where `source` stores class instances as views, a copy has the
+     * instance's own keys (`viewedDocument`), which only a document of the
+     * target's record type holds (`storedRecordType`, for the `stored`
+     * copy, a spread's literal).
+     */
+    public requireViewCopyStorage(
+        source: string,
+        target: string,
+        node: ts.Node,
+        stored?: ts.Node,
+    ): void {
+        if (!this.viewsInstances(source)) return;
+        const record = this.storedRecordType(target, stored);
+        const demand = record && this.documentDemandOf(record, node);
+        if (demand) throw new NativeRecordStorageRequired(demand);
+        this.fail(
+            node,
+            `A copy of a record that may be a class instance's view has the instance's own keys, which '${target}' storage does not hold.`,
+        );
+    }
+
+    /** Struct `name` views instances of class struct `classStruct` (`instance_view`). */
+    public noteInstanceView(name: string, classStruct: string): void {
+        const known = this.viewedClassStructs.get(name) ?? [];
+        if (!known.includes(classStruct))
+            this.viewedClassStructs.set(name, [...known, classStruct]);
+    }
+
+    /**
+     * Where struct `name` stores class instances as views, which enumerate
+     * as the instances do: the test that the record `ownerCpp` names (its
+     * member operator included) is a view, and that instance as a document
+     * (`ViewedObject::document`), whose own keys and values are the
+     * instance's. Undefined for any other struct.
+     */
+    public viewedDocument(
+        name: string,
+        ownerCpp: string,
+        node: ts.Node,
+    ): { readonly viewCpp: string; readonly documentCpp: string } | undefined {
+        if (!this.viewsInstances(name)) return undefined;
+        this.noteEnumeratedView(name, node);
+        return {
+            viewCpp: `${ownerCpp}${viewedMember}.get()`,
+            documentCpp: `${ownerCpp}${viewedMember}.document()`,
+        };
+    }
+
+    /** Records of struct `name`, where it views instances, enumerate. */
+    private noteEnumeratedView(name: string, node: ts.Node): void {
+        if (this.viewsInstances(name) && !this.enumeratedViewStructs.has(name))
+            this.enumeratedViewStructs.set(name, node);
+    }
+
+    /** Each class an enumerated view views has a document view (`json_value_keys`). */
+    private boxViewedClasses(): void {
+        for (const [name, node] of this.enumeratedViewStructs)
+            for (const classStruct of this.viewedClassStructs.get(name) ?? [])
+                this.markJsonBoxed({ kind: "struct", name: classStruct }, node);
     }
 
     /**
@@ -3109,20 +3180,33 @@ export class DataTypeRegistry {
             fields.some((field) => field.accessor && !dictionaryView)
         )
             return undefined;
+        const own = this.storedRecordType(name, stored);
+        const named =
+            stored &&
+            own &&
+            own !== source.type &&
+            this.ownDocumentDemand(own, stored);
+        return named || { ...source, document: true };
+    }
+
+    /**
+     * The type of the `stored` value where it maps to struct `name`, else
+     * the type that registered the struct: record types share a struct by
+     * layout.
+     */
+    private storedRecordType(
+        name: string,
+        stored: ts.Node | undefined,
+    ): ts.Type | undefined {
         const own =
             stored &&
             this.checker.getNonNullableType(
                 this.checker.getTypeAtLocation(stored),
             );
-        if (own && own !== source.type) {
-            const mapped = this.fromTsType(own, stored);
-            const named =
-                mapped?.kind === "struct" && mapped.name === name
-                    ? this.ownDocumentDemand(own, stored)
-                    : undefined;
-            if (named) return named;
-        }
-        return { ...source, document: true };
+        const mapped = own && this.fromTsType(own, stored);
+        return mapped?.kind === "struct" && mapped.name === name
+            ? own
+            : this.nativeRecordSources.get(name)?.type;
     }
 
     /**
@@ -10584,11 +10668,16 @@ export class DataTypeRegistry {
 
     /**
      * Whether every field of a struct is always an own key of its records,
-     * in field order: neither its storage, the record's tags (`ownPresence`)
-     * nor its class's key order (`classKeyOrders`) decide it.
+     * in field order: neither its storage, the record's tags (`ownPresence`),
+     * its class's key order (`classKeyOrders`) nor the instance a view
+     * stands for (`viewedDocument`) decide it.
      */
     public ownKeysDecided(structName: string, node: ts.Node): boolean {
-        if (this.structsByName.get(structName)?.classKeyOrders) return false;
+        if (
+            this.structsByName.get(structName)?.classKeyOrders ||
+            this.viewsInstances(structName)
+        )
+            return false;
         return this.structFields(structName, node, "accessors").every(
             (field) =>
                 !this.presenceByTags(structName, field) &&
@@ -12810,6 +12899,7 @@ export class DataTypeRegistry {
                         return;
                     }
                     this.jsonSerializedStructs.set(current.name, node);
+                    this.noteEnumeratedView(current.name, node);
                     this.keyOrders.noteEnumeration(current.name, node);
                     path.push(current.name);
                     for (const field of this.structFields(
@@ -13164,6 +13254,7 @@ export class DataTypeRegistry {
             this.ownErrorNames.add(type.name);
         this.jsonBoxedStructs.set(type.name, node);
         this.keyOrders.noteEnumeration(type.name, node);
+        this.noteEnumeratedView(type.name, node);
         this.cppType(type);
         for (const field of this.viewedFields(
             type.name,
@@ -13275,8 +13366,15 @@ export class DataTypeRegistry {
             const presences = fields.map((field) =>
                 this.ownPresence(name, field, "value", "->", node),
             );
+            // A view reads the instance it stands for.
+            const view = this.viewedDocument(name, "value->", node);
             lines.push(
                 `inline bbl::js::JsonValue json_value_property(const ${name}&${fields.length ? " value" : ""}, std::string_view${fields.length ? " key" : ""}) {`,
+                ...(view
+                    ? [
+                          `    if (${view.viewCpp}) return ${view.documentCpp}.get(key);`,
+                      ]
+                    : []),
             );
             fields.forEach((field, index) => {
                 const property = `value->${field.name}${field.accessor ? ".get()" : ""}`;
@@ -13323,6 +13421,7 @@ export class DataTypeRegistry {
                 });
             if (
                 !orders &&
+                !view &&
                 presences.every((presence) => presence === undefined)
             )
                 lines.push(
@@ -13334,6 +13433,11 @@ export class DataTypeRegistry {
             else
                 lines.push(
                     `inline bbl::js::Array<std::string> json_value_keys(const ${name}& value) {`,
+                    ...(view
+                        ? [
+                              `    if (${view.viewCpp}) return ${view.documentCpp}.own_keys();`,
+                          ]
+                        : []),
                     "    bbl::js::Array<std::string> keys;",
                     ...(orders
                         ? this.classTagBranches(
@@ -13431,8 +13535,22 @@ export class DataTypeRegistry {
         }
         for (const name of names) {
             const definition = this.structsByName.get(name);
+            // A view writes the instance it stands for.
+            const view = this.viewedDocument(
+                name,
+                "value.",
+                this.jsonSerializedStructs.get(name)!,
+            );
             lines.push(
                 `inline void json_write(bbl::js::JsonWriter& writer, const ${structName(name)}& value) {`,
+                ...(view
+                    ? [
+                          `    if (${view.viewCpp}) {`,
+                          `        ${this.jsonWriteCpp({ kind: "json" }, view.documentCpp)}`,
+                          "        return;",
+                          "    }",
+                      ]
+                    : []),
                 "    writer.begin_object();",
             );
             const fields = definition?.fields ?? [];
@@ -13647,6 +13765,7 @@ export class DataTypeRegistry {
      * dependency order inside `namespace bblscene`.
      */
     public renderPreamble(structuredClone = false): DataPreamble {
+        this.boxViewedClasses();
         this.checkFieldPresenceReads();
         this.absentProperties.check();
         this.checkRecordKeyOrders();

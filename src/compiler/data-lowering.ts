@@ -13141,18 +13141,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
-     * Stores the member `key` a spread copies out of `spread`'s value as
-     * `dataType`, at the spread: no expression of its own names it, so a
-     * sink asking which native owner it holds reads its checked type
+     * Stores the member `key` a spread at `spread` copies out of
+     * `source`'s value as `dataType`: no expression of its own names it,
+     * so a sink asking which native owner it holds reads its checked type
      * (`convertedMember`).
      */
     private compileSpreadMemberForSink(
         member: Value,
         dataType: DataType,
-        spread: ts.SpreadAssignment,
+        spread: ts.Node,
+        source: ts.Expression,
         key: string,
     ): string {
-        const property = this.memberProperty(spread.expression, key);
+        const property = this.memberProperty(source, key);
         return this.compileConvertedMember(
             member,
             dataType,
@@ -13162,9 +13163,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             property && {
                 type: this.context.checker.getTypeOfSymbolAtLocation(
                     property,
-                    spread.expression,
+                    source,
                 ),
-                of: spread.expression,
+                of: source,
             },
         );
     }
@@ -14877,7 +14878,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * for a record with a symbol key no document key can hold. A class
      * whose classes create their keys in different orders gives each
      * class's entries in its order (`classKeyOrders`), read through
-     * `classOwnerCpp`.
+     * `classOwnerCpp`; a view copies the instance it stands for (`view`).
      */
     private spreadOwnEntries(
         source: Value,
@@ -14885,6 +14886,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     ):
         | {
               readonly entries: readonly OwnEntry[];
+              readonly view?: {
+                  readonly viewCpp: string;
+                  readonly documentCpp: string;
+              };
               readonly byClass?: {
                   readonly classOwnerCpp: string;
                   readonly orders: readonly (readonly OwnEntry[])[];
@@ -14920,17 +14925,24 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             property,
         );
         const dataTypes = this.context.dataTypes;
+        const access = dataTypes.memberAccess(source.dataType.name);
         const orders = dataTypes.classKeyOrders(
             source.dataType.name,
             entries,
             (entry) => entry.key,
         );
+        const view = dataTypes.viewedDocument(
+            source.dataType.name,
+            `${snapshot}${access}`,
+            property,
+        );
         return {
             entries,
+            ...(view ? { view } : {}),
             ...(orders
                 ? {
                       byClass: {
-                          classOwnerCpp: `${snapshot}${dataTypes.memberAccess(source.dataType.name)}`,
+                          classOwnerCpp: `${snapshot}${access}`,
                           orders,
                       },
                   }
@@ -15046,8 +15058,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                             // A class copies its keys in the order its
                             // instances create them.
                             const byClass = spread.byClass;
-                            if (!byClass) copy(spread.entries);
-                            else
+                            const copyFields = (): void => {
+                                if (!byClass) return copy(spread.entries);
                                 for (const line of this.context.dataTypes.classTagBranches(
                                     byClass.classOwnerCpp,
                                     byClass.orders.map((entries) =>
@@ -15059,6 +15071,28 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                                     ),
                                 ))
                                     this.context.emit(line);
+                            };
+                            // A view copies the instance it stands for.
+                            const view = spread.view;
+                            if (!view) copyFields();
+                            else {
+                                this.context.emit({
+                                    kind: "open",
+                                    code: `if (${view.viewCpp}) {`,
+                                });
+                                this.context.emit({
+                                    kind: "expression",
+                                    code: `    bbl::js::json_spread_into(${result}, ${view.documentCpp});`,
+                                });
+                                this.context.emit({
+                                    kind: "branch",
+                                    code: "} else {",
+                                });
+                                this.context.increaseIndent();
+                                copyFields();
+                                this.context.decreaseIndent();
+                                this.context.emit({ kind: "close", code: "}" });
+                            }
                             continue;
                         }
                         const value = this.compileKnownValueForSink(
@@ -15521,7 +15555,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * A `?` field that also admits null cannot say whether its empty
      * storage is absent or null; into a target field still holding its
      * absent default (`fresh`) the storage copies as it is, exact either
-     * way. Returns the target fields every run writes.
+     * way. `stored` is the copy's own node (a spread's literal), whose
+     * type stores a copy of a class instance's view as a document
+     * (`requireViewCopyStorage`). Returns the target fields every run writes.
      */
     public copyStructOwnProperties(
         target: { cpp: string; type: DataType<"struct"> },
@@ -15532,8 +15568,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         options: {
             excludedKeys?: ReadonlySet<string>;
             fresh?: (field: string) => boolean;
+            stored?: ts.Node;
         } = {},
     ): ReadonlySet<string> {
+        this.context.dataTypes.requireViewCopyStorage(
+            sourceType.name,
+            target.type.name,
+            source,
+            options.stored,
+        );
         this.context.dataTypes.noteRecordConversion(
             target.type,
             [],
@@ -15774,12 +15817,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * records contribute only the keys they actually carry; a native struct
      * contributes every field. This preserves JavaScript's last-write-wins
      * spread semantics even when a partial record appears after explicit
-     * properties.
+     * properties. `sources` spread after the literal's own parts, as
+     * `Object.assign` copies them onto a fresh literal.
      */
     public emitSpreadStructDeclaration(
         cppName: string,
         literal: ts.ObjectLiteralExpression,
         dataType: DataType & { kind: "struct" },
+        sources: readonly ts.Expression[] = [],
     ): Record<string, Value> | undefined {
         const referenceStruct = this.context.dataTypes.isReferenceStruct(
             dataType.name,
@@ -15834,24 +15879,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             sourceName: string,
             sourceValue: Value,
             node: ts.Node,
+            source: ts.Expression,
         ): void => {
             const field = fieldOf(sourceName, node);
             this.context.emit({
                 kind: "expression",
                 code: store(
                     field,
-                    ts.isSpreadAssignment(node)
-                        ? this.compileSpreadMemberForSink(
-                              sourceValue,
-                              field.type,
-                              node,
-                              sourceName,
-                          )
-                        : this.compileKnownValueForSink(
-                              sourceValue,
-                              field.type,
-                              node,
-                          ),
+                    this.compileSpreadMemberForSink(
+                        sourceValue,
+                        field.type,
+                        node,
+                        source,
+                        sourceName,
+                    ),
                 ),
             });
             assigned.add(field.name);
@@ -15876,20 +15917,26 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                             : [],
                     ),
             );
-        for (const [index, property] of literal.properties.entries()) {
-            refuseProtoSetter(property, (node, message) =>
-                this.context.fail(node, message),
-            );
-            if (ts.isSpreadAssignment(property)) {
+        const parts: readonly (ts.ObjectLiteralElementLike | ts.Expression)[] =
+            [...literal.properties, ...sources];
+        for (const [index, property] of parts.entries()) {
+            // A source `Object.assign` copies onto the literal is a spread.
+            if (
+                !ts.isObjectLiteralElementLike(property) ||
+                ts.isSpreadAssignment(property)
+            ) {
+                const spreadSource = ts.isSpreadAssignment(property)
+                    ? property.expression
+                    : property;
                 const replaced = writtenAfter(index);
                 const source =
-                    this.compileDataPath(property.expression, "read") ??
-                    this.context.compileValue(property.expression);
+                    this.compileDataPath(spreadSource, "read") ??
+                    this.context.compileValue(spreadSource);
                 // A union or optional source spreads the member its
                 // narrowing selects.
                 const spread =
                     source.kind === "data"
-                        ? this.narrowOptional(source, property.expression)
+                        ? this.narrowOptional(source, spreadSource)
                         : source;
                 if (spread.kind === "json-null" || knownAbsent(spread)) {
                     declareDefault();
@@ -15926,7 +15973,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         // absent, so its storage stores as it is.
                         const field = fieldOf(name, property);
                         if (!assigned.has(field.name)) {
-                            assign(name, value, property);
+                            assign(name, value, property, spreadSource);
                             continue;
                         }
                         trackKnownField(
@@ -15940,7 +15987,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                                 ? this.context.bindings.pinValueToTemporary(
                                       value,
                                       "spread_member",
-                                      property.expression,
+                                      spreadSource,
                                   )
                                 : value,
                             property,
@@ -15954,6 +16001,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                                         entry.value,
                                         field.type,
                                         property,
+                                        spreadSource,
                                         name,
                                     ),
                                 ),
@@ -16074,11 +16122,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         { cpp: cppName, type: dataType },
                         spread,
                         spread.dataType,
-                        property.expression,
+                        spreadSource,
                         "spread",
                         {
                             excludedKeys,
                             fresh: (field) => !assigned.has(field),
+                            stored: literal,
                         },
                     )) {
                         assigned.add(name);
@@ -16111,7 +16160,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     const pinned = this.context.bindings.pinValueToTemporary(
                         spread,
                         "spread_optional",
-                        property.expression,
+                        spreadSource,
                     );
                     const present = this.presentOptionalValue(
                         pinned,
@@ -16135,11 +16184,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         { cpp: cppName, type: dataType },
                         present,
                         innerType,
-                        property.expression,
+                        spreadSource,
                         "spread",
                         {
                             excludedKeys,
                             fresh: (field) => !assigned.has(field),
+                            stored: literal,
                         },
                     ))
                         copiedFields.add(name);
@@ -16157,10 +16207,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     declareDefault();
                     for (const [name, slot] of this.enumMapEntries(
                         spread,
-                        property.expression,
+                        spreadSource,
                     )) {
                         created.push({ key: name });
-                        if (!replaced.has(name)) assign(name, slot, property);
+                        if (!replaced.has(name))
+                            assign(name, slot, property, spreadSource);
                     }
                     continue;
                 }
@@ -16171,6 +16222,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     "Object spread requires a compile-time record or native struct of the target type.",
                 );
             }
+            refuseProtoSetter(property, (node, message) =>
+                this.context.fail(node, message),
+            );
             const key = this.runtimeKey(property);
             if (key && ts.isPropertyAssignment(property)) {
                 knownProperties = undefined;
@@ -18912,12 +18966,32 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             // `dictionary.name = value`: the named member is an entry.
             const entry = this.dictionaryEntry(left);
             if (entry) {
-                // A number member updated above.
-                if (operator !== "=")
-                    this.context.fail(
+                // A number member updated above; a document's member
+                // updates as a document place.
+                if (operator !== "=") {
+                    if (entry.dataType.value.kind !== "json")
+                        this.context.fail(
+                            expression,
+                            "Compound assignment to a dictionary member requires a number value.",
+                        );
+                    this.emitJsonCompoundAssignment(
                         expression,
-                        "Compound assignment to a dictionary member requires a number value.",
+                        {
+                            read: this.mapPropertyValue(
+                                entry.owner.cpp,
+                                entry.keyCpp,
+                                entry.dataType.value,
+                            ).cpp,
+                            store: (next) =>
+                                `${entry.owner.cpp}.set(${entry.keyCpp}, ${next});`,
+                        },
+                        operator,
                     );
+                    this.context.bindings.invalidateRecordProperties(
+                        entry.owner,
+                    );
+                    return true;
+                }
                 const value = this.compileKnownValueForSink(
                     this.context.compileValue(expression.right),
                     entry.dataType.value,
