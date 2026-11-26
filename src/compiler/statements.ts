@@ -1111,14 +1111,12 @@ export class StatementLowerer {
         }
         if (ts.isVariableStatement(statement)) {
             this.loweredTerminators.delete(statement);
-            for (const declaration of statement.declarationList.declarations) {
-                context.declarations.emitVariableDeclaration(declaration);
+            for (const declaration of statement.declarationList.declarations)
                 // An initializer that always throws ends the flow here.
-                if (context.declarations.completesAbruptly(declaration)) {
+                if (context.declarations.emitVariableDeclaration(declaration)) {
                     this.loweredTerminators.add(statement);
                     return;
                 }
-            }
             return;
         }
         if (ts.isExpressionStatement(statement)) {
