@@ -18,7 +18,7 @@ import {
     type Absence,
 } from "./type-facts.js";
 import { optionalPresentCpp, optionalValueCpp, type Value } from "./types.js";
-import { knownCondition } from "./values/model.js";
+import { knownCondition, presenceFlagCpp } from "./values/model.js";
 
 /**
  * One operand of a strict equality between two values that may be absent:
@@ -205,6 +205,27 @@ export function strictEqualsCpp(
         unrecordedFact(left.dataType, "identity") ??
         unrecordedFact(right.dataType, "identity");
     if (unrecorded) context.fail(expression, unrecorded);
+    // Collection element types do not take part in JavaScript identity.
+    // Their native templates differ, but each exposes its storage identity.
+    const collection = (value: Value): boolean =>
+        value.dataType?.kind === "map" || value.dataType?.kind === "set";
+    if (collection(left) && collection(right)) {
+        const identity = (value: Value): string => {
+            const storage = `(${value.cpp}).identity()`;
+            const present = presenceFlagCpp(value);
+            return present ? `(${present} ? ${storage} : nullptr)` : storage;
+        };
+        return absentAwareIdentity(
+            sameAbsenceCpp(
+                lowerer,
+                { node: expression.left, value: left },
+                { node: expression.right, value: right },
+            ),
+            presenceFlagCpp(left) ?? "true",
+            (operator) => `${identity(left)} ${operator} ${identity(right)}`,
+            negated,
+        );
+    }
     if (isRecordTable(left.dataType) && isRecordTable(right.dataType))
         context.fail(
             expression,

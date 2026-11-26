@@ -3769,6 +3769,29 @@ check(
 );
 
 check(
+    "collections with different element types compare their storage identities",
+    `
+    const a = new WeakMap<object, number>();
+    const b = new WeakMap<object, string>();
+    const unknownA: unknown = a;
+    if (unknownA === b || a !== unknownA) throw new Error("different weak maps");
+    const strong = new Map<object, number>();
+    if (unknownA === strong) throw new Error("weak and strong maps");
+    const numbers = new Set<number>();
+    const strings = new Set<string>();
+    const unknownSet: unknown = numbers;
+    if (unknownSet === strings || unknownSet === a) throw new Error("different collections");
+    const records = new WeakSet<{ id: number }>();
+    const names = new WeakSet<{ name: string }>();
+    const unknownRecords: unknown = records;
+    if (unknownRecords === names || unknownRecords !== records) throw new Error("different weak sets");
+    const list = [a];
+    let index = 2;
+    if (list[index] !== list[index + 1] || list[index] === a) throw new Error("absent maps");
+    `,
+);
+
+check(
     "loose equality between objects compares identity without coercion",
     `
     const notes = new WeakMap<object, string[]>();
