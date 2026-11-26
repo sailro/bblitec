@@ -826,10 +826,12 @@ function compileObjectEntries(
 ): Value {
     context.expectArgumentCount(call, 1, 1);
     const raw = context.compileValue(argumentAt(call, 0));
-    const owner =
+    const owner = context.dataLowerer.nativeUnionDocument(
         raw.kind === "data"
             ? context.dataLowerer.narrowOptional(raw, argumentAt(call, 0))
-            : raw;
+            : raw,
+        call,
+    );
     const resultType = context.dataLowerer.dataTypeAt(call);
     const array =
         resultType === undefined || resultType.kind === "vector"

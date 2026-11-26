@@ -2453,7 +2453,10 @@ export class ExpressionLowerer {
         projection: "keys" | "values",
     ): Value {
         this.context.expectArgumentCount(call, 1, 1);
-        const object = this.compileValue(argumentAt(call, 0));
+        const object = this.context.dataLowerer.nativeUnionDocument(
+            this.compileValue(argumentAt(call, 0)),
+            call,
+        );
         const resultType = this.context.dataLowerer.dataTypeAt(call);
         if (object.moduleNamespace && projection === "keys") {
             this.context.emitDiscardedValue(object);

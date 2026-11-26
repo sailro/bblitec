@@ -22083,6 +22083,24 @@ check(
     `,
 );
 check(
+    "Object.keys, Object.entries and for-in enumerate an unknown element as the member it holds",
+    `
+    const boxed: unknown[] = [];
+    boxed.push({ a: 1, b: 2 });
+    boxed.push(7);
+    boxed.push("xy");
+    let out = "";
+    for (const value of boxed) {
+        const record = value as Record<string, unknown>;
+        out += Object.keys(value as object).join() + "|" + Object.keys(record).join() + "|";
+        for (const key in value as object) out += key;
+        for (const key in record) out += key;
+        out += "|" + Object.entries(record).map(([key, item]) => key + "=" + String(item)).join() + ";";
+    }
+    if (out !== "a,b|a,b|abab|a=1,b=2;|||;0,1|0,1|0101|0=x,1=y;") throw new Error(out);
+    `,
+);
+check(
     "a folded if that breaks leaves the switch clause, not the switch",
     `
     const T = true;

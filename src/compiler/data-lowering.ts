@@ -4755,6 +4755,26 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return { ...value, truthinessCpp: "true" };
     }
 
+    /**
+     * A value of a native union (a record beside a primitive, nullable or
+     * not) as the document it boxes into, whose own keys and values are
+     * those of the member it holds, as an enumeration reads them; any
+     * other value as it is.
+     */
+    public nativeUnionDocument(value: Value, node: ts.Node): Value {
+        const dataType =
+            value.kind === "data" && value.dataType?.kind === "optional"
+                ? value.dataType.inner
+                : value.dataType;
+        if (value.kind !== "data" || dataType?.kind !== "union") return value;
+        const json: DataType = { kind: "json" };
+        this.context.reachJson();
+        return this.leafValue(
+            this.compileKnownValueForSink(value, json, node),
+            json,
+        );
+    }
+
     public narrowOptional(
         value: Value,
         expression: ts.Expression | ts.BindingName,

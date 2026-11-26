@@ -3254,7 +3254,13 @@ export class StatementLowerer {
         const raw = context.compileValue(statement.expression);
         const owner =
             raw.kind === "data"
-                ? context.dataLowerer.narrowOptional(raw, statement.expression)
+                ? context.dataLowerer.nativeUnionDocument(
+                      context.dataLowerer.narrowOptional(
+                          raw,
+                          statement.expression,
+                      ),
+                      statement.expression,
+                  )
                 : raw;
         if (owner.kind === "record") {
             // A key a conditional spread wrote is visited while it is own;
