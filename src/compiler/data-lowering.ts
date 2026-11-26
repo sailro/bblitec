@@ -15556,8 +15556,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * storage is absent or null; into a target field still holding its
      * absent default (`fresh`) the storage copies as it is, exact either
      * way. `stored` is the copy's own node (a spread's literal), whose
-     * type stores a copy of a class instance's view as a document
-     * (`requireViewCopyStorage`). Returns the target fields every run writes.
+     * type stores as a document a copy of a class instance's view or of a
+     * class hierarchy's instance (`requireViewCopyStorage`,
+     * `requireClassCopyStorage`). Returns the target fields every run writes.
      */
     public copyStructOwnProperties(
         target: { cpp: string; type: DataType<"struct"> },
@@ -15630,6 +15631,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     ]);
                     continue;
                 }
+                this.context.dataTypes.requireClassCopyStorage(
+                    sourceType.name,
+                    target.type.name,
+                    entry.key,
+                    source,
+                    options.stored,
+                );
                 // A copy carrying a property its new (or assigned) object's
                 // type does not store gives that object the source's layout.
                 if (operation !== "rest")

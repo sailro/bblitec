@@ -2821,14 +2821,49 @@ export class DataTypeRegistry {
         node: ts.Node,
         stored?: ts.Node,
     ): void {
-        if (!this.viewsInstances(source)) return;
+        if (this.viewsInstances(source))
+            this.requireCopyDocument(
+                target,
+                node,
+                stored,
+                `A copy of a record that may be a class instance's view has the instance's own keys, which '${target}' storage does not hold.`,
+            );
+    }
+
+    /**
+     * A copy of class struct `source`'s records stored in struct `target`,
+     * met at `node`, carrying `key`, which `target` does not store: where
+     * `source` stands for a hierarchy, each copy has its instance's class's
+     * own keys, which only a document of the target's record type holds
+     * (`storedRecordType`, for the `stored` copy, a spread's literal).
+     */
+    public requireClassCopyStorage(
+        source: string,
+        target: string,
+        key: string,
+        node: ts.Node,
+        stored?: ts.Node,
+    ): void {
+        if (this.classStructTagged(source))
+            this.requireCopyDocument(
+                target,
+                node,
+                stored,
+                `A copy of a '${source}' instance has its class's own key '${key}', which '${target}' storage does not hold.`,
+            );
+    }
+
+    /** Requires that a copy stored in struct `target` be a document of its record type, or refuses with `refusal`. */
+    private requireCopyDocument(
+        target: string,
+        node: ts.Node,
+        stored: ts.Node | undefined,
+        refusal: string,
+    ): never {
         const record = this.storedRecordType(target, stored);
         const demand = record && this.documentDemandOf(record, node);
         if (demand) throw new NativeRecordStorageRequired(demand);
-        this.fail(
-            node,
-            `A copy of a record that may be a class instance's view has the instance's own keys, which '${target}' storage does not hold.`,
-        );
+        return this.fail(node, refusal);
     }
 
     /** Struct `name` views instances of class struct `classStruct` (`instance_view`). */

@@ -175,7 +175,8 @@ const FIXED_LAYOUT_ORIGINS: ReadonlySet<DeclarationOrigin> = new Set([
  * Whether a type is a plain record a component can hold: an object type,
  * or an intersection of them, with properties and no call, construct or
  * index signature, that is not an array or a class instance, every
- * property declared by the program or the engine.
+ * property declared by the program or the engine, and declared by a class
+ * only in an object literal's type (a spread's copy of an instance).
  */
 export function isPlainRecord(checker: ts.TypeChecker, type: ts.Type): boolean {
     return recordShape(checker, type, false);
@@ -209,6 +210,12 @@ function recordShape(
     )
         return false;
     const properties = checker.getPropertiesOfType(type);
+    const literal = parts.every(
+        (part) =>
+            ((part as ts.ObjectType).objectFlags &
+                ts.ObjectFlags.ObjectLiteral) !==
+            0,
+    );
     return (
         properties.length > 0 &&
         properties.every(
@@ -217,7 +224,7 @@ function recordShape(
                 declarations.length > 0 &&
                 declarations.every(
                     (declaration) =>
-                        !ts.isClassLike(declaration.parent) &&
+                        (literal || !ts.isClassLike(declaration.parent)) &&
                         !FIXED_LAYOUT_ORIGINS.has(
                             declarationOrigin(declaration),
                         ),

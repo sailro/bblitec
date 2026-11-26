@@ -16287,6 +16287,24 @@ check(
 );
 
 check(
+    "a spread of a base-typed class instance into its own literal keeps the subclass's keys in its class order",
+    `
+    class A { a = 1; }
+    class B extends A { b = 2; c = 5; }
+    class C extends A { c = 3; b = 4; }
+    const items: A[] = [new A(), new B(), new C()];
+    let out = "";
+    for (const item of items) {
+        const copy = { ...item };
+        const more = { ...item, z: 3 };
+        out += JSON.stringify(copy) + Object.keys(copy).join() + "|" + JSON.stringify(more) + copy.a + ";";
+    }
+    const want = '{"a":1}a|{"a":1,"z":3}1;{"a":1,"b":2,"c":5}a,b,c|{"a":1,"b":2,"c":5,"z":3}1;{"a":1,"c":3,"b":4}a,c,b|{"a":1,"c":3,"b":4,"z":3}1;';
+    if (out !== want) throw new Error(out);
+`,
+);
+
+check(
     "class-hierarchy-instances-list-their-keys-in-their-own-class-order",
     `
     class A { a = 1; }
