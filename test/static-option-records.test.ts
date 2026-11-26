@@ -79,6 +79,22 @@ test("reads closed descriptor helpers with scalar arguments and local bindings",
     }
 });
 
+test("reads an option record a helper returns through settled ifs and const names", () => {
+    for (const back of [false, true]) {
+        const compiled = program(
+            `function culling(back: boolean) {
+                const off = { backFaceCulling: false, depthWrite: false } as const;
+                if (back) return { backFaceCulling: true, depthWrite: true } as const;
+                return off;
+            }`,
+            `uniforms: ["worldViewProjection"],
+            ...culling(${back}),`,
+        );
+        assert.equal(compiled.backFaceCulling, back);
+        assert.equal(compiled.depthWrite, back);
+    }
+});
+
 test("refuses a recursive descriptor helper", () => {
     assert.throws(
         () =>

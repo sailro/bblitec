@@ -894,6 +894,11 @@ public:
         return result;
     }
 
+    /** The keys `for...in` walks: none for null or undefined, which it skips. */
+    [[nodiscard]] bbl::js::Array<std::string> for_in_keys() const {
+        return is_null() || is_undefined() ? bbl::js::Array<std::string>{} : own_keys();
+    }
+
     [[nodiscard]] bbl::js::Array<JsonValue> own_values() const {
         bbl::js::Array<JsonValue> result;
         if (is_object()) {
@@ -1214,6 +1219,17 @@ template <typename T> [[nodiscard]] JsonValue json_value(const Map<std::string, 
 template <typename... T> [[nodiscard]] JsonValue json_value(const std::variant<T...>& value);
 template <typename T> [[nodiscard]] JsonValue json_value(const Ref<T>& value) {
     return value ? JsonValue::from_native(value) : JsonValue::null_value();
+}
+
+template <typename T> JsonValue viewed_document(const ViewedObject& viewed) {
+    return json_value(viewed.object<T>());
+}
+
+inline JsonValue ViewedObject::document() const {
+    if (!document_)
+        throw std::logic_error(
+            "A view enumerates as an instance whose class has no document view.");
+    return document_(*this);
 }
 
 /** `value === object` for a record stored by reference: whether `value` boxes that very record. */

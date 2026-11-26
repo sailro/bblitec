@@ -12,12 +12,10 @@
  * the package's TypeScript join the program, and their type-only reads of
  * any other pinned module read the package's declarations.
  */
-import { readFileSync } from "node:fs";
 import { posix, resolve, sep } from "node:path";
 import ts from "typescript";
 import { isRuntimeImport } from "./module-imports.js";
 import { cachedBakeSync, moduleIdentity } from "./bake-cache.js";
-import { compilerRepositoryRoot } from "./repository-root.js";
 import {
     dynamicImportSpecifier,
     isPackageImportSpecifier,
@@ -26,7 +24,7 @@ import {
 } from "./typescript-module-specifiers.js";
 import {
     exportedDeclarations,
-    readPinFile,
+    pinnedSourceInputs,
     sharedUpstreamStore,
     type UpstreamSourceStore,
 } from "./upstream-source.js";
@@ -171,23 +169,11 @@ export class PinnedProgramSources {
         );
         const exports = new Map<string, string>();
         for (const name of exportedDeclarations(declarations).keys()) {
-            const value = this.store.findPublicExport(name)?.modulePath;
             // A type the package's barrel cannot name is the export of the
             // one qualifying module declaring it.
-            const owners =
-                value === undefined
-                    ? this.store
-                          .declaringModules(name)
-                          .filter((module) => this.qualifies(module))
-                    : [];
-            const module =
-                value !== undefined
-                    ? this.qualifies(value)
-                        ? value
-                        : undefined
-                    : owners.length === 1
-                      ? owners[0]
-                      : undefined;
+            const module = this.store.exportModule(name, (candidate) =>
+                this.qualifies(candidate),
+            );
             if (module) exports.set(name, module);
         }
         const program = new Set<string>();
@@ -401,15 +387,6 @@ let exportNames: ReadonlySet<string> | undefined;
  */
 export function pinnedProgramExportNames(): ReadonlySet<string> {
     if (exportNames) return exportNames;
-    const root = compilerRepositoryRoot();
-    const corpus = readPinFile("upstream/babylon-lite-corpus.json", root) as {
-        packageSources?: unknown;
-    };
-    const inputs = [
-        readFileSync(resolve(root, "package-lock.json")),
-        readFileSync(resolve(root, "upstream/babylon-lite.json")),
-        new TextEncoder().encode(JSON.stringify(corpus.packageSources ?? [])),
-    ];
     const names = cachedBakeSync(
         {
             kind: "pinned-program-exports",
@@ -424,7 +401,7 @@ export function pinnedProgramExportNames(): ReadonlySet<string> {
             browser: false,
             buildConditions: true,
             parameters: {},
-            inputs,
+            inputs: pinnedSourceInputs(),
         },
         () =>
             new TextEncoder().encode(

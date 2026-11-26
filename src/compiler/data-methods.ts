@@ -741,10 +741,9 @@ export function compileDataMethodCall(
                 lowerer.context.fail(call, "Array.fill expects one argument.");
             }
             lowerer.context.reachJsData();
-            const value = lowerer.compileForRetainedSink(
+            const value = lowerer.compileForSink(
                 argumentAt(call, 0),
                 created.element,
-                "Array.fill",
             );
             return {
                 kind: "data",
@@ -1766,6 +1765,20 @@ function compileKnownDataMethod(
             slotHoldsOnlyNull(
                 lowerer.context.dataTypes.resolveTypeParameter(yieldedType),
             );
+        // A tagged yield keeps null and undefined apart; completion reads
+        // as its undefined state, as a missing Map slot does.
+        const value =
+            resultValueType.kind === "optional" &&
+            resultValueType.inner.kind === "tagged"
+                ? lowerer.storedCallResult(
+                      `${result}.value.value_or(${lowerer.context.dataTypes.cppType(resultValueType.inner)}{})`,
+                      resultValueType.inner,
+                      "iterator_yield",
+                  )
+                : {
+                      ...lowerer.leafValue(resultValueCpp, resultValueType),
+                      ...(nullYield ? { slotFoundCpp: `!${result}.done` } : {}),
+                  };
         return {
             kind: "record",
             cpp: "",
@@ -1774,11 +1787,7 @@ function compileKnownDataMethod(
                     ...lowerer.leafValue(`${result}.done`, { kind: "boolean" }),
                     nativeCaptures,
                 },
-                value: {
-                    ...lowerer.leafValue(resultValueCpp, resultValueType),
-                    ...(nullYield ? { slotFoundCpp: `!${result}.done` } : {}),
-                    nativeCaptures,
-                },
+                value: { ...value, nativeCaptures },
             },
         };
     }
@@ -3312,16 +3321,6 @@ function compileArrayMap(
                     return;
                 }
                 if (
-                    lowerer.context.dataTypes.carriesBorrowedPlatformEvent(
-                        mappedType.element,
-                    )
-                )
-                    lowerer.context.refuseBorrowedPlatformEventEscape(
-                        result,
-                        callback,
-                        `Array.${method} result`,
-                    );
-                if (
                     method === "flatMap" &&
                     result.dataType?.kind === "product"
                 ) {
@@ -3565,11 +3564,6 @@ function compileArrayPush(state: ArrayMethodState): Value {
             ? call.arguments.map((argument, index) => {
                   const boundary = lowerer.context.nativeBindingCheckpoint();
                   const value = lowerer.context.compileValue(argument);
-                  lowerer.context.refuseBorrowedPlatformEventEscape(
-                      value,
-                      argument,
-                      "Array.push",
-                  );
                   // A static snapshot owns the value selected at push,
                   // including creation calls and a mutable source handle
                   // that is rebound later; the array stores that value as
@@ -3762,26 +3756,10 @@ function compileArrayPush(state: ArrayMethodState): Value {
             });
             return `bbl::js::array_append(${receiver}, ${copy})`;
         }
-        if (
-            pushedValues &&
-            lowerer.context.dataTypes.carriesBorrowedPlatformEvent(
-                dataType.element,
-            )
-        ) {
-            lowerer.context.refuseBorrowedPlatformEventEscape(
-                pushedValues[index]!,
-                argument,
-                "Array.push",
-            );
-        }
         let value = preparedValues[index];
         if (value === undefined) {
             const boundary = lowerer.context.nativeBindingCheckpoint();
-            const cpp = lowerer.compileForRetainedSink(
-                argument,
-                dataType.element,
-                "Array.push",
-            );
+            const cpp = lowerer.compileForSink(argument, dataType.element);
             value = cpp;
             if (index < lastEffect) {
                 value =
@@ -3898,11 +3876,7 @@ function compileArrayUnshift(state: ArrayMethodState): Value {
     // present handle into an array of optional ones).
     const element = lowerer.context.dataTypes.cppType(dataType.element);
     const values = call.arguments.map((argument, index) => {
-        const cpp = lowerer.compileForRetainedSink(
-            argument,
-            dataType.element,
-            "Array.unshift",
-        );
+        const cpp = lowerer.compileForSink(argument, dataType.element);
         const name =
             lowerer.context.allocateTemporaryCppName("unshift_argument");
         lowerer.context.emit({
@@ -3953,11 +3927,7 @@ function compileArrayWith(state: ArrayMethodState): Value {
         lowerer.context.fail(call, "Array.with expects an index and a value.");
     const receiver = captureArrayReceiver(lowerer, narrowed);
     const index = lowerer.compileNumberArgument(call.arguments[0], "0.0");
-    const value = lowerer.compileForRetainedSink(
-        argumentAt(call, 1),
-        dataType.element,
-        "Array.with",
-    );
+    const value = lowerer.compileForSink(argumentAt(call, 1), dataType.element);
     return {
         kind: "data",
         cpp: `bbl::js::array_with(${receiver}, ${index}, ${value})`,
@@ -4125,15 +4095,6 @@ function compileMapDataMethod(
         }
         const keyValue = lowerer.context.compileValue(argumentAt(call, 0));
         lowerer.context.recordCollectionKey(narrowed, keyValue);
-        if (
-            lowerer.context.dataTypes.carriesBorrowedPlatformEvent(dataType.key)
-        ) {
-            lowerer.context.refuseBorrowedPlatformEventEscape(
-                keyValue,
-                argumentAt(call, 0),
-                "Map.set key",
-            );
-        }
         const keyNode = argumentAt(call, 0);
         const key = lowerer.context.allocateTemporaryCppName("map_key");
         const keyCpp = lowerer.compileKnownValueForSink(
@@ -4169,17 +4130,6 @@ function compileMapDataMethod(
             assignedValue,
             call,
         );
-        if (
-            lowerer.context.dataTypes.carriesBorrowedPlatformEvent(
-                dataType.value,
-            )
-        ) {
-            lowerer.context.refuseBorrowedPlatformEventEscape(
-                assignedValue,
-                argumentAt(call, 1),
-                "Map.set value",
-            );
-        }
         const value = lowerer.compileKnownValueForSink(
             assignedValue,
             dataType.value,
@@ -4329,19 +4279,6 @@ function compileSetDataMethod(
             lowerer.context.fail(call, "Set.add expects exactly one value.");
         }
         const member = lowerer.context.compileValue(argumentAt(call, 0));
-        if (
-            lowerer.context.dataTypes.carriesBorrowedPlatformEvent(
-                dataType.element,
-            ) ||
-            (dataType.element.kind === "handle" &&
-                dataType.element.handle === "dom-event-identity")
-        ) {
-            lowerer.context.refuseBorrowedPlatformEventEscape(
-                member,
-                argumentAt(call, 0),
-                "Set.add",
-            );
-        }
         const value = lowerer.compileKnownValueForSink(
             member,
             dataType.element,

@@ -27,6 +27,24 @@ check(
 `,
 );
 
+// A subpath of the pinned package types its names from its own module:
+// `WgslSource` exists only there, and an options interface the entry also
+// exports stays the entry's one type.
+check(
+    "a-pinned-subpath-types-its-names-from-its-own-module",
+    `
+    import type { WgslSource } from "babylon-lite/shader/wgsl.js";
+    import type { DdsEnvironmentBackgroundOptions } from "babylon-lite/material/pbr/background-dds-environment.js";
+    function mark(text: string): WgslSource { return text as WgslSource; }
+    const parts: WgslSource[] = [mark("fn a() {}"), mark("fn b() {}")];
+    const joined: string = parts.join("|");
+    if (joined !== "fn a() {}|fn b() {}" || !parts[1]!.startsWith("fn b")) throw new Error("wgsl source " + joined);
+    const options: DdsEnvironmentBackgroundOptions = { skyboxUrl: "sky.dds", groundTextureUrl: "ground.png", skyboxSize: 400 };
+    options.enableNoise ??= false;
+    if (options.skyboxSize / 2 !== 200 || options.enableNoise || options.skyboxUrl + options.groundTextureUrl !== "sky.ddsground.png") throw new Error("options");
+`,
+);
+
 check(
     "a-binding-pattern-binds-alike-in-every-position",
     `
@@ -3381,19 +3399,17 @@ check(
 `,
 );
 
-test("a spread of a record holding a class's prototype accessor refuses", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-            interface Flag { readonly on: boolean; }
-            class Switch { count = 0; get on(): boolean { return this.count > 0; } view(): Flag { return this; } }
-            const flags: Flag[] = [{ on: false }, new Switch().view()];
-            const copies = flags.map((flag) => ({ ...flag }));
-            if (copies.length !== 2) throw new Error("copies");
-            `),
-        /Property 'on' is an accessor; this use reads and writes stored record fields only/,
-    );
-});
+check(
+    "a spread of a record holding a class instance copies the instance's own fields, not its prototype accessor",
+    `
+    interface Flag { readonly on: boolean; }
+    class Switch { count = 0; get on(): boolean { return this.count > 0; } view(): Flag { return this; } }
+    const flags: Flag[] = [{ on: false }, new Switch().view()];
+    const copies = flags.map((flag) => ({ ...flag }));
+    const seen = copies.map((copy) => JSON.stringify(copy) + Object.keys(copy).join()).join(";");
+    if (seen !== '{"on":false}on;{"count":0}count' || copies[0]!.on !== false) throw new Error(seen);
+    `,
+);
 
 check(
     "a class instance keeps one object under an interface-typed binding",
@@ -3546,23 +3562,48 @@ check(
     `,
 );
 
-test("a record type stored as one class's instances refuses another record where a copy is observable", () => {
-    const prelude =
-        "interface Tool { activate(): void } const made: Tool[] = []; class Move implements Tool { constructor() { made.push(this); } activate(): void {} }";
-    assert.throws(
-        () =>
-            compileSource(
-                `${prelude} class Paint implements Tool { activate(): void {} } const tools: Tool[] = [new Move(), new Paint()]; const same = tools[0] === made[0]; export {};`,
-            ),
-        /'Tool' is stored as the 'Move' instances it holds; a 'Paint' instance stored as it would be a copy of the one object JavaScript keeps/,
-    );
-    assert.throws(
-        () =>
-            compileSource(
-                `${prelude} const tools: Tool[] = [new Move(), { activate(): void {} }]; const same = tools[0] === made[0]; export {};`,
-            ),
-        /'Tool' is stored as the 'Move' instances it holds; a record that is not one stored as it would be a copy of the one object JavaScript keeps/,
-    );
+check(
+    "a record type a class's instances and other objects both are holds each instance's one view",
+    `
+    interface Tool { activate(): void }
+    const made: Tool[] = [];
+    let active = "";
+    class Move implements Tool { constructor() { made.push(this); } activate(): void { active += "m"; } }
+    class Paint implements Tool { activate(): void { active += "p"; } }
+    const move = new Move();
+    const paint = new Paint();
+    const literal: Tool = { activate(): void { active += "l"; } };
+    const tools: Tool[] = [move, paint, literal];
+    for (const tool of tools) tool.activate();
+    if (active !== "mpl" || tools[0] !== made[0] || tools[0] !== move || tools[1] !== paint || tools[2] !== literal)
+        throw new Error("one tool each " + active);
+    if (tools.indexOf(paint) !== 1 || tools.indexOf(move) !== 0 || made.indexOf(move) !== 0 || (tools[0] as object) === paint)
+        throw new Error("searched by identity");
+    const seen = new Set<Tool>([move, literal]);
+    const order = new Map<Tool, number>([[paint, 2]]);
+    if (!seen.has(tools[0]!) || seen.has(paint) || order.get(tools[1]!) !== 2 || order.has(move)) throw new Error("keyed by identity");
+    const notes = new WeakMap<object, string>();
+    notes.set(move, "move");
+    notes.set(tools[1]!, "paint");
+    if (notes.get(tools[0]!) !== "move" || notes.get(paint) !== "paint" || notes.has(literal)) throw new Error("weak keys");
+    interface Counter { count: number; readonly busy: boolean; bump(): number }
+    class Tally {
+        count = 0;
+        get busy(): boolean { return this.count > 0; }
+        bump(): number { return ++this.count; }
+        view(): Counter { return this.count < 0 ? idle : this; }
+    }
+    const idle: Counter = { count: -1, busy: false, bump: () => 0 };
+    const tally = new Tally();
+    const counter = tally.view();
+    counter.count = 4;
+    if (tally.count !== 4 || !counter.busy || counter.bump() !== 5 || tally.count !== 5) throw new Error("written through the view");
+    tally.count = 7;
+    if (counter.count !== 7 || tally.view() !== counter || counter !== tally || idle === tally.view()) throw new Error("one tally " + counter.count);
+    `,
+);
+
+test("a record type stored as one class's instances refuses a method read as a value", () => {
     assert.throws(
         () =>
             compileSource(
@@ -3571,6 +3612,183 @@ test("a record type stored as one class's instances refuses another record where
         /Method 'inc' is read as a value; method values are unsupported/,
     );
 });
+
+check(
+    "an interface a class's this and a module literal both produce is the instance or the literal",
+    `
+    interface View { count: number; radius: number[] }
+    interface Envelope {
+        readonly compact: boolean;
+        preferredDistance(view: View, a: number, b: number): number;
+        permitsApproach(view: View, walker: number, other: number): boolean;
+    }
+    class Contacts {
+        private compactCount = 0;
+        private readonly members: number[] = [];
+        constructor(private readonly view: View) {}
+        get compact(): boolean { return this.compactCount > 0; }
+        add(slot: number): void { this.compactCount++; this.members[slot] = 1; }
+        preferredDistance(view: View, a: number, b: number): number { return view.radius[a]! + view.radius[b]! + this.view.count; }
+        permitsApproach(_view: View, walker: number, other: number): boolean { return this.members[walker]! > 0 && other >= 0; }
+        envelope(slot?: number): Envelope {
+            return this.compactCount > 0 && (slot === undefined || this.members[slot]! > 0) ? this : normalEnvelope;
+        }
+    }
+    const normalEnvelope: Envelope = {
+        compact: false,
+        preferredDistance: (view, a, b) => view.radius[a]! + view.radius[b]!,
+        permitsApproach: () => false,
+    };
+    const contacts = new WeakMap<View, Contacts>();
+    function envelopeOf(view: View, slot?: number): Envelope {
+        return contacts.get(view)?.envelope(slot) ?? normalEnvelope;
+    }
+    const view: View = { count: 2, radius: [0.5, 0.25] };
+    let text = "";
+    const first = envelopeOf(view, 0);
+    text += String(first.compact) + first.preferredDistance(view, 0, 1) + first.permitsApproach(view, 0, 1);
+    const created = new Contacts(view);
+    contacts.set(view, created);
+    created.add(0);
+    const second = envelopeOf(view, 0);
+    text += "," + String(second.compact) + second.preferredDistance(view, 0, 1) + second.permitsApproach(view, 0, 1);
+    text += "," + String(envelopeOf(view, 1) === normalEnvelope) + String(second === created) + String(envelopeOf(view) === second);
+    if (text !== "false0.75false,true2.75true,truetruetrue") throw new Error(text);
+    `,
+);
+
+check(
+    "one interface two unrelated classes' instances hold is each instance",
+    `
+    interface Shape { readonly size: number; area(): number }
+    class Square { constructor(private side: number) {} get size(): number { return this.side; } area(): number { return this.side * this.side; } grow(): void { this.side++; } }
+    class Disc { constructor(private radius: number) {} get size(): number { return this.radius; } area(): number { return 3 * this.radius * this.radius; } }
+    const square = new Square(2);
+    const disc = new Disc(1);
+    const shapes: Shape[] = [];
+    shapes.push(square);
+    shapes.push(disc);
+    shapes.push({ size: 1, area: () => 3 });
+    let total = 0;
+    for (const shape of shapes) total += shape.area() + shape.size;
+    if (total !== 14 || shapes[0] !== square || shapes.indexOf(disc) !== 1 || shapes.includes(new Disc(1))) throw new Error("shapes " + total);
+    square.grow();
+    if (shapes[0]!.size !== 3 || shapes[0]!.area() !== 9) throw new Error("grown");
+    `,
+);
+
+check(
+    "a write through an element read as a class instance's interface view writes the instance",
+    `
+    interface Counter { count: number; label: string; note?: string }
+    class Tally { count = 0; extra = 1; label = "t"; note?: string; }
+    const tally = new Tally();
+    const counters: Counter[] = [tally, { count: 5, label: "l" }];
+    if (counters[0] !== tally) throw new Error("identity");
+    counters[0]!.count = 7;
+    counters[1]!.count += 1;
+    counters[0]!.count++;
+    counters[0]!["count"] = counters[0]!.count + 1;
+    counters[0]!.label += "x";
+    counters[0]!.note ??= "n";
+    counters[1]!.note ||= "m";
+    let total = 0;
+    for (const counter of counters) { counter.count *= 2; total += counter.count; }
+    const out = String(tally.count) + "," + counters[1]!.count + "," + tally.extra + tally.label + tally.note + counters[1]!.note + total;
+    if (out !== "18,12,1txnm30") throw new Error(out);
+    `,
+);
+
+check(
+    "a class instance's interface view enumerates and serializes as the instance",
+    `
+    interface Rec { a: number; b: string }
+    class Tally { constructor(public a: number, public b: string, private c = 3) {} bump(): number { return this.c; } }
+    class Other { z = 0; a = 5; b = "o"; }
+    const rs: Rec[] = [{ a: 1, b: "x" }];
+    const t = new Tally(2, "y");
+    rs.push(t);
+    rs.push(new Other());
+    let out = "";
+    for (const r of rs) {
+        out += JSON.stringify(r) + Object.keys(r).join() + "|";
+        for (const key in r) out += key;
+        out += "|" + Object.entries(r).map(([k, v]) => k + "=" + v).join() + "|" + Object.values(r).join();
+        const copy: Record<string, unknown> = { ...r, w: 1 };
+        out += "|" + JSON.stringify(copy) + ";";
+    }
+    rs[1]!.a = 7;
+    out += t.a + JSON.stringify(rs[1]) + t.bump();
+    const boxed: unknown[] = [JSON.parse("1")];
+    boxed.push(rs[1]);
+    for (const value of boxed) {
+        const record = value as Record<string, unknown>;
+        out += "|" + Object.keys(record).join() + JSON.stringify(value);
+    }
+    const literal: Rec[] = [{ a: 1, b: "x" }, new Tally(2, "y")];
+    out += "|" + JSON.stringify(literal);
+    const want = '{"a":1,"b":"x"}a,b|ab|a=1,b=x|1,x|{"a":1,"b":"x","w":1};{"a":2,"b":"y","c":3}a,b,c|abc|a=2,b=y,c=3|2,y,3|{"a":2,"b":"y","c":3,"w":1};{"z":0,"a":5,"b":"o"}z,a,b|zab|z=0,a=5,b=o|0,5,o|{"z":0,"a":5,"b":"o","w":1};7{"a":7,"b":"y","c":3}3|1|a,b,c{"a":7,"b":"y","c":3}|[{"a":1,"b":"x"},{"a":2,"b":"y","c":3}]';
+    if (out !== want) throw new Error(out);
+    `,
+);
+
+check(
+    "a copy of a class instance's interface view has the instance's own keys",
+    `
+    interface Rec { a: number; b: string }
+    class Tally { constructor(public a: number, public b: string, private c = 3) {} bump(): number { return this.c; } }
+    const rs: Rec[] = [{ a: 1, b: "x" }, new Tally(2, "y")];
+    let out = "";
+    for (const r of rs) {
+        const narrow: { a: number } = { ...r };
+        const same: Rec = { ...r };
+        same.a += 10;
+        const assigned = Object.assign({}, r);
+        out += JSON.stringify(narrow) + Object.keys(narrow).join() + JSON.stringify(same) + r.a + JSON.stringify(assigned) + ";";
+    }
+    out += JSON.stringify(rs.map((r) => ({ ...r })));
+    interface Opt { a?: number; b: string }
+    const os: Opt[] = [{ a: 1, b: "x" }, { b: "y" }];
+    for (const o of os) { const copied = Object.assign({}, o); out += "|" + JSON.stringify(copied) + Object.keys(copied).join(); }
+    const want = '{"a":1,"b":"x"}a,b{"a":11,"b":"x"}1{"a":1,"b":"x"};{"a":2,"b":"y","c":3}a,b,c{"a":12,"b":"y","c":3}2{"a":2,"b":"y","c":3};[{"a":1,"b":"x"},{"a":2,"b":"y","c":3}]|{"a":1,"b":"x"}a,b|{"b":"y"}b';
+    if (out !== want) throw new Error(out);
+    `,
+);
+
+// A class handing out `this` as an interface a literal also produces, in a
+// program whose identity uses hold no such record.
+const unrelatedIdentityPrelude = `
+    interface Gauge { readonly tight: boolean; span(a: number, b: number): number }
+    class Tally {
+        count = 0;
+        get tight(): boolean { return this.count > 0; }
+        span(a: number, b: number): number { return a * b + this.count; }
+        gauge(): Gauge { return this.count > 0 ? this : loose; }
+    }
+    const loose: Gauge = { tight: false, span: (a, b) => a + b };
+    const tally = new Tally();
+    const before = tally.gauge();
+    tally.count = 1;
+    const after = tally.gauge();
+    if (before.tight || before.span(2, 3) !== 5 || !after.tight || after.span(2, 3) !== 7) throw new Error("gauges");
+`;
+
+check(
+    "an interface a class's this and a literal produce compiles beside an unrelated object identity",
+    `${unrelatedIdentityPrelude}
+    const tokens: object[] = [{}, {}];
+    if (tokens[0] === tokens[1]) throw new Error("tokens");
+    `,
+);
+
+check(
+    "an interface a class's this and a literal produce compiles beside an unrelated asserted document",
+    `${unrelatedIdentityPrelude}
+    const parsed = JSON.parse('{"x":1}') as { x: number };
+    const others = [parsed, parsed];
+    if (others[0] !== others[1] || parsed.x !== 1) throw new Error("parsed");
+    `,
+);
 
 // A weak map keyed through an `object` parameter keys what the calls of
 // its function pass; only a key that can hold the record type keeps a
@@ -3607,24 +3825,85 @@ check(
     `,
 );
 
-test("a broad key that can hold a record keeps it keyed by identity", () => {
-    for (const keyed of [
-        "function mark(): number { return note(world.tallies[0]!.gauge(), 'kept'); }",
-        "function mark(): void { let key: object = world; notes.set(key, []); }",
-        "const handed: unknown = notes;",
-    ])
-        assert.throws(
-            () =>
-                compileSource(
-                    `${objectKeyedNotes} const gauges: Gauge[] = world.tallies.map((tally) => tally.gauge()); ${keyed} export {};`,
-                ),
-            /'Gauge' is stored as the 'Tally' instances it holds; a record that is not one stored as it would be a copy of the one object JavaScript keeps/,
-        );
-    // A const of a broad type holds the object its initializer gives.
-    compileSource(
-        `${objectKeyedNotes} const gauges: Gauge[] = world.tallies.map((tally) => tally.gauge()); function mark(): void { const key: object = world; notes.set(key, []); } export {};`,
-    );
-});
+check(
+    "a broad key that can hold a class's interface view keys the instance",
+    `${objectKeyedNotes}
+    world.tallies[1]!.count = 2;
+    const gauges: Gauge[] = world.tallies.map((tally) => tally.gauge());
+    function mark(): number { return note(world.tallies[1]!.gauge(), "kept"); }
+    notes.set(world, []);
+    const handed: unknown = notes;
+    if (mark() !== 1 || note(gauges[1]!, "again") !== 2 || note(world.tallies[1]!, "instance") !== 3 || gauges[0] !== loose)
+        throw new Error("keyed by the instance");
+    if (annotate(world) !== 1 || !gauges[1]!.tight || gauges[1] !== world.tallies[1]) throw new Error("world");
+    if (notes.has(loose) || handed !== notes) throw new Error("loose");
+    `,
+);
+
+check(
+    "weak collections compare, search and key by identity",
+    `
+    interface Owner { id: number }
+    const notes = new WeakMap<object, string[]>();
+    const other = new WeakMap<object, string[]>();
+    const handed: unknown = notes;
+    if (handed !== notes || handed === other || !(notes === notes)) throw new Error("weak map identity");
+    const key: Owner = { id: 1 };
+    notes.set(key, ["a"]);
+    const seen = new WeakSet<Owner>();
+    const seenHanded: unknown = seen;
+    seen.add(key);
+    if (seenHanded !== seen || seen === new WeakSet<Owner>() || !seen.has(key)) throw new Error("weak set identity");
+    const kept = [notes, other];
+    if (kept.indexOf(other) !== 1 || !kept.includes(notes) || kept.lastIndexOf(notes) !== 0 || kept.includes(new WeakMap<object, string[]>()))
+        throw new Error("search");
+    const named = new Map<WeakMap<object, string[]>, string>([[notes, "notes"]]);
+    if (named.get(notes) !== "notes" || named.has(other) || notes.get(key)![0] !== "a") throw new Error("keyed");
+    `,
+);
+
+check(
+    "collections with different element types compare their storage identities",
+    `
+    const a = new WeakMap<object, number>();
+    const b = new WeakMap<object, string>();
+    const unknownA: unknown = a;
+    if (unknownA === b || a !== unknownA) throw new Error("different weak maps");
+    const strong = new Map<object, number>();
+    if (unknownA === strong) throw new Error("weak and strong maps");
+    const numbers = new Set<number>();
+    const strings = new Set<string>();
+    const unknownSet: unknown = numbers;
+    if (unknownSet === strings || unknownSet === a) throw new Error("different collections");
+    const records = new WeakSet<{ id: number }>();
+    const names = new WeakSet<{ name: string }>();
+    const unknownRecords: unknown = records;
+    if (unknownRecords === names || unknownRecords !== records) throw new Error("different weak sets");
+    const list = [a];
+    let index = 2;
+    if (list[index] !== list[index + 1] || list[index] === a) throw new Error("absent maps");
+    `,
+);
+
+check(
+    "loose equality between objects compares identity without coercion",
+    `
+    const notes = new WeakMap<object, string[]>();
+    const other = new WeakMap<object, string[]>();
+    const alias = notes;
+    if (notes == other || notes != alias) throw new Error("weak map identity");
+    const seen = new WeakSet<object>();
+    if (seen != seen || seen == new WeakSet<object>()) throw new Error("weak set identity");
+    const maps = new Map<string, number>();
+    const same = maps;
+    if (maps != same || maps == new Map<string, number>()) throw new Error("map identity");
+    const record = { value: 1 }, sameRecord = record, different = { value: 1 };
+    if (record != sameRecord || record == different) throw new Error("record identity");
+    let calls = 0;
+    function get(): WeakMap<object, string[]> { calls++; return notes; }
+    if (get() != get() || calls !== 2) throw new Error("evaluation order");
+    `,
+);
 
 check(
     "fresh class instances are the only handle of their interface views",
@@ -5126,6 +5405,8 @@ function check(
                 },
             }).outputText,
             {
+                // A source with imports (type-only) transpiles as a module.
+                exports: {},
                 location: { search },
                 URLSearchParams,
                 TextDecoder,
@@ -6638,6 +6919,32 @@ checkInRealm(
 );
 
 checkInRealm(
+    "structured-clone-of-an-interface-view-copies-the-instance",
+    `
+    interface Rec { a: number; b: string }
+    class Tally { constructor(public a: number, public b: string, private c = 3) {} bump(): number { return this.c; } }
+    const rs: Rec[] = [{ a: 1, b: "x" }, new Tally(2, "y")];
+    let out = "";
+    for (const r of rs) { const clone = structuredClone(r); out += JSON.stringify(clone) + Object.keys(clone).join() + ";"; }
+    out += JSON.stringify(structuredClone(rs));
+    if (out !== '{"a":1,"b":"x"}a,b;{"a":2,"b":"y","c":3}a,b,c;[{"a":1,"b":"x"},{"a":2,"b":"y","c":3}]') throw new Error(out);
+    globalThis.close();
+`,
+);
+
+checkInRealm(
+    "structured-clone-of-a-view-copies-own-fields-not-prototype-getters",
+    `
+    interface Flag { readonly on: boolean; }
+    class Switch { count = 0; get on(): boolean { return this.count > 0; } view(): Flag { return this; } }
+    const flags: Flag[] = [{ on: false }, new Switch().view()];
+    const out = flags.map((flag) => JSON.stringify(structuredClone(flag))).join("|");
+    if (out !== '{"on":false}|{"count":0}') throw new Error(out);
+    globalThis.close();
+`,
+);
+
+checkInRealm(
     "structured-clone-rest-records-options-and-errors",
     `
     interface Pose { readonly x: number; readonly yaw: number }
@@ -6687,18 +6994,6 @@ test("structuredClone refuses shapes without a clone codec", () => {
                 "class K { n = 1; } const k = structuredClone(new K()); const n = k.n;",
             ),
         /structuredClone 'value' is an instance of class K/,
-    );
-    // A class's prototype getter is no own property to serialize.
-    assert.throws(
-        () =>
-            compileSource(`
-            interface Flag { readonly on: boolean; }
-            class Switch { count = 0; get on(): boolean { return this.count > 0; } view(): Flag { return this; } }
-            const flags: Flag[] = [{ on: false }, new Switch().view()];
-            const copies = flags.map((flag) => structuredClone(flag));
-            if (copies.length !== 2) throw new Error("copies");
-            `),
-        /Property 'on' is an accessor/,
     );
     for (const options of [
         "{ transfer: [bytes.buffer] }",
@@ -10746,6 +11041,40 @@ check(
         if (\`n\${names[at]}\${names[0]}\` !== "nundefineda") throw new Error("string enum element past the end");
         at = 0;
         if ("t" + tones[at] !== "t1") throw new Error("numeric enum element in range");
+    }
+    main();
+`,
+);
+
+check(
+    "number array reads past the end are undefined to arithmetic, comparisons and tests",
+    `
+    class Slots {
+        private readonly members: number[] = [];
+        add(slot: number): void { this.members[slot] = 1; }
+        has(slot: number): boolean { return this.members[slot]! > 0; }
+    }
+    function main(): void {
+        const slots = new Slots();
+        slots.add(0);
+        if (!slots.has(0) || slots.has(1)) throw new Error("asserted comparison past the end");
+        const values: number[] = [3];
+        const floats = new Float32Array(2);
+        const pair: [number, number] = [1, 2];
+        let at = 2;
+        let text = String(values[at]! + 1) + (values[at]! * 2) + (values[at]! <= 0) + (values[at]! >= 0);
+        text += "," + (values[at]! === 3) + (values[at]! !== 3) + (values[at]! == 3) + -values[at]! + ~values[at]! + (values[at]! | 0) + !values[at]!;
+        text += "," + (values[at]! || 7) + (values[at]! ? "t" : "f") + (floats[at]! < 1) + (floats[at]! + 1) + (pair[at]! > 0) + (pair[at - 1]! + 1);
+        let sum = 1;
+        sum += values[at]!;
+        let bits = 5;
+        bits |= values[at]!;
+        text += "," + sum + bits + (values[0]! + 1);
+        if (values[at]!) throw new Error("truthy past the end");
+        while (values[at]!) throw new Error("a loop test past the end");
+        if (text !== "NaNNaNfalsefalse,falsetruefalseNaN-10true,7ffalseNaNfalse3,NaN54") throw new Error(text);
+        at = 0;
+        if (values[at]! + 1 !== 4 || !(values[at]! > 2)) throw new Error("in range");
     }
     main();
 `,
@@ -15221,12 +15550,6 @@ test("dynamic object and built-in boundaries refuse explicitly", () => {
             /String\.indexOf expects a search string and an optional position/,
         ],
         [
-            `interface M { a?: number; b?: string }
-            const ms: M[] = [{ a: 1 }];
-            console.log(Object.assign({}, ms[0]!));`,
-            /Enumerating a struct with optional properties as a fixed list requires known own keys/,
-        ],
-        [
             `const names = ["a"]; console.log(/^a/m.test(names[0]!));`,
             /Reached RegExp literals support the g, i and u flags, not 'm'/,
         ],
@@ -15234,6 +15557,16 @@ test("dynamic object and built-in boundaries refuse explicitly", () => {
     for (const [source, message] of refusals)
         assert.throws(() => compileSource(source), message);
 });
+
+check(
+    "Object.assign onto a fresh literal copies a struct's optional keys as the run holds them",
+    `
+    interface M { a?: number; b?: string }
+    const ms: M[] = [{ a: 1 }, { b: "x" }, {}];
+    const out = ms.map((m) => JSON.stringify(Object.assign({}, m))).join("|");
+    if (out !== '{"a":1}|{"b":"x"}|{}') throw new Error(out);
+    `,
+);
 
 check(
     "null-defaults-take-null-and-undefined-arguments",
@@ -15908,6 +16241,105 @@ check(
     const house: House = { label: "h" };
     const seeded: House = { label: "s", seed: 2 };
     if (classify[0]!(tower, tower) !== "seed" || classify[0]!(house, house) !== "label" || classify[0]!(seeded, house) !== "label,seed") throw new Error("own keys");
+`,
+);
+
+check(
+    "object-entries-and-values-of-run-time-own-keys-iterate-and-map",
+    `
+    interface Opt { label: string; count: number; detail?: string }
+    const items: Opt[] = [];
+    items.push({ label: "tag", count: 1 });
+    items.push({ label: "tag", count: 2, detail: "extra" });
+    items.push({ label: "u", count: 3, detail: undefined });
+    let seen = "";
+    for (const item of items) {
+        seen += Object.entries(item).map(([k, v]) => k + "=" + v).join("+") + ";";
+        for (const [k, v] of Object.entries(item)) seen += k + ":" + typeof v + ",";
+        seen += Object.values(item).length + "|" + Object.keys(item).join(",") + ";";
+    }
+    if (seen !== "label=tag+count=1;label:string,count:number,2|label,count;label=tag+count=2+detail=extra;label:string,count:number,detail:string,3|label,count,detail;label=u+count=3+detail=undefined;label:string,count:number,detail:undefined,3|label,count,detail;") throw new Error("optional keys " + seen);
+    class Base { label = "tag"; }
+    class Left extends Base { detail = "extra"; }
+    const shapes: Base[] = [];
+    shapes.push(new Base());
+    shapes.push(new Left());
+    let walked = "";
+    for (const shape of shapes) {
+        for (const [k, v] of Object.entries(shape)) walked += k + "=" + v + "+";
+        walked += Object.values(shape).join("+") + ";";
+    }
+    if (walked !== "label=tag+tag;label=tag+detail=extra+tag+extra;") throw new Error("hierarchy keys " + walked);
+`,
+);
+
+check(
+    "a-spread-of-a-class-instance-copies-the-fields-its-own-class-declares",
+    `
+    class Base { a = 1; }
+    class Left extends Base { b = 2; }
+    const items: Base[] = [];
+    items.push(new Base());
+    items.push(new Left());
+    let out = "";
+    for (const item of items) {
+        const copy: Record<string, unknown> = { ...item, z: 9 };
+        out += JSON.stringify(copy) + Object.keys(copy).join() + ";";
+    }
+    if (out !== '{"a":1,"z":9}a,z;{"a":1,"b":2,"z":9}a,b,z;') throw new Error("spread " + out);
+`,
+);
+
+check(
+    "a spread of a base-typed class instance into its own literal keeps the subclass's keys in its class order",
+    `
+    class A { a = 1; }
+    class B extends A { b = 2; c = 5; }
+    class C extends A { c = 3; b = 4; }
+    const items: A[] = [new A(), new B(), new C()];
+    let out = "";
+    for (const item of items) {
+        const copy = { ...item };
+        const more = { ...item, z: 3 };
+        out += JSON.stringify(copy) + Object.keys(copy).join() + "|" + JSON.stringify(more) + copy.a + ";";
+    }
+    const want = '{"a":1}a|{"a":1,"z":3}1;{"a":1,"b":2,"c":5}a,b,c|{"a":1,"b":2,"c":5,"z":3}1;{"a":1,"c":3,"b":4}a,c,b|{"a":1,"c":3,"b":4,"z":3}1;';
+    if (out !== want) throw new Error(out);
+`,
+);
+
+check(
+    "class-hierarchy-instances-list-their-keys-in-their-own-class-order",
+    `
+    class A { a = 1; }
+    class B extends A { b = 2; }
+    class C extends A { c = 3; b = 4; }
+    const agreed: A[] = [new B(), new C()];
+    if (JSON.stringify(agreed) !== '[{"a":1,"b":2},{"a":1,"c":3,"b":4}]') throw new Error("agreed order " + JSON.stringify(agreed));
+    class P { p = 0; }
+    class Q extends P { x = 1; y = 2; }
+    class R extends P { y = 3; x = 4; }
+    const items: P[] = [new Q(), new R(), new P()];
+    let out = JSON.stringify(items) + ";";
+    for (const item of items) {
+        out += Object.keys(item).join() + "|";
+        for (const key in item) out += key;
+        out += "|" + Object.entries(item).map(([k, v]) => k + v).join() + "|" + Object.values(item).join();
+        const copy: Record<string, unknown> = { ...item, z: 9 };
+        out += "|" + JSON.stringify(copy) + ";";
+    }
+    if (out !== '[{"p":0,"x":1,"y":2},{"p":0,"y":3,"x":4},{"p":0}];p,x,y|pxy|p0,x1,y2|0,1,2|{"p":0,"x":1,"y":2,"z":9};p,y,x|pyx|p0,y3,x4|0,3,4|{"p":0,"y":3,"x":4,"z":9};p|p|p0|0|{"p":0,"z":9};') throw new Error("class orders " + out);
+    const boxed: unknown[] = [JSON.parse("7")];
+    boxed.push(new Q());
+    boxed.push(new R());
+    let viewed = "";
+    for (const value of boxed) {
+        const record = value as Record<string, unknown>;
+        viewed += Object.keys(record).join() + "|";
+        for (const key in record) viewed += key;
+        viewed += "|" + JSON.stringify(value) + ";";
+    }
+    if (viewed !== '||7;p,x,y|pxy|{"p":0,"x":1,"y":2};p,y,x|pyx|{"p":0,"y":3,"x":4};') throw new Error("views " + viewed);
 `,
 );
 
@@ -18093,6 +18525,38 @@ check(
         commit: (result) => { if (result === undefined) committed++; },
     });
     if (done !== undefined || committed !== 1) throw new Error("generic undefined result");
+`,
+);
+
+check(
+    "a-declaration-initialized-by-a-call-that-always-throws-throws-there",
+    `
+    interface Shape { kind: string; size: number }
+    function need(x: Shape | undefined, check: (s: Shape) => boolean): Shape {
+        if (!x || !check(x)) throw new Error("need");
+        return x;
+    }
+    function pick<T extends { kind: string }>(x: T | undefined, kind: string): T {
+        if (!x || x.kind !== kind) throw new Error("pick " + kind);
+        return x;
+    }
+    let after = 0, caught = "";
+    try {
+        const shape = need(undefined, (s) => s.kind === "box");
+        after += shape.size;
+    } catch (error) {
+        caught = error instanceof Error ? error.message : "other";
+    }
+    if (caught !== "need" || after !== 0) throw new Error("checked helper " + caught);
+    try {
+        let first = 1, shape = pick<Shape>(undefined, "box"), last = 2;
+        after += shape.size + first + last;
+    } catch (error) {
+        caught = error instanceof Error ? error.message : "other";
+    }
+    if (caught !== "pick box" || after !== 0) throw new Error("generic helper " + caught);
+    const valid = need({ kind: "box", size: 3 }, (s) => s.kind === "box");
+    if (valid.size !== 3 || pick<Shape>(valid, "box") !== valid) throw new Error("valid configuration");
 `,
 );
 
@@ -21592,6 +22056,61 @@ check(
     function run(): string { const R: Record<string, number> = { a: 1 }; const extra = { c: 3 }; Object.assign(R, { a: 5, b: 2 }, extra); return Object.keys(R).join() + ":" + R["a"] + R["b"] + R["c"]; }
     function same(): number { const R: Record<string, number> = { a: 1 }; const result = Object.assign(R, { b: 2 }); result["c"] = 3; return Object.keys(R).length; }
     if (run() !== "a,b,c:523" || same() !== 3) throw new Error("assign " + run() + same());
+    `,
+);
+check(
+    "Object.assign into a Record copies a source's optional and class-ordered keys as the run holds them",
+    `
+    class A { a = 1; }
+    class B extends A { b = 2; c = 5; }
+    class C extends A { c = 3; b = 4; }
+    const items: A[] = [new A(), new B(), new C()];
+    let out = "";
+    for (const item of items) {
+        const target: Record<string, number> = { z: 0 };
+        Object.assign(target, item);
+        out += JSON.stringify(target) + ";";
+    }
+    interface Opt { a: number; b?: number; }
+    const opts: Opt[] = [{ a: 1 }, { a: 2, b: 3 }];
+    for (const opt of opts) {
+        const target: Record<string, number> = {};
+        Object.assign(target, opt);
+        out += Object.keys(target).join() + "=" + Object.values(target).join() + ";";
+    }
+    const want = '{"z":0,"a":1};{"z":0,"a":1,"b":2,"c":5};{"z":0,"a":1,"c":3,"b":4};a=1;a,b=2,3;';
+    if (out !== want) throw new Error(out);
+    `,
+);
+check(
+    "Object.keys, Object.entries and for-in enumerate an unknown element as the member it holds",
+    `
+    const boxed: unknown[] = [];
+    boxed.push({ a: 1, b: 2 });
+    boxed.push(7);
+    boxed.push("xy");
+    let out = "";
+    for (const value of boxed) {
+        const record = value as Record<string, unknown>;
+        out += Object.keys(value as object).join() + "|" + Object.keys(record).join() + "|";
+        for (const key in value as object) out += key;
+        for (const key in record) out += key;
+        out += "|" + Object.entries(record).map(([key, item]) => key + "=" + String(item)).join() + ";";
+    }
+    if (out !== "a,b|a,b|abab|a=1,b=2;|||;0,1|0,1|0101|0=x,1=y;") throw new Error(out);
+    `,
+);
+check(
+    "for-in walks no keys of a null or undefined document",
+    `
+    const docs: unknown[] = JSON.parse('[{"a":1},null,3,"xy"]');
+    docs.push(undefined);
+    let out = "";
+    for (const doc of docs) {
+        for (const key in doc as object) out += key;
+        out += ";";
+    }
+    if (out !== "a;;;01;;") throw new Error(out);
     `,
 );
 check(

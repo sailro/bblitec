@@ -76,7 +76,9 @@ test("represented initializer storage refuses writes outside its retained elemen
 test("an array annotated with a represented union stores each of its arms", (t) => {
     const result = compileSource(`
         const values: (ArrayBuffer | MessagePort | number)[] = [new ArrayBuffer(1)];
-        if (values.push(3) !== 2 || typeof values[1] !== "number" || (values[1] as number) !== 3)
+        if (values.push(3) !== 2 || values[1] !== 3 || values[0] === 3)
+            throw new Error("union arms compare with a number");
+        if (typeof values[1] !== "number" || (values[1] as number) !== 3)
             throw new Error("pushed number");
         if (typeof values[0] !== "object" || (values[0] as ArrayBuffer).byteLength !== 1)
             throw new Error("initial buffer");

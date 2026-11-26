@@ -1,5 +1,5 @@
 import { writable } from "./emission-transaction.js";
-import { knownCondition, presentCopy } from "./values/model.js";
+import { knownCondition, presentCopy, valueDataType } from "./values/model.js";
 import {
     compileShaderMaterialViewDefinitions,
     nativeShaderViewRevision,
@@ -116,7 +116,6 @@ type ObjectStaticContext = Pick<
     | "storageTakenDuringAttempt"
     | "program"
     | "evaluationOrder"
-    | "refuseBorrowedPlatformEventEscape"
     | "useNativeValue"
     | "resolveRecordValue"
     | "unwrap"
@@ -297,7 +296,8 @@ export function structOwnEntries(
         context.dataTypes.structField(dataType.name, accessor.sourceName, node);
     // The union arms the checker narrowed a spread operand to decide the
     // keys the record's tags would: own where every arm declares the key
-    // present, absent where none declares it.
+    // present, absent where none declares it. An instance's class tag is
+    // its own: a value typed as a class may be of any class extending it.
     const arms =
         ts.isSpreadAssignment(node) || ts.isSpreadElement(node)
             ? unionMembers(context.checker.getTypeAtLocation(node.expression))
@@ -305,7 +305,11 @@ export function structOwnEntries(
     const armPresence = (
         field: DataStructField,
     ): "present" | "absent" | undefined => {
-        if (!arms || !context.dataTypes.presenceByTags(dataType.name, field))
+        if (
+            !arms ||
+            field.ownForClassTags !== undefined ||
+            !context.dataTypes.presenceByTags(dataType.name, field)
+        )
             return undefined;
         const declared = arms.map((arm) =>
             context.checker.getPropertyOfType(arm, field.sourceName),
@@ -423,15 +427,18 @@ export function ownEntries(
  * The own keys, values or `[key, value]` entries of a compile-time record
  * or a struct as a fresh array, built at run time so a key joins it only
  * while it is own. Undefined when every key is known (a fixed list).
+ * Without a `resultType` (the checker types the values `any`), the values
+ * share the lane their own storages join to (`ownedArrayType`); a view's
+ * are the documents of the instance it stands for (`viewedDocument`).
  */
 export function ownArray(
     context: OwnEntryContext &
         Pick<
             ObjectStaticContext,
-            "cppString" | "captureEmittedLines" | "reachJsData"
+            "cppString" | "captureEmittedLines" | "reachJsData" | "reachJson"
         >,
     owner: Value,
-    resultType: DataType<"vector">,
+    resultType: DataType<"vector"> | undefined,
     projection: "keys" | "values" | "entries",
     node: ts.Node,
 ): Value | undefined {
@@ -458,41 +465,119 @@ export function ownArray(
         node,
     )!;
     context.reachJsData();
-    const element = resultType.element;
-    const pushes: string[] = [];
+    const access = struct
+        ? context.dataTypes.memberAccess(owner.dataType.name)
+        : "";
+    // A view lists the keys and values of the instance it stands for.
+    const view =
+        struct &&
+        context.dataTypes.viewedDocument(
+            owner.dataType.name,
+            `own_owner${access}`,
+            node,
+        );
+    if (view) context.reachJson();
+    const document: DataType = { kind: "json" };
+    const arrayType =
+        resultType ??
+        ownArrayType(
+            context,
+            view
+                ? [document]
+                : entries.map(
+                      ({ key, value }) =>
+                          valueDataType(value) ??
+                          context.fail(
+                              node,
+                              `Enumerating own property '${key}' as an array element requires a stored value.`,
+                          ),
+                  ),
+            projection,
+        );
+    const element = arrayType.element;
+    const push = (keyValue: Value, value: Value): string => {
+        const projected: Value =
+            projection === "keys"
+                ? keyValue
+                : projection === "values"
+                  ? value
+                  : {
+                        kind: "tuple",
+                        cpp: "",
+                        tupleElements: [keyValue, value],
+                    };
+        return `own.push_back(${context.dataLowerer.compileKnownValueForSink(projected, element, node)});`;
+    };
+    const pushes = new Map<OwnEntry, string>();
+    let viewed = "";
     const emitted = context.captureEmittedLines(() => {
-        for (const { key, value, presence } of entries) {
-            const keyValue = staticStringValue(key, (text) =>
-                context.cppString(text),
+        for (const entry of entries) {
+            const pushed = push(
+                staticStringValue(entry.key, (text) => context.cppString(text)),
+                entry.value,
             );
-            const projected: Value =
-                projection === "keys"
-                    ? keyValue
-                    : projection === "values"
-                      ? value
-                      : {
-                            kind: "tuple",
-                            cpp: "",
-                            tupleElements: [keyValue, value],
-                        };
-            const push = `own.push_back(${context.dataLowerer.compileKnownValueForSink(projected, element, node)});`;
-            pushes.push(presence ? `if (${presence.ownCpp}) ${push}` : push);
+            pushes.set(
+                entry,
+                entry.presence
+                    ? `if (${entry.presence.ownCpp}) ${pushed}`
+                    : pushed,
+            );
         }
+        if (view)
+            viewed = `if (${view.viewCpp}) { const auto own_document = ${view.documentCpp}; for (const std::string& own_key : own_document.own_keys()) ${push(
+                context.dataLowerer.leafValue("own_key", { kind: "string" }),
+                context.dataLowerer.leafValue(
+                    "own_document.get(own_key)",
+                    document,
+                ),
+            )} return own; } `;
     });
     if (emitted.length > 0)
         context.fail(
             node,
             `A ${struct ? "struct" : "record"}'s own properties enumerate as an array when each value converts to its element in place.`,
         );
-    const build = `${context.dataTypes.cppType(resultType)} own; ${pushes.join(" ")} return own;`;
+    const pushed = (ordered: readonly OwnEntry[]): string =>
+        ordered.map((entry) => pushes.get(entry)!).join(" ");
+    const build = `${context.dataTypes.cppType(arrayType)} own; ${viewed}${
+        struct
+            ? context.dataTypes.classOrderedStatements(
+                  owner.dataType.name,
+                  `own_owner${access}`,
+                  entries,
+                  (entry) => entry.key,
+                  pushed,
+              )
+            : pushed(entries)
+    } return own;`;
     return {
         kind: "data",
         cpp: struct
             ? `[](const auto& own_owner) { ${build} }(${owner.cpp})`
             : `[&]() { ${build} }()`,
-        dataType: resultType,
+        dataType: arrayType,
         freshData: true,
     };
+}
+
+/** The array an own-property projection of values of `values` stores: they share one lane. */
+function ownArrayType(
+    context: OwnEntryContext,
+    values: readonly DataType[],
+    projection: "keys" | "values" | "entries",
+): DataType<"vector"> {
+    if (projection === "keys")
+        return { kind: "vector", element: { kind: "string" } };
+    const lane = context.dataTypes.ownedArrayType([...values]);
+    return projection === "values"
+        ? lane
+        : {
+              kind: "vector",
+              element: context.dataTypes.tupleStorage([
+                  { kind: "string" },
+                  lane.element,
+              ]),
+          };
 }
 
 /**
@@ -505,14 +590,40 @@ function fixedOwnEntries(
     node: ts.Node,
 ): Array<[string, Value]> | undefined {
     const entries = ownEntries(context, owner, node);
-    if (entries?.some((entry) => entry.presence !== undefined))
-        context.fail(
-            node,
-            owner.kind === "record"
-                ? "Enumerating a record whose keys a conditional spread decides as a fixed list requires known own keys; its keys and values enumerate as arrays."
-                : "Enumerating a struct with optional properties as a fixed list requires known own keys; its keys and values enumerate as arrays.",
-        );
+    const unfixed = entries && unfixedOwnKeys(context, owner, entries, node);
+    if (unfixed) context.fail(node, unfixedOwnKeysRefusals[unfixed]);
     return entries?.map(({ key, value }) => [key, value]);
+}
+
+/** Why a fixed list refuses own keys (`unfixedOwnKeys`). */
+const unfixedOwnKeysRefusals = {
+    spread: "Enumerating a record whose keys a conditional spread decides as a fixed list requires known own keys; its keys and values enumerate as arrays.",
+    presence:
+        "Enumerating a struct with optional properties as a fixed list requires known own keys; its keys and values enumerate as arrays.",
+    view: "Enumerating a record that may be a class instance's view as a fixed list requires the instance's keys; its keys and values enumerate as arrays.",
+    order: "Enumerating a class hierarchy instance whose classes create their keys in different orders as a fixed list requires one order; its keys and values enumerate as arrays.",
+} as const;
+
+/**
+ * What may make `owner`'s own `entries` differ between runs: a record
+ * member a conditional spread writes, a struct property that may be absent,
+ * the instance a view stands for, or its classes' key orders. Undefined
+ * where they are the same keys on every run.
+ */
+function unfixedOwnKeys(
+    context: OwnEntryContext,
+    owner: Value,
+    entries: readonly OwnEntry[],
+    node: ts.Node,
+): keyof typeof unfixedOwnKeysRefusals | undefined {
+    if (entries.some((entry) => entry.presence !== undefined))
+        return owner.kind === "record" ? "spread" : "presence";
+    if (ownKeysKnown(context, owner, node)) return undefined;
+    if (owner.kind === "record") return "spread";
+    return owner.dataType?.kind === "struct" &&
+        context.dataTypes.viewsInstances(owner.dataType.name)
+        ? "view"
+        : "order";
 }
 
 /** Common own-property projection for Object keys, values, entries and assign. */
@@ -715,13 +826,15 @@ function compileObjectEntries(
 ): Value {
     context.expectArgumentCount(call, 1, 1);
     const raw = context.compileValue(argumentAt(call, 0));
-    const owner =
+    const owner = context.dataLowerer.nativeUnionDocument(
         raw.kind === "data"
             ? context.dataLowerer.narrowOptional(raw, argumentAt(call, 0))
-            : raw;
+            : raw,
+        call,
+    );
     const resultType = context.dataLowerer.dataTypeAt(call);
     const array =
-        resultType?.kind === "vector"
+        resultType === undefined || resultType.kind === "vector"
             ? ownArray(context, owner, resultType, "entries", call)
             : undefined;
     if (array) return array;
@@ -866,13 +979,62 @@ function compileObjectAssign(
         context.fail(call, "Object.assign takes a target and its sources.");
     }
     const targetExpression = context.unwrap(argumentAt(call, 0));
+    const sources = call.arguments.slice(1);
+    // A source whose own keys only the run decides (a document, an optional
+    // property, a class instance's view) onto a fresh literal: the literal
+    // is built as the call's record type, each source spread onto it, or
+    // as the document that type is.
+    let document: Value | undefined;
+    if (
+        ts.isObjectLiteralExpression(targetExpression) &&
+        !targetExpression.properties.some(ts.isAccessor) &&
+        context.probeEmission(() =>
+            sources.some((source) => {
+                const value = context.compileValue(source);
+                if (isJsonValue(value)) return true;
+                const entries = ownEntries(context, value, source);
+                return (
+                    entries !== undefined &&
+                    unfixedOwnKeys(context, value, entries, source) !==
+                        undefined
+                );
+            }),
+        )
+    ) {
+        const stored = context.dataTypes.fromStoredTsType(
+            context.checker.getTypeAtLocation(call),
+            call,
+        );
+        if (stored?.kind === "json")
+            document = context.dataLowerer.leafValue(
+                context.dataLowerer.compileForSink(targetExpression, stored),
+                stored,
+            );
+        else if (stored?.kind !== "struct")
+            return context.fail(
+                call,
+                "Object.assign onto a literal from a source whose own keys the run decides requires a record type for its result.",
+            );
+        else {
+            const cpp = context.allocateTemporaryCppName("assigned");
+            context.dataLowerer.emitSpreadStructDeclaration(
+                cpp,
+                targetExpression,
+                stored,
+                sources,
+            );
+            context.dataLowerer.registerLocal(cpp, "owned");
+            return context.dataLowerer.leafValue(cpp, stored);
+        }
+    }
     // A bound record is written in place, so its later reads see the
     // stores; reading it as a value would write into a copy.
     let target =
+        document ??
         context.probeEmission(() =>
             context.resolveRecordValue(targetExpression),
-        ) ?? context.compileValue(targetExpression);
-    const sources = call.arguments.slice(1);
+        ) ??
+        context.compileValue(targetExpression);
     // A function given properties is a callable record: a fresh record
     // whose call is that function, filled below as a struct target is. It
     // is built as the callable type its result is stored as, when it has
@@ -952,21 +1114,6 @@ function compileObjectAssign(
                   ]),
               ]
             : pairs;
-    };
-    // An existing target keeps what it receives, as a field store does.
-    const sourcePairs = (
-        source: ts.Expression,
-        value?: Value,
-    ): Array<[string, Value]> => {
-        const pairs = readPairs(source, value, true);
-        if (!fresh)
-            for (const [, value] of pairs)
-                context.refuseBorrowedPlatformEventEscape(
-                    value,
-                    source,
-                    "Object.assign",
-                );
-        return pairs;
     };
     if (isJsonValue(target)) {
         const owner = context.bindings.pinValueToTemporary(
@@ -1067,7 +1214,7 @@ function compileObjectAssign(
             : target;
         const properties = (writable(result).recordProperties ??= {});
         for (const source of sources) {
-            for (const [key, value] of sourcePairs(source)) {
+            for (const [key, value] of readPairs(source, undefined, true)) {
                 const existing = properties[key];
                 // A property with native storage takes the store there; the
                 // record then reads its storage rather than a folded value.
@@ -1141,7 +1288,7 @@ function compileObjectAssign(
                 );
                 return;
             }
-            for (const [key, value] of sourcePairs(source, sourceValue)) {
+            for (const [key, value] of readPairs(source, sourceValue, true)) {
                 const field = context.dataTypes.structField(
                     structType.name,
                     key,
@@ -1206,10 +1353,23 @@ function compileObjectAssign(
             ),
         );
         sources.forEach((source, index) => {
-            for (const [key, value] of sourcePairs(source, values[index]))
+            const value = values[index]!;
+            // A struct's optional and class-ordered keys are copied as
+            // the run holds them, as a spread copies them.
+            if (
+                value.kind === "data" &&
+                context.dataLowerer.copyOwnEntriesInto(
+                    owner.cpp,
+                    mapType,
+                    value,
+                    source,
+                )
+            )
+                return;
+            for (const [key, pair] of readPairs(source, value, true))
                 context.emit({
                     kind: "expression",
-                    code: `${owner.cpp}.set(${context.cppString(key)}, ${context.dataLowerer.compileKnownValueForSink(value, mapType.value, source)});`,
+                    code: `${owner.cpp}.set(${context.cppString(key)}, ${context.dataLowerer.compileKnownValueForSink(pair, mapType.value, source)});`,
                 });
         });
         return owner;
@@ -1231,7 +1391,7 @@ function compileObjectAssign(
         );
         const ownerType = context.checker.getTypeAtLocation(targetExpression);
         sources.forEach((source, index) => {
-            for (const [key, value] of sourcePairs(source, values[index]))
+            for (const [key, value] of readPairs(source, values[index], true))
                 storeLoweredRecordProperty(
                     context,
                     owner,
@@ -1797,10 +1957,6 @@ function definitionAccessor(
             false,
             ts.isArrowFunction(callback) ? undefined : target,
         );
-    context.bindings.refuseEscapingPlatformEventCapturesIn(
-        callback,
-        context.bindings.variableScopes.length,
-    );
     context.callbacks.hoistForwardCallbackBindings(callback, true);
     const receiverType: DataType<"struct"> = {
         kind: "struct",

@@ -2612,6 +2612,8 @@ export interface ValueFields {
     storedEngineCpp?: string;
     /** Stored engine/handle pair; cpp reads its raw handle member. */
     resourceStorageCpp?: string;
+    /** Stored event reference (`EventRef`, `BaseEventRef`); cpp reads its payload. */
+    eventStorageCpp?: string;
     /** Stored parameter whose reached owner use can request an owning carrier. */
     engineOwnerParameter?: ts.ParameterDeclaration;
     /** Joined from resources of different engine carriers; its engine is the one unambiguous engine context. */
@@ -3111,7 +3113,7 @@ export interface ValueFields {
     /** Storage behind a nullable resource value whose `cpp` is its dereference. */
     optionalStorageCpp?: string;
     /**
-     * The borrowed DOM Event base view. It reuses the mouse-event Value kind so
+     * The DOM Event base view. It reuses the mouse-event Value kind so
      * preventDefault follows the existing path, but exposes no typed mouse
      * fields through an unsafe assertion.
      */

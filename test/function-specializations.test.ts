@@ -4,7 +4,13 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { FunctionSpecializations } from "../src/compiler/function-specializations.js";
+import { runSelfCheckingProgram } from "./self-checking-program.js";
+import ts from "typescript";
+import {
+    FunctionSpecializations,
+    type FunctionEmissionScope,
+    type SpecializationReads,
+} from "../src/compiler/function-specializations.js";
 import {
     EmissionTransaction,
     writable,
@@ -216,50 +222,53 @@ test("recursive specializations share bodies within their native scope", () => {
 
 test("specialization snapshots distinguish changed facts, aliases and scopes", () => {
     const cache = new FunctionSpecializations<string>();
+    const reads = programReads("export {};").reads;
+    const keyOf = (scope: FunctionEmissionScope, values: unknown[]) =>
+        cache.key(scope, values, reads);
     const scope = { lexical: {}, emission: 0, block: 0, continuation: -1 };
     const metadata = { kind: "mesh", cpp: "mesh", sceneMeshIndex: 1 };
-    const before = cache.key(scope, [metadata]);
-    assert.equal(before, cache.key(scope, [{ ...metadata }]));
+    const before = keyOf(scope, [metadata]);
+    assert.equal(before, keyOf(scope, [{ ...metadata }]));
     metadata.sceneMeshIndex = 2;
-    assert.notEqual(before, cache.key(scope, [metadata]));
+    assert.notEqual(before, keyOf(scope, [metadata]));
     assert.notEqual(
-        cache.key(scope, [metadata]),
-        cache.key({ ...scope, emission: 1 }, [metadata]),
+        keyOf(scope, [metadata]),
+        keyOf({ ...scope, emission: 1 }, [metadata]),
     );
     assert.notEqual(
-        cache.key(scope, [metadata]),
-        cache.key({ ...scope, block: 1 }, [metadata]),
+        keyOf(scope, [metadata]),
+        keyOf({ ...scope, block: 1 }, [metadata]),
     );
     assert.notEqual(
-        cache.key(scope, [metadata]),
-        cache.key({ ...scope, continuation: 1 }, [metadata]),
+        keyOf(scope, [metadata]),
+        keyOf({ ...scope, continuation: 1 }, [metadata]),
     );
     assert.notEqual(
-        cache.key(scope, [metadata, metadata]),
-        cache.key(scope, [metadata, { ...metadata }]),
+        keyOf(scope, [metadata, metadata]),
+        keyOf(scope, [metadata, { ...metadata }]),
     );
-    assert.notEqual(cache.key(scope, [0]), cache.key(scope, [-0]));
+    assert.notEqual(keyOf(scope, [0]), keyOf(scope, [-0]));
     assert.notEqual(
-        cache.key(scope, [Symbol("same")]),
-        cache.key(scope, [Symbol("same")]),
+        keyOf(scope, [Symbol("same")]),
+        keyOf(scope, [Symbol("same")]),
     );
     assert.notEqual(
-        cache.key(scope, [new Uint8Array([1])]),
-        cache.key(scope, [new Int8Array([1])]),
+        keyOf(scope, [new Uint8Array([1])]),
+        keyOf(scope, [new Int8Array([1])]),
     );
     const buffer = new Uint8Array([1]).buffer;
-    const original = cache.key(scope, [buffer]);
+    const original = keyOf(scope, [buffer]);
     new Uint8Array(buffer)[0] = 2;
-    assert.notEqual(original, cache.key(scope, [buffer]));
+    assert.notEqual(original, keyOf(scope, [buffer]));
     const key = Symbol("metadata");
-    assert.notEqual(
-        cache.key(scope, [{ [key]: 1 }]),
-        cache.key(scope, [{ [key]: 2 }]),
-    );
+    assert.notEqual(keyOf(scope, [{ [key]: 1 }]), keyOf(scope, [{ [key]: 2 }]));
 });
 
 test("specialization schemas preserve descriptors, cycles, sparse arrays and rollback", () => {
     const cache = new FunctionSpecializations<string>();
+    const reads = programReads("export {};").reads;
+    const keyOf = (scope: FunctionEmissionScope, values: unknown[]) =>
+        cache.key(scope, values, reads);
     const scope = { lexical: {}, emission: 0, block: 0, continuation: -1 };
     let calls = 0;
     const getter = () => {
@@ -272,7 +281,7 @@ test("specialization schemas preserve descriptors, cycles, sparse arrays and rol
         configurable: true,
     });
     metadata.self = metadata;
-    const original = cache.key(scope, [metadata]);
+    const original = keyOf(scope, [metadata]);
     const equivalent: Record<string | symbol, unknown> = {};
     equivalent.self = equivalent;
     Object.defineProperty(equivalent, "computed", {
@@ -280,37 +289,37 @@ test("specialization schemas preserve descriptors, cycles, sparse arrays and rol
         configurable: true,
     });
     equivalent.value = 1;
-    assert.equal(cache.key(scope, [equivalent]), original);
+    assert.equal(keyOf(scope, [equivalent]), original);
     assert.equal(calls, 0);
     new EmissionTransaction().run(() => {
         writable(metadata).value = 2;
         writable(metadata).extra = metadata;
         writable(metadata)[Symbol("temporary")] = 3;
-        assert.notEqual(cache.key(scope, [metadata]), original);
+        assert.notEqual(keyOf(scope, [metadata]), original);
         return false;
     }, Boolean);
-    assert.equal(cache.key(scope, [metadata]), original);
+    assert.equal(keyOf(scope, [metadata]), original);
     Object.defineProperty(metadata, "computed", {
         get: () => 4,
         configurable: true,
     });
-    assert.notEqual(cache.key(scope, [metadata]), original);
+    assert.notEqual(keyOf(scope, [metadata]), original);
     assert.equal(calls, 0);
     const sparse: unknown[] = [];
     sparse.length = 2;
     sparse[1] = undefined;
     assert.notEqual(
-        cache.key(scope, [sparse]),
-        cache.key(scope, [[undefined, undefined]]),
+        keyOf(scope, [sparse]),
+        keyOf(scope, [[undefined, undefined]]),
     );
     assert.notEqual(
-        cache.key(scope, [
+        keyOf(scope, [
             new Map([
                 ["a", metadata],
                 ["b", equivalent],
             ]),
         ]),
-        cache.key(scope, [
+        keyOf(scope, [
             new Map([
                 ["b", equivalent],
                 ["a", metadata],
@@ -318,9 +327,134 @@ test("specialization schemas preserve descriptors, cycles, sparse arrays and rol
         ]),
     );
     assert.equal(
-        cache.key(scope, [{ b: [1, true], a: "x" }]),
+        keyOf(scope, [{ b: [1, true], a: "x" }]),
         '0:0:0:-1:[{string:"a":string:"x",string:"b":[number:1,boolean:true]}]',
     );
+});
+
+/** A checked program of one source file, and its top-level declarations by name. */
+function programReads(source: string): {
+    reads: SpecializationReads;
+    declared: (name: string) => { node: ts.Node; symbol: ts.Symbol };
+} {
+    const options: ts.CompilerOptions = {
+        target: ts.ScriptTarget.ES2022,
+        strict: true,
+        noEmit: true,
+    };
+    const host = ts.createCompilerHost(options, true);
+    const file = ts.createSourceFile("input.ts", source, options.target!, true);
+    const read = host.getSourceFile.bind(host);
+    host.getSourceFile = (path, ...rest) =>
+        path === "input.ts" ? file : read(path, ...rest);
+    const program = ts.createProgram(["input.ts"], options, host);
+    const checker = program.getTypeChecker();
+    const declared = (name: string) => {
+        const declaration = file.statements
+            .flatMap((statement) =>
+                ts.isVariableStatement(statement)
+                    ? statement.declarationList.declarations
+                    : [],
+            )
+            .find(
+                (candidate) =>
+                    ts.isIdentifier(candidate.name) &&
+                    candidate.name.text === name,
+            )!;
+        return {
+            node: declaration.initializer!,
+            symbol: checker.getSymbolAtLocation(declaration.name)!,
+        };
+    };
+    return { reads: { checker, program }, declared };
+}
+
+test("a callback's captured scopes key only the bindings its code may read", () => {
+    const { reads, declared } = programReads(`
+        let counter = 0;
+        let other = 0;
+        let dispatched = 0;
+        function helper(): number { return counter; }
+        interface Runner { run(): number }
+        class Timed implements Runner { run(): number { return dispatched; } }
+        export const direct = () => counter;
+        export const transitive = () => helper();
+        export const viaInterface = (runner: Runner) => runner.run();
+        export const dynamic = (runner: any, name: string) => runner[name]();
+        export const timed = new Timed();
+    `);
+    const cache = new FunctionSpecializations<string>();
+    const scope = { lexical: {}, emission: 0, block: 0, continuation: -1 };
+    const number = (cpp: string, staticNumber: number) => ({
+        value: { kind: "number", cpp, staticNumber },
+    });
+    const symbols = ["counter", "other", "dispatched"].map(
+        (name) => declared(name).symbol,
+    );
+    const key = (callback: string, bindings: Map<ts.Symbol, unknown>): string =>
+        cache.key(
+            scope,
+            [
+                {
+                    kind: "callback",
+                    cpp: "",
+                    callbackDeclaration: declared(callback).node,
+                    callbackRecordOwner: {
+                        kind: "record",
+                        cpp: "",
+                        recordScopes: [bindings],
+                    },
+                },
+            ],
+            reads,
+        );
+    const scopeOf = (counter: number, other: number, dispatched: number) =>
+        new Map<ts.Symbol, unknown>([
+            [symbols[0]!, number("counter", counter)],
+            [symbols[1]!, number("other", other)],
+            [symbols[2]!, number("dispatched", dispatched)],
+        ]);
+    for (const callback of ["direct", "transitive", "viaInterface"]) {
+        assert.equal(
+            key(callback, scopeOf(1, 1, 1)),
+            key(callback, scopeOf(1, 2, 1)),
+            `${callback}: an unread binding`,
+        );
+    }
+    // Read directly, through a called function, through dispatch.
+    assert.notEqual(
+        key("direct", scopeOf(1, 1, 1)),
+        key("direct", scopeOf(2, 1, 1)),
+    );
+    assert.notEqual(
+        key("transitive", scopeOf(1, 1, 1)),
+        key("transitive", scopeOf(2, 1, 1)),
+    );
+    assert.notEqual(
+        key("viaInterface", scopeOf(1, 1, 1)),
+        key("viaInterface", scopeOf(1, 1, 2)),
+    );
+    // A run-time key on a value that may be a class instance keeps it all.
+    assert.notEqual(
+        key("dynamic", scopeOf(1, 1, 1)),
+        key("dynamic", scopeOf(1, 2, 1)),
+    );
+    // A binding declared later in a live scope leaves the key alone.
+    const growing = scopeOf(1, 1, 1);
+    const before = key("direct", growing);
+    growing.set(declared("timed").symbol, number("timed", 0));
+    assert.equal(key("direct", growing), before);
+    // An unread binding aliasing a read value keeps the alias topology.
+    const value = { kind: "number", cpp: "counter", staticNumber: 1 };
+    const aliased = new Map<ts.Symbol, unknown>([
+        [symbols[0]!, { value }],
+        [symbols[1]!, { value }],
+    ]);
+    const distinct = new Map<ts.Symbol, unknown>([
+        [symbols[0]!, { value }],
+        [symbols[1]!, number("other", 1)],
+    ]);
+    assert.notEqual(key("direct", aliased), key("direct", distinct));
 });
 
 test("escaping recursive groups share their traced callable within one scope", () => {
@@ -341,6 +475,40 @@ test("escaping recursive groups share their traced callable within one scope", (
         result.cpp.match(/make_gc_shared<bbl::js::Callback<void\(\)>>/g)
             ?.length,
         1,
+    );
+});
+
+test("a callback's group, keyed by its enclosing invocation's locals, leaves a parameter's record to its caller", async (t) => {
+    // The `map` callback reads `record` and `path` of the `canonical` call
+    // it is created in, so each invocation keys its own group. An inlined
+    // call's local alias of the record its parameter holds is no owner:
+    // storage demanded for it would hold every other specialization's
+    // document too.
+    const canonical = `
+        function canonical(value: unknown, path = "root"): string {
+            if (typeof value !== "object" || value === null) return JSON.stringify(value);
+            if (Array.isArray(value)) return \`[\${value.map((item, index) => canonical(item, \`\${path}[\${index}]\`)).join(",")}]\`;
+            const record = value as Record<string, unknown>;
+            return \`{\${Object.keys(record).sort().map((key) => \`\${JSON.stringify(key)}:\${canonical(record[key], \`\${path}.\${key}\`)}\`).join(",")}}\`;
+        }
+    `;
+    const written = `
+        const written = canonical({ z: 1, y: [true, "t"] });
+        if (written !== '{"y":[true,"t"],"z":1}') throw new Error(written);
+    `;
+    const parsed = `
+        const parsed = canonical(JSON.parse('{"b":[1,{"c":null}],"a":"x"}'));
+        if (parsed !== '{"a":"x","b":[1,{"c":null}]}') throw new Error(parsed);
+    `;
+    await runSelfCheckingProgram(
+        t,
+        "function-specializations/parameter-record-written",
+        canonical + written,
+    );
+    await runSelfCheckingProgram(
+        t,
+        "function-specializations/parameter-record-parsed-first",
+        canonical + parsed + written,
     );
 });
 

@@ -1,4 +1,4 @@
-import { basename, resolve } from "node:path";
+import { basename, dirname, relative, resolve, sep } from "node:path";
 import ts from "typescript";
 import { compilerRepositoryRoot } from "../repository-root.js";
 import {
@@ -34,8 +34,9 @@ export const babylonPackages = ["babylon-lite", "@babylonjs/lite"] as const;
 /** The declaration files every compiler program reads a package's API from. */
 interface CompilerPackageTypings {
     /**
-     * The pinned package's rolled-up `index.d.ts`: every Babylon specifier
-     * (`babylonPackages`, either spelling, any subpath) resolves to it.
+     * The pinned package's rolled-up `index.d.ts`: the entry, in either
+     * spelling (`babylonPackages`), resolves to it; a subpath resolves to
+     * its module's typings ({@link pinnedModuleTypingsPath}).
      */
     readonly babylon: string;
     /** The pin's WebGPU peer typings, a root of every program. */
@@ -98,7 +99,7 @@ function sourceFileOrigin(file: ts.SourceFile): DeclarationOrigin {
     if (!file.isDeclarationFile) return "program";
     const path = resolve(file.fileName);
     const typings = compilerPackageTypings();
-    return path === typings.babylon
+    return path === typings.babylon || pinnedTypingsModule(path) !== undefined
         ? "babylon"
         : path === typings.webGpu
           ? "webgpu"
@@ -290,10 +291,11 @@ export function declaredInDomLibrary(symbol: ts.Symbol | undefined): boolean {
  * own scenes use for the modules its entry point does not re-export. Both
  * spellings name the same pinned code, so both dispatch by the imported name.
  *
- * The one answer to this question: module resolution
- * (`program.ts`) and the capture harness's specifier rewrite
- * (`capture-suite-reference.ts`) read it too, so a subpath cannot be pinned
- * for one of them and unknown to another.
+ * The one answer to this question, with {@link babylonSubpathModule} for
+ * which module a subpath names: module resolution (`program.ts`) and the
+ * capture harness's specifier rewrite (`capture-suite-reference.ts`) read
+ * them too, so a subpath cannot be pinned for one of them and unknown to
+ * another.
  */
 export function isBabylonModule(specifier: string): boolean {
     return babylonPackages.some(
@@ -301,6 +303,102 @@ export function isBabylonModule(specifier: string): boolean {
             specifier === packageName ||
             specifier.startsWith(`${packageName}/`),
     );
+}
+
+/**
+ * The module of the pinned package a subpath specifier names, as the
+ * package's sources spell it (`src/shader/wgsl.ts` for
+ * `babylon-lite/shader/wgsl.js` or `babylon-lite/shader/wgsl`), or
+ * undefined for the entry and for any other package. The browser loads
+ * the module the package emits for it (`capture-suite-reference.ts`).
+ */
+export function babylonSubpathModule(specifier: string): string | undefined {
+    const packageName = babylonPackages.find((name) =>
+        specifier.startsWith(`${name}/`),
+    );
+    return packageName
+        ? `src/${specifier.slice(packageName.length + 1).replace(/\.js$/, "")}.ts`
+        : undefined;
+}
+
+/**
+ * Where a pinned module's typings live in a compiler program: beside the
+ * entry (`index.d.ts`), at the module's own path with `.d.ts`
+ * (`src/shader/wgsl.d.ts`). No such file is installed; the program reads
+ * the declarations `pinned-module-typings.ts` writes for it.
+ */
+export function pinnedModuleTypingsPath(module: string): string {
+    return resolve(
+        dirname(compilerPackageTypings().babylon),
+        module.replace(/\.ts$/, ".d.ts"),
+    );
+}
+
+/** The pinned module whose typings ({@link pinnedModuleTypingsPath}) sit at a path, or undefined. */
+export function pinnedTypingsModule(path: string): string | undefined {
+    const within = relative(
+        dirname(compilerPackageTypings().babylon),
+        resolve(path),
+    ).replaceAll(sep, "/");
+    return within.startsWith("src/") && within.endsWith(".d.ts")
+        ? `${within.slice(0, -".d.ts".length)}.ts`
+        : undefined;
+}
+
+/**
+ * The first name a file imports or re-exports by name from the pinned
+ * package, its entry or a subpath, that the module it names does not
+ * export. TypeScript binds such a name to an error type, which no storage
+ * decision may read as the program's; a subpath naming no pinned module
+ * exports nothing.
+ */
+export function missingPinnedExport(
+    checker: ts.TypeChecker,
+    file: ts.SourceFile,
+):
+    | {
+          readonly node: ts.ImportSpecifier | ts.ExportSpecifier;
+          readonly name: string;
+          readonly specifier: string;
+      }
+    | undefined {
+    for (const statement of file.statements) {
+        if (
+            !ts.isImportDeclaration(statement) &&
+            !ts.isExportDeclaration(statement)
+        )
+            continue;
+        const module = statement.moduleSpecifier;
+        if (
+            !module ||
+            !ts.isStringLiteral(module) ||
+            !isBabylonModule(module.text)
+        )
+            continue;
+        const bindings = ts.isImportDeclaration(statement)
+            ? statement.importClause?.namedBindings
+            : statement.exportClause;
+        if (
+            !bindings ||
+            ts.isNamespaceImport(bindings) ||
+            ts.isNamespaceExport(bindings)
+        )
+            continue;
+        const moduleSymbol = checker.getSymbolAtLocation(module);
+        const exported = new Set(
+            moduleSymbol
+                ? checker
+                      .getExportsOfModule(moduleSymbol)
+                      .map(({ name }) => name)
+                : [],
+        );
+        for (const node of bindings.elements) {
+            const name = specifierSourceName(node);
+            if (!exported.has(name))
+                return { node, name, specifier: module.text };
+        }
+    }
+    return undefined;
 }
 
 /**

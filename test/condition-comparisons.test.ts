@@ -33,7 +33,7 @@ test("a loose equality between one primitive type lowers as the strict one", () 
     assert.match(cpp, /if \(v_n == 0\.0\)/);
     assert.match(cpp, /if \(v_n != 1\.0\)/);
     assert.match(cpp, /if \(std::string\(v_s\) == std::string\("a"\)\)/);
-    assert.match(cpp, /if \(v_b != true\)/);
+    assert.match(cpp, /if \(\(v_b\) != \(true\)\)/);
     // Two settled numbers fold through the shared numeric fold.
     assert.doesNotMatch(cpp, /v_two == 2\.0/);
 });

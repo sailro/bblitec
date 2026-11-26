@@ -2834,7 +2834,7 @@ export class UserFunctionLowerer {
         mapped: DataType | undefined,
         node: ts.Node,
     ): DataType | undefined {
-        return mapped?.kind === "borrowed-platform-event" &&
+        return mapped?.kind === "platform-event" &&
             ts.isFunctionLike(node) &&
             returnsOnlyConstructedEvents(node, this.checker, (expression) =>
                 libraryGlobal(this.checker, expression),
@@ -3108,6 +3108,7 @@ export class UserFunctionLowerer {
                             ? context.activeThis()
                             : undefined,
                     ],
+                    context,
                 );
                 let facts = this.scalarResults.get(ir.declaration, key);
                 if (!facts) {
@@ -3966,13 +3967,68 @@ export class UserFunctionLowerer {
     }
 
     /**
+     * Whether `call` of `callee`, whose argument `index` binds its
+     * parameter present (`present`, `bindsPresent`), has the shared body
+     * answer that parameter's presence test (`presenceTested`). Only the
+     * root of a group no call re-enters specializes: a recursive group, and
+     * a body that needs a local native, share one body for every presence.
+     * The native-function router asks it before any group lowers, to leave
+     * such a call to this owner. A default the argument leaves unused is
+     * the native function's too: it evaluates the default only for an
+     * absent argument, as JavaScript does.
+     */
+    public specializesOnPresence(
+        context: Pick<UserFunctionContext, "bindings" | "dataTypes" | "fail">,
+        call: ts.CallExpression,
+        callee: ts.Identifier,
+        declaration: SupportedFunction,
+        index: number,
+        present: () => boolean,
+    ): boolean {
+        const parameter = positionalParameter(call, declaration, index);
+        if (!parameter) return false;
+        const type = this.checker.getTypeAtLocation(parameter);
+        return (
+            this.presenceTested(
+                parameter,
+                declaration,
+                context.dataTypes.dynamicJsonType(type) ??
+                    context.dataTypes.fromTsType(type, parameter),
+            ) &&
+            present() &&
+            !this.irFor(declaration, callee.text, (node, message) =>
+                context.fail(node, message),
+            ).needsLocalNative &&
+            this.reachedRecursiveGroup(context, declaration) === undefined
+        );
+    }
+
+    /**
+     * Whether a body tests the presence of `parameter`, held in `storage`,
+     * which an argument that binds it present answers in a specialized
+     * body: a parameter a call may leave absent (optional storage, or a
+     * default), and a test of it in the body.
+     */
+    private presenceTested(
+        parameter: ts.ParameterDeclaration,
+        declaration: SupportedFunction,
+        storage: DataType | undefined,
+    ): boolean {
+        return (
+            (storage?.kind === "optional" ||
+                parameter.initializer !== undefined) &&
+            parameterPresenceTested(this.checker, parameter, declaration)
+        );
+    }
+
+    /**
      * The recursive group a call reaches. Calls through an existing sibling's
      * storage no longer need a shared group: the cycle is recomputed without
      * crossing those bindings, keeping their captures and the identities of
      * nonrecursive siblings. A cycle that dissolves leaves an ordinary call.
      */
     private reachedRecursiveGroup(
-        context: UserFunctionContext,
+        context: Pick<UserFunctionContext, "bindings">,
         root: SupportedFunction,
     ): readonly SupportedFunction[] | undefined {
         const represented = (declaration: SupportedFunction): boolean => {
@@ -4515,18 +4571,16 @@ export class UserFunctionLowerer {
                         declaration === root.declaration && !recursive
                             ? rootArguments[index]
                             : undefined;
-                    // A default initializer tests its parameter too.
+                    // A default tests its parameter too.
                     if (
-                        (mapped?.kind === "optional" ||
-                            parameter.initializer !== undefined) &&
                         presentArgument &&
-                        bindsPresent(presentArgument) &&
                         (parameter.initializer !== undefined ||
-                            parameterPresenceTested(
-                                this.checker,
+                            this.presenceTested(
                                 parameter,
                                 declaration,
-                            ))
+                                mapped,
+                            )) &&
+                        bindsPresent(presentArgument)
                     ) {
                         if (mapped?.kind === "optional") mapped = mapped.inner;
                         presentParameters.push(index);
@@ -4841,8 +4895,7 @@ export class UserFunctionLowerer {
                     "A record argument would bind a dictionary parameter of a shared body.",
                 );
             // A structural projection allocates a new record. Both shared
-            // methods and functions must retain the caller's object identity;
-            // borrowed events additionally keep their dispatch lifetime.
+            // methods and functions must retain the caller's object identity.
             if (
                 !recursive &&
                 parameterType?.kind === "struct" &&
@@ -4981,8 +5034,8 @@ export class UserFunctionLowerer {
                 );
         });
 
-        // A borrowed platform event lives on the dispatch stack of the
-        // listener that received it; a separate native body cannot name it.
+        // A platform event is a local of the listener body that received
+        // it; a separate native body cannot name it.
         if (
             !recursive &&
             rootEntry.captured.some(
@@ -4992,7 +5045,7 @@ export class UserFunctionLowerer {
             )
         )
             throw new SharedCallRequiresInline(
-                "A shared body would capture a borrowed platform event.",
+                "A shared body would capture a platform event.",
             );
         const escapes = this.groupStorageEscapes(context.program, declarations);
         const sharedBody = !recursive;
@@ -5010,22 +5063,26 @@ export class UserFunctionLowerer {
             (callSiteEffects && !reuseCallSite) ||
             (sharedBody && activeSurvey() !== undefined)
                 ? undefined
-                : this.emittedRecursiveGroups.key(scope, [
-                      context.dataTypes.captureTypeArguments(),
-                      rootEntry.captured,
-                      rootEntry.presentParameters,
-                      reuseCallSite ? rootEntry.argumentFacts : undefined,
-                      reuseCallSite,
-                      declarations.some((declaration) =>
-                          this.readsReceiver(declaration),
-                      )
-                          ? context.activeThis()
-                          : undefined,
-                      functionDependencies(context, declarations),
-                      // A body calling a method whose recursive group is being
-                      // emitted calls that group, which the next group is not.
-                      context.classLowerer.activeRecursion(),
-                  ]);
+                : this.emittedRecursiveGroups.key(
+                      scope,
+                      [
+                          context.dataTypes.captureTypeArguments(),
+                          rootEntry.captured,
+                          rootEntry.presentParameters,
+                          reuseCallSite ? rootEntry.argumentFacts : undefined,
+                          reuseCallSite,
+                          declarations.some((declaration) =>
+                              this.readsReceiver(declaration),
+                          )
+                              ? context.activeThis()
+                              : undefined,
+                          functionDependencies(context, declarations),
+                          // A body calling a method whose recursive group is being
+                          // emitted calls that group, which the next group is not.
+                          context.classLowerer.activeRecursion(),
+                      ],
+                      context,
+                  );
         // A survey's probe calls the body an earlier probe lowered on the
         // same storage, with the same inputs, as the specialization it
         // emitted, beginning its statements again.
@@ -5940,7 +5997,17 @@ export class UserFunctionLowerer {
             else
                 context.emit({
                     kind: "expression",
-                    code: `${entry.cppName} = ${closure};`,
+                    // Every materialization of a named function whose closure
+                    // names its function object is that object: the group's
+                    // cell carries the identity every other read of the
+                    // declaration carries (`callbackIdentity`), not a fresh
+                    // one per group.
+                    code: context.hasCallbackIdentity(
+                        entry.declaration,
+                        undefined,
+                    )
+                        ? `${entry.cppName} = {${context.callbackIdentity(entry.declaration, undefined)}u, ${closure}};`
+                        : `${entry.cppName} = ${closure};`,
                 });
         } finally {
             context.bindings.popScope();
@@ -7481,7 +7548,7 @@ export class UserFunctionLowerer {
                     type &&
                     !isNativeStructuralView(inner) &&
                     !context.dataTypes.carriesHandle(type) &&
-                    !context.dataTypes.carriesBorrowedPlatformEvent(type)
+                    !context.dataTypes.carriesPlatformEvent(type)
                 ) {
                     // A throwing body still has its declared expression type.
                     // Keep the call in a typed lambda only when lowering proves

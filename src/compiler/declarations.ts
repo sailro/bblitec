@@ -200,7 +200,6 @@ interface DeclarationContext
             | "compileStringLiteral"
             | "constArrayLiteral"
             | "defaultEngine"
-            | "refuseBorrowedPlatformEventEscape"
             | "emitDiscardedValue"
             | "emitExpressionAsStatement"
             | "callbacks"
@@ -660,18 +659,23 @@ export class DeclarationLowerer {
         });
     }
 
+    /**
+     * Fills a lexical binding with its initializer's value; true when the
+     * initializer never completes normally, and runs in place of the value
+     * (`emitVariableDeclaration`).
+     */
     private initializeLexicalBinding(
         declaration: ts.VariableDeclaration,
         cppName: string,
         type: DataType,
-    ): void {
+    ): boolean {
         const initializer = declaration.initializer ?? declaration.name;
         const value = declaration.initializer
             ? this.context.compileValue(declaration.initializer)
             : undefinedValue();
         if (value.kind === "void" && value.abruptCompletion) {
             this.context.emitDiscardedValue(value);
-            return;
+            return true;
         }
         this.emitLexicalInitialization(cppName, type, value, initializer);
         if (
@@ -698,6 +702,7 @@ export class DeclarationLowerer {
                 nativeCaptures: stored.nativeCaptures,
             });
         }
+        return false;
     }
 
     /**
@@ -976,7 +981,7 @@ export class DeclarationLowerer {
             return;
         }
         if (
-            dataType.kind === "borrowed-platform-event" &&
+            dataType.kind === "platform-event" &&
             declaration &&
             assignsOnlyConstructedEvents(
                 declaration,
@@ -985,10 +990,10 @@ export class DeclarationLowerer {
             )
         )
             dataType = { kind: "handle", handle: "dom-event" };
-        if (dataType.kind === "borrowed-platform-event") {
+        if (dataType.kind === "platform-event") {
             this.context.fail(
                 name,
-                `Variable '${name.text}' cannot default-construct a borrowed DOM event; bind it from an active platform callback.`,
+                `Variable '${name.text}' cannot default-construct a DOM event; bind it from a platform event.`,
             );
         }
         if (
@@ -1038,15 +1043,17 @@ export class DeclarationLowerer {
      * (`const r = make({ cancel: close })`, `close` reading `r`): the
      * binding is temporal-dead-zone storage before the initializer runs,
      * then filled with its value, so the closure holds the binding rather
-     * than a name nothing defined yet. False when no closure reads it
+     * than a name nothing defined yet. Undefined when no closure reads it
      * outside the initializer (a record's own methods keep the record
-     * binding's handling) or its type has no owned data representation.
+     * binding's handling) or its type has no owned data representation;
+     * else whether its initializer never completes normally
+     * (`initializeLexicalBinding`).
      */
     private emitSelfReadingDeclaration(
         declaration: ts.VariableDeclaration,
         name: ts.Identifier,
         symbol: ts.Symbol,
-    ): boolean {
+    ): boolean | undefined {
         const initializer = declaration.initializer;
         // A function's own reads of its name are its recursion, which the
         // function binding owns (self-scheduling callbacks included).
@@ -1063,15 +1070,14 @@ export class DeclarationLowerer {
                     outsideDeclaration(declaration, read.pos),
                 )
         )
-            return false;
+            return undefined;
         const type = this.lexicalBindingType(name, initializer);
-        if (!type) return false;
-        this.initializeLexicalBinding(
+        if (!type) return undefined;
+        return this.initializeLexicalBinding(
             declaration,
             this.declareLexicalBinding(name, symbol, type),
             type,
         );
-        return true;
     }
 
     /**
@@ -1202,18 +1208,25 @@ export class DeclarationLowerer {
         );
     }
 
-    public emitVariableDeclaration(declaration: ts.VariableDeclaration): void {
+    /**
+     * Lowers a variable declaration; true when its initializer never
+     * completes normally (a call whose every path throws): the initializer
+     * runs in place of the binding, and nothing after it does.
+     */
+    public emitVariableDeclaration(
+        declaration: ts.VariableDeclaration,
+    ): boolean {
         if (
             (ts.getCombinedModifierFlags(declaration) &
                 ts.ModifierFlags.Ambient) !==
             0
         )
-            return;
+            return false;
         if (
             this.context.varBindings.hoists(declaration) &&
             this.context.varBindings.emitDeclaration(declaration)
         )
-            return;
+            return false;
         if (
             !declaration.initializer &&
             declaration.type &&
@@ -1240,15 +1253,15 @@ export class DeclarationLowerer {
                 dataType: { kind: "handle", handle: "gpu-texture" },
                 engineCpp: this.context.requireDefaultEngine(declaration),
             });
-            return;
+            return false;
         }
         if (ts.isObjectBindingPattern(declaration.name)) {
             this.emitObjectBindingDeclaration(declaration);
-            return;
+            return false;
         }
         if (ts.isArrayBindingPattern(declaration.name)) {
             this.emitArrayBindingDeclaration(declaration);
-            return;
+            return false;
         }
         if (!ts.isIdentifier(declaration.name)) {
             this.context.fail(
@@ -1260,7 +1273,7 @@ export class DeclarationLowerer {
         const selection = this.deferrableSelection(declaration);
         if (selection && this.selectionRefuses(selection)) {
             this.context.bindings.deferSelection(declaration.name, selection);
-            return;
+            return false;
         }
         // An empty `Mesh[]` and the entity loop that fills it are one
         // construct — the recursive-visitor spelling of a container
@@ -1272,7 +1285,7 @@ export class DeclarationLowerer {
             );
         if (flattened) {
             this.context.bindings.defineVariable(declaration.name, flattened);
-            return;
+            return false;
         }
         const declarationSymbol = this.context.symbols.valueSymbol(
             declaration.name,
@@ -1286,13 +1299,14 @@ export class DeclarationLowerer {
             this.context.bindings.lookupOptional(declaration.name)
         ) {
             this.forwardBindings.delete(declarationSymbol);
-            if (forward !== "hoisted")
+            return (
+                forward !== "hoisted" &&
                 this.initializeLexicalBinding(
                     declaration,
                     forward.cppName,
                     forward.type,
-                );
-            return;
+                )
+            );
         }
         // A closure its initializer creates (a record's accessor, a stored
         // function it names) may reach later bindings of this block before
@@ -1308,15 +1322,14 @@ export class DeclarationLowerer {
             this.context.callbacks.hoistForwardCallbackBindings(
                 declaration.initializer,
             );
-        if (
+        const selfReading =
             declarationSymbol &&
             this.emitSelfReadingDeclaration(
                 declaration,
                 declaration.name,
                 declarationSymbol,
-            )
-        )
-            return;
+            );
+        if (selfReading !== undefined) return selfReading;
         const sourceName = declaration.name.text;
         const cppName = this.context.bindings.cppIdentifier(sourceName);
         if (
@@ -1339,7 +1352,7 @@ export class DeclarationLowerer {
                     declaration,
                     "A binding captured by its initializer requires an owned data type.",
                 );
-            this.initializeLexicalBinding(
+            return this.initializeLexicalBinding(
                 declaration,
                 this.declareLexicalBinding(
                     declaration.name,
@@ -1348,7 +1361,6 @@ export class DeclarationLowerer {
                 ),
                 type,
             );
-            return;
         }
         const sharedClosureStorage =
             this.context.sharedClosures.needsSharedClosureStorage(declaration);
@@ -1369,7 +1381,7 @@ export class DeclarationLowerer {
                 cppName,
                 sharedClosureStorage,
             );
-            return;
+            return false;
         }
         if (
             this.emitAbsenceTaggedDeclaration(
@@ -1378,7 +1390,7 @@ export class DeclarationLowerer {
                 sharedClosureStorage,
             )
         )
-            return;
+            return false;
 
         if (
             declaration.parent !== undefined &&
@@ -1403,7 +1415,7 @@ export class DeclarationLowerer {
                 sharedClosureStorage,
             )
         ) {
-            return;
+            return false;
         }
         if (
             ts.isArrowFunction(declaration.initializer) ||
@@ -1414,7 +1426,7 @@ export class DeclarationLowerer {
                 declaration.initializer,
                 cppName,
             );
-            return;
+            return false;
         }
 
         // A promise whose executor only escapes its own `resolve`, which
@@ -1426,7 +1438,7 @@ export class DeclarationLowerer {
                 cppName,
             )
         ) {
-            return;
+            return false;
         }
 
         // `const original = Math.random`, which the corpus writes only to
@@ -1457,7 +1469,7 @@ export class DeclarationLowerer {
                     cpp: "",
                 });
             }
-            return;
+            return false;
         }
 
         const nullableResource = this.context.nullableResourceKind(
@@ -1478,7 +1490,7 @@ export class DeclarationLowerer {
                 nullableResource,
                 sharedClosureStorage,
             );
-            return;
+            return false;
         }
         const hostLookup = this.context.unwrap(declaration.initializer);
         const id =
@@ -1507,7 +1519,7 @@ export class DeclarationLowerer {
             this.context.pendingHostUiLookups.push(
                 this.context.bindings.lookup(declaration.name),
             );
-            return;
+            return false;
         }
 
         if (
@@ -1534,7 +1546,7 @@ export class DeclarationLowerer {
                     cpp: "",
                     ...(browserValue ? { browserValue } : {}),
                 });
-                return;
+                return false;
             }
         }
 
@@ -1548,7 +1560,7 @@ export class DeclarationLowerer {
                 cppName,
             );
             this.context.bindings.defineVariable(declaration.name, engine);
-            return;
+            return false;
         }
 
         if (
@@ -1559,7 +1571,7 @@ export class DeclarationLowerer {
                 sharedClosureStorage,
             )
         ) {
-            return;
+            return false;
         }
 
         // `const K = class { ... }` declares the class `K`: what the
@@ -1576,7 +1588,7 @@ export class DeclarationLowerer {
                     "A class expression is lowered as the initializer of a const it names.",
                 );
             this.context.classLowerer.emitDeclaration(classExpression);
-            return;
+            return false;
         }
         const forwardCallback = this.prepareForwardFunctionResult(
             declaration,
@@ -1625,7 +1637,7 @@ export class DeclarationLowerer {
                 "",
                 initializerFactsStable(),
             );
-            return;
+            return false;
         }
         requireOneObject(this.context, declaration, value);
         if (value.kind === "record" && declaration.type) {
@@ -1683,7 +1695,7 @@ export class DeclarationLowerer {
                 forwardCallback,
                 value,
             );
-            return;
+            return false;
         }
         const initializer = this.context.unwrap(declaration.initializer);
         const aliasesRecord = this.selectsNamedValue(initializer);
@@ -1749,7 +1761,7 @@ export class DeclarationLowerer {
                 value,
                 initializerCpp,
             );
-            return;
+            return false;
         }
         if (
             value.impure ||
@@ -1777,7 +1789,7 @@ export class DeclarationLowerer {
             // live one, so its bridges can be named. A URL the bake driver
             // produces is likewise a generation-time name.
             this.context.bindings.defineVariable(declaration.name, value);
-            return;
+            return false;
         }
         if (value.kind === "browser") {
             // A local helper can erase its DOM body statement by statement
@@ -1785,7 +1797,7 @@ export class DeclarationLowerer {
             // recognizable as browser-only before inlining, but its resulting
             // binding is still a valid erased browser value.
             this.context.bindings.defineVariable(declaration.name, value);
-            return;
+            return false;
         }
         if (value.kind === "engine") {
             // createEngine already emitted the owning engine. A helper's
@@ -1802,7 +1814,11 @@ export class DeclarationLowerer {
                 );
             }
             this.context.bindings.defineVariable(declaration.name, value);
-            return;
+            return false;
+        }
+        if (value.kind === "void" && value.abruptCompletion) {
+            this.context.emitDiscardedValue(value);
+            return true;
         }
         if (value.kind === "void") {
             // `void x`, or a call whose completion is proven undefined: the
@@ -1818,7 +1834,7 @@ export class DeclarationLowerer {
                   );
             if (read) {
                 this.context.bindings.defineVariable(declaration.name, read);
-                return;
+                return false;
             }
             this.context.fail(
                 declaration.initializer,
@@ -1836,7 +1852,7 @@ export class DeclarationLowerer {
                 cppName,
                 sharedClosureStorage,
             );
-            return;
+            return false;
         }
         if (value.kind === "callback" || isCompileTimeOnlyValue(value.kind)) {
             const accessors = [
@@ -1890,7 +1906,7 @@ export class DeclarationLowerer {
             this.context.bindings.defineVariable(declaration.name, value);
             if (value.kind === "record")
                 this.materializeAssignedRecordMethods(declaration.name, value);
-            return;
+            return false;
         }
         if (value.kind === "data") {
             const symbol = this.context.symbols.valueSymbol(declaration.name);
@@ -1927,7 +1943,7 @@ export class DeclarationLowerer {
                     optionalFoundCpp: `${cppName} != nullptr`,
                     objectIdentityCpp: cppName,
                 });
-                return;
+                return false;
             }
             const constructs =
                 ts.isCallExpression(initializer) ||
@@ -2320,7 +2336,7 @@ export class DeclarationLowerer {
                     },
                 ),
             );
-            return;
+            return false;
         }
 
         const nativeType =
@@ -2463,6 +2479,7 @@ export class DeclarationLowerer {
             delete writable(stored).packagedBodySource;
         }
         this.context.bindings.defineVariable(declaration.name, stored);
+        return false;
     }
 
     /** The fields of a record local every reached initializer or write provides non-nullable. */
@@ -3318,12 +3335,6 @@ export class DeclarationLowerer {
                 callback,
                 enclosingBody,
             );
-        if (escapes) {
-            this.context.bindings.refuseEscapingPlatformEventCapturesIn(
-                callback,
-                this.context.bindings.variableScopes.length,
-            );
-        }
         const storage = this.context.emitNativeCallbackStorage(
             cppName,
             `${returnCpp}(${parameterTypes.join(", ")})`,

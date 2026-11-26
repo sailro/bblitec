@@ -107,7 +107,7 @@ int main() {
                 auto event = synthetic_event_from_options("input", kind, empty);
                 bool refused = false;
                 try {
-                    static_cast<void>(event.borrowed_event().as<PlatformMouseEvent>());
+                    static_cast<void>(event.event_ref().as<PlatformMouseEvent>());
                 } catch (const std::runtime_error&) {
                     refused = true;
                 }

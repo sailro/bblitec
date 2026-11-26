@@ -24,6 +24,7 @@
 #endif
 #include <chrono>
 #include <cmath>
+#include <concepts>
 #include <cstddef>
 #include <coroutine>
 #include <cstdint>
@@ -676,7 +677,28 @@ public:
         return left.block_ == right.block_;
     }
 
+    /** A reference that does not count: `lock` answers its object while a counted one holds it. */
+    class Weak {
+    public:
+        Weak() = default;
+        explicit Weak(const Ref& target)
+            : identity_(target.weak_identity()), block_(target.block_) {}
+        [[nodiscard]] bool expired() const noexcept { return identity_.expired(); }
+        [[nodiscard]] Ref lock() const {
+            if (identity_.expired() || block_->count == 0)
+                return {};
+            block_->retain();
+            return Ref(block_);
+        }
+
+    private:
+        std::weak_ptr<const void> identity_;
+        Block* block_ = nullptr;
+    };
+
 private:
+    friend class ViewedObject;
+
     T& require_value() const {
         if (!block_)
             throw_nullish_access();
@@ -763,87 +785,209 @@ template <typename T, typename... Args> [[nodiscard]] Ref<T> make_ref(Args&&... 
     return result;
 }
 
-/**
- * A non-owning reference whose constructor cannot represent null.
- *
- * Platform event payloads use this only while their synchronous dispatch
- * frame is active. The compiler rejects every retained copy; the wrapper
- * keeps ordinary record copies cheap without making the event an owning or
- * default-constructible JavaScript value.
- */
-template <typename T> class Borrowed {
-public:
-    explicit Borrowed(T& value) noexcept : value_(std::addressof(value)) {}
+class JsonValue;
+class ViewedObject;
 
-    [[nodiscard]] T& get() const noexcept { return *value_; }
+/** The instance `viewed` stands for, of class struct `T`, as a document; defined beside documents. */
+template <typename T> JsonValue viewed_document(const ViewedObject& viewed);
+
+/**
+ * The class instance a record type's view stands for (`instance_view`): a
+ * counted, traced reference to an object of any class, whose address is the
+ * view's identity. Empty in a record that is no view. A view enumerates and
+ * serializes as the instance (`document`) where the instance's class has a
+ * document view (`json_value_keys`).
+ */
+class ViewedObject {
+public:
+    ViewedObject() = default;
+    template <typename T>
+    explicit ViewedObject(const Ref<T>& object)
+        : node_(object.block_), object_(object.get()), identity_(object.weak_identity()) {
+        if constexpr (requires { json_value_keys(object); })
+            document_ = &viewed_document<T>;
+        if (node_)
+            node_->pin();
+    }
+    ViewedObject(const ViewedObject& other)
+        : node_(other.node_), object_(other.object_), identity_(other.identity_),
+          document_(other.document_) {
+        if (node_)
+            node_->pin();
+    }
+    ViewedObject& operator=(ViewedObject other) noexcept {
+        std::swap(node_, other.node_);
+        std::swap(object_, other.object_);
+        std::swap(identity_, other.identity_);
+        std::swap(document_, other.document_);
+        return *this;
+    }
+    ~ViewedObject() {
+        if (node_)
+            node_->unpin();
+    }
+    /** The instance's address, null for a record that is no view. */
+    [[nodiscard]] const void* get() const noexcept { return object_; }
+    /** The instance's weak-collection key (`Ref::weak_identity`). */
+    [[nodiscard]] const std::weak_ptr<const void>& identity() const noexcept { return identity_; }
+    /** The instance as a document: its own keys in its class's order, and their values. */
+    [[nodiscard]] JsonValue document() const;
+    /** The instance, of class struct `T`. */
+    template <typename T> [[nodiscard]] Ref<T> object() const {
+        auto* block = static_cast<typename Ref<T>::Block*>(node_);
+        block->retain();
+        return Ref<T>(block);
+    }
+    void gc_trace(const TraceVisitor& visitor) const { visitor.reference(node_); }
 
 private:
-    T* value_;
+    gc::Node* node_ = nullptr;
+    const void* object_ = nullptr;
+    std::weak_ptr<const void> identity_;
+    JsonValue (*document_)(const ViewedObject&) = nullptr;
 };
 
 /**
- * The common DOM Event view borrows dispatch state and cancellation from its
- * payload, including when it crosses a helper typed as Event.
- *
- * MouseEvent and KeyboardEvent retain their typed Borrowed<T> wrappers. This
- * erased facade accepts either without introducing a third platform-event
- * record or making arbitrary DOM objects storable.
+ * A record type whose records can be an instance's view: the compiler gives
+ * its struct the member `bbl_viewed` (`viewedMember`), where an instance's
+ * view keeps the instance (`instance_view`).
  */
-class BorrowedEvent {
+template <typename V>
+concept ViewedRecord = requires(V& record) {
+    { record.bbl_viewed } -> std::same_as<ViewedObject&>;
+};
+
+/** The object a record that may be an instance's view is: that instance, or the record itself. */
+template <ViewedRecord V> [[nodiscard]] const void* viewed_object(const Ref<V>& record) {
+    const auto* view = record.get();
+    return view && view->bbl_viewed.get() ? view->bbl_viewed.get() : view;
+}
+
+/** `viewed_object`'s weak-collection key. */
+template <ViewedRecord V>
+[[nodiscard]] std::weak_ptr<const void> viewed_identity(const Ref<V>& record) {
+    const auto* view = record.get();
+    return view && view->bbl_viewed.get() ? view->bbl_viewed.identity() : record.weak_identity();
+}
+
+namespace detail {
+/** Each instance's live view as the record type `V` (`instance_view`), by the instance's identity. */
+template <typename V> struct InstanceViews {
+    std::map<std::weak_ptr<const void>, typename Ref<V>::Weak,
+             std::owner_less<std::weak_ptr<const void>>>
+        entries;
+    typename decltype(entries)::iterator cursor = entries.end();
+    /** Drops a few entries whose view died, as `WeakMap` prunes its keys. */
+    void prune() {
+        for (std::size_t i = 0; i < 2 && !entries.empty(); ++i) {
+            if (cursor == entries.end())
+                cursor = entries.begin();
+            const auto entry = cursor++;
+            if (entry->second.expired())
+                entries.erase(entry);
+        }
+    }
+};
+template <typename V> InstanceViews<V>& instance_views() {
+    thread_local InstanceViews<V> views;
+    return views;
+}
+} // namespace detail
+
+/**
+ * The one view of `object` as the record type `V`, whose properties read and
+ * write the instance: `make` builds it the first time, and again only after
+ * no reference holds the last one, when nothing can tell the two apart.
+ */
+template <ViewedRecord V, typename T, typename Make>
+[[nodiscard]] Ref<V> instance_view(const Ref<T>& object, Make&& make) {
+    if (!object)
+        return {};
+    auto& views = detail::instance_views<V>();
+    views.prune();
+    const auto key = object.weak_identity();
+    const auto found = views.entries.find(key);
+    if (found != views.entries.end())
+        if (auto view = found->second.lock())
+            return view;
+    Ref<V> view = std::forward<Make>(make)();
+    view->bbl_viewed = ViewedObject(object);
+    views.entries.insert_or_assign(key, typename Ref<V>::Weak(view));
+    return view;
+}
+
+/**
+ * A JavaScript reference to a typed platform event (MouseEvent,
+ * KeyboardEvent). It owns a copy of the payload, or shares the payload its
+ * owner keeps; either shares the event's identity, dispatch state and
+ * canceled flag with every other copy (`PlatformEventFlags`), so it stays
+ * valid once the dispatch ends.
+ */
+template <typename T> class EventRef {
 public:
-    template <typename T>
-        requires requires(const T& value) { value.prevent_default(); }
-    explicit BorrowedEvent(const T& value) noexcept
-        : value_(std::addressof(value)), type_(&type_tag<T>),
-          prevent_default_([](const void* borrowed) noexcept {
-              static_cast<const T*>(borrowed)->prevent_default();
-          }),
-          default_prevented_([](const void* borrowed) noexcept {
-              if constexpr (requires(const T & event) { event.is_default_prevented(); })
-                  return static_cast<const T*>(borrowed)->is_default_prevented();
-              else
-                  return static_cast<const T*>(borrowed)->default_prevented;
-          }) {
-        dom = value.dom;
+    explicit EventRef(T& value) : value_(std::make_shared<T>(value)) {}
+    /** A reference to a payload `value` already shares (as an aliasing pointer to its owner). */
+    explicit EventRef(std::shared_ptr<T> value) : value_(std::move(value)) {}
+
+    [[nodiscard]] T& get() const noexcept { return *value_; }
+    [[nodiscard]] const void* identity() const noexcept { return value_->identity(); }
+    [[nodiscard]] bool operator==(const EventRef& other) const noexcept {
+        return identity() == other.identity();
     }
 
-    [[nodiscard]] const BorrowedEvent& get() const noexcept { return *this; }
-    void prevent_default() const noexcept { prevent_default_(value_); }
-    [[nodiscard]] bool is_default_prevented() const noexcept { return default_prevented_(value_); }
+private:
+    std::shared_ptr<T> value_;
+};
+
+/**
+ * A JavaScript reference to a platform event as the common DOM Event, also
+ * where it crosses a helper typed as Event. Like `EventRef`, it owns its
+ * payload, of whichever platform event type.
+ */
+class BaseEventRef {
+public:
+    template <std::derived_from<PlatformEventFlags> T>
+    explicit BaseEventRef(std::shared_ptr<const T> value)
+        : dom(value->dom), flags_(value.get()), type_(&type_tag<T>), value_(std::move(value)) {}
+    template <std::derived_from<PlatformEventFlags> T>
+    explicit BaseEventRef(const T& value) : BaseEventRef(std::make_shared<const T>(value)) {}
+
+    [[nodiscard]] const BaseEventRef& get() const noexcept { return *this; }
+    [[nodiscard]] const void* identity() const noexcept { return flags_->identity(); }
+    [[nodiscard]] bool operator==(const BaseEventRef& other) const noexcept {
+        return identity() == other.identity();
+    }
+    void prevent_default() const noexcept { flags_->prevent_default(); }
+    [[nodiscard]] bool is_default_prevented() const noexcept {
+        return flags_->is_default_prevented();
+    }
     void stop_propagation() const { bbl::dom_event_state(*this).stop_propagation(); }
     void stop_immediate_propagation() const {
         bbl::dom_event_state(*this).stop_immediate_propagation();
     }
     std::shared_ptr<bbl::DomEventState> dom;
-    [[nodiscard]] BorrowedEvent retaining(std::shared_ptr<const void> owner) const {
-        auto result = *this;
-        result.owner_ = std::move(owner);
-        return result;
-    }
 
     template <typename T> [[nodiscard]] const T& payload() const {
         if (type_ != &type_tag<T>) {
-            throw std::runtime_error("Borrowed DOM event has the wrong payload type.");
+            throw std::runtime_error("The DOM event has the wrong payload type.");
         }
-        return *static_cast<const T*>(value_);
+        return *static_cast<const T*>(value_.get());
     }
 
     template <typename T> [[nodiscard]] const T& as() const {
         const auto& value = payload<T>();
         if constexpr (requires { value.has_mouse_payload(); }) {
             if (!value.has_mouse_payload())
-                throw std::runtime_error("Borrowed DOM event has no mouse payload.");
+                throw std::runtime_error("The DOM event has no mouse payload.");
         }
         return value;
     }
 
 private:
     template <typename T> static inline const char type_tag = 0;
-    const void* value_;
-    std::shared_ptr<const void> owner_;
+    const PlatformEventFlags* flags_;
     const void* type_;
-    void (*prevent_default_)(const void*) noexcept;
-    bool (*default_prevented_)(const void*) noexcept;
+    std::shared_ptr<const void> value_;
 };
 
 /** A Uint8Array view. Subarrays share storage; slices own a copy. */
@@ -1305,19 +1449,47 @@ template <typename T> [[nodiscard]] inline std::vector<T> array_to_vector(const 
     return std::vector<T>(values.begin(), values.end());
 }
 
+/**
+ * The slot an indexed write fills in an Array whose element type has no
+ * default value (an event reference): it replaces an element or appends one
+ * at the end. A write further past the end would leave holes that no value
+ * of the type represents, and throws.
+ */
+template <typename T> class ArrayAppendSlot {
+public:
+    ArrayAppendSlot(Array<T>& target, std::size_t index) : target_(target), index_(index) {}
+    ArrayAppendSlot& operator=(T value) {
+        if (index_ < target_.size())
+            target_[index_] = std::move(value);
+        else if (index_ == target_.size())
+            target_.push_back(std::move(value));
+        else
+            throw std::runtime_error("This Array cannot hold holes: write its elements in order.");
+        return *this;
+    }
+
+private:
+    Array<T>& target_;
+    std::size_t index_;
+};
+
 /** JavaScript indexed writes grow an Array and leave default-valued holes. */
 template <typename T>
-[[nodiscard]] inline T& array_index_write(Array<T>& target, std::size_t index) {
-    if (index >= target.size()) {
-        if (index == std::numeric_limits<std::size_t>::max()) {
-            // The sentinel `array_index` maps every unrepresentable double
-            // to. Without this refusal `resize(index + 1)` wraps to
-            // `resize(0)` and silently truncates the array.
-            throw std::runtime_error("Array index write out of range.");
+[[nodiscard]] inline decltype(auto) array_index_write(Array<T>& target, std::size_t index) {
+    if constexpr (!std::default_initializable<T>) {
+        return ArrayAppendSlot<T>(target, index);
+    } else {
+        if (index >= target.size()) {
+            if (index == std::numeric_limits<std::size_t>::max()) {
+                // The sentinel `array_index` maps every unrepresentable double
+                // to. Without this refusal `resize(index + 1)` wraps to
+                // `resize(0)` and silently truncates the array.
+                throw std::runtime_error("Array index write out of range.");
+            }
+            target.resize(index + 1);
         }
-        target.resize(index + 1);
+        return target[index];
     }
-    return target[index];
 }
 
 /**
@@ -1398,9 +1570,11 @@ public:
     {
         return has_value() == other.has_value() && (!has_value() || value() == other.value());
     }
-    [[nodiscard]] bool operator==(const T& other) const
-        requires requires(const T& left, const T& right) { left == right; }
-    {
+    /** Whether this holds a value equal to `other`, of any type a `T` compares with. */
+    template <typename U>
+        requires(!std::same_as<U, Nullable> &&
+                 requires(const T& left, const U& right) { left == right; })
+    [[nodiscard]] bool operator==(const U& other) const {
         return has_value() && value() == other;
     }
     void gc_trace(const TraceVisitor& visitor) const { visitor(owned_); }
@@ -2775,6 +2949,10 @@ template <typename V> class WeakMap {
     std::shared_ptr<Storage> storage_ = make_gc_shared<Storage>();
 
 public:
+    /** JavaScript's `===`, searches and Map keys: one weak map whatever names it. */
+    [[nodiscard]] bool operator==(const WeakMap& other) const { return storage_ == other.storage_; }
+    [[nodiscard]] const void* identity() const { return storage_.get(); }
+
     [[nodiscard]] typename MapGetResult<V>::Type get(const WeakIdentity& key) const {
         storage_->prune();
         const auto found = storage_->entries.find(key);
@@ -5700,8 +5878,8 @@ array_store_borrowed(Values& values, double index, const char* site) {
  * JavaScript stores a plain property instead of an element) refuses.
  */
 template <typename T>
-[[nodiscard]] inline T& array_index_write_checked(Array<T>& values, double index,
-                                                  const char* site) {
+[[nodiscard]] inline decltype(auto) array_index_write_checked(Array<T>& values, double index,
+                                                              const char* site) {
     if (!(index >= 0.0 && std::floor(index) == index && index < 4294967295.0)) [[unlikely]] {
         throw_index_error(site, "write", index, values.size());
     }
@@ -5709,8 +5887,8 @@ template <typename T>
 }
 // An accessor's array handle shares the storage the element write changes.
 template <typename T>
-[[nodiscard]] inline T& array_index_write_checked(Array<T>&& values, double index,
-                                                  const char* site) {
+[[nodiscard]] inline decltype(auto) array_index_write_checked(Array<T>&& values, double index,
+                                                              const char* site) {
     return array_index_write_checked(values, index, site);
 }
 
@@ -6539,6 +6717,18 @@ inline void set_random_override(Callback<double()> callback) {
 }
 
 } // namespace bbl::js
+
+namespace bbl {
+
+/** The JavaScript value of an event's optional target (`currentTarget`, `relatedTarget`). */
+inline js::Nullable<DomEventTargetValue> dom_target_value(Engine& engine,
+                                                          std::optional<DomEventTarget> target) {
+    if (!target)
+        return std::nullopt;
+    return dom_target_value(engine, *target);
+}
+
+} // namespace bbl
 
 #include <bblite/js_text_codec.hpp>
 #include <bblite/js_search_params.hpp>

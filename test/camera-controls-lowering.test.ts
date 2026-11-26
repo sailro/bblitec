@@ -673,7 +673,7 @@ test("attachControl hands its pointer-down predicate the press's PointerEvent", 
     );
     assert.match(
         cpp,
-        /bbl::js::Borrowed<const bbl::PlatformMouseEvent>\(event\)/,
+        /bbl::js::EventRef<const bbl::PlatformMouseEvent>\(event\)/,
     );
     assert.match(
         compileSource(program("() => true")).cpp,

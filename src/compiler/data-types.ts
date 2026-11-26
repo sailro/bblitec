@@ -161,8 +161,8 @@ import {
 } from "./record-components.js";
 import ts from "typescript";
 import {
-    AbsenceTagStorageRequired,
     requireDeclarationAbsenceTag,
+    requireRecordSlotAbsenceTag,
 } from "./absence-tag-storage.js";
 import { classFieldPresenceSource } from "./class-field-presence-storage.js";
 import { createHash } from "node:crypto";
@@ -214,6 +214,7 @@ import {
     declaredRecordName,
     holdsAnyPresentValue,
     isEmptyObjectType,
+    isObjectLiteralType,
     holdsObjectKeyword,
     sourceOrderedProperties,
     valueKindOf,
@@ -461,6 +462,8 @@ export interface DataStructField {
     defaultWhenMissing?: boolean;
     /** Which union tags actually own this field (wire serialization observes absence). */
     presentForTags?: Array<Array<{ discriminant: string; value: string }>>;
+    /** A hierarchy struct's field only some classes declare: the class tags whose instances own it. */
+    ownForClassTags?: readonly number[];
     /** A class layout slot storing whether this source property is present. */
     presenceOf?: string;
     /**
@@ -497,6 +500,11 @@ export function structFieldKey(
     field: DataStructField,
 ): string {
     return `${structName}.${field.name}`;
+}
+
+/** How many alternatives the tag test of a field's ownership joins (`fieldTagsCpp`). */
+function tagAlternatives(field: DataStructField): number {
+    return field.ownForClassTags?.length ?? field.presentForTags?.length ?? 0;
 }
 
 /**
@@ -564,6 +572,11 @@ interface DataStructDefinition {
     /** One struct for a class hierarchy: it stores which class each object is. */
     classTag?: true;
     /**
+     * A hierarchy whose classes create their keys in orders no one layout
+     * takes: each class tag's fields, in the order its instances create them.
+     */
+    classKeyOrders?: readonly (readonly string[])[];
+    /**
      * A function object with properties (`(() => T) & { dispose(): void }`):
      * the record's own call, held beside its properties as `callMember`.
      */
@@ -575,6 +588,13 @@ export const callMember = "bbl_call";
 
 /** The member a class hierarchy's shared struct keeps each object's class tag in. */
 export const classTagMember = "bbl_class_tag";
+
+/**
+ * The member a struct of instance views keeps the instance a view stands
+ * for in (`bbl::js::ViewedObject`); the runtime's `bbl::js::ViewedRecord`
+ * requires it.
+ */
+const viewedMember = "bbl_viewed";
 
 /**
  * One local class with a demanded runtime representation.
@@ -782,10 +802,10 @@ const WEB_PLATFORM_HEADERS: readonly (readonly [
     [["uninhabited-object"], "pal_media_stream"],
     // A stored error or rejection listener spells the realm's error event.
     [
-        ["borrowed-platform-event"],
+        ["platform-event"],
         "pal_application_errors",
         (type) =>
-            type.kind === "borrowed-platform-event" &&
+            type.kind === "platform-event" &&
             (type.event === "error" || type.event === "rejection"),
     ],
 ];
@@ -893,11 +913,11 @@ export function touchListDataType(): DataType {
     return { kind: "vector", element: { kind: "handle", handle: "touch" } };
 }
 
-export function borrowedPlatformEventKind(
+export function platformEventKind(
     symbol: ts.Symbol | undefined,
-): DataType<"borrowed-platform-event">["event"] | undefined {
+): DataType<"platform-event">["event"] | undefined {
     if (!symbol || !declaredInDomLibrary(symbol)) return undefined;
-    // Extended events and DataTransfer borrow the checked dispatch payload.
+    // Extended events and DataTransfer view the checked dispatch payload.
     if (
         [
             "Event",
@@ -2142,6 +2162,23 @@ export class DataTypeRegistry {
     }
 
     /**
+     * A record field's storage: one layout stores the property once, tagged
+     * when a program tells its absent values apart through any member
+     * declaring it ({@link absenceTaggedStorage}).
+     */
+    private fieldAbsenceTaggedStorage(
+        declarations: readonly ts.Declaration[],
+        type: DataType,
+    ): DataType {
+        return this.absenceTaggedStorage(
+            declarations.find((declaration) =>
+                this.storage.absenceTags.has(declaration),
+            ),
+            type,
+        );
+    }
+
+    /**
      * The storage of a source declaration whose value has `type` (resolved
      * at `site`) when the program observes which absent value it holds:
      * tagged, or an array of tagged elements ({@link absenceTaggedStorage});
@@ -2481,6 +2518,19 @@ export class DataTypeRegistry {
     private readonly proxyRecords = new EmissionSet<
         NativeRecordStorageDemand["identity"]
     >();
+    /** Record types whose class instances are stored as views (`instanceViews`), by record identity. */
+    private readonly instanceViewRecords = new EmissionSet<
+        NativeRecordStorageDemand["identity"]
+    >();
+    /** The structs of those record types: each keeps the instance a view stands for (`viewedMember`). */
+    private readonly instanceViewStructs = new EmissionSet<string>();
+    /** The class structs whose instances each such struct views (`noteInstanceView`). */
+    private readonly viewedClassStructs = new EmissionMap<
+        string,
+        readonly string[]
+    >();
+    /** Such structs whose records enumerate, with the first node enumerating each (`viewedDocument`). */
+    private readonly enumeratedViewStructs = new EmissionMap<string, ts.Node>();
     private readonly proxyTargets = new EmissionSet<
         NativeRecordStorageDemand["identity"]
     >();
@@ -2547,6 +2597,12 @@ export class DataTypeRegistry {
             if (demand.armFields)
                 this.withRecordDemand(demand, () =>
                     this.armFieldUnions.add(this.structIdentity(demand.type)),
+                );
+            if (demand.instanceViews)
+                this.withRecordDemand(demand, () =>
+                    this.instanceViewRecords.add(
+                        this.structIdentity(demand.type),
+                    ),
                 );
             if (demand.view)
                 this.withRecordDemand(demand, () =>
@@ -2726,16 +2782,153 @@ export class DataTypeRegistry {
         const instance = this.classInstanceType(declaration);
         if (!source || !instance || this.isClassStruct(name)) return undefined;
         const view = this.checker.getNonNullableType(source.type);
-        // An intersection of object types (`Query & Pick<Store, "resolve">`)
-        // is a view as one object type is.
-        return objectLikeType(view) &&
-            this.checker.getPropertiesOfType(view).length > 0 &&
-            callSignatures(this.checker, view, "exact").length === 0 &&
-            view.getConstructSignatures().length === 0 &&
-            this.checker.getIndexInfosOfType(view).length === 0 &&
+        return this.viewableRecord(view) &&
             this.checker.isTypeAssignableTo(instance, view)
             ? { ...source, classView: declaration }
             : undefined;
+    }
+
+    /**
+     * The record type `type`, met at `node`, as one whose class instances
+     * are each stored as their one view (`instance_view`): the type a
+     * class's instances and other objects both are, which no one class's
+     * instance storage holds.
+     */
+    public instanceViewsDemand(
+        type: ts.Type,
+        node: ts.Node,
+    ): NativeRecordStorageDemand | undefined {
+        const view = this.checker.getNonNullableType(type);
+        return this.viewableRecord(view)
+            ? { ...this.recordDemand(view, node), instanceViews: true }
+            : undefined;
+    }
+
+    /** Whether struct `name` stores class instances as views (`instanceViewsDemand`). */
+    public viewsInstances(name: string): boolean {
+        return this.instanceViewStructs.has(name);
+    }
+
+    /**
+     * A copy of struct `source`'s records (a spread, `Object.assign`, an
+     * object rest, a structured clone) stored in struct `target`, met at
+     * `node`: where `source` stores class instances as views, a copy has the
+     * instance's own keys (`viewedDocument`), which only a document of the
+     * target's record type holds (`storedRecordType`, for the `stored`
+     * copy, a spread's literal).
+     */
+    public requireViewCopyStorage(
+        source: string,
+        target: string,
+        node: ts.Node,
+        stored?: ts.Node,
+    ): void {
+        if (this.viewsInstances(source))
+            this.requireCopyDocument(
+                target,
+                node,
+                stored,
+                `A copy of a record that may be a class instance's view has the instance's own keys, which '${target}' storage does not hold.`,
+            );
+    }
+
+    /**
+     * A copy of class struct `source`'s records stored in struct `target`,
+     * met at `node`, carrying `key`, which `target` does not store: where
+     * `source` stands for a hierarchy, each copy has its instance's class's
+     * own keys, which only a document of the target's record type holds
+     * (`storedRecordType`, for the `stored` copy, a spread's literal).
+     */
+    public requireClassCopyStorage(
+        source: string,
+        target: string,
+        key: string,
+        node: ts.Node,
+        stored?: ts.Node,
+    ): void {
+        if (this.classStructTagged(source))
+            this.requireCopyDocument(
+                target,
+                node,
+                stored,
+                `A copy of a '${source}' instance has its class's own key '${key}', which '${target}' storage does not hold.`,
+            );
+    }
+
+    /** Requires that a copy stored in struct `target` be a document of its record type, or refuses with `refusal`. */
+    private requireCopyDocument(
+        target: string,
+        node: ts.Node,
+        stored: ts.Node | undefined,
+        refusal: string,
+    ): never {
+        const record = this.storedRecordType(target, stored);
+        const demand = record && this.documentDemandOf(record, node);
+        if (demand) throw new NativeRecordStorageRequired(demand);
+        return this.fail(node, refusal);
+    }
+
+    /** Struct `name` views instances of class struct `classStruct` (`instance_view`). */
+    public noteInstanceView(name: string, classStruct: string): void {
+        const known = this.viewedClassStructs.get(name) ?? [];
+        if (!known.includes(classStruct))
+            this.viewedClassStructs.set(name, [...known, classStruct]);
+    }
+
+    /**
+     * Where struct `name` stores class instances as views, which enumerate
+     * as the instances do: the test that the record `ownerCpp` names (its
+     * member operator included) is a view, and that instance as a document
+     * (`ViewedObject::document`), whose own keys and values are the
+     * instance's. Undefined for any other struct.
+     */
+    public viewedDocument(
+        name: string,
+        ownerCpp: string,
+        node: ts.Node,
+    ): { readonly viewCpp: string; readonly documentCpp: string } | undefined {
+        if (!this.viewsInstances(name)) return undefined;
+        this.noteEnumeratedView(name, node);
+        return {
+            viewCpp: `${ownerCpp}${viewedMember}.get()`,
+            documentCpp: `${ownerCpp}${viewedMember}.document()`,
+        };
+    }
+
+    /** Records of struct `name`, where it views instances, enumerate. */
+    private noteEnumeratedView(name: string, node: ts.Node): void {
+        if (this.viewsInstances(name) && !this.enumeratedViewStructs.has(name))
+            this.enumeratedViewStructs.set(name, node);
+    }
+
+    /** Each class an enumerated view views has a document view (`json_value_keys`). */
+    private boxViewedClasses(): void {
+        for (const [name, node] of this.enumeratedViewStructs)
+            for (const classStruct of this.viewedClassStructs.get(name) ?? [])
+                this.markJsonBoxed({ kind: "struct", name: classStruct }, node);
+    }
+
+    /**
+     * The address the object `cpp` of reference struct `name` is identified
+     * by: an instance's view is the instance it stands for.
+     */
+    public referenceIdentityCpp(name: string, cpp: string): string {
+        return this.viewsInstances(name)
+            ? `bbl::js::viewed_object(${cpp})`
+            : `${cpp}.get()`;
+    }
+
+    /** Whether a record type can be a view of an object: named properties only. */
+    private viewableRecord(view: ts.Type): boolean {
+        // An intersection of object types (`Query & Pick<Store, "resolve">`)
+        // is a view as one object type is.
+        return (
+            objectLikeType(view) &&
+            this.checker.getPropertiesOfType(view).length > 0 &&
+            callSignatures(this.checker, view, "exact").length === 0 &&
+            view.getConstructSignatures().length === 0 &&
+            this.checker.getIndexInfosOfType(view).length === 0
+        );
     }
 
     /** The class whose instances a record type is stored as (`classViewDemand`). */
@@ -3024,20 +3217,33 @@ export class DataTypeRegistry {
             fields.some((field) => field.accessor && !dictionaryView)
         )
             return undefined;
+        const own = this.storedRecordType(name, stored);
+        const named =
+            stored &&
+            own &&
+            own !== source.type &&
+            this.ownDocumentDemand(own, stored);
+        return named || { ...source, document: true };
+    }
+
+    /**
+     * The type of the `stored` value where it maps to struct `name`, else
+     * the type that registered the struct: record types share a struct by
+     * layout.
+     */
+    private storedRecordType(
+        name: string,
+        stored: ts.Node | undefined,
+    ): ts.Type | undefined {
         const own =
             stored &&
             this.checker.getNonNullableType(
                 this.checker.getTypeAtLocation(stored),
             );
-        if (own && own !== source.type) {
-            const mapped = this.fromTsType(own, stored);
-            const named =
-                mapped?.kind === "struct" && mapped.name === name
-                    ? this.ownDocumentDemand(own, stored)
-                    : undefined;
-            if (named) return named;
-        }
-        return { ...source, document: true };
+        const mapped = own && this.fromTsType(own, stored);
+        return mapped?.kind === "struct" && mapped.name === name
+            ? own
+            : this.nativeRecordSources.get(name)?.type;
     }
 
     /**
@@ -3702,8 +3908,20 @@ export class DataTypeRegistry {
                 accessor(shape.getProperty(property.name)),
             ) ??
                 false) ||
-            this.recordViews.has(this.structIdentity(record)) ||
-            this.proxyRecords.has(this.structIdentity(record))
+            this.viewsInAccessorSlots(record)
+        );
+    }
+
+    /**
+     * Whether record type `record` stores its data fields in accessor slots:
+     * a record view, a proxy or an instance view (`instanceViewsDemand`).
+     */
+    private viewsInAccessorSlots(record: ts.Type): boolean {
+        const identity = this.structIdentity(record);
+        return (
+            this.recordViews.has(identity) ||
+            this.proxyRecords.has(identity) ||
+            this.instanceViewRecords.has(identity)
         );
     }
 
@@ -3764,8 +3982,7 @@ export class DataTypeRegistry {
     public isAccessorRecordType(type: ts.Type): boolean {
         const record = this.checker.getNonNullableType(type);
         return (
-            this.recordViews.has(this.structIdentity(record)) ||
-            this.proxyRecords.has(this.structIdentity(record)) ||
+            this.viewsInAccessorSlots(record) ||
             this.checker
                 .getPropertiesOfType(record)
                 .some((property) =>
@@ -6044,11 +6261,7 @@ export class DataTypeRegistry {
     private holdsOnlyDynamicValues(type: ts.Type): boolean {
         return presentMembers(type).every(
             (member) =>
-                (member.flags & ts.TypeFlags.Object) !== 0 &&
-                ((member as ts.ObjectType).objectFlags &
-                    ts.ObjectFlags.ObjectLiteral) !==
-                    0 &&
-                this.isNonNullConstraint(member),
+                isObjectLiteralType(member) && this.isNonNullConstraint(member),
         );
     }
 
@@ -6334,11 +6547,11 @@ export class DataTypeRegistry {
         )
             return { kind: "event-target" };
         if (platformHandle) return { kind: "handle", handle: platformHandle };
-        const borrowedEvent = borrowedPlatformEventKind(type.symbol);
-        if (borrowedEvent) {
+        const platformEvent = platformEventKind(type.symbol);
+        if (platformEvent) {
             return {
-                kind: "borrowed-platform-event",
-                event: borrowedEvent,
+                kind: "platform-event",
+                event: platformEvent,
             };
         }
         if (
@@ -6628,7 +6841,7 @@ export class DataTypeRegistry {
                           this.storedElementType(elementType, node);
                 if (
                     symbolName === "WeakSet" &&
-                    element?.kind === "borrowed-platform-event"
+                    element?.kind === "platform-event"
                 )
                     return {
                         kind: "set",
@@ -8251,16 +8464,18 @@ export class DataTypeRegistry {
             const optional = memberProperties.some(
                 (member) => (member.flags & ts.SymbolFlags.Optional) !== 0,
             );
-            const stored = markIdentityFunctions(
-                this.markStoredObjectReferences(first),
+            const declarations = memberProperties.flatMap(
+                (member) => member.declarations ?? [],
+            );
+            const stored = this.fieldAbsenceTaggedStorage(
+                declarations,
+                markIdentityFunctions(this.markStoredObjectReferences(first)),
             );
             fields.push({
                 sourceName: property.name,
                 name: sanitizeIdentifier(property.name),
                 type: stored,
-                declarations: memberProperties.flatMap(
-                    (member) => member.declarations ?? [],
-                ),
+                declarations,
                 ...(optional ? { optionalProperty: true } : {}),
                 ...(optional && stored.kind !== "optional"
                     ? { defaultWhenMissing: true }
@@ -9915,6 +10130,9 @@ export class DataTypeRegistry {
         const partial = this.assertedEmpty(type);
         const view = this.recordViews.has(this.structIdentity(type));
         const proxy = this.proxyRecords.has(this.structIdentity(type));
+        const instanceViews = this.instanceViewRecords.has(
+            this.structIdentity(type),
+        );
         const valueOf = (
             owned: OwnedStructProperty,
         ): {
@@ -10133,21 +10351,22 @@ export class DataTypeRegistry {
                         : growable,
                 ),
             );
-            // One layout stores the property once: tagged when a program
-            // tells its absent values apart through any member declaring it.
-            const taggedDeclaration = declarations.find((declaration) =>
-                this.storage.absenceTags.has(declaration),
-            );
-            const mapped = this.absenceTaggedStorage(
-                taggedDeclaration,
+            const mapped = this.fieldAbsenceTaggedStorage(
+                declarations,
                 untagged,
             );
             // A property one member declares as an accessor and another as
             // data is one accessor slot: it holds a data property's value
             // inline, and a write to a getter-only slot throws, as it does
-            // in JavaScript (`bbl::js::Accessor`).
+            // in JavaScript (`bbl::js::Accessor`). An instance's view reads
+            // and writes the instance's own properties through its slots.
             const accessors = declared.map(({ symbol }) =>
-                this.propertyAccessor(symbol, view || proxy),
+                this.propertyAccessor(
+                    symbol,
+                    view ||
+                        proxy ||
+                        (instanceViews && mapped.kind !== "function"),
+                ),
             );
             const accessor = accessors.includes("get-set")
                 ? "get-set"
@@ -10192,16 +10411,13 @@ export class DataTypeRegistry {
                 ),
             );
         }
-        // A component's members are one object under several types, and a
-        // function object is one object wherever it is passed.
-        if (partial || proxy || component || call) {
+        // A component's members are one object under several types, a
+        // function object is one object wherever it is passed, and an
+        // instance's view is one object for that instance.
+        if (partial || proxy || component || call || instanceViews) {
             this.referenceStructNames.add(provisionalName);
         }
-        if (
-            fields.some((field) =>
-                this.carriesBorrowedPlatformEvent(field.type),
-            )
-        ) {
+        if (fields.some((field) => this.carriesPlatformEvent(field.type))) {
             // A synchronous callback observes one JavaScript payload object. Making
             // the whole record reference-backed ensures a handler's field mutation
             // is visible to the dispatcher after the call.
@@ -10224,6 +10440,7 @@ export class DataTypeRegistry {
             )
         )
             this.prototypeAccessorStructs.add(mapped.name);
+        if (instanceViews) this.instanceViewStructs.add(mapped.name);
         return mapped;
     }
 
@@ -10479,10 +10696,17 @@ export class DataTypeRegistry {
     }
 
     /**
-     * Whether every field of a struct is always an own key of its records:
-     * neither its storage nor the record's tags (`ownPresence`) decide it.
+     * Whether every field of a struct is always an own key of its records,
+     * in field order: neither its storage, the record's tags (`ownPresence`),
+     * its class's key order (`classKeyOrders`) nor the instance a view
+     * stands for (`viewedDocument`) decide it.
      */
     public ownKeysDecided(structName: string, node: ts.Node): boolean {
+        if (
+            this.structsByName.get(structName)?.classKeyOrders ||
+            this.viewsInstances(structName)
+        )
+            return false;
         return this.structFields(structName, node, "accessors").every(
             (field) =>
                 !this.presenceByTags(structName, field) &&
@@ -10548,8 +10772,7 @@ export class DataTypeRegistry {
                 });
         } else {
             const demand = this.documentRecordDemand(structName);
-            if (demand && !demand.type.isUnion())
-                throw new NativeRecordStorageRequired(demand);
+            if (demand) throw new NativeRecordStorageRequired(demand);
         }
         this.refuseAmbiguousPresence(field, node);
     }
@@ -10586,17 +10809,12 @@ export class DataTypeRegistry {
         if (presence === "ambiguous")
             this.ambiguousPresenceRead(structName, field, node);
         // A field holding null beside absence, whose presence is read, keeps
-        // the two apart in tagged storage: a library-declared field too (an
-        // init dictionary's `relatedTarget`), the record's storage being the
-        // program's.
+        // the two apart in tagged storage.
         if (presence === "nullable" && !field.accessorReceiver)
-            for (const declaration of field.declarations ?? [])
-                if (
-                    (ts.isPropertySignature(declaration) ||
-                        ts.isPropertyDeclaration(declaration)) &&
-                    !this.storage.absenceTags.has(declaration)
-                )
-                    throw new AbsenceTagStorageRequired(declaration);
+            requireRecordSlotAbsenceTag(
+                this.storage.absenceTags,
+                field.declarations ?? [],
+            );
         if (arms || presence !== "own")
             this.presenceReads.set(`${structName}.${field.sourceName}`, {
                 structName,
@@ -10625,7 +10843,7 @@ export class DataTypeRegistry {
             );
         if (tags !== undefined)
             return {
-                ownCpp: `${field.presentForTags!.length > 1 ? `(${tags})` : tags} && ${held}`,
+                ownCpp: `${tagAlternatives(field) > 1 ? `(${tags})` : tags} && ${held}`,
             };
         return {
             ownCpp: held,
@@ -10641,7 +10859,8 @@ export class DataTypeRegistry {
     public presenceByTags(structName: string, field: DataStructField): boolean {
         return (
             this.structsByName.has(structName) &&
-            field.presentForTags !== undefined &&
+            (field.presentForTags !== undefined ||
+                field.ownForClassTags !== undefined) &&
             !field.accessor
         );
     }
@@ -10657,19 +10876,42 @@ export class DataTypeRegistry {
         access: "->" | ".",
     ): string | undefined {
         const definition = this.structsByName.get(structName);
-        const alternatives = field.presentForTags;
-        if (
-            !definition ||
-            !alternatives ||
-            !this.presenceByTags(structName, field)
-        )
+        if (!definition || !this.presenceByTags(structName, field))
             return undefined;
-        return this.tagConditionCpp(
+        return this.fieldTagsCpp(
             definition,
-            alternatives,
-            (tag) => `${ownerCpp}${access}${tag.name}`,
+            field,
+            (member) => `${ownerCpp}${access}${member}`,
             "bblscene::",
         );
+    }
+
+    /**
+     * The run-time test that a record's tags make `field` own, reading each
+     * tag member through `member`: a union arm declaring it is selected, or
+     * the instance is of a class declaring it. Undefined for a field every
+     * record of the struct owns.
+     */
+    private fieldTagsCpp(
+        definition: DataStructDefinition,
+        field: DataStructField,
+        member: (name: string) => string,
+        namespace: string,
+    ): string | undefined {
+        if (field.ownForClassTags)
+            return field.ownForClassTags.length === 0
+                ? "false"
+                : field.ownForClassTags
+                      .map((tag) => `${member(classTagMember)} == ${tag}`)
+                      .join(" || ");
+        return field.presentForTags
+            ? this.tagConditionCpp(
+                  definition,
+                  field.presentForTags,
+                  (tag) => member(tag.name),
+                  namespace,
+              )
+            : undefined;
     }
 
     /**
@@ -10929,12 +11171,116 @@ export class DataTypeRegistry {
                 }
             }
         });
+        // An instance owns the fields its own class and the classes it
+        // extends declare, not those only another class of the hierarchy
+        // does, created base class first.
+        const concrete = this.classHierarchy.concreteClasses(root);
+        const declaredBy = concrete.map((member) =>
+            classChain(this.classHierarchy.table(member))
+                .reverse()
+                .flatMap(
+                    (link) =>
+                        layouts[classes.indexOf(link.declaration)]?.fields ??
+                        [],
+                ),
+        );
+        // The struct lists its fields in the order every class creates
+        // them; where classes disagree, each enumerates in its own.
+        const classKeyOrders = declaredBy.map((declared) =>
+            ownKeyOrder(declared.map((field) => field.sourceName)),
+        );
+        const agreed = agreedKeyOrder(
+            classKeyOrders,
+            fields.map((field) => field.sourceName),
+        );
+        if (agreed)
+            fields.sort(
+                (left, right) =>
+                    agreed.indexOf(left.sourceName) -
+                    agreed.indexOf(right.sourceName),
+            );
+        for (const field of fields) {
+            const tags = concrete.flatMap((_, tag) =>
+                declaredBy[tag]!.some(
+                    (declared) => declared.sourceName === field.sourceName,
+                )
+                    ? [tag]
+                    : [],
+            );
+            if (tags.length < concrete.length) field.ownForClassTags = tags;
+        }
         this.registerStructDefinition(`class#${name}`, {
             name,
             fields,
             classTag: true,
+            ...(agreed ? {} : { classKeyOrders }),
         });
         return { kind: "struct", name };
+    }
+
+    /**
+     * The orders records of struct `name` list `items` (fields or entries,
+     * keyed by `key`) in when its classes create their keys in different
+     * orders: by class tag, the items that class owns in its order.
+     * Undefined where the items' own order is every record's.
+     */
+    public classKeyOrders<T>(
+        name: string,
+        items: readonly T[],
+        key: (item: T) => string,
+    ): readonly (readonly T[])[] | undefined {
+        return this.structsByName
+            .get(name)
+            ?.classKeyOrders?.map((order) =>
+                order.flatMap((owned) =>
+                    items.filter((item) => key(item) === owned),
+                ),
+            );
+    }
+
+    /** The test that the record `ownerCpp` names (its member operator included) is of class `tag`. */
+    public classTagTestCpp(ownerCpp: string, tag: number): string {
+        return `${ownerCpp}${classTagMember} == ${tag}`;
+    }
+
+    /**
+     * Lines branching on the class of the record `ownerCpp` names (its
+     * member operator included): each class runs its arm's lines.
+     */
+    public classTagBranches(
+        ownerCpp: string,
+        arms: readonly (readonly string[])[],
+    ): string[] {
+        return [
+            ...arms.flatMap((arm, tag) => [
+                `${tag === 0 ? "" : "} else "}if (${this.classTagTestCpp(ownerCpp, tag)}) {`,
+                ...arm,
+            ]),
+            "}",
+        ];
+    }
+
+    /**
+     * The statements `statements` spells for `items` of a record of struct
+     * `name` (fields or entries, keyed by `key`) in the order its class
+     * creates its keys: where its classes create them in different orders
+     * (`classKeyOrders`), a branch per class on the record `ownerCpp`
+     * names (`classTagBranches`).
+     */
+    public classOrderedStatements<T>(
+        name: string,
+        ownerCpp: string,
+        items: readonly T[],
+        key: (item: T) => string,
+        statements: (ordered: readonly T[]) => string,
+    ): string {
+        const orders = this.classKeyOrders(name, items, key);
+        return orders
+            ? this.classTagBranches(
+                  ownerCpp,
+                  orders.map((ordered) => [statements(ordered)]),
+              ).join(" ")
+            : statements(items);
     }
 
     /** Whether a class-backed struct stands for a hierarchy and stores a class tag. */
@@ -11930,18 +12276,18 @@ export class DataTypeRegistry {
     }
 
     /**
-     * Whether a value of this shape physically contains a borrowed event.
+     * Whether a value of this shape physically contains a platform event.
      *
      * Function signatures deliberately stop the walk: a stored handler may
      * accept an event-bearing payload without itself containing a live event.
      */
-    public carriesBorrowedPlatformEvent(
+    public carriesPlatformEvent(
         type: DataType,
         seen = new EmissionSet<string>(),
     ): boolean {
         return containsDataKind(
             type,
-            "borrowed-platform-event",
+            "platform-event",
             (name) => this.structFieldTypes(name),
             false,
             seen,
@@ -12605,6 +12951,7 @@ export class DataTypeRegistry {
                         return;
                     }
                     this.jsonSerializedStructs.set(current.name, node);
+                    this.noteEnumeratedView(current.name, node);
                     this.keyOrders.noteEnumeration(current.name, node);
                     path.push(current.name);
                     for (const field of this.structFields(
@@ -12959,6 +13306,7 @@ export class DataTypeRegistry {
             this.ownErrorNames.add(type.name);
         this.jsonBoxedStructs.set(type.name, node);
         this.keyOrders.noteEnumeration(type.name, node);
+        this.noteEnumeratedView(type.name, node);
         this.cppType(type);
         for (const field of this.viewedFields(
             type.name,
@@ -13070,8 +13418,15 @@ export class DataTypeRegistry {
             const presences = fields.map((field) =>
                 this.ownPresence(name, field, "value", "->", node),
             );
+            // A view reads the instance it stands for.
+            const view = this.viewedDocument(name, "value->", node);
             lines.push(
                 `inline bbl::js::JsonValue json_value_property(const ${name}&${fields.length ? " value" : ""}, std::string_view${fields.length ? " key" : ""}) {`,
+                ...(view
+                    ? [
+                          `    if (${view.viewCpp}) return ${view.documentCpp}.get(key);`,
+                      ]
+                    : []),
             );
             fields.forEach((field, index) => {
                 const property = `value->${field.name}${field.accessor ? ".get()" : ""}`;
@@ -13082,12 +13437,14 @@ export class DataTypeRegistry {
                     );
                     return;
                 }
-                // An absent shared object reads undefined, not its null, and
-                // a nullable field's empty storage refuses to guess.
+                // An absent shared object, or a field the record's tags do
+                // not make own, reads undefined, not its slot, and a nullable
+                // field's empty storage refuses to guess.
                 const presence = presences[index];
                 const read =
                     presence &&
                     (field.type.kind === "struct" ||
+                        this.presenceByTags(name, field) ||
                         presence.emptySlot === "ambiguous")
                         ? `${presence.ownCpp} ? ${cpp} : bbl::js::JsonValue{}`
                         : cpp;
@@ -13101,7 +13458,24 @@ export class DataTypeRegistry {
                 ...fields.map((field) => field.sourceName),
                 ...(this.ownErrorNames.has(name) ? ["name"] : []),
             ];
-            if (presences.every((presence) => presence === undefined))
+            // A class lists its keys in the order its instances create them.
+            const indices = fields.map((_, index) => index);
+            const orders = this.classKeyOrders(
+                name,
+                indices,
+                (index) => fields[index]!.sourceName,
+            );
+            const pushes = (ordered: readonly number[]): string[] =>
+                ordered.map((index) => {
+                    const push = `keys.push_back(${stringLiteral(fields[index]!.sourceName)});`;
+                    const presence = presences[index];
+                    return presence ? `if (${presence.ownCpp}) ${push}` : push;
+                });
+            if (
+                !orders &&
+                !view &&
+                presences.every((presence) => presence === undefined)
+            )
                 lines.push(
                     `inline bbl::js::Array<std::string> json_value_keys([[maybe_unused]] const ${name}& value) {`,
                     `    return {${keys.map(stringLiteral).join(", ")}};`,
@@ -13111,14 +13485,21 @@ export class DataTypeRegistry {
             else
                 lines.push(
                     `inline bbl::js::Array<std::string> json_value_keys(const ${name}& value) {`,
+                    ...(view
+                        ? [
+                              `    if (${view.viewCpp}) return ${view.documentCpp}.own_keys();`,
+                          ]
+                        : []),
                     "    bbl::js::Array<std::string> keys;",
-                    ...fields.map((field, index) => {
-                        const push = `keys.push_back(${stringLiteral(field.sourceName)});`;
-                        const presence = presences[index];
-                        return presence
-                            ? `    if (${presence.ownCpp}) ${push}`
-                            : `    ${push}`;
-                    }),
+                    ...(orders
+                        ? this.classTagBranches(
+                              "value->",
+                              orders.map((ordered) =>
+                                  pushes(ordered).map((line) => `    ${line}`),
+                              ),
+                          )
+                        : pushes(indices)
+                    ).map((line) => `    ${line}`),
                     ...keys
                         .slice(fields.length)
                         .map(
@@ -13206,8 +13587,22 @@ export class DataTypeRegistry {
         }
         for (const name of names) {
             const definition = this.structsByName.get(name);
+            // A view writes the instance it stands for.
+            const view = this.viewedDocument(
+                name,
+                "value.",
+                this.jsonSerializedStructs.get(name)!,
+            );
             lines.push(
                 `inline void json_write(bbl::js::JsonWriter& writer, const ${structName(name)}& value) {`,
+                ...(view
+                    ? [
+                          `    if (${view.viewCpp}) {`,
+                          `        ${this.jsonWriteCpp({ kind: "json" }, view.documentCpp)}`,
+                          "        return;",
+                          "    }",
+                      ]
+                    : []),
                 "    writer.begin_object();",
             );
             const fields = definition?.fields ?? [];
@@ -13327,17 +13722,42 @@ export class DataTypeRegistry {
                             `    writer.key(${key});`,
                             `    ${this.jsonWriteCpp(field.type, `value.${field.name}${field.accessor ? ".get()" : ""}`)}`,
                         ];
-                // A field only some union arms declare is written for them.
-                return field.presentForTags && definition
+                // A field only some union arms or classes declare is
+                // written for them.
+                const tags =
+                    definition &&
+                    this.fieldTagsCpp(
+                        definition,
+                        field,
+                        (member) => `value.${member}`,
+                        "",
+                    );
+                return tags
                     ? [
-                          `    if (${this.tagConditionCpp(definition, field.presentForTags, (tag) => `value.${tag.name}`, "")}) {`,
+                          `    if (${tags}) {`,
                           ...written.map((line) => `    ${line}`),
                           "    }",
                       ]
                     : written;
             };
-            for (const field of definition?.fields ?? [])
-                lines.push(...fieldLines(field));
+            // A class writes its keys in the order its instances create them.
+            const orders = this.classKeyOrders(
+                name,
+                fields,
+                (field) => field.sourceName,
+            );
+            if (orders)
+                lines.push(
+                    ...this.classTagBranches(
+                        "value.",
+                        orders.map((ordered) =>
+                            ordered
+                                .flatMap(fieldLines)
+                                .map((line) => `    ${line}`),
+                        ),
+                    ).map((line) => `    ${line}`),
+                );
+            else for (const field of fields) lines.push(...fieldLines(field));
             lines.push("    writer.end_object();", "}", "");
         }
         return lines;
@@ -13397,6 +13817,7 @@ export class DataTypeRegistry {
      * dependency order inside `namespace bblscene`.
      */
     public renderPreamble(structuredClone = false): DataPreamble {
+        this.boxViewedClasses();
         this.checkFieldPresenceReads();
         this.absentProperties.check();
         this.checkRecordKeyOrders();
@@ -13551,7 +13972,7 @@ export class DataTypeRegistry {
                 `struct ${definition.name}${this.isReferenceStruct(definition.name) ? "Data" : ""} {`,
                 // Scalar members are value-initialized, so a record built
                 // field by field never exposes an indeterminate value. Class
-                // members keep their own construction: some (a borrowed
+                // members keep their own construction: some (a platform
                 // event view) have no default constructor to name.
                 ...definition.fields.map(
                     (field) =>
@@ -13567,6 +13988,9 @@ export class DataTypeRegistry {
                 ),
                 ...(definition.classTag
                     ? [`    int ${classTagMember}{};`]
+                    : []),
+                ...(this.instanceViewStructs.has(definition.name)
+                    ? [`    bbl::js::ViewedObject ${viewedMember}{};`]
                     : []),
                 ...(definition.call
                     ? [`    ${this.cppType(definition.call)} ${callMember};`]
@@ -13604,6 +14028,9 @@ export class DataTypeRegistry {
                           ...(definition.call
                               ? [`        visitor(record.${callMember});`]
                               : []),
+                          ...(this.instanceViewStructs.has(definition.name)
+                              ? [`        visitor(record.${viewedMember});`]
+                              : []),
                           "    }",
                       ]),
                 ...(structuredClone
@@ -13614,15 +14041,14 @@ export class DataTypeRegistry {
                           ...["const ", ""].flatMap((qualifier) => [
                               `    template <typename Visitor> friend void clone_fields(${qualifier}${definition.name}${this.isReferenceStruct(definition.name) ? "Data" : ""}&${cloneFields.length ? " record" : ""}, Visitor&&${cloneFields.length ? " visitor" : ""}) {`,
                               ...cloneFields.map((field) => {
-                                  if (field.presentForTags) {
-                                      const condition = this.tagConditionCpp(
-                                          definition,
-                                          field.presentForTags,
-                                          (tag) => `record.${tag.name}`,
-                                          "",
-                                      );
+                                  const condition = this.fieldTagsCpp(
+                                      definition,
+                                      field,
+                                      (member) => `record.${member}`,
+                                      "",
+                                  );
+                                  if (condition)
                                       return `        visitor.when(${stringLiteral(field.sourceName)}, record.${field.name}, ${condition});`;
-                                  }
                                   return `        visitor(${stringLiteral(field.sourceName)}, record.${field.name}${field.defaultWhenMissing ? ", true" : ""});`;
                               }),
                               "    }",

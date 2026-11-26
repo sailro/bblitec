@@ -111,7 +111,7 @@ const pageLifecycleNames = new Set(["beforeunload", "pagehide"]);
 /**
  * The DOM listener families (`bbl::on_dom_<family>`/`off_dom_<family>`):
  * the types each dispatches (custom takes every type no other family or
- * service claims), its callback's borrowed event (its own value kind, or the
+ * service claims), its callback's event (its own value kind, or the
  * base Event view, `baseView`, its members are read through), whether an
  * element `on<type>` handler joins it, the feature a listener reaches beside
  * input:dom, and whether its listeners need a Document or Window target.
@@ -550,7 +550,7 @@ function compileDomCallback(
         [
             "baseView" in event
                 ? valueForKind("platform-mouse-event", {
-                      cpp: `bbl::js::BorrowedEvent(${name})`,
+                      cpp: `bbl::js::BaseEventRef(${name})`,
                       readOnly: true,
                       engineCpp: engine,
                       platformEventBase: true,

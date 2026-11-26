@@ -784,6 +784,136 @@ function libraryTypeDeclares(
 }
 
 /**
+ * The type a receiver holds to reach a class member: its class's instance,
+ * or the class itself for a static member; undefined for a member of an
+ * anonymous class.
+ */
+function memberHolder(
+    checker: ts.TypeChecker,
+    member: ts.ClassElement,
+): ts.Type | undefined {
+    const owner = member.parent;
+    const symbol =
+        ts.isClassLike(owner) && owner.name
+            ? declaredSymbol(checker, owner.name)
+            : undefined;
+    if (!symbol) return undefined;
+    return isStaticMember(member)
+        ? checker.getTypeOfSymbol(symbol)
+        : checker.getDeclaredTypeOfSymbol(symbol);
+}
+
+/** A class method or accessor with a body, and its {@link memberHolder}. */
+interface ClassCodeMember {
+    readonly code: ts.MethodDeclaration | ts.AccessorDeclaration;
+    readonly holder: ts.Type | undefined;
+}
+
+/** A program's class methods and accessors with a body. */
+interface ClassCode {
+    /** By the key a member access names them with. */
+    readonly named: ReadonlyMap<string, readonly ClassCodeMember[]>;
+    /**
+     * The ones the language may call on a value no access names: a
+     * protocol method (`then`, `toString`) or a computed key
+     * (`[Symbol.iterator]`, `[Symbol.toPrimitive]`).
+     */
+    readonly protocol: readonly ClassCodeMember[];
+    /** Each distinct holder of any of them; undefined for an anonymous class's. */
+    readonly holders: ReadonlySet<ts.Type | undefined>;
+}
+
+/** @unjournaled Derived from the program alone, on first use. */
+const classCodeByProgram = new WeakMap<ts.Program, ClassCode>();
+
+function classCode(checker: ts.TypeChecker, program: ts.Program): ClassCode {
+    const known = classCodeByProgram.get(program);
+    if (known) return known;
+    const named = new Map<string, ClassCodeMember[]>();
+    const protocol: ClassCodeMember[] = [];
+    const holders = new Set<ts.Type | undefined>();
+    for (const file of program.getSourceFiles()) {
+        if (
+            file.isDeclarationFile ||
+            program.isSourceFileFromExternalLibrary(file)
+        )
+            continue;
+        for (const node of sourceFileNodes(file)) {
+            if (
+                !(ts.isMethodDeclaration(node) || ts.isAccessor(node)) ||
+                !node.body ||
+                !ts.isClassLike(node.parent)
+            )
+                continue;
+            const member = { code: node, holder: memberHolder(checker, node) };
+            holders.add(member.holder);
+            const name = staticPropertyKey(checker, node.name);
+            if (name !== undefined) {
+                const list = named.get(name);
+                if (list) list.push(member);
+                else named.set(name, [member]);
+            }
+            if (
+                name === undefined ||
+                ts.isComputedPropertyName(node.name) ||
+                LANGUAGE_PROTOCOL_METHODS.has(name)
+            )
+                protocol.push(member);
+        }
+    }
+    const code = { named, protocol, holders };
+    classCodeByProgram.set(program, code);
+    return code;
+}
+
+/** Whether a receiver of type `receiver` may hold a member's {@link memberHolder}. */
+function mayReach(
+    checker: ts.TypeChecker,
+    receiver: ts.Type,
+    holder: ts.Type | undefined,
+): boolean {
+    return holder === undefined || mayHold(checker, receiver, holder);
+}
+
+/**
+ * The class methods and accessors a member access named `name` may run on
+ * a receiver of type `receiver`: dispatch forward, the converse of
+ * {@link ClassHierarchy.methodCallers}. A member is reached when the
+ * receiver may hold its class's instance ({@link mayHold}), whatever type
+ * it is read through: the class, a base, an interface, `this` or `any`.
+ */
+export function dispatchedClassMembers(
+    checker: ts.TypeChecker,
+    program: ts.Program,
+    name: string,
+    receiver: ts.Type,
+): (ts.MethodDeclaration | ts.AccessorDeclaration)[] {
+    return (classCode(checker, program).named.get(name) ?? []).flatMap(
+        (member) =>
+            mayReach(checker, receiver, member.holder) ? [member.code] : [],
+    );
+}
+
+/** The class members the language itself may call on any value ({@link ClassCode.protocol}). */
+export function protocolClassMembers(
+    checker: ts.TypeChecker,
+    program: ts.Program,
+): (ts.MethodDeclaration | ts.AccessorDeclaration)[] {
+    return classCode(checker, program).protocol.map((member) => member.code);
+}
+
+/** Whether a key only the run time knows, read on a receiver of type `receiver`, may run a class's code. */
+export function runTimeKeyMayRunClassCode(
+    checker: ts.TypeChecker,
+    program: ts.Program,
+    receiver: ts.Type,
+): boolean {
+    for (const holder of classCode(checker, program).holders)
+        if (mayReach(checker, receiver, holder)) return true;
+    return false;
+}
+
+/**
  * Each program's subclass edges (`ClassHierarchy.subclasses`): derived
  * from the program alone, walked once for every hierarchy of it, the
  * attempts of one compile included.
@@ -833,13 +963,8 @@ export class ClassHierarchy {
         const name = staticPropertyKey(this.checker, method.name);
         if (name === undefined || LANGUAGE_PROTOCOL_METHODS.has(name))
             return undefined;
-        const symbol = owner.name
-            ? declaredSymbol(this.checker, owner.name)
-            : undefined;
-        if (!symbol) return undefined;
-        const holder = isStaticMember(method)
-            ? this.checker.getTypeOfSymbol(symbol)
-            : this.checker.getDeclaredTypeOfSymbol(symbol);
+        const holder = memberHolder(this.checker, method);
+        if (!holder) return undefined;
         const uses = memberUses(this.checker, this.program);
         const known = new Map<ts.Type, boolean>();
         const reaches = (receiver: ts.Node): boolean => {

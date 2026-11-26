@@ -159,7 +159,7 @@ export function isOpaqueReference(type: DataType | undefined): boolean {
 export function isNativeStructuralView(type: DataType | undefined): boolean {
     return (
         isOpaqueReference(type) ||
-        type?.kind === "borrowed-platform-event" ||
+        type?.kind === "platform-event" ||
         type?.kind === "handle" ||
         type?.kind === "event-target"
     );

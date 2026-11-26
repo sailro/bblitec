@@ -1,5 +1,4 @@
 import test from "node:test";
-import assert from "node:assert/strict";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
@@ -145,17 +144,45 @@ test("Map cursors distinguish yielded null references from completion", async (t
     });
 });
 
-test("Map cursor values refuse unrepresented mixed absence comparisons", () => {
-    for (const read of ["values.next().value", "first.value"]) {
-        assert.throws(
-            () =>
-                compileSource(`
-            interface Item {value:number;}
-            const values=new Map<number,Item|null|undefined>([[0,null],[1,undefined]]).values();
-            ${read === "first.value" ? "const first=values.next();" : ""}
-            if(${read}!==null)throw new Error('null yield');
-        `),
-            /may be null or undefined is compared strictly with null/,
+test("Map and Set cursors tell yielded null and undefined apart", async (t) => {
+    const source = `
+        interface Item {value:number;}
+        const item:Item={value:3};
+        const map=new Map<number,Item|null|undefined>([[0,null],[1,undefined],[2,item]]);
+        const values=map.values();
+        if(values.next().value!==null)throw new Error('null yield');
+        const first=values.next();
+        if(first.done||first.value===null||first.value!==undefined)throw new Error('undefined yield');
+        const third=values.next();
+        if(third.done||third.value!==item)throw new Error('item yield');
+        const end=values.next();
+        if(!end.done||end.value===null||end.value!==undefined)throw new Error('completion');
+        if(map.values().next().value===undefined)throw new Error('direct null yield');
+        const kept=map.values();
+        const held:Array<IteratorResult<Item|null|undefined,undefined>>=[kept.next(),kept.next(),kept.next(),kept.next()];
+        if(held[0]!.done||held[0]!.value!==null)throw new Error('stored null');
+        if(held[1]!.done||held[1]!.value!==undefined||held[1]!.value===null)throw new Error('stored undefined');
+        if(held[2]!.done||held[2]!.value!==item)throw new Error('stored item');
+        if(!held[3]!.done||held[3]!.value!==undefined||held[3]!.value===null)throw new Error('stored completion');
+        const set=new Set<Item|null|undefined>([undefined,null]).values();
+        if(set.next().value!==undefined||set.next().value!==null||set.next().value!==undefined)
+            throw new Error('Set yields');
+    `;
+    runInNewContext(
+        ts.transpileModule(source, {
+            compilerOptions: {
+                target: ts.ScriptTarget.ES2022,
+                module: ts.ModuleKind.None,
+            },
+        }).outputText,
+    );
+    const result = compileSource(source);
+    const native = optionalNativeFixtureTools(false);
+    await t.test("native assertions", { skip: !native }, () => {
+        runGeneratedProgram(
+            native!,
+            "map-cursor-boundaries/mixed-absence-yields",
+            result.cpp,
         );
-    }
+    });
 });

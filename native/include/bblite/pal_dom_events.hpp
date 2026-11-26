@@ -63,23 +63,14 @@ public:
         if (!event.dom)
             throw std::logic_error("DOM dispatch requires an owned event path.");
         auto& state = *event.dom;
-        if (state.dispatching)
-            throw std::logic_error("The same event is already being dispatched.");
-        state.dispatching = true;
-        state.dispatch_engine = owner;
+        const DomDispatchScope scope(state, owner,
+                                     owner ? owner->lifetime.token() : std::weak_ptr<const int>{});
         struct Reset {
             DomEventState& state;
             const Event& event;
             ~Reset() {
                 if constexpr (requires { event.default_prevented = true; })
                     event.default_prevented = event.default_prevented || state.default_prevented;
-                state.phase = 0;
-                state.current_target.reset();
-                state.path.clear();
-                state.propagation_stopped = false;
-                state.immediate_propagation_stopped = false;
-                state.dispatching = false;
-                state.dispatch_engine = nullptr;
             }
         } reset{state, event};
         const auto path = state.path;
@@ -505,6 +496,7 @@ template <typename Event>
                               std::optional<DomEventTarget> related = std::nullopt) {
     if (path.empty())
         throw std::logic_error("DOM events require a target.");
+    payload.default_prevented = payload.default_prevented.detached();
     payload.dom = new_dom_event_state();
     payload.dom->type = std::move(type);
     payload.dom->target = path.front();
@@ -704,13 +696,6 @@ inline void dispatch_dom_batch(Engine& engine, const std::shared_ptr<DomEventBat
 
 inline std::vector<DomEventTarget> dom_canvas_path() {
     return {DomEventTarget::canvas(), DomEventTarget::document(), DomEventTarget::window()};
-}
-
-inline js::Nullable<DomEventTargetValue> dom_target_value(Engine& engine,
-                                                          std::optional<DomEventTarget> target) {
-    if (!target)
-        return std::nullopt;
-    return dom_target_value(engine, *target);
 }
 
 inline Engine& dom_target_owner(DomEventTargetValue value) {
@@ -1414,8 +1399,22 @@ public:
         static_cast<void>(event());
         return payload_->keyboard ? &*payload_->keyboard : nullptr;
     }
-    [[nodiscard]] js::BorrowedEvent borrowed_event() const {
-        return js::BorrowedEvent(event()).retaining(payload_);
+    /** The base Event view of this event, which shares its payload. */
+    [[nodiscard]] js::BaseEventRef event_ref() const {
+        return js::BaseEventRef(std::shared_ptr<const PlatformMouseEvent>(payload_, &event()));
+    }
+    /** This event as a MouseEvent reference, which shares its identity and state. */
+    [[nodiscard]] js::EventRef<const PlatformMouseEvent> mouse_ref() const {
+        return js::EventRef<const PlatformMouseEvent>(
+            std::shared_ptr<const PlatformMouseEvent>(payload_, &mouse()));
+    }
+    /** This constructed KeyboardEvent as a reference, which shares its identity and state. */
+    [[nodiscard]] js::EventRef<const PlatformKeyboardEvent> keyboard_ref() const {
+        const auto* keys = keyboard();
+        if (!keys)
+            throw std::logic_error("The event is not a KeyboardEvent.");
+        return js::EventRef<const PlatformKeyboardEvent>(
+            std::shared_ptr<const PlatformKeyboardEvent>(payload_, keys));
     }
     void prevent_default() const { event().prevent_default(); }
     void stop_propagation() const { event().stop_propagation(); }
@@ -1425,10 +1424,13 @@ public:
     [[nodiscard]] bool operator==(const OwnedDomEvent& other) const {
         return identity() == other.identity();
     }
-    [[nodiscard]] bool operator==(const PlatformMouseEvent& other) const {
+    [[nodiscard]] bool operator==(const PlatformEventFlags& other) const {
         return dom == other.dom;
     }
-    [[nodiscard]] bool operator==(const js::BorrowedEvent& other) const { return dom == other.dom; }
+    [[nodiscard]] bool operator==(const js::BaseEventRef& other) const { return dom == other.dom; }
+    template <typename T> [[nodiscard]] bool operator==(const js::EventRef<T>& other) const {
+        return *this == other.get();
+    }
     void set_owner(Engine& engine) const {
         static_cast<void>(event());
         if (payload_->owner && (payload_->owner != &engine || payload_->owner_lifetime.expired()))

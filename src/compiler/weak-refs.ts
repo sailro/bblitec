@@ -25,11 +25,7 @@ export function compileWeakRefNew(
             "new WeakRef requires a target of the native data model.",
         );
     context.reachJsData();
-    const target = lowerer.compileForRetainedSink(
-        arguments_[0]!,
-        dataType.target,
-        "WeakRef",
-    );
+    const target = lowerer.compileForSink(arguments_[0]!, dataType.target);
     return {
         kind: "data",
         cpp: `bbl::js::make_ref<${context.dataTypes.cppType(dataType.target)}>(${target})`,

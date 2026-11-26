@@ -162,7 +162,7 @@ export class DeferredCapabilities {
         if (rhs)
             context.emit({
                 kind: "expression",
-                code: `static_cast<void>(${context.dataLowerer.compileForRetainedSink(rhs, result, "a deferred DOM property")});`,
+                code: `static_cast<void>(${context.dataLowerer.compileForSink(rhs, result)});`,
             });
         return this.emitKnown(
             rhs ? node.parent : node,

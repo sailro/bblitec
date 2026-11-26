@@ -83,6 +83,26 @@ export function readUpstreamPin(
     };
 }
 
+/**
+ * The bytes that fix what a store reads, for a bake over pinned sources to
+ * key on: the package lock (which fixes the package installed, and the
+ * vendored packages beside it), the pin, and the corpus's pinned
+ * type-only sources.
+ */
+export function pinnedSourceInputs(
+    repositoryRoot = compilerRepositoryRoot(),
+): Uint8Array[] {
+    const corpus = readPinFile(
+        "upstream/babylon-lite-corpus.json",
+        repositoryRoot,
+    ) as Partial<BabylonLiteCorpusManifest>;
+    return [
+        readFileSync(resolve(repositoryRoot, "package-lock.json")),
+        readFileSync(resolve(repositoryRoot, "upstream/babylon-lite.json")),
+        new TextEncoder().encode(JSON.stringify(corpus.packageSources ?? [])),
+    ];
+}
+
 /** Where the pinned package is installed (`node_modules/<package>`), from the pin file alone. */
 export function pinnedPackageRoot(
     repositoryRoot = compilerRepositoryRoot(),
@@ -314,6 +334,22 @@ export class UpstreamSourceStore {
     public findPublicExport(name: string): PublicExport | undefined {
         if (this.publicExports.size === 0) this.loadPublicExports();
         return this.publicExports.get(name);
+    }
+
+    /**
+     * The module that owns the export `name` among those `qualifies`
+     * admits: its public export's module, else the one admitted source
+     * declaring it (`declaringModules`). Undefined when the public export's
+     * module is not admitted, or when no source or several declare it.
+     */
+    public exportModule(
+        name: string,
+        qualifies: (module: string) => boolean = () => true,
+    ): string | undefined {
+        const value = this.findPublicExport(name)?.modulePath;
+        if (value !== undefined) return qualifies(value) ? value : undefined;
+        const owners = this.declaringModules(name).filter(qualifies);
+        return owners.length === 1 ? owners[0] : undefined;
     }
 
     public resolvePublicExport(name: string): PublicExport {

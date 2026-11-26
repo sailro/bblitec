@@ -35,8 +35,9 @@ import {
 
 const prefix = `
     import { createEngine, createSceneContext, createMeshFromData, createBox,
-        createPbrMaterial, createMorphTargets, createSkeleton, setMorphTargetWeights,
+        createPbrMaterial, createMorphTargets, setMorphTargetWeights,
         onBeforeRender, addToScene, registerScene, startEngine } from "@babylonjs/lite";
+    import { createSkeleton } from "@babylonjs/lite/skeleton/create-skeleton.js";
     const engine = await createEngine({});
     const scene = createSceneContext(engine);
     const positions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);

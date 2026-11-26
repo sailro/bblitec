@@ -6319,8 +6319,8 @@ export class UiProjection {
 
     /**
      * A per-element listener or handler outside shared DOM dispatch (form
-     * input/change, a file input's change): it receives a borrowed mouse
-     * event view. A handler's false result cancels its event.
+     * input/change, a file input's change): it receives a mouse event
+     * view. A handler's false result cancels its event.
      */
     public compileUiElementCallback(
         callback: ts.Expression,

@@ -164,6 +164,11 @@ function uncloneablePosition(
                 );
             if (seen.has(type.name)) return undefined;
             seen.add(type.name);
+            context.dataTypes.requireViewCopyStorage(
+                type.name,
+                type.name,
+                node,
+            );
             for (const field of context.dataTypes.structFields(
                 type.name,
                 node,
@@ -250,7 +255,7 @@ function uncloneablePosition(
             return refuse("an ArrayBufferView without its element class");
         case "numberindex":
             return refuse("a numeric index view");
-        case "borrowed-platform-event":
+        case "platform-event":
             return refuse("a platform event");
         case "function":
             // structuredClone throws DataCloneError where it meets one.

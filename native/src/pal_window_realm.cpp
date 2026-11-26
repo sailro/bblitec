@@ -1769,7 +1769,7 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                     WorkerRealm realm(loop, {}, services);
                     realm.provide_host_accessor(HostAccessor::device_pixel_ratio,
                                                 window_device_pixel_ratio);
-                    ApplicationErrors errors(loop);
+                    ApplicationErrors errors(loop, owner.engine);
                     owner.errors = &errors;
                     // Only a capture realm's animation frames end with a rendering update.
                     if (frame_options.frame_delta_ms > 0)

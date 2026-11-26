@@ -524,8 +524,8 @@ std::shared_ptr<PointerDragDispatcher> create_pointer_drag_dispatcher(Engine& en
     }
     return state;
 }
-js::Callback<void(js::BorrowedEvent)> pointer_drag_listener(const std::shared_ptr<PointerDragDispatcher>& state, unsigned kind) {
-    return [weak = std::weak_ptr<PointerDragDispatcher>(state), kind](js::BorrowedEvent event) {
+js::Callback<void(js::BaseEventRef)> pointer_drag_listener(const std::shared_ptr<PointerDragDispatcher>& state, unsigned kind) {
+    return [weak = std::weak_ptr<PointerDragDispatcher>(state), kind](js::BaseEventRef event) {
         if (auto live = weak.lock()) drag_event(*live, kind, event.as<PlatformMouseEvent>());
     };
 }

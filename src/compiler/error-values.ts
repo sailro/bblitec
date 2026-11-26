@@ -419,7 +419,7 @@ export function thrownException(
     refusal: { node: ts.Node; message: string },
 ): { cpp: string; pointer: boolean } {
     const error = authoredErrorValue(context, thrown) ?? thrown;
-    // A borrowed DOM event cannot outlive its dispatch: it throws opaque, and
+    // Thrown-value storage holds no DOM event: one throws opaque, and
     // natively reading the thrown value refuses.
     if (
         error.kind === "platform-mouse-event" ||

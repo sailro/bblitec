@@ -276,11 +276,12 @@ export class PinnedProgram implements PinnedNames {
     private createProgram(
         rootNames: readonly string[],
         file?: ts.SourceFile,
+        options: ts.CompilerOptions = PINNED_PROGRAM_OPTIONS,
     ): ts.Program {
         const getSourceFile = this.host.getSourceFile.bind(this.host);
         return ts.createProgram({
             rootNames: [...rootNames, BUNDLER_QUERIES],
-            options: PINNED_PROGRAM_OPTIONS,
+            options,
             host: file
                 ? {
                       ...this.host,
@@ -317,6 +318,44 @@ export class PinnedProgram implements PinnedNames {
                 this.rooted.set(file, checked.checker);
         }
         return checked;
+    }
+
+    /**
+     * A pinned module's declarations, as TypeScript's declaration emit
+     * writes them from its checked source: `@internal` members kept, and
+     * every other module named by its own relative specifier. Refuses a
+     * module whose declarations TypeScript cannot write.
+     */
+    public declarationText(modulePath: string): string {
+        const program = this.createProgram(
+            [modulePath, this.webGpu],
+            undefined,
+            {
+                ...PINNED_PROGRAM_OPTIONS,
+                noEmit: false,
+                declaration: true,
+                emitDeclarationOnly: true,
+                // The host resolves every import (`resolveModuleNameLiterals`);
+                // without this, the emit tries a package `imports` specifier
+                // for a module it names and needs a base path the pin lacks.
+                resolvePackageJsonImports: false,
+            },
+        );
+        const file = program.getSourceFile(modulePath);
+        let text: string | undefined;
+        const { diagnostics } = program.emit(
+            file,
+            (name, data) => {
+                if (name.endsWith(".d.ts")) text = data;
+            },
+            undefined,
+            true,
+        );
+        if (!file || diagnostics.length || text === undefined)
+            throw new Error(
+                `TypeScript writes no declarations for pinned module ${modulePath}: ${diagnostics.map(({ messageText }) => ts.flattenDiagnosticMessageText(messageText, " ")).join("; ")}`,
+            );
+        return text;
     }
 
     private wholeProgram(): {

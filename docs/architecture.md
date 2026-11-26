@@ -147,7 +147,9 @@ Executables start with authored live defaults; parity and checks apply the regis
 - RAII owns locals; shared containers and `bbl::js::Ref<T>` keep JS identity.
 - Payloads that can own a traced edge join cycle collection at frame boundaries and teardown; others are reference
   counted. Statics and GC registries are realm-local.
-- Non-atomic JS references stay on their realm; borrowed events last one dispatch.
+- Non-atomic JS references stay on their realm. A platform event kept past its dispatch (closure, record, container) is
+  an owned reference (`bbl::js::EventRef`, `BaseEventRef`) sharing identity, dispatch state and cancellation with
+  every copy, so it reads the dispatch's final state; error and rejection events share theirs the same way.
 - Physics, navigation and audio owners outlive renderer rebuilds; GPU resources live through in-flight submissions.
 - Destructors and noexcept paths report broken invariants through `bblite/teardown.hpp`, then terminate. Exceptions
   escaping an entry are reported through `bblite/uncaught_error.hpp`.

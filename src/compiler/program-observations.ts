@@ -40,7 +40,12 @@ import {
     type MemberAccess,
     type WriteKind,
 } from "./syntax.js";
-import { valueKindOf, arrayShape, unionMembers } from "./type-facts.js";
+import {
+    valueKindOf,
+    arrayShape,
+    unionMembers,
+    callSignatures,
+} from "./type-facts.js";
 
 /** The library calls that define members of their first argument. */
 type ReflectiveDefinition =
@@ -135,8 +140,8 @@ export interface NamedRead {
  *   not hold, or whose key method is read other than as a direct callee;
  * - enumerations: `Object.keys`/`values`/`entries`/`getOwnPropertyNames`/
  *   `getOwnPropertyDescriptors`/`hasOwn`, `Object.assign` sources, object
- *   spreads and rests, `for...in`, `in`, `hasOwnProperty`, `JSON.stringify`
- *   and `structuredClone`;
+ *   spreads and rests, `for...in`, `in`, `hasOwnProperty`, and each
+ *   record `JSON.stringify` and `structuredClone` reach;
  * - key views: the enumerations but object spreads, which copy the keys
  *   into the record `copies` names rather than show them;
  * - widened arrays: the element types of mutable arrays read where a
@@ -657,6 +662,34 @@ function observe(program: ts.Program): ProgramObservations {
         const type = copiedKeys(node);
         if (type) keyViews.add(type);
     };
+    // `JSON.stringify` and `structuredClone` enumerate each record they
+    // reach: an array's or a tuple's elements, a record's property values.
+    const deeplyEnumerated = (node: ts.Node): void => {
+        const seen = new Set<ts.Type>();
+        const reach = (type: ts.Type): void => {
+            if (
+                seen.has(type) ||
+                !objectLike(type) ||
+                callSignatures(checker, type, "present").length > 0
+            )
+                return;
+            seen.add(type);
+            enumerations.add(type);
+            keyViews.add(type);
+            for (const member of unionMembers(type)) {
+                const nested =
+                    checker.isArrayType(member) || checker.isTupleType(member)
+                        ? checker.getTypeArguments(member as ts.TypeReference)
+                        : checker
+                              .getPropertiesOfType(member)
+                              .map((property) =>
+                                  checker.getTypeOfSymbol(property),
+                              );
+                for (const value of nested) reach(value);
+            }
+        };
+        reach(typeOf(node));
+    };
     const read = (
         name: string,
         node: ts.Node,
@@ -1023,7 +1056,7 @@ function observe(program: ts.Program): ProgramObservations {
             node.expression.text === "structuredClone" &&
             node.arguments[0]
         )
-            enumerated(node.arguments[0]);
+            deeplyEnumerated(node.arguments[0]);
     };
     const call = (node: ts.CallExpression): void => {
         const callee = namedMember(checker, unwrapExpression(node.expression));
@@ -1094,7 +1127,7 @@ function observe(program: ts.Program): ProgramObservations {
         } else if (owner === "Reflect") {
             if (first) addWrite(first, { node });
         } else if (owner === "JSON") {
-            if (method === "stringify" && first) enumerated(first);
+            if (method === "stringify" && first) deeplyEnumerated(first);
         } else if (
             IDENTITY_SEARCHES.has(method) &&
             first &&

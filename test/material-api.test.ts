@@ -327,7 +327,7 @@ test("a PBR material's doubleSided reads its own property: a glTF material's, na
 
 test("a loop over a run-time selection creates a shader or standard material's no-color view per pass", () => {
     const { cpp } =
-        compileSource(`import {createEngine,createShaderMaterial,createShaderNoColorMaterialView,createStandardMaterial,createStandardNoColorMaterialView,type Material,type ShaderMaterial,type StandardMaterial} from "@babylonjs/lite";
+        compileSource(`import {createEngine,createShaderMaterial,createShaderNoColorMaterialView,createStandardMaterial,createStandardNoColorMaterialView,type Material,type ShaderMaterial,type StandardMaterialProps} from "@babylonjs/lite";
 async function main(){
 await createEngine({});
 const shader=createShaderMaterial({
@@ -336,7 +336,7 @@ fragmentSource:"@fragment fn mainFragment()->@location(0) vec4f{return vec4f(1.0
 attributes:["position"],uniforms:["worldViewProjection"]});
 const standard=createStandardMaterial();
 const shaders:ShaderMaterial[]=[shader,shader].filter(()=>Math.random()<0.5);
-const standards:StandardMaterial[]=[standard,standard].filter(()=>Math.random()<0.5);
+const standards:StandardMaterialProps[]=[standard,standard].filter(()=>Math.random()<0.5);
 const views:Material[]=[];
 for(const source of shaders)views.push(createShaderNoColorMaterialView(source));
 for(const source of standards)views.push(createStandardNoColorMaterialView(source));

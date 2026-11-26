@@ -73,11 +73,7 @@ export function compileBoundCollectionMethod(
             pinOperand(
                 context,
                 lowerer.leafValue(
-                    lowerer.compileForRetainedSink(
-                        argument,
-                        parameters[index]!,
-                        "Bound collection argument",
-                    ),
+                    lowerer.compileForSink(argument, parameters[index]!),
                     parameters[index]!,
                 ),
                 argument,

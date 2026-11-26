@@ -77,9 +77,9 @@ test("reachable reference names retain definitions after a matching layout is in
             bbl::PlatformKeyboardEvent event;
             event.code = "Space";
             auto first = bbl::js::make_ref<bblscene::${first}Data>(
-                bblscene::${first}Data{bbl::js::Borrowed<const bbl::PlatformKeyboardEvent>(event), false});
+                bblscene::${first}Data{bbl::js::EventRef<const bbl::PlatformKeyboardEvent>(event), false});
             auto second = bbl::js::make_ref<bblscene::${second}Data>(
-                bblscene::${second}Data{bbl::js::Borrowed<const bbl::PlatformKeyboardEvent>(event), false});
+                bblscene::${second}Data{bbl::js::EventRef<const bbl::PlatformKeyboardEvent>(event), false});
             auto alias = first;
             const auto consume = [](auto payload) {
                 payload->consumed = payload->event.get().code == "Space";

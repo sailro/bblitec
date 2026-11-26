@@ -1110,9 +1110,13 @@ export class StatementLowerer {
             return;
         }
         if (ts.isVariableStatement(statement)) {
-            for (const declaration of statement.declarationList.declarations) {
-                context.declarations.emitVariableDeclaration(declaration);
-            }
+            this.loweredTerminators.delete(statement);
+            for (const declaration of statement.declarationList.declarations)
+                // An initializer that always throws ends the flow here.
+                if (context.declarations.emitVariableDeclaration(declaration)) {
+                    this.loweredTerminators.add(statement);
+                    return;
+                }
             return;
         }
         if (ts.isExpressionStatement(statement)) {
@@ -3248,7 +3252,13 @@ export class StatementLowerer {
         const raw = context.compileValue(statement.expression);
         const owner =
             raw.kind === "data"
-                ? context.dataLowerer.narrowOptional(raw, statement.expression)
+                ? context.dataLowerer.nativeUnionDocument(
+                      context.dataLowerer.narrowOptional(
+                          raw,
+                          statement.expression,
+                      ),
+                      statement.expression,
+                  )
                 : raw;
         if (owner.kind === "record") {
             // A key a conditional spread wrote is visited while it is own;
@@ -3348,7 +3358,7 @@ export class StatementLowerer {
                 initializer: snapshotReadCpp(owner),
             });
             return {
-                keysCpp: `${object}.own_keys()`,
+                keysCpp: `${object}.for_in_keys()`,
                 presentCpp: (key) => `${object}.has_own(${key})`,
             };
         }
@@ -3386,7 +3396,8 @@ export class StatementLowerer {
             if (
                 fields.some(
                     (field) => field.accessor && !field.accessorReceiver,
-                )
+                ) &&
+                context.dataTypes.holdsPrototypeAccessors(dataType.name)
             )
                 context.dataTypes.structFields(dataType.name, node);
             const access = context.dataTypes.memberAccess(dataType.name);
@@ -3406,12 +3417,30 @@ export class StatementLowerer {
                 )?.ownCpp,
             }));
             const optional = presence.filter(({ present }) => present);
-            const pushes = presence.map(({ field, present }) => {
-                const push = `own.push_back(${context.cppString(field.sourceName)});`;
-                return present ? `if (${present}) ${push}` : push;
-            });
+            const pushes = (
+                ordered: readonly (typeof presence)[number][],
+            ): string =>
+                ordered
+                    .map(({ field, present }) => {
+                        const push = `own.push_back(${context.cppString(field.sourceName)});`;
+                        return present ? `if (${present}) ${push}` : push;
+                    })
+                    .join(" ");
+            // A view lists the keys of the instance it stands for.
+            const view = context.dataTypes.viewedDocument(
+                dataType.name,
+                `${object}${access}`,
+                node,
+            );
+            if (view) context.reachJson();
             return {
-                keysCpp: `[&] { bbl::js::Array<std::string> own; ${pushes.join(" ")} return own; }()`,
+                keysCpp: `[&] { ${view ? `if (${view.viewCpp}) return ${view.documentCpp}.own_keys(); ` : ""}bbl::js::Array<std::string> own; ${context.dataTypes.classOrderedStatements(
+                    dataType.name,
+                    `${object}${access}`,
+                    presence,
+                    ({ field }) => field.sourceName,
+                    pushes,
+                )} return own; }()`,
                 ...(optional.length
                     ? {
                           presentCpp: (key: string) =>
@@ -4928,7 +4957,10 @@ export class StatementLowerer {
                         code: `${target.cpp} = ${value.cpp};`,
                     });
                 } else if (
-                    (target.kind === "data" || target.kind === "promise") &&
+                    (target.kind === "data" ||
+                        target.kind === "promise" ||
+                        // A stored event reads as the event it holds.
+                        target.eventStorageCpp !== undefined) &&
                     (operator === "=" || isJsonValue(target)) &&
                     context.dataLowerer.emitAssignment(unwrapped)
                 ) {
@@ -5001,9 +5033,15 @@ export class StatementLowerer {
                     context.emitDiscardedValue(value);
                     return;
                 } else {
-                    // A compile-time array a later assignment replaces is
-                    // stored: the declaration is lowered again with storage.
-                    if (target.kind === "tuple")
+                    // A compile-time array or a dispatched event a later
+                    // assignment replaces is stored: the declaration is
+                    // lowered again with storage.
+                    if (
+                        target.kind === "tuple" ||
+                        ((target.kind === "platform-keyboard-event" ||
+                            target.kind === "platform-mouse-event") &&
+                            target.eventStorageCpp === undefined)
+                    )
                         requireDynamicBindingStorage(
                             context.checker,
                             unwrapped.left,

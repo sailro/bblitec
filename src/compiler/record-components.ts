@@ -11,6 +11,7 @@ import {
     callSignatures,
     classInstanceDeclaration,
     declaredRecordName,
+    isObjectLiteralType,
     unionMembers,
 } from "./type-facts.js";
 
@@ -175,7 +176,8 @@ const FIXED_LAYOUT_ORIGINS: ReadonlySet<DeclarationOrigin> = new Set([
  * Whether a type is a plain record a component can hold: an object type,
  * or an intersection of them, with properties and no call, construct or
  * index signature, that is not an array or a class instance, every
- * property declared by the program or the engine.
+ * property declared by the program or the engine, and declared by a class
+ * only in an object literal's type (a spread's copy of an instance).
  */
 export function isPlainRecord(checker: ts.TypeChecker, type: ts.Type): boolean {
     return recordShape(checker, type, false);
@@ -209,6 +211,7 @@ function recordShape(
     )
         return false;
     const properties = checker.getPropertiesOfType(type);
+    const literal = parts.every(isObjectLiteralType);
     return (
         properties.length > 0 &&
         properties.every(
@@ -217,7 +220,7 @@ function recordShape(
                 declarations.length > 0 &&
                 declarations.every(
                     (declaration) =>
-                        !ts.isClassLike(declaration.parent) &&
+                        (literal || !ts.isClassLike(declaration.parent)) &&
                         !FIXED_LAYOUT_ORIGINS.has(
                             declarationOrigin(declaration),
                         ),
@@ -316,6 +319,27 @@ export interface RecordJoin {
 
 /** What a record component keys its members by. */
 export type RecordComponentKey = ts.Symbol | ts.Type | InstantiatedRecord;
+
+/**
+ * Whether two joins join the same records the same way. A record is its
+ * identity (`recordIdentity`), as components key it, not its checker type:
+ * the checker types an object literal afresh each time it is asked.
+ */
+export function sameRecordJoin(
+    checker: ts.TypeChecker,
+    left: RecordJoin,
+    right: RecordJoin,
+): boolean {
+    return (
+        left.kind === right.kind &&
+        left.sourceInstantiation === right.sourceInstantiation &&
+        left.targetInstantiation === right.targetInstantiation &&
+        recordIdentity(checker, left.source) ===
+            recordIdentity(checker, right.source) &&
+        recordIdentity(checker, left.target) ===
+            recordIdentity(checker, right.target)
+    );
+}
 
 const COMPONENT_KEY = "record-component:";
 

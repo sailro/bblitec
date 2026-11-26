@@ -313,13 +313,6 @@ export class CallbackLowerer {
             ? this.context.allocateTemporaryCppName("frame_delta")
             : undefined;
 
-        const previousPlatformEventCaptureFloor =
-            this.context.bindings.escapingPlatformEventCaptureFloor;
-        if (this.context.frameCallbackDepth > 0) {
-            this.context.bindings.escapingPlatformEventCaptureFloor =
-                this.context.bindings.variableScopes.length;
-        }
-        this.context.bindings.refuseEscapingPlatformEventCapturesIn(unwrapped);
         this.context.bindings.pushScope(this.context.allocateBlockPrefix());
         // This body is emitted into a real native callback lambda. A source
         // `return` therefore leaves that lambda directly, including when it
@@ -364,8 +357,6 @@ export class CallbackLowerer {
         } finally {
             this.context.endNativeFunctionBody();
             this.context.bindings.popScope();
-            this.context.bindings.escapingPlatformEventCaptureFloor =
-                previousPlatformEventCaptureFloor;
         }
         // A source callback may name its delta and then not reach it --
         // most often because a branch the scene's own query folds away was
@@ -478,13 +469,6 @@ export class CallbackLowerer {
             signature === "interval"
                 ? undefined
                 : this.context.allocateTemporaryCppName("frame_callback_value");
-        const previousPlatformEventCaptureFloor =
-            this.context.bindings.escapingPlatformEventCaptureFloor;
-        if (this.context.frameCallbackDepth > 0) {
-            this.context.bindings.escapingPlatformEventCaptureFloor =
-                this.context.bindings.variableScopes.length;
-        }
-        this.context.bindings.refuseEscapingPlatformEventCapturesIn(identifier);
         const captureByValue = this.capturesByValue(retainCaptures);
         this.context.frameCallbackDepth += 1;
         let compiled: CapturedClosure;
@@ -534,8 +518,6 @@ export class CallbackLowerer {
             );
         } finally {
             this.context.frameCallbackDepth -= 1;
-            this.context.bindings.escapingPlatformEventCaptureFloor =
-                previousPlatformEventCaptureFloor;
         }
         const lambdaParameter = parameter
             ? `[[maybe_unused]] ${frameCallbackParameterType(signature)} ${parameter}`
@@ -915,9 +897,6 @@ export class CallbackLowerer {
                     : undefined;
             });
         if (stored) {
-            this.context.bindings.refuseEscapingPlatformEventCapturesIn(
-                callback,
-            );
             const snapshot =
                 this.context.allocateTemporaryCppName("platform_callback");
             // The registration keeps the function the name holds now; a
@@ -990,20 +969,6 @@ export class CallbackLowerer {
             };
         }
         const previousHidden = this.context.platformDocumentHiddenCpp;
-        const previousPlatformEventCaptureFloor =
-            this.context.bindings.escapingPlatformEventCaptureFloor;
-        if (this.context.frameCallbackDepth > 0) {
-            this.context.bindings.escapingPlatformEventCaptureFloor =
-                this.context.bindings.variableScopes.length;
-        }
-        this.context.bindings.refuseEscapingPlatformEventCapturesIn(callback);
-        // The scan above compares against the enclosing handler's live scope
-        // chain. Callback records may restore the scope chain they closed over
-        // while their own body is compiled, so that numeric floor cannot stay
-        // active across the restore. Any callback created by this body performs
-        // its own scan against the restored chain before it escapes.
-        this.context.bindings.escapingPlatformEventCaptureFloor =
-            previousPlatformEventCaptureFloor;
         this.context.platformDocumentHiddenCpp = documentHiddenCpp;
         this.context.frameCallbackDepth += 1;
         let compiled: CapturedClosure;
@@ -1135,8 +1100,6 @@ export class CallbackLowerer {
         } finally {
             this.context.frameCallbackDepth -= 1;
             this.context.platformDocumentHiddenCpp = previousHidden;
-            this.context.bindings.escapingPlatformEventCaptureFloor =
-                previousPlatformEventCaptureFloor;
         }
         const cppParameter = parameter
             ? `[[maybe_unused]] ${parameter.cppType} ${parameter.name}`

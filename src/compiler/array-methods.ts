@@ -157,11 +157,7 @@ export function compileArrayValueMethod(
                 call,
                 "Array.fill expects one to three arguments.",
             );
-        const value = lowerer.compileForRetainedSink(
-            call.arguments[0]!,
-            type.element,
-            "Array.fill",
-        );
+        const value = lowerer.compileForSink(call.arguments[0]!, type.element);
         const item = lowerer.context.allocateTemporaryCppName("fill_value");
         lowerer.context.emit({
             kind: "declaration",
@@ -209,11 +205,7 @@ export function compileArrayValueMethod(
             : "0.0",
     );
     const inserted = call.arguments.slice(2).map((argument) => {
-        const value = lowerer.compileForRetainedSink(
-            argument,
-            type.element,
-            "Array.splice",
-        );
+        const value = lowerer.compileForSink(argument, type.element);
         const name = lowerer.context.allocateTemporaryCppName("splice_item");
         lowerer.context.emit({
             kind: "declaration",

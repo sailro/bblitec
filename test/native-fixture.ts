@@ -672,13 +672,18 @@ export function writeFixtureHeaders(
     return directory;
 }
 
-/** An application realm on the native event loop, without a display. */
-export function headlessRealmHost(): string {
+/**
+ * An application realm on the native event loop, without a display; the
+ * options are `windowApplicationHost`'s.
+ */
+export function headlessRealmHost(
+    options: Parameters<typeof windowApplicationHost>[0] = {},
+): string {
     return `
 namespace bbl::pal {
 Engine& window_document_engine() { static Engine engine; return engine; }
 }
-${windowApplicationHost()}
+${windowApplicationHost(options)}
 `;
 }
 

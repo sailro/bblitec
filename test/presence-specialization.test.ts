@@ -8,12 +8,16 @@ test("a shared body specializes on the presence its argument proves", (t) => {
     // `doc.v ?? 0.2` is never nullish: each body that tests its parameter's
     // presence -- a comparison, a default, or handing it to one that does --
     // runs as the body for a present parameter. A record it returns beside
-    // a run-time text keeps the text its present branch chose.
+    // a run-time text keeps the text its present branch chose. A recursive
+    // body is one body for every presence, testing it at run time.
     const source = `
 function present(tone: number | undefined): string { return tone === undefined ? "absent" : "present"; }
 function loose(tone: number | null | undefined): string { return tone == null ? "absent" : "present"; }
 function defaulted(tone: number = 7): number { return tone; }
 function forwards(tone: number | undefined): string { return present(tone); }
+function depth(tone: number | undefined, n: number): number {
+    return n <= 0 ? (tone === undefined ? -1 : tone) : depth(tone, n - 1);
+}
 function prelude(tone: number | null): string {
     if (tone === null) return "none";
     return \`k=\${tone.toFixed(3)}\`;
@@ -34,12 +38,14 @@ function read(text: string | null): string {
         present(config.v),
         picked.vertex,
         picked.fragment,
+        String(depth(tone, 2)),
+        String(depth(config.v, 1)),
     ].join(" ");
 }
 const absent = read(null);
 const given = read('{"v":0.5}');
-if (absent !== "present present 0.2 present absent xb k=0.200") throw new Error(absent);
-if (given !== "present present 0.5 present present xb k=0.500") throw new Error(given);
+if (absent !== "present present 0.2 present absent xb k=0.200 0.2 -1") throw new Error(absent);
+if (given !== "present present 0.5 present present xb k=0.500 0.5 0.5") throw new Error(given);
 `;
     return runSelfCheckingProgram(t, "presence-specialization", source, {
         compile: { fileName: resolve("presence-specialization.ts") },

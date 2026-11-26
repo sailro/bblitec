@@ -287,7 +287,7 @@ export class WindowProperties {
         const owner = this.snapshotTarget(target);
         context.emit({
             kind: "expression",
-            code: `${field.functionCpp}(${owner}) = ${context.dataLowerer.compileForRetainedSink(expression.right, stored, "a Window extension")};`,
+            code: `${field.functionCpp}(${owner}) = ${context.dataLowerer.compileForSink(expression.right, stored)};`,
         });
         return true;
     }

@@ -22,9 +22,9 @@ import { functionUsesDynamicThis } from "./user-functions.js";
 import { calledSignature, isNullishLiteral, namedMember } from "./symbols.js";
 import {
     absenceKind,
+    admitsUndefined,
     holdsOnly,
     isVoid,
-    nullability,
     PRIMITIVE_KINDS,
     signatureParameterTypes,
     type Nullability,
@@ -303,11 +303,12 @@ function compileStringify(
         dataType,
         argument,
     );
-    // A document value the program types as possibly undefined serializes
-    // to `undefined` where it is (`bbl::js::json_stringify_value`).
+    // A document value the program types as possibly undefined, `any` or
+    // `unknown` included, serializes to `undefined` where it is
+    // (`bbl::js::json_stringify_value`).
     if (
         isJsonValue(represented) &&
-        nullability(context.checker.getTypeAtLocation(argument)).undefined
+        admitsUndefined(context.checker.getTypeAtLocation(argument))
     )
         return jsonValue(
             indent > 0

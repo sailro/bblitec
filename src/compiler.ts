@@ -28,6 +28,7 @@ import {
     isEngineScopedHandleKind,
     isInputSnapshotHandleKind,
 } from "./compiler/data-types/handles.js";
+import { platformEventPayloadCpp } from "./compiler/data-types/scalars.js";
 import {
     forEachAnalysisNode,
     precedesForwardRead,
@@ -282,7 +283,10 @@ import {
 } from "./compiler/namespace-declarations.js";
 import { emitBigIntCompoundAssignment } from "./compiler/bigint-values.js";
 import { compileSpriteAtlasRecord } from "./compiler/sprite-atlas-record.js";
-import { createCompilerProgram } from "./compiler/program.js";
+import {
+    createCompilerProgram,
+    isProgramSourceFile,
+} from "./compiler/program.js";
 import {
     ModuleActivationRequired,
     ModuleNamespaces,
@@ -307,6 +311,7 @@ import {
     libraryStaticMember,
     nullishComparison,
     isLibraryStatic,
+    missingPinnedExport,
 } from "./compiler/symbols.js";
 import {
     isNullable,
@@ -318,12 +323,12 @@ import {
     isVoid,
     unionMembers,
     valueKindOf,
-    nullability,
     typeAdmitsData,
 } from "./compiler/type-facts.js";
 import {
     retainedStaticText,
     StaticEvaluator,
+    type ReturnedExpression,
 } from "./compiler/static-evaluator.js";
 import { StatementLowerer } from "./compiler/statements.js";
 import { HandleCollections } from "./compiler/handle-collections.js";
@@ -380,6 +385,7 @@ import {
     unwrapExpression,
     notJson,
     type SupportedFunction,
+    type FunctionWithBody,
 } from "./compiler/syntax.js";
 import {
     CompileError,
@@ -1085,18 +1091,6 @@ interface ShaderSourceHole {
 type UnreadLanes = ReadonlyMap<number, ReadonlyArray<readonly string[]>>;
 
 /**
- * What a local function's call returns, read at generation without running
- * it (`Compiler.returnedExpression`): the returned expression, read
- * `within` the scope binding the callee's parameters, and the callee's own
- * `const` names with the initializers that stand for them.
- */
-interface ReturnedExpression {
-    readonly returned: ts.Expression;
-    readonly within: <T>(read: () => T) => T;
-    readonly aliases: ReadonlyMap<ts.Symbol, ts.Expression>;
-}
-
-/**
  * One fold of a shader stage's text (`compileShaderSource`): which run, the
  * holes found so far, and whether a builder ran over an argument with holes.
  */
@@ -1546,6 +1540,8 @@ class Compiler implements LoweringServices {
                 ),
             (value, name, node) => this.structNumber(value, name, node),
             this.absenceTags,
+            (callee, call, values) =>
+                this.bindReturnedParameters(callee, call, values),
         );
     }
 
@@ -1555,6 +1551,7 @@ class Compiler implements LoweringServices {
         this.registerNativeBinding("bbl_audio_session");
         if (this.options.workers)
             this.reachFeature("platform:workers", this.sourceFile);
+        this.refuseMissingPinnedExports();
         this.dataTypes.registerRecordFacts(this.program.getSourceFiles());
         this.collectSourceCppNames();
         this.collectStaticConstants();
@@ -4477,58 +4474,39 @@ class Compiler implements LoweringServices {
     }
 
     /**
-     * What a call of a local function generation cannot run returns, read
-     * without running it: its arguments are evaluated once, here, and read
-     * `within` a scope binding the callee's parameters to them. Its body is
-     * `return`s, `if` statements whose pure conditions generation knows
-     * over those bindings (a known-false one skipped, a known-true one entered),
-     * and `const` declarations, whose initializers stand for their names
-     * (`aliases`). A parameter the callee writes, a rest parameter, a
-     * default an argument may leave in use, or a spread argument keeps the
-     * call unspelled.
+     * What a call of a local function generation cannot run returns
+     * (`StaticEvaluator.returnedExpression`), each argument evaluated once
+     * here: a list generation reads as one, otherwise its value.
      */
     private returnedExpression(
         call: ts.CallExpression,
     ): ReturnedExpression | undefined {
-        if (call.questionDotToken) return undefined;
-        const callee = calledFunction(this.checker, call);
-        const body = callee?.body;
-        if (
-            !callee ||
-            !body ||
-            callee.getSourceFile().isDeclarationFile ||
-            call.arguments.length !== callee.parameters.length ||
-            call.arguments.some(ts.isSpreadElement) ||
-            !callee.parameters.every(
-                (parameter, index) =>
-                    ts.isIdentifier(parameter.name) &&
-                    !parameter.dotDotDotToken &&
-                    (!parameter.initializer ||
-                        !nullability(
-                            this.checker.getTypeAtLocation(
-                                call.arguments[index]!,
+        return this.evaluator.returnedExpression(call, () =>
+            call.arguments.map((argument) =>
+                this.bindings.pinValueToTemporary(
+                    this.probeEmission(() =>
+                        unlessRefused(() => ({
+                            kind: "tuple" as const,
+                            cpp: "",
+                            tupleElements: this.staticListItems(argument).map(
+                                (item) => this.staticListItemValue(item),
                             ),
-                        ).undefined) &&
-                    parameterIsReadOnly(this.checker, callee, parameter.name),
-            )
-        )
-            return undefined;
-        const values = call.arguments.map((argument) =>
-            this.bindings.pinValueToTemporary(
-                this.probeEmission(() =>
-                    unlessRefused(() => ({
-                        kind: "tuple" as const,
-                        cpp: "",
-                        tupleElements: this.staticListItems(argument).map(
-                            (item) => this.staticListItemValue(item),
-                        ),
-                    })),
-                ) ?? this.compileValue(argument),
-                "list_argument",
-                argument,
+                        })),
+                    ) ?? this.compileValue(argument),
+                    "list_argument",
+                    argument,
+                ),
             ),
         );
-        const within = <T>(read: () => T): T => {
+    }
+
+    /** A scope binding `callee`'s parameters to `values`, `call`'s arguments, for reads `within` it. */
+    private bindReturnedParameters(
+        callee: FunctionWithBody,
+        call: ts.CallExpression,
+        values: readonly Value[],
+    ): ReturnedExpression["within"] {
+        return <T>(read: () => T): T => {
             this.bindings.pushScope(this.allocateUserFunctionPrefix());
             try {
                 callee.parameters.forEach((parameter, index) =>
@@ -4543,55 +4521,6 @@ class Compiler implements LoweringServices {
                 this.bindings.popScope();
             }
         };
-        if (!ts.isBlock(body))
-            return { returned: body, within, aliases: new Map() };
-        const aliases = new Map<ts.Symbol, ts.Expression>();
-        // The expression the statements return, or "none" when they fall
-        // through; undefined where generation cannot tell.
-        const returned = (
-            statements: readonly ts.Statement[],
-        ): ts.Expression | "none" | undefined => {
-            for (const statement of statements) {
-                if (ts.isReturnStatement(statement))
-                    return statement.expression ?? undefined;
-                if (ts.isVariableStatement(statement)) {
-                    if (variableKind(statement.declarationList) !== "const")
-                        return undefined;
-                    for (const declaration of statement.declarationList
-                        .declarations) {
-                        const symbol = ts.isIdentifier(declaration.name)
-                            ? this.symbols.valueSymbol(declaration.name)
-                            : undefined;
-                        if (!symbol || !declaration.initializer)
-                            return undefined;
-                        aliases.set(symbol, declaration.initializer);
-                    }
-                    continue;
-                }
-                if (
-                    !ts.isIfStatement(statement) ||
-                    !this.evaluationOrder.isPureExpression(statement.expression)
-                )
-                    return undefined;
-                const known = within(
-                    () => this.compileValue(statement.expression).staticBoolean,
-                );
-                if (known === undefined) return undefined;
-                const branch = known
-                    ? statement.thenStatement
-                    : statement.elseStatement;
-                if (!branch) continue;
-                const inner = returned(
-                    ts.isBlock(branch) ? branch.statements : [branch],
-                );
-                if (inner !== "none") return inner;
-            }
-            return "none";
-        };
-        const found = returned(body.statements);
-        return found === undefined || found === "none"
-            ? undefined
-            : { returned: found, within, aliases };
     }
 
     /** The strings a list generation cannot spell holds (`staticListItems`). */
@@ -8582,24 +8511,6 @@ class Compiler implements LoweringServices {
         declared?: DataType,
     ): void {
         const sharedStorage = this.classFieldNeedsSharedStorage(name);
-        const declaredData = declared ?? this.dataLowerer.dataTypeAt(name);
-        const unwrappedInitializer = this.unwrap(initializer);
-        if (
-            declaredData &&
-            this.dataTypes.carriesBorrowedPlatformEvent(declaredData) &&
-            unwrappedInitializer.kind !== ts.SyntaxKind.NullKeyword &&
-            !(
-                ts.isIdentifier(unwrappedInitializer) &&
-                unwrappedInitializer.text === "undefined" &&
-                !this.bindings.lookupOptional(unwrappedInitializer)
-            )
-        ) {
-            this.refuseBorrowedPlatformEventEscape(
-                this.compileValue(initializer),
-                initializer,
-                "class field assignment",
-            );
-        }
         const nullableResource = this.nullableResourceKind(name);
         const nullableInitializer = nullableResource
             ? this.compileValue(initializer)
@@ -9653,17 +9564,23 @@ class Compiler implements LoweringServices {
                           value.absenceTagType &&
                             storage === value.absenceTagStorageCpp
                           ? this.dataTypes.cppType(value.absenceTagType)
-                          : value.dataType
-                            ? this.dataTypes.cppType(value.dataType)
-                            : isHandleKind(value.kind)
-                              ? handleCppType(value.kind)
-                              : value.kind === "number"
-                                ? "double"
-                                : value.kind === "boolean"
-                                  ? "bool"
-                                  : value.kind === "string"
-                                    ? "std::string"
-                                    : undefined;
+                          : // So is an event's: a local holding the event
+                            // read through it holds its payload.
+                            value.dataType?.kind === "platform-event" &&
+                              value.eventStorageCpp !== undefined &&
+                              storage !== value.eventStorageCpp
+                            ? platformEventPayloadCpp(value.dataType)
+                            : value.dataType
+                              ? this.dataTypes.cppType(value.dataType)
+                              : isHandleKind(value.kind)
+                                ? handleCppType(value.kind)
+                                : value.kind === "number"
+                                  ? "double"
+                                  : value.kind === "boolean"
+                                    ? "bool"
+                                    : value.kind === "string"
+                                      ? "std::string"
+                                      : undefined;
         if (cppType)
             this.registerNativeBindingType(
                 storage,
@@ -10239,14 +10156,6 @@ class Compiler implements LoweringServices {
                 this.conditions.compileCondition(statement.expression),
             );
             return;
-        }
-        if (this.dataTypes.carriesBorrowedPlatformEvent(returnType)) {
-            const value = this.compileValue(statement.expression);
-            this.refuseBorrowedPlatformEventEscape(
-                value,
-                statement.expression,
-                "a function return",
-            );
         }
         const returned = this.dataLowerer.compileForSink(
             statement.expression,
@@ -11246,18 +11155,6 @@ class Compiler implements LoweringServices {
             : undefined;
     }
 
-    public refuseBorrowedPlatformEventEscape(
-        value: Value,
-        node: ts.Node,
-        destination: string,
-    ): void {
-        if (!this.bindings.containsPlatformEvent(value)) return;
-        this.fail(
-            node,
-            `A borrowed platform event cannot escape its synchronous dispatch frame through ${destination}. Copy only owned scalar/string fields needed later.`,
-        );
-    }
-
     /**
      * The evaluator's own unwrap -- one rule for what a reader sees
      * through, including the pin's `wgsl` tag -- which records every await
@@ -11496,7 +11393,7 @@ class Compiler implements LoweringServices {
             }
         }
         const cpp = this.dataLowerer.compileForSink(argument, dataType);
-        if (dataType.kind === "borrowed-platform-event") {
+        if (dataType.kind === "platform-event") {
             // The erased Event view returns itself from get(), so its wrapper
             // must outlive the inlined parameter reference.
             const storage = this.allocateTemporaryCppName("event_argument");
@@ -11689,10 +11586,6 @@ class Compiler implements LoweringServices {
                 });
                 dataType = { ...dataType, identity: true };
             }
-            this.bindings.refuseEscapingPlatformEventCapturesIn(
-                expression,
-                this.bindings.variableScopes.length,
-            );
             const cpp = this.userFunctions.compileStoredDataFunction(
                 this,
                 expression,
@@ -13159,6 +13052,19 @@ class Compiler implements LoweringServices {
                   ]
                 : body,
         });
+    }
+
+    /** Refuses, at the import, a pinned name the package does not export. */
+    private refuseMissingPinnedExports(): void {
+        for (const file of this.program.getSourceFiles()) {
+            if (!isProgramSourceFile(file)) continue;
+            const missing = missingPinnedExport(this.checker, file);
+            if (missing)
+                this.fail(
+                    missing.node,
+                    `'${missing.specifier}' does not export '${missing.name}': the pinned package declares no such name.`,
+                );
+        }
     }
 
     public fail(

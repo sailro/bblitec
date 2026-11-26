@@ -308,7 +308,11 @@ export class ReplayStorage {
                 const key = this.recordKey(request.demand);
                 if (this.refusedRecords.has(key)) return false;
                 const known = this.records.get(key);
-                const merged = mergeNativeRecordStorage(known, request.demand);
+                const merged = mergeNativeRecordStorage(
+                    this.checker,
+                    known,
+                    request.demand,
+                );
                 // A record keeps the site its source spells first, and the
                 // type and frames it was demanded in there, whichever attempt
                 // met it first.

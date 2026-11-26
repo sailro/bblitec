@@ -996,6 +996,55 @@ test("supports aliased Babylon Lite imports", () => {
     assert.match(result.cpp, /\.clear_color =/);
 });
 
+test("refuses imports of names the pinned package does not export", () => {
+    for (const [statement, name] of [
+        [
+            `import { createEngine, type Engine as LiteEngine } from "babylon-lite";`,
+            "Engine",
+        ],
+        [
+            `import { createEngine, createEngineSoon } from "@babylonjs/lite";`,
+            "createEngineSoon",
+        ],
+        [
+            `import { createEngine, missingHelper as helper } from "babylon-lite";`,
+            "missingHelper",
+        ],
+        [`export { NoSuchType } from "babylon-lite";`, "NoSuchType"],
+        // A subpath exports what its own module does.
+        [
+            `import { wgsl, createEngine } from "babylon-lite/shader/wgsl.js";`,
+            "createEngine",
+        ],
+        [
+            `import { type WgslSource, wgsl } from "babylon-lite/shader/no-such-module.js";`,
+            "WgslSource",
+        ],
+    ] as const)
+        assert.throws(
+            () =>
+                compileSource(`
+                    ${statement}
+                    let api: { read: (engine: number) => number } | null = null;
+                    api ??= { read: (engine) => engine };
+                `),
+            (error: unknown) =>
+                error instanceof Error &&
+                error.message.includes(
+                    `does not export '${name}': the pinned package declares no such name.`,
+                ) &&
+                error.message.startsWith("input.ts:2:"),
+        );
+    // A subpath's module, not the entry's typings, says what it exports.
+    compileSource(`
+        import { installPbrTracking } from "babylon-lite/material/tracking/pbr-tracking";
+        import { type WgslSource, wgsl } from "babylon-lite/shader/wgsl.js";
+        const source: WgslSource = wgsl\`fn main() {}\`;
+        void installPbrTracking;
+        void source;
+    `);
+});
+
 test("resolves pinned Babylon types independently of cwd", () => {
     const previous = process.cwd();
     const temporary = mkdtempSync(join(tmpdir(), "bblitec-compiler-"));
@@ -1198,10 +1247,7 @@ test("materializes private module state observed by an exported function", () =>
             .length,
         2,
     );
-    assert.match(
-        result.cpp,
-        new RegExp(`bbl::js::array_at_or_default\\(${values[1]},`),
-    );
+    assert.match(result.cpp, new RegExp(`bbl::js::number_at\\(${values[1]},`));
 });
 
 test("materializes mutable module state used only at call time", () => {
@@ -1297,10 +1343,7 @@ test("materializes state populated by a dependent registrar module", () => {
         result.cpp,
         new RegExp(`${values[1]}\\.push_back\\(11\\.0\\)`),
     );
-    assert.match(
-        result.cpp,
-        new RegExp(`bbl::js::array_at_or_default\\(${values[1]},`),
-    );
+    assert.match(result.cpp, new RegExp(`bbl::js::number_at\\(${values[1]},`));
 });
 
 test("keeps pure imported data builders on the static path", () => {
@@ -4767,10 +4810,10 @@ test("evaluates animation factories once when projecting a class record into typ
             createAnimationManager, createBox, createEngine,
             createPropertyAnimationClip, createPropertyAnimationGroup,
             stopAnimation,
-            type AnimationManager, type Mesh, type PropertyAnimationGroup,
+            type AnimationGroup, type AnimationManager, type Mesh,
         } from "@babylonjs/lite";
         class Controller {
-            private groups: Record<"jump" | "rest", PropertyAnimationGroup>;
+            private groups: Record<"jump" | "rest", AnimationGroup>;
             constructor(manager: AnimationManager, target: Mesh) {
                 const clip = createPropertyAnimationClip("move", [{
                     path: "position.x",
@@ -5353,12 +5396,12 @@ test("spells a missed array slot in text only where the index may miss", () => {
     `);
 
     const missable = result.cpp.match(
-        /\(bbl::js::array_has_index\(v_plain, (v_bblite_element_index_\d+)\) \? bbl::js::concat\(bbl::js::NumberPart\(bbl::js::array_at_or_default\(v_plain, \1\)\)\) : std::string\("undefined"\)\)/g,
+        /\(bbl::js::array_has_index\(v_plain, (v_bblite_element_index_\d+)\) \? bbl::js::concat\(bbl::js::NumberPart\(bbl::js::number_at\(v_plain, \1\)\)\) : std::string\("undefined"\)\)/g,
     );
     assert.equal(missable?.length, 1);
     assert.match(
         result.cpp,
-        /concat_append\(v_text, bbl::js::NumberPart\(bbl::js::array_at_or_default\(v_plain, v_bblite_element_index_\d+\)\)\);/,
+        /concat_append\(v_text, bbl::js::NumberPart\(bbl::js::number_at\(v_plain, v_bblite_element_index_\d+\)\)\);/,
     );
 });
 
@@ -10952,14 +10995,14 @@ test("material stores through an effectful owner evaluate it once", () => {
     // its owner for the setter: every statement names the owner, so an
     // index with effects is read once ahead of them.
     const result = compileSource(`
-        import { createEngine, createStandardMaterial, type StandardMaterial } from "@babylonjs/lite";
+        import { createEngine, createStandardMaterial, type StandardMaterialProps } from "@babylonjs/lite";
 
         async function main() {
             const engine = await createEngine({});
             const first = createStandardMaterial();
             const second = createStandardMaterial();
             const third = createStandardMaterial();
-            interface Holder { mat: StandardMaterial }
+            interface Holder { mat: StandardMaterialProps }
             const holders: Holder[] = [{ mat: first }, { mat: second }, { mat: third }];
             let h = 0;
             holders[h++]!.mat.uvOffset = [5, 6];
@@ -13190,71 +13233,10 @@ test("carries retained mousedown cancellation from the executed callback", () =>
     );
 });
 
-test("refuses platform event aliases captured by escaping callbacks", () => {
-    const escapingCases = [
-        {
-            declaration: "const alias = event;",
-            use: "alias.preventDefault();",
-            name: "alias",
-        },
-        {
-            declaration: "const wrapped = { event };",
-            use: "wrapped.event.preventDefault();",
-            name: "wrapped",
-        },
-        {
-            declaration:
-                "const wrapped = { nested: [{ borrowed: event }] as const };" +
-                " const nested = wrapped.nested;",
-            use:
-                "const record = nested[0];" +
-                " record.borrowed.preventDefault();",
-            name: "nested",
-        },
-        {
-            declaration:
-                "const wrapped = { nested: [{ borrowed: event }] as const };",
-            use: "wrapped.nested[0].borrowed.preventDefault();",
-            name: "wrapped",
-        },
-    ];
-    for (const escaping of escapingCases) {
-        assert.throws(
-            () =>
-                compileSource(
-                    `
-                        import { createEngine } from "@babylonjs/lite";
-                        async function main(): Promise<void> {
-                            await createEngine({});
-                            const button = document.createElement("button");
-                            button.addEventListener("mousedown", (event: MouseEvent) => {
-                                ${escaping.declaration}
-                                button.addEventListener("pointerup", () => {
-                                    ${escaping.use}
-                                });
-                            });
-                            document.body.appendChild(button);
-                        }
-                        void main();
-                    `,
-                    { fileName: "test/escaped-platform-event.ts" },
-                ),
-            (error: unknown) => {
-                assert.ok(error instanceof CompileError);
-                assert.match(
-                    error.message,
-                    /^test\/escaped-platform-event\.ts:\d+:\d+:/,
-                );
-                assert.match(
-                    error.message,
-                    new RegExp(
-                        `escaping callback cannot capture platform event value '${escaping.name}'`,
-                    ),
-                );
-                return true;
-            },
-        );
-    }
+// An escaping callback's captures of the event, through aliases and
+// records, are copies of it (callback-registry.test.ts runs them against
+// JavaScript).
+test("a listener reads its event in place and hands later callbacks owned fields", () => {
     assert.doesNotThrow(() =>
         compileSource(`
             import { createEngine } from "@babylonjs/lite";
@@ -17344,7 +17326,7 @@ test("registers a callback returned by a local factory as a platform listener", 
     );
     assert.match(
         result.cpp,
-        /\(\*v_onDown_owner\)\(bbl::js::Borrowed<const bbl::PlatformKeyboardEvent>\(v_bblite_dom_event_\d+\)\)/,
+        /\(\*v_onDown_owner\)\(bbl::js::EventRef<const bbl::PlatformKeyboardEvent>\(v_bblite_dom_event_\d+\)\)/,
     );
 });
 
@@ -22038,16 +22020,16 @@ test("shares mutable class fields across retained callbacks", () => {
 
 test("retains mutable containers in records returned by factories", () => {
     const result = compileSource(`
-        import { createEngine, type Engine } from "@babylonjs/lite";
+        import { createEngine, type EngineContext } from "@babylonjs/lite";
 
         interface Store {
-            readonly engine: Engine;
+            readonly engine: EngineContext;
             _state: {
                 values: Map<number, string>;
             };
         }
 
-        function createStore(engine: Engine): Store {
+        function createStore(engine: EngineContext): Store {
             return {
                 engine,
                 _state: {
@@ -22074,18 +22056,14 @@ test("retains mutable containers in records returned by factories", () => {
         void main();
     `);
 
-    const storage = result.cpp.match(
-        /auto (\w+) = bbl::js::make_gc_shared<bblscene::(\w+)>\(bbl::js::make_ref<bblscene::\2Data>\(bblscene::\2Data\{bbl::js::Map<double, std::string>\{\}\}\)\);/,
-    );
-    assert.ok(storage);
+    // The record keeps the engine and its state record: both calls reach
+    // the one map the factory created.
     assert.match(
         result.cpp,
-        new RegExp(`\\(\\*${storage[1]}\\)->values\\.set\\(`),
+        /bblscene::StoreData\{bbl::StoredEngine\{v_engine\}, bbl::js::make_ref<bblscene::(\w+)Data>\(bblscene::\1Data\{bbl::js::Map<double, std::string>\{\}\}\)\}/,
     );
-    assert.match(
-        result.cpp,
-        new RegExp(`\\(\\*${storage[1]}\\)->values\\.get\\(`),
-    );
+    assert.match(result.cpp, /store->_state->values\.set\(/);
+    assert.match(result.cpp, /store->_state->values\.get\(/);
     assert.doesNotMatch(
         result.cpp,
         /bbl::js::Map<double, std::string>\{\}\.(?:set|get)\(/,
@@ -23680,13 +23658,12 @@ test("refuses the multi-material CSG mesh builder by name", () => {
     assert.throws(
         () =>
             compileSource(
-                csgScene(
-                    [
-                        '    const meshes = createMeshesFromCsg(engine, csgSubtract(createCsgFromMesh(createBox(engine, 2)), createCsgFromMesh(createSphere(engine, { diameter: 1 }))), [createStandardMaterial()], "carved");',
-                        "    addToScene(scene, meshes[0]);",
-                    ],
-                    ["createMeshesFromCsg"],
-                ),
+                // A subpath exports the sibling the entry does not.
+                `import { createMeshesFromCsg } from "babylon-lite/mesh/csg.js";
+${csgScene([
+    '    const meshes = createMeshesFromCsg(engine, csgSubtract(createCsgFromMesh(createBox(engine, 2)), createCsgFromMesh(createSphere(engine, { diameter: 1 }))), [createStandardMaterial()], "carved");',
+    "    addToScene(scene, meshes[0]);",
+])}`,
                 { fileName: "input.ts" },
             ),
         (error: unknown) =>

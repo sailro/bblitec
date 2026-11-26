@@ -351,7 +351,7 @@ export class EngineObjectProperties {
         if (operator === ts.SyntaxKind.EqualsToken) {
             context.emit({
                 kind: "expression",
-                code: `${slot} = ${context.dataLowerer.compileForRetainedSink(expression.right, target.field.type, "a property added to an engine object")};`,
+                code: `${slot} = ${context.dataLowerer.compileForSink(expression.right, target.field.type)};`,
             });
             return true;
         }

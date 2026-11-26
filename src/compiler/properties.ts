@@ -78,7 +78,7 @@ import {
 import { renderClosure } from "./closure-captures.js";
 import { readWorkerEventProperty } from "./workers.js";
 import {
-    borrowedPlatformEventKind,
+    platformEventKind,
     handleCppType,
     isPinnedEngineObjectKind,
     touchListDataType,
@@ -2493,7 +2493,7 @@ const TOUCH_EVENT_LISTS: ReadonlyMap<string, string> = new Map([
 ]);
 
 /**
- * A TouchEvent member of a borrowed base Event: a list, made once per event
+ * A TouchEvent member of a base Event view: a list, made once per event
  * (`bbl::dom_touch_list`), or a modifier key. Undefined for other members.
  */
 function touchEventMember(
@@ -3169,7 +3169,7 @@ export class PropertyAccessLowerer {
     }
 
     /**
-     * A borrowed base Event asserted to a keyboard or mouse interface: a
+     * A base Event view asserted to a keyboard or mouse interface: a
      * checked view of the payload, which throws when the dispatch carried
      * another one.
      */
@@ -3182,7 +3182,7 @@ export class PropertyAccessLowerer {
                 cpp: `${owner.cpp}.payload<bbl::PlatformMouseEvent>()`,
                 ...(owner.engineCpp ? { engineCpp: owner.engineCpp } : {}),
             });
-        const event = borrowedPlatformEventKind(
+        const event = platformEventKind(
             this.context.checker
                 .getNonNullableType(
                     this.context.checker.getTypeAtLocation(ownerExpression),
@@ -3341,7 +3341,7 @@ export class PropertyAccessLowerer {
     }
 
     /**
-     * A member of a DOM event value: a borrowed base Event (asserted to its
+     * A member of a DOM event value: a base Event view (asserted to its
      * interface where the source names one), a typed keyboard or mouse
      * event, or a custom event. A property access and a destructuring
      * element read the same members; `site` reports reached features,
@@ -3546,7 +3546,7 @@ export class PropertyAccessLowerer {
             if (!asserted)
                 this.context.fail(
                     nameSite,
-                    `Borrowed DOM Event values do not expose '${property}'; only preventDefault is supported on the base Event view.`,
+                    `Base DOM Event values do not expose '${property}'; only preventDefault is supported on the base Event view.`,
                 );
             return this.platformEventProperty(
                 asserted,
@@ -4058,8 +4058,15 @@ export class PropertyAccessLowerer {
             return undefinedValue();
         }
         // The receiver as written: an assertion names the event's interface.
+        // An event stored as optional data the checker proves present is
+        // that event.
         const event = this.eventMember(
-            owner,
+            (!ts.isOptionalChain(expression) &&
+                this.context.dataLowerer.presentStoredHandle(
+                    owner,
+                    expression.expression,
+                )) ||
+                owner,
             expression.expression,
             property,
             expression,

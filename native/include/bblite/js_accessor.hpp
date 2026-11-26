@@ -277,6 +277,20 @@ template <typename T, typename Record>
     return AccessorClosures{std::move(getter), std::move(setter)};
 }
 
+/** A class instance's field seen through the instance's view as a record
+ * type (`instance_view`): reads and writes reach the instance's member. */
+template <typename T, typename Object, typename Data>
+[[nodiscard]] auto member_accessor(Object object, T Data::* member) {
+    using Member = std::tuple<Object, T Data::*>;
+    auto entry = Member{std::move(object), member};
+    auto getter = make_closure(
+        entry, [](Member& view) -> T { return (*std::get<0>(view)).*std::get<1>(view); });
+    auto setter = make_closure(std::move(entry), [](Member& view, T value) {
+        (*std::get<0>(view)).*std::get<1>(view) = std::move(value);
+    });
+    return AccessorClosures{std::move(getter), std::move(setter)};
+}
+
 /** An optional field of such a view: an absent entry reads as absent. */
 template <typename T, typename Record>
 [[nodiscard]] auto optional_entry_accessor(Record record, std::string key) {
