@@ -1,12 +1,7 @@
 import assert from "node:assert/strict";
-import test, { type TestContext } from "node:test";
-import { runInNewContext } from "node:vm";
-import ts from "typescript";
+import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import {
-    optionalNativeFixtureTools,
-    runGeneratedProgram,
-} from "./native-fixture.js";
+import { checkMaterialProgram } from "./material-programs.js";
 
 // A pre-built view an `unknown` field holds: an entry's own, a shared shader
 // material, or none, chosen by functions typed to return `unknown`. A frame
@@ -223,70 +218,8 @@ async function main(): Promise<void> {
 void main();
 `;
 
-/**
- * Runs a program over materials as JavaScript runs it, each factory making a
- * fresh object, then natively where a native compiler is installed; each
- * run checks its own results. Returns the generated C++.
- */
-async function checkMaterialIdentity(
-    t: TestContext,
-    name: string,
-    program: string,
-): Promise<string> {
-    const realm: { finished?: Promise<void> } = {};
-    runInNewContext(
-        ts.transpileModule(
-            program.replace("void main();", "realm.finished = main();"),
-            {
-                compilerOptions: {
-                    target: ts.ScriptTarget.ESNext,
-                    module: ts.ModuleKind.CommonJS,
-                },
-            },
-        ).outputText,
-        {
-            exports: {},
-            realm,
-            require: () => ({
-                createEngine: async () => ({}),
-                createStandardMaterial: () => ({}),
-            }),
-        },
-    );
-    await realm.finished;
-    const { cpp } = compileSource(program);
-    const tools = optionalNativeFixtureTools(false);
-    if (!tools) {
-        t.skip("Native fixture compiler unavailable.");
-        return cpp;
-    }
-    runGeneratedProgram(
-        tools,
-        `erased-handle-fields/${name}`,
-        `#define main generated_main
-${cpp}
-#undef main
-namespace bbl {
-Engine create_engine(EngineOptions) { return {}; }
-// Each material is a record of its own; the run reads none of its fields.
-MaterialHandle create_standard_material(Engine& engine) {
-    engine.materials.emplace_back();
-    return MaterialHandle{static_cast<std::uint32_t>(engine.materials.size() - 1)};
-}
-} // namespace bbl
-int main() { return generated_main(); }
-`,
-        { expectedOutput: "", timeoutMs: 20000 },
-    );
-    return cpp;
-}
-
 test("a Set and a Map whose erased keys a view of a material writes keep each material once by identity, as JavaScript does", async (t) => {
-    const cpp = await checkMaterialIdentity(
-        t,
-        "identity-keys",
-        identityProgram,
-    );
+    const cpp = await checkMaterialProgram(t, "identity-keys", identityProgram);
     // The keys are the materials themselves, compared as handles.
     assert.match(cpp, /bbl::js::Set<[^>\n]*bbl::MaterialHandle/);
 });
@@ -336,7 +269,7 @@ void main();
 `;
 
 test("arrays of erased elements written with materials hold the materials by identity, as JavaScript does", async (t) => {
-    const cpp = await checkMaterialIdentity(
+    const cpp = await checkMaterialProgram(
         t,
         "erased-arrays",
         erasedArrayProgram,
@@ -384,7 +317,7 @@ void main();
 `;
 
 test("an array of engine objects asserted as records of a view stays the one array of those objects, as JavaScript keeps it", async (t) => {
-    const cpp = await checkMaterialIdentity(
+    const cpp = await checkMaterialProgram(
         t,
         "viewed-arrays",
         viewedArrayProgram,
@@ -506,7 +439,7 @@ void main();
 `;
 
 test("records received through a view that omits their material keep it present, as JavaScript does", async (t) => {
-    const cpp = await checkMaterialIdentity(
+    const cpp = await checkMaterialProgram(
         t,
         "viewed-records",
         viewedRecordsProgram,
@@ -600,7 +533,7 @@ void main();
 `;
 
 test("an array of optional materials grows by several values at once and is searched by identity, as JavaScript does", async (t) => {
-    const cpp = await checkMaterialIdentity(
+    const cpp = await checkMaterialProgram(
         t,
         "optional-handle-arrays",
         optionalHandleArrayProgram,

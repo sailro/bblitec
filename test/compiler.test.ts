@@ -10983,20 +10983,22 @@ test("material stores through an effectful owner evaluate it once", () => {
     // its owner for the setter: every statement names the owner, so an
     // index with effects is read once ahead of them.
     const result = compileSource(`
-        import { createEngine, createStandardMaterial } from "@babylonjs/lite";
+        import { createEngine, createStandardMaterial, type StandardMaterialProps } from "@babylonjs/lite";
 
         async function main() {
             const engine = await createEngine({});
             const first = createStandardMaterial();
             const second = createStandardMaterial();
             const third = createStandardMaterial();
-            const rig = { materials: [first, second, third] };
+            interface Holder { mat: StandardMaterialProps }
+            const holders: Holder[] = [{ mat: first }, { mat: second }, { mat: third }];
             let h = 0;
-            rig.materials[h++]!.uvOffset = [5, 6];
+            holders[h++]!.mat.uvOffset = [5, 6];
             let d = 0;
-            rig.materials[d++]!.diffuseColor = [0, 0, 1];
+            holders[d++]!.mat.diffuseColor = [0, 0, 1];
             let u = 0;
-            rig.materials[u++]!.uvScale = [2, 2];
+            holders[u++]!.mat.uvScale = [2, 2];
+            const rig = { materials: [first, second, third] };
             let r = 0;
             rig.materials[r++]!.uvOffset = [r, r];
             let s = 0;

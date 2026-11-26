@@ -7839,6 +7839,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     if (facts && fixed !== undefined) {
                         writable(value).recordProperties = facts;
                         writable(value).staticElementIndex = fixed;
+                    } else if (fixed === undefined) {
+                        const shared = this.sharedResourceFields(
+                            indexed,
+                            dataType.element.name,
+                            recordFacts,
+                            access,
+                        );
+                        if (shared) writable(value).recordProperties = shared;
                     }
                     if (mode === "write") this.invalidateStaticElements(value);
                 }
@@ -11046,10 +11054,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 )
                     continue;
                 recordProperties[field.sourceName] = {
-                    ...this.leafValue(
-                        `${cpp}${this.context.dataTypes.memberAccess(elementType.name)}${field.name}`,
-                        field.type,
-                    ),
+                    ...this.elementField(cpp, elementType.name, field, [
+                        source,
+                    ]),
                     nativeCaptures: captures.nativeCaptures,
                     ...scalarFacts(source),
                 };
@@ -11065,6 +11072,62 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             );
             return value;
         });
+    }
+
+    /**
+     * A record element's field read off the element `cpp` names: a handle
+     * keeps the resource facts (family, engine) every value `sources` holds
+     * shares, the one value a literal stored or each a runtime index can
+     * read.
+     */
+    private elementField(
+        cpp: string,
+        struct: string,
+        field: DataStructField,
+        sources: readonly Value[],
+    ): Value {
+        const read = this.leafValue(
+            `${cpp}${this.context.dataTypes.memberAccess(struct)}${field.name}`,
+            field.type,
+        );
+        return field.type.kind === "handle"
+            ? withCommonResourceMetadata(read, sources)
+            : read;
+    }
+
+    /**
+     * The handle fields of a record element a runtime index reads: those
+     * every element of the array's snapshot holds, each with the resource
+     * facts all of them share.
+     */
+    private sharedResourceFields(
+        cpp: string,
+        struct: string,
+        elements: readonly Value[],
+        node: ts.Node,
+    ): Record<string, Value> | undefined {
+        const maps = elements.map((element) =>
+            this.context.bindings.recordPropertiesAreCurrent(element)
+                ? element.recordProperties
+                : undefined,
+        );
+        const shared: Record<string, Value> = {};
+        for (const field of this.context.dataTypes.structFields(
+            struct,
+            node,
+            "accessors",
+        )) {
+            if (field.type.kind !== "handle") continue;
+            const sources = maps.map((map) => map?.[field.sourceName]);
+            if (sources.every((source) => source !== undefined))
+                shared[field.sourceName] = this.elementField(
+                    cpp,
+                    struct,
+                    field,
+                    sources,
+                );
+        }
+        return Object.keys(shared).length > 0 ? shared : undefined;
     }
 
     /**
