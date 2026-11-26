@@ -22101,6 +22101,19 @@ check(
     `,
 );
 check(
+    "for-in walks no keys of a null or undefined document",
+    `
+    const docs: unknown[] = JSON.parse('[{"a":1},null,3,"xy"]');
+    docs.push(undefined);
+    let out = "";
+    for (const doc of docs) {
+        for (const key in doc as object) out += key;
+        out += ";";
+    }
+    if (out !== "a;;;01;;") throw new Error(out);
+    `,
+);
+check(
     "a folded if that breaks leaves the switch clause, not the switch",
     `
     const T = true;

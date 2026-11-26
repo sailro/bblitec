@@ -3360,7 +3360,7 @@ export class StatementLowerer {
                 initializer: snapshotReadCpp(owner),
             });
             return {
-                keysCpp: `${object}.own_keys()`,
+                keysCpp: `${object}.for_in_keys()`,
                 presentCpp: (key) => `${object}.has_own(${key})`,
             };
         }

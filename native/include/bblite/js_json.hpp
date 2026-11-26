@@ -894,6 +894,11 @@ public:
         return result;
     }
 
+    /** The keys `for...in` walks: none for null or undefined, which it skips. */
+    [[nodiscard]] bbl::js::Array<std::string> for_in_keys() const {
+        return is_null() || is_undefined() ? bbl::js::Array<std::string>{} : own_keys();
+    }
+
     [[nodiscard]] bbl::js::Array<JsonValue> own_values() const {
         bbl::js::Array<JsonValue> result;
         if (is_object()) {
