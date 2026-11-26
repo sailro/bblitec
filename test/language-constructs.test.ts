@@ -3679,6 +3679,28 @@ check(
     `,
 );
 
+check(
+    "a write through an element read as a class instance's interface view writes the instance",
+    `
+    interface Counter { count: number; label: string; note?: string }
+    class Tally { count = 0; extra = 1; label = "t"; note?: string; }
+    const tally = new Tally();
+    const counters: Counter[] = [tally, { count: 5, label: "l" }];
+    if (counters[0] !== tally) throw new Error("identity");
+    counters[0]!.count = 7;
+    counters[1]!.count += 1;
+    counters[0]!.count++;
+    counters[0]!["count"] = counters[0]!.count + 1;
+    counters[0]!.label += "x";
+    counters[0]!.note ??= "n";
+    counters[1]!.note ||= "m";
+    let total = 0;
+    for (const counter of counters) { counter.count *= 2; total += counter.count; }
+    const out = String(tally.count) + "," + counters[1]!.count + "," + tally.extra + tally.label + tally.note + counters[1]!.note + total;
+    if (out !== "18,12,1txnm30") throw new Error(out);
+    `,
+);
+
 // A class handing out `this` as an interface a literal also produces, in a
 // program whose identity uses hold no such record.
 const unrelatedIdentityPrelude = `

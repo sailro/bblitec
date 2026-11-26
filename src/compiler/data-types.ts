@@ -3787,8 +3787,20 @@ export class DataTypeRegistry {
                 accessor(shape.getProperty(property.name)),
             ) ??
                 false) ||
-            this.recordViews.has(this.structIdentity(record)) ||
-            this.proxyRecords.has(this.structIdentity(record))
+            this.viewsInAccessorSlots(record)
+        );
+    }
+
+    /**
+     * Whether record type `record` stores its data fields in accessor slots:
+     * a record view, a proxy or an instance view (`instanceViewsDemand`).
+     */
+    private viewsInAccessorSlots(record: ts.Type): boolean {
+        const identity = this.structIdentity(record);
+        return (
+            this.recordViews.has(identity) ||
+            this.proxyRecords.has(identity) ||
+            this.instanceViewRecords.has(identity)
         );
     }
 
@@ -3849,8 +3861,7 @@ export class DataTypeRegistry {
     public isAccessorRecordType(type: ts.Type): boolean {
         const record = this.checker.getNonNullableType(type);
         return (
-            this.recordViews.has(this.structIdentity(record)) ||
-            this.proxyRecords.has(this.structIdentity(record)) ||
+            this.viewsInAccessorSlots(record) ||
             this.checker
                 .getPropertiesOfType(record)
                 .some((property) =>

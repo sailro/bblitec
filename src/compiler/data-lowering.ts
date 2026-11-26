@@ -1327,18 +1327,20 @@ export class DataLowerer {
     /**
      * `left += right` on a string place, or on an optional string lane
      * (`optional`), whose old value reads as JavaScript's ToString reads it:
-     * an absent one as "undefined" or "null".
+     * an absent one as "undefined" or "null". A place that is a read, such
+     * as an accessor slot's `get()`, stores through `store`.
      */
     public emitStringCompound(
         expression: ts.BinaryExpression,
         place: string,
         optional?: DataType<"optional">,
+        store?: (value: string) => string,
     ): Value {
         const target = this.compoundPlace(
             expression.left,
             expression.right,
             place,
-            optional !== undefined,
+            optional !== undefined || store !== undefined,
             "string",
         );
         const appended = this.context.compileValue(expression.right);
@@ -1354,8 +1356,8 @@ export class DataLowerer {
         this.emitCompoundStore(
             expression.left,
             `bbl::js::concat(${previous}, ${part})`,
-            (value) => `${target.place} = ${value};`,
-            !optional && target.previous === target.place
+            store ?? ((value) => `${target.place} = ${value};`),
+            !optional && !store && target.previous === target.place
                 ? `bbl::js::concat_append(${target.place}, ${part});`
                 : undefined,
             "string",
@@ -18936,6 +18938,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 this.emitNumericUpdate(accessor, left, compoundNext);
                 return true;
             }
+            const slot =
+                operator === "+="
+                    ? this.accessorSlot(left, "string")
+                    : undefined;
+            if (slot !== undefined) {
+                this.emitStringCompound(
+                    expression,
+                    `${slot}.get()`,
+                    undefined,
+                    (value) => `${slot}.set(${value});`,
+                );
+                return true;
+            }
         }
         if (
             operator === "=" &&
@@ -20141,7 +20156,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
     }
 
-    /** Numeric receiver slots read once before the RHS and store through the same owner. */
+    /** Numeric setters and accessor slots, read once before the RHS and stored through the same owner. */
     private accessorNumberPlace(
         operand: ts.PropertyAccessExpression | ts.ElementAccessExpression,
     ):
@@ -20149,6 +20164,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         | undefined {
         const setter = this.recordSetterPlace(operand);
         if (setter) return setter;
+        const slot = this.accessorSlot(operand, "number");
+        return slot === undefined ? undefined : { kind: "accessor", slot };
+    }
+
+    /**
+     * The accessor slot of a `kind` data field `operand` names (a member
+     * a record stores in an accessor slot, such as a class instance's
+     * interface view), its reference owner held once for the read and the
+     * store; undefined for any other operand.
+     */
+    private accessorSlot(
+        operand: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+        kind: "number" | "string",
+    ): string | undefined {
         if (
             !ts.isPropertyAccessExpression(operand) ||
             !this.mayWriteAccessor(operand)
@@ -20161,8 +20190,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             const owner = this.narrowOptional(raw, operand.expression);
             const field = this.accessorField(owner, operand.name.text, operand);
             if (
-                !field?.accessorReceiver ||
-                field.type.kind !== "number" ||
+                !field ||
+                field.type.kind !== kind ||
                 owner.dataType?.kind !== "struct"
             )
                 return undefined;
@@ -20176,10 +20205,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                       operand.expression,
                   )
                 : owner;
-            return {
-                kind: "accessor" as const,
-                slot: `${held.cpp}${this.context.dataTypes.memberAccess(owner.dataType.name)}${field.name}`,
-            };
+            return `${held.cpp}${this.context.dataTypes.memberAccess(owner.dataType.name)}${field.name}`;
         });
     }
 
