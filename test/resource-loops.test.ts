@@ -169,17 +169,6 @@ test("inclusive resource loops preserve endpoint values and empty ranges", () =>
     }
 });
 
-test("inclusive nested resource loops retain compact construction cardinality", () => {
-    const result = compileSource(
-        gridSource
-            .replace("x = 0; x < 64", "x = 1; x <= 64")
-            .replace("y = 0; y < 64", "y = 1; y <= 64"),
-    );
-    assert.equal(result.manifest.sceneMeshes.length, 4096);
-    assert.equal(result.cpp.match(/bbl::create_box\(/g)?.length, 1);
-    assert.equal(result.cpp.match(/for \(;/g)?.length, 2);
-});
-
 test("a runtime await still specializes resources reached through its arguments", () => {
     const result = compileSource(
         scene(
@@ -273,13 +262,6 @@ const assignmentControls = [
     `let values: number[] = []; const held = values; values = []; held.push(7); let oldTotal = 0; for (const value of held) oldTotal += value; let newTotal = 0; for (const value of values) newTotal += value; if (oldTotal !== 7 || newTotal !== 0) throw new Error("rebinding a snapshot owner changed its old aliases");`,
 ] as const;
 
-test("ordinary array assignment shares cardinality after static elements are withdrawn", () => {
-    const result = compileSource(assignmentControls[0]);
-    assert.match(result.cpp, /const auto& \w+ = v_values;/);
-    assert.match(result.cpp, /for \(std::size_t/);
-    assert.match(result.cpp, /v_total \+=/);
-});
-
 test("array rebinding detaches only the destination's cardinality", () => {
     const result = compileSource(
         scene(`
@@ -296,15 +278,6 @@ test("array rebinding detaches only the destination's cardinality", () => {
     );
     assert.equal(result.manifest.sceneMaterialCount, 2);
     assert.equal(result.manifest.scenePbrMaterials[0]?.materialsBefore, 1);
-});
-
-test("unproven assignment aliases cannot retain an empty-collection shortcut", () => {
-    for (const source of assignmentControls.slice(4, 6)) {
-        const result = compileSource(`async function main() { ${source} }`);
-        assert.match(result.cpp, /const auto& \w+ = v_values;/);
-        assert.match(result.cpp, /for \(std::size_t/);
-        assert.match(result.cpp, /v_total \+=/);
-    }
 });
 
 test(

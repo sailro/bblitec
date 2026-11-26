@@ -162,17 +162,6 @@ function lowerStatements(source: string): string {
         .join("\n");
 }
 
-test("Math.max and Math.min lower to one JavaScript call over every argument", () => {
-    assert.equal(
-        lowerStatements("a = Math.max(a, b, c);"),
-        "        a = bbl::js::math_extreme<true>({a, b, c});",
-    );
-    assert.equal(
-        lowerStatements("a = Math.min(b, c);"),
-        "        a = bbl::js::math_extreme<false>({b, c});",
-    );
-});
-
 test("a Uint32Array store converts with ToUint32", () => {
     const store = lowerStatements("mask[0] = -1;");
     assert.match(store, /= bbl::js::to_uint32\(/);

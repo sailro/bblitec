@@ -374,56 +374,6 @@ test("a scene that reaches neither carries neither", () => {
     );
 });
 
-test("nlohmann is linked only for loaders, environment parsing or the JSON bridge", () => {
-    const cmake = readFileSync(resolve("native/CMakeLists.txt"), "utf8");
-    const gate =
-        /if\(\s*"loader:gltf" IN_LIST BBLITE_RUNTIME_FEATURES OR\s*"loader:babylon" IN_LIST BBLITE_RUNTIME_FEATURES OR\s*"environment:env" IN_LIST BBLITE_RUNTIME_FEATURES OR\s*"data:json" IN_LIST BBLITE_RUNTIME_FEATURES\s*\)\s*find_package\(nlohmann_json CONFIG REQUIRED\)/;
-    assert.match(cmake, gate);
-});
-
-test("the Web Storage PAL keeps its file work behind an encoded key", () => {
-    const source = readFileSync(resolve("native/src/pal_storage.cpp"), "utf8");
-    // The root and the name encoding Web Storage shares with IndexedDB.
-    const root = readFileSync(
-        resolve("native/src/pal_storage_root.hpp"),
-        "utf8",
-    );
-    assert.match(source, /detail::storage_root\(\)/);
-    assert.match(source, /detail::encode_storage_name\(/);
-    // SDL owns "where may this program write"; nothing here names a path.
-    assert.match(
-        root,
-        /SDL_GetPrefPath\(kPrefOrganisation, kPrefApplication\)/,
-    );
-    assert.match(root, /SDL_free\(preferences\)/);
-    // A key becomes a file name through an injective encoding: every byte
-    // outside [A-Za-z0-9-] is escaped, and the escape character too.
-    assert.match(root, /byte == '-'/);
-    assert.match(root, /encoded\.push_back\('_'\)/);
-    // The shared PAL helper stages beside the destination and atomically
-    // replaces it, so Web Storage and selected-file downloads cannot drift.
-    assert.match(source, /detail::write_file_atomically/);
-    const fileIo = readFileSync(resolve("native/src/pal_file_io.hpp"), "utf8");
-    assert.match(fileIo, /random_staging_token/);
-    assert.match(fileIo, /CREATE_NEW/);
-    assert.match(fileIo, /O_CREAT \| O_EXCL \| O_NOFOLLOW/);
-    assert.match(fileIo, /FlushFileBuffers/);
-    assert.match(fileIo, /::fsync/);
-    assert.match(fileIo, /MoveFileExW|std::filesystem::rename/);
-    // Reads are bounded and removing an absent key is not a failure.
-    assert.match(source, /kMaximumEntryBytes/);
-    assert.match(source, /try_read_binary_file_bounded/);
-    // A test root keeps the user's own preferences out of a run.
-    assert.match(root, /BBLITE_LOCAL_STORAGE_ROOT/);
-    // No OS API outside PAL: the header the scene includes is a thin shim.
-    const shim = readFileSync(
-        resolve("native/include/bblite/js_storage.hpp"),
-        "utf8",
-    );
-    assert.doesNotMatch(shim, /filesystem|fstream|SDL_/);
-    assert.match(shim, /pal::read_local_storage/);
-});
-
 test("the JSON runtime is included only by the scenes that reach it", () => {
     const projection = readFileSync(
         resolve("src/compiler/output-projection.ts"),

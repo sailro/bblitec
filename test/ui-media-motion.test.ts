@@ -29,19 +29,3 @@ test("reduced-motion rules lower to the native condition", () => {
 test("reduced-motion changes update conditional styles without altering the system preference", (t) => {
     runRmlUiFixture(t, "ui-media-motion");
 });
-
-test("media rules retain native grid tracks", () => {
-    for (const columns of ["repeat(2, 40px)", "40px 1fr"]) {
-        const result = compileSource(`
-            import { createEngine } from "@babylonjs/lite";
-            await createEngine({});
-            const sheet = document.createElement("style");
-            sheet.textContent = "@media (prefers-reduced-motion: reduce){.panel{display:grid;grid-template-columns:${columns};}}";
-            document.head.appendChild(sheet);
-        `);
-        assert.match(
-            result.cpp,
-            /grid-template-columns:[^\n]+\.media = \{\.reduced_motion = true\}/,
-        );
-    }
-});

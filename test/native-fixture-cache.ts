@@ -14,7 +14,9 @@
  *
  * A command whose inputs or outputs the cache cannot name (response files,
  * `/Tp`/`/Tc` sources, precompiled headers, preprocessor output) always runs
- * the compiler, as does every command when `BBLITE_FIXTURE_CACHE=0`.
+ * the compiler, as does every command when `BBLITE_FIXTURE_CACHE=0`. A
+ * caller may run a missed command another way that writes what it would
+ * (`FixtureCompile`); the cache keys and stores it as the command.
  */
 import { execFileSync } from "node:child_process";
 import {
@@ -362,42 +364,22 @@ if (statistics)
     );
 
 /**
- * Runs `compiler` with `args` in `cwd`, restoring a stored build whose
- * command and every input it read are unchanged, and storing a successful
- * one. A failure throws the compiler's diagnostics without include notes.
+ * Runs `compiler` with `args` in `cwd` and returns its output. With
+ * `reportsIncludes`, include notes name every header the compile read, in
+ * English; the flag leads the command, as everything after `/link` goes to
+ * the linker. A failure throws the compiler's diagnostics without include
+ * notes.
  */
-export function runFixtureCompiler(
+export function runCompiler(
     compiler: string,
     environment: NodeJS.ProcessEnv,
     args: readonly string[],
     cwd: string,
-): void {
-    const plan =
-        process.env.BBLITE_FIXTURE_CACHE === "0"
-            ? undefined
-            : fixtureCompilePlan(args, cwd);
-    const cache = plan
-        ? (fixtureBuilds ??= new FixtureBuildCache(
-              resolve(cwd, artifactDirectory("native-fixture-cache")),
-              cwd,
-          ))
-        : undefined;
-    const key = plan && cache?.commandKey(compiler, environment, plan);
-    if (plan && key && cache!.restore(key, plan)) {
-        if (statistics) statistics.hits++;
-        return;
-    }
-    if (statistics) {
-        if (key) statistics.misses++;
-        else statistics.bypasses++;
-    }
-    // The include notes name every header the build read, in English. The
-    // flag leads the command: everything after `/link` goes to the linker.
-    const reportsIncludes = key !== undefined && plan!.sources.length > 0;
-    let output: string;
+    reportsIncludes: boolean,
+): string {
     const started = statistics ? performance.now() : 0;
     try {
-        output = execFileSync(
+        return execFileSync(
             compiler,
             reportsIncludes ? ["/showIncludes", ...args] : args,
             {
@@ -421,8 +403,52 @@ export function runFixtureCompiler(
         if (statistics)
             statistics.compilerMilliseconds += performance.now() - started;
     }
+}
+
+/**
+ * Builds what a missed command would, and returns every header it read when
+ * `reportsIncludes` (none otherwise).
+ */
+export type FixtureCompile = (reportsIncludes: boolean) => readonly string[];
+
+/**
+ * Runs `compiler` with `args` in `cwd`, or `compile` in its place,
+ * restoring a stored build whose command and every input it read are
+ * unchanged, and storing a successful one. A failure throws the compiler's
+ * diagnostics without include notes.
+ */
+export function runFixtureCompiler(
+    compiler: string,
+    environment: NodeJS.ProcessEnv,
+    args: readonly string[],
+    cwd: string,
+    compile: FixtureCompile = (reportsIncludes) =>
+        includeNotes(
+            runCompiler(compiler, environment, args, cwd, reportsIncludes),
+        ).includes,
+): void {
+    const plan =
+        process.env.BBLITE_FIXTURE_CACHE === "0"
+            ? undefined
+            : fixtureCompilePlan(args, cwd);
+    const cache = plan
+        ? (fixtureBuilds ??= new FixtureBuildCache(
+              resolve(cwd, artifactDirectory("native-fixture-cache")),
+              cwd,
+          ))
+        : undefined;
+    const key = plan && cache?.commandKey(compiler, environment, plan);
+    if (plan && key && cache!.restore(key, plan)) {
+        if (statistics) statistics.hits++;
+        return;
+    }
+    if (statistics) {
+        if (key) statistics.misses++;
+        else statistics.bypasses++;
+    }
+    const reportsIncludes = key !== undefined && plan!.sources.length > 0;
+    const includes = compile(reportsIncludes);
     if (!plan || !key) return;
-    const { includes } = includeNotes(output);
     // A compile that reported no header cannot prove what it read.
     if (!reportsIncludes || includes.length > 0) {
         const stored = cache!.store(key, plan, includes);

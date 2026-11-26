@@ -2830,7 +2830,7 @@ export class ExpressionLowerer {
      * and read back by a sink it cannot see. A number in an ordinary
      * expression position is consumed where it is written, already at the
      * width that position asked for.
-     * `test/compiler.test.ts` pins both halves.
+     * `test/compiler-data.test.ts` pins both halves.
      */
     private laneValue(expression: ts.Expression): Value {
         const raw = this.context.compileValue(expression);

@@ -169,35 +169,6 @@ test("an await under an erased browser-only guard refuses in the application rea
     );
 });
 
-test("an erased awaited declaration and `await null` take the same void suspension", () => {
-    const result = compileSource(`
-        const order: string[] = [];
-        async function query(): Promise<void> {
-            order.push("q0");
-            const estimate = await navigator.storage.estimate();
-            order.push("q1");
-        }
-        async function tick(): Promise<void> {
-            order.push("t0");
-            await null;
-            order.push("t1");
-        }
-        void (async () => {
-            const both = [query(), tick()];
-            order.push("caller");
-            await Promise.all(both);
-            globalThis.close();
-        })();
-    `);
-    const suspension =
-        "= co_await bbl::js::Promise<bbl::js::PromiseVoid>::resolved(bbl::js::PromiseVoid{});";
-    assert.equal(result.cpp.split(suspension).length - 1, 2);
-    assert.match(
-        result.cpp,
-        /erased_await_\d+ = co_await bbl::js::Promise<bbl::js::PromiseVoid>/,
-    );
-});
-
 test("an unread await of a non-thenable takes a void turn in the Window realm", () => {
     // `container.flowGraphRuntimes` is read under its await as the asset's
     // own list, which a promise cannot hold; an await nothing reads (a

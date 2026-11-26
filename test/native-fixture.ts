@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import { regexText } from "./regex.js";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
     existsSync,
     mkdirSync,
+    readdirSync,
     readFileSync,
     renameSync,
     rmSync,
+    statSync,
     writeFileSync,
 } from "node:fs";
 import {
@@ -22,6 +24,7 @@ import type { Feature } from "../src/compiler/types.js";
 import {
     discoverDevelopmentTools,
     discoverWindowsBuildTools,
+    findExecutable,
     type DevelopmentTools,
     type WindowsBuildTools,
 } from "../src/development-tools.js";
@@ -34,7 +37,12 @@ import {
 } from "../src/feature-macros.js";
 import { developmentVcpkgInstall } from "../src/vcpkg-install.js";
 import { sceneAggregateSources } from "../src/native-scene-sources.js";
-import { runFixtureCompiler } from "./native-fixture-cache.js";
+import {
+    includeNotes,
+    runCompiler,
+    runFixtureCompiler,
+    type FixtureCompile,
+} from "./native-fixture-cache.js";
 
 /** The development vcpkg install for `triplet` (the one scene builds link against). */
 export function developmentVcpkgRoot(triplet = "x64-windows"): string {
@@ -432,6 +440,10 @@ const productIncludeKeys = new Set(
     productIncludes.map((path) => path.toLowerCase()),
 );
 
+function isClangCl(tools: WindowsBuildTools): boolean {
+    return /clang-cl(?:\.exe)?$/i.test(tools.compiler);
+}
+
 /** A command compiles when it names a source; otherwise it only links. */
 const sourceArgument = /\.(?:c|cc|cpp|cxx|mm)$|^[/-]T[pc]/i;
 
@@ -487,7 +499,7 @@ export function nativeFixtureArguments(
         }
         rest.push(argument);
     }
-    const clang = /clang-cl(?:\.exe)?$/i.test(tools.compiler);
+    const clang = isClangCl(tools);
     const product = productCompileOptions();
     const macroFolder = fixtureMacroFolder(overrides);
     // A target's own include folders come before its dependencies' (CMake).
@@ -506,21 +518,358 @@ export function nativeFixtureArguments(
     ];
 }
 
+/** A fixture compiler command: the harness's arguments, without the banner. */
+function fixtureCommand(
+    tools: WindowsBuildTools,
+    arguments_: readonly string[],
+): readonly string[] {
+    return ["/nologo", ...nativeFixtureArguments(tools, arguments_)];
+}
+
 /**
- * Runs the fixture compiler, reusing a stored build whose command and every
- * input it read are unchanged (`native-fixture-cache.ts`).
- * `BBLITE_FIXTURE_CACHE=0` always compiles.
+ * Runs the fixture compiler, or `compile` in its place, reusing a stored
+ * build whose command and every input it read are unchanged
+ * (`native-fixture-cache.ts`). `BBLITE_FIXTURE_CACHE=0` always compiles.
  */
 export function runNativeFixtureCompiler(
     tools: WindowsBuildTools,
     arguments_: readonly string[],
+    compile?: FixtureCompile,
 ): void {
     runFixtureCompiler(
         tools.compiler,
         tools.environment,
-        ["/nologo", ...nativeFixtureArguments(tools, arguments_)],
+        fixtureCommand(tools, arguments_),
         resolve("."),
+        compile,
     );
+}
+
+/**
+ * Generated programs' precompiled preambles: each test process's own, in
+ * `<pid>/`, removed when it exits, as Clang records the absolute path and
+ * time of every header in one. A process killed first leaves its folder,
+ * which the next one removes.
+ */
+const preambleRoot = resolve("artifacts/native-fixture-pch");
+let processPreambleFolder: string | undefined;
+
+function preambleFolder(): string {
+    if (processPreambleFolder) return processPreambleFolder;
+    for (const entry of existsSync(preambleRoot)
+        ? readdirSync(preambleRoot)
+        : [])
+        if (/^\d+$/.test(entry) && !processRuns(Number(entry)))
+            rmSync(join(preambleRoot, entry), {
+                recursive: true,
+                force: true,
+            });
+    const folder = join(preambleRoot, String(process.pid));
+    mkdirSync(folder, { recursive: true });
+    process.on("exit", () => rmSync(folder, { recursive: true, force: true }));
+    return (processPreambleFolder = folder);
+}
+
+function processRuns(pid: number): boolean {
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch (error) {
+        return (error as NodeJS.ErrnoException).code === "EPERM";
+    }
+}
+
+/** A generated program's precompiled preamble, and what this process learned of it. */
+interface PrecompiledPreamble {
+    readonly path: string;
+    /** The program's own flags, which every unit reading the header shares. */
+    readonly flags: readonly string[];
+    /** The command building the header. */
+    readonly command: readonly string[];
+    /** The headers its build read, with their size and time then. */
+    headers?: readonly (readonly [
+        path: string,
+        size: number,
+        mtimeMs: number,
+    ])[];
+    /** Classes programs throw that it declares, by type descriptor, spelled. */
+    readonly declared: Map<string, string>;
+    /** Classes programs throw that it does not declare: their own. */
+    readonly undeclared: Set<string>;
+}
+
+const preambles = new Map<string, PrecompiledPreamble>();
+
+function digest(text: string): string {
+    return createHash("sha256").update(text).digest("hex").slice(0, 16);
+}
+
+/**
+ * The precompiled header of a generated program's preamble, its leading
+ * `#include <...>` lines, under its flags: parsing them is most of a
+ * program's compile. Undefined when the program has none, or when its flags
+ * name another source, which the header would reach too.
+ */
+function precompiledPreamble(
+    tools: WindowsBuildTools,
+    flags: readonly string[],
+    cpp: string,
+): PrecompiledPreamble | undefined {
+    if (!isClangCl(tools))
+        throw new Error(
+            `Generated programs compile with clang-cl, not ${tools.compiler}.`,
+        );
+    if (flags.some((flag) => sourceArgument.test(flag))) return undefined;
+    const includes: string[] = [];
+    for (const line of cpp.split("\n").map((text) => text.trimEnd())) {
+        if (/^#include <[^>]+>$/.test(line)) includes.push(line);
+        else if (line !== "" && !line.startsWith("//")) break;
+    }
+    if (includes.length === 0) return undefined;
+    const text = includes.map((line) => `${line}\n`).join("");
+    const name = digest([...flags, text].join("\n"));
+    const folder = preambleFolder();
+    const path = join(folder, `${name}.pch`);
+    const known = preambles.get(path);
+    if (known) return known;
+    const source = join(folder, `${name}.cpp`);
+    writeFileSync(source, text);
+    const preamble: PrecompiledPreamble = {
+        path,
+        flags,
+        command: fixtureCommand(tools, [
+            ...flags,
+            "/c",
+            "-Xclang",
+            "-emit-pch",
+            // As the product's shared PCH does (native-header-cache.cmake).
+            "-Xclang",
+            "-fpch-instantiate-templates",
+            `/Fo${path}`,
+            source,
+        ]),
+        declared: new Map(),
+        undeclared: new Set(),
+    };
+    preambles.set(path, preamble);
+    return preamble;
+}
+
+/**
+ * Builds `preamble` unless its headers kept the size and time they had
+ * when this process built it, which Clang requires; returns them.
+ */
+function builtPreamble(
+    tools: WindowsBuildTools,
+    preamble: PrecompiledPreamble,
+): readonly string[] {
+    const unchanged = preamble.headers?.every(([path, size, mtimeMs]) => {
+        const stat = statSync(path, { throwIfNoEntry: false });
+        return stat?.size === size && stat.mtimeMs === mtimeMs;
+    });
+    if (preamble.headers && unchanged)
+        return preamble.headers.map(([path]) => path);
+    const headers = [
+        ...new Set(
+            includeNotes(
+                runCompiler(
+                    tools.compiler,
+                    tools.environment,
+                    preamble.command,
+                    resolve("."),
+                    true,
+                ),
+            ).includes.map((include) => resolve(include)),
+        ),
+    ];
+    preamble.headers = headers.map((path) => {
+        const stat = statSync(path);
+        return [path, stat.size, stat.mtimeMs] as const;
+    });
+    preamble.declared.clear();
+    preamble.undeclared.clear();
+    return headers;
+}
+
+function readingPreamble(preamble: PrecompiledPreamble): string[] {
+    return ["-Xclang", "-include-pch", "-Xclang", preamble.path];
+}
+
+/**
+ * The header a unit reading `preamble` includes first: a throw of each
+ * class it declares that programs throw. Clang names a thrown class's copy
+ * constructor in its catchable type only while it checks a throw of that
+ * class in the unit, never through a precompiled header
+ * (`pch-exception-copies.test.ts`); without one, exceptions copied by
+ * `std::current_exception` and `std::rethrow_exception` lose their copy
+ * constructors. The functions are inline and never called.
+ */
+function exceptionRecord(preamble: PrecompiledPreamble): string {
+    const text = [...preamble.declared.values()]
+        .sort()
+        .map(
+            (spelled, index) =>
+                `inline void bblite_fixture_thrown_${index}(const ${spelled}& value) { throw value; }\n`,
+        )
+        .join("");
+    const path = join(dirname(preamble.path), `${digest(text)}.hpp`);
+    if (!existsSync(path)) writeFileSync(path, text);
+    return path;
+}
+
+/**
+ * The classes `object` throws, by type descriptor (`?AV<name>@@`): their
+ * throw information symbols, `_TI<qualifiers><count><type>`.
+ */
+function thrownClasses(tools: WindowsBuildTools, object: string): string[] {
+    const symbols = execFileSync(
+        join(dirname(tools.compiler), "llvm-nm.exe"),
+        ["--defined-only", "--just-symbol-name", object],
+        { encoding: "utf8", windowsHide: true, maxBuffer: 256 * 1024 * 1024 },
+    );
+    return [
+        ...new Set(
+            symbols
+                .split(/\r?\n/)
+                .flatMap(
+                    (symbol) =>
+                        /^_TI[CVU]*\d+(\?A[UV].+)$/.exec(symbol)?.[1] ?? [],
+                ),
+        ),
+    ];
+}
+
+/** Each type descriptor's class as C++ spells it, by MSVC's undecorator. */
+function classSpellings(
+    tools: WindowsBuildTools,
+    descriptors: readonly string[],
+): string[] {
+    const undname = findExecutable("undname", {
+        environment: tools.environment,
+    });
+    if (!undname)
+        throw new Error(
+            "MSVC's undname.exe names the classes generated programs throw through a precompiled preamble; it is not on the build tools' PATH.",
+        );
+    const output = execFileSync(
+        undname,
+        descriptors.map((descriptor) => `??_R0${descriptor}@8`),
+        { encoding: "utf8", windowsHide: true },
+    );
+    const spelled = [
+        ...output.matchAll(/^is :- "(.+) `RTTI Type Descriptor'"\r?$/gm),
+    ].map((match) => match[1]!);
+    if (spelled.length !== descriptors.length)
+        throw new Error(
+            `undname did not name ${descriptors.join(", ")}:\n${output}`,
+        );
+    return spelled;
+}
+
+/**
+ * Whether `preamble` declares `spelled`: a unit reading only it checks a
+ * throw of the class. A class it does not name is the program's own.
+ */
+function declaresClass(
+    tools: WindowsBuildTools,
+    preamble: PrecompiledPreamble,
+    spelled: string,
+): boolean {
+    if (spelled.includes("`"))
+        throw new Error(
+            `A generated program throws ${spelled}, which no unit can name to record its copy constructor.`,
+        );
+    const source = join(
+        dirname(preamble.path),
+        `declares-${digest(spelled)}.cpp`,
+    );
+    writeFileSync(
+        source,
+        `inline void bblite_fixture_thrown(const ${spelled}& value) { throw value; }\n`,
+    );
+    try {
+        runCompiler(
+            tools.compiler,
+            tools.environment,
+            [
+                ...readingPreamble(preamble),
+                ...fixtureCommand(tools, [...preamble.flags, "/Zs", source]),
+            ],
+            resolve("."),
+            false,
+        );
+        return true;
+    } catch (error) {
+        const errors = (error as Error).message
+            .split(/\r?\n/)
+            .filter((line) => /\berror:/.test(line));
+        if (
+            errors.length > 0 &&
+            errors.every((line) =>
+                /\berror: (?:use of undeclared identifier|unknown type name|no (?:type|class|struct|member) named) /.test(
+                    line,
+                ),
+            )
+        )
+            return false;
+        throw new Error(
+            `Cannot tell whether a generated program's precompiled preamble declares ${spelled}, which the program throws.`,
+            { cause: error },
+        );
+    }
+}
+
+/**
+ * Compiles `arguments_`, whose object is `object`, reading `preamble`
+ * and its exception record. A compile throwing a class this process has not
+ * met records it when the preamble declares it, and compiles again.
+ */
+function compileReadingPreamble(
+    tools: WindowsBuildTools,
+    preamble: PrecompiledPreamble,
+    arguments_: readonly string[],
+    object: string,
+): FixtureCompile {
+    return (reportsIncludes) => {
+        const headers = builtPreamble(tools, preamble);
+        for (;;) {
+            const record = exceptionRecord(preamble);
+            const output = runCompiler(
+                tools.compiler,
+                tools.environment,
+                [
+                    ...readingPreamble(preamble),
+                    `/FI${record}`,
+                    ...fixtureCommand(tools, arguments_),
+                ],
+                resolve("."),
+                reportsIncludes,
+            );
+            const met = thrownClasses(tools, object).filter(
+                (descriptor) =>
+                    !preamble.declared.has(descriptor) &&
+                    !preamble.undeclared.has(descriptor),
+            );
+            const spellings = met.length ? classSpellings(tools, met) : [];
+            let recorded = false;
+            met.forEach((descriptor, index) => {
+                const spelled = spellings[index]!;
+                if (declaresClass(tools, preamble, spelled)) {
+                    preamble.declared.set(descriptor, spelled);
+                    recorded = true;
+                } else preamble.undeclared.add(descriptor);
+            });
+            if (recorded) continue;
+            // The record is this process's; the preamble's headers are the build's.
+            return [
+                ...headers,
+                ...includeNotes(output).includes.filter(
+                    (include) =>
+                        resolve(include).toLowerCase() !== record.toLowerCase(),
+                ),
+            ];
+        }
+    };
 }
 
 /**
@@ -629,8 +978,9 @@ export interface GeneratedProgramOptions {
 
 /**
  * Compiles one generated translation unit in `artifacts/<name>` with the
- * fixture's own `flags` and runs it: a failed assertion or an uncaught throw
- * in the program fails the caller. Returns what the program printed.
+ * fixture's own `flags`, its preamble precompiled (`precompiledPreamble`),
+ * and runs it: a failed assertion or an uncaught throw in the program fails
+ * the caller. Returns what the program printed.
  */
 export function runGeneratedProgram(
     tools: WindowsBuildTools,
@@ -643,12 +993,25 @@ export function runGeneratedProgram(
     const source = join(directory, "check.cpp"),
         executable = join(directory, "check.exe");
     writeFileSync(source, cpp);
-    runNativeFixtureCompiler(tools, [
-        ...(options.flags ?? []),
+    const flags = options.flags ?? [];
+    const arguments_ = [
+        ...flags,
         `/Fo:${directory}/`,
         `/Fe:${executable}`,
         source,
-    ]);
+    ];
+    const preamble = precompiledPreamble(tools, flags, cpp);
+    runNativeFixtureCompiler(
+        tools,
+        arguments_,
+        preamble &&
+            compileReadingPreamble(
+                tools,
+                preamble,
+                arguments_,
+                join(directory, "check.obj"),
+            ),
+    );
     const output = runFixtureExecutable(executable, {
         timeoutMs: options.timeoutMs ?? 0,
     });

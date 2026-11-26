@@ -246,7 +246,10 @@ node dist/src/scene-command.js neutrality <saved-baseline-directory>
 - Native fixtures (`test/native-fixture.ts`) take `bblite_core`'s standard and options from `native/CMakeLists.txt` and
   refuse fixtures that restate them. Successful builds are cached in `artifacts/native-fixture-cache/` (30 days);
   `BBLITE_FIXTURE_CACHE=0` disables it. `BBLITE_FIXTURE_CACHE_STATS=1` prints per-process hits, misses, bypasses,
-  publication counts and compiler time.
+  publication counts and compiler time. Generated programs (`runGeneratedProgram`) precompile their leading
+  `#include <...>` lines once per test process in `artifacts/native-fixture-pch/<pid>/` (removed at exit); each unit
+  also compiles a throw of every precompiled class it throws, without which clang-cl copies those exceptions bitwise
+  (`test/pch-exception-copies.test.ts`).
 - vcpkg installs: `artifacts/vcpkg-installed/development-full-<key>` (`BBLITE_VCPKG_INSTALLED_ROOT` relocates), reconciled
   once per `scene build`; three most recent per name kept.
 - Worktrees: `tools/setup-worktree.ps1 -Path <path> -Branch <branch> [-SharedVcpkg]`; `-Remove` unlinks junctions first.
