@@ -125,7 +125,7 @@ test("conflicting native object views name each storage and where it was demande
         native: {
             type,
             node: second,
-            storage: { kind: "borrowed-platform-event", event: "mouse" },
+            storage: { kind: "platform-event", event: "mouse" },
         },
     } as const;
     const registry = () =>
@@ -144,7 +144,7 @@ test("conflicting native object views name each storage and where it was demande
         );
     const views = refusal(
         "'event-target' at '[^']*native-view-demand.ts:2'",
-        "'borrowed(mouse)' at '[^']*native-view-demand.ts:3'",
+        "'event(mouse)' at '[^']*native-view-demand.ts:3'",
     );
 
     // Two native owners merged into one demand, in one demand per owner,
@@ -159,7 +159,7 @@ test("conflicting native object views name each storage and where it was demande
         conflict.nativeConflict.map(({ storage, node }) => [storage, node]),
         [
             ["event-target", first],
-            ["borrowed(mouse)", second],
+            ["event(mouse)", second],
         ],
     );
     assert.equal(

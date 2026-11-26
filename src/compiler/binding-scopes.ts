@@ -38,7 +38,6 @@ import {
     EmissionMap,
     EmissionSet,
     EmissionWeakSet,
-    journaled,
     writable,
 } from "./emission-transaction.js";
 import { readScalarOperand } from "./evaluation-order.js";
@@ -93,7 +92,6 @@ interface BindingScopesContext extends Pick<
     LoweringServices,
     | "program"
     | "evaluationOrder"
-    | "activeNativeReturnType"
     | "allocateBlockPrefix"
     | "allocateTemporaryCppName"
     | "captureRecordScopes"
@@ -181,9 +179,9 @@ export class BindingScopes {
     public readonly variableScopes: Array<Map<ts.Symbol, VariableBinding>> =
         emissionArray([new EmissionMap()]);
     /**
-     * Module and entry statements bind here, before any dispatch, so no
-     * borrowed event is live where these bindings are made; a later store of
-     * one into them refuses where the store happens.
+     * Module and entry statements bind here, outside every listener: their
+     * bindings are no listener's locals, so they hold no event a listener
+     * received as its own (`containsPlatformEvent`).
      */
     private readonly rootScope = this.variableScopes[0]!;
     /** @unjournaled Derived alias graph observes every source mutation and rollback. */
@@ -192,14 +190,6 @@ export class BindingScopes {
     private readonly sharedRecordMaps = new EmissionWeakSet<object>();
     private readonly unwrittenScalarRecordMaps = new EmissionWeakSet<object>();
     private readonly cppNamePrefixes: string[] = emissionArray([""]);
-
-    /**
-     * Scope depth at which a nested persistent callback begins. Platform event
-     * objects are borrowed from the dispatch stack, so only bindings introduced
-     * at or below this callback may refer to one.
-     */
-    @journaled public accessor escapingPlatformEventCaptureFloor:
-        number | undefined;
 
     constructor(private readonly context: BindingScopesContext) {}
 
@@ -350,11 +340,6 @@ export class BindingScopes {
         ) {
             const binding = this.variableScopes[index]!.get(symbol);
             if (binding) {
-                this.refuseEscapingPlatformEventCapture(
-                    identifier,
-                    index,
-                    binding.value,
-                );
                 this.refusePoisonedRebind(identifier, binding);
                 if (binding.unassignedVar)
                     this.context.varBindings.refuseUnassignedRead(identifier);
@@ -554,11 +539,12 @@ export class BindingScopes {
     }
 
     /**
-     * Whether a value, or any value it carries, is a borrowed platform event.
+     * Whether a value, or any value it carries, is a platform event, which
+     * lives in the native body of the listener that received it.
      *
      * A closure carries the bindings its code reads, through the functions
      * declared in a function body that it names -- not every binding of the
-     * scope chain it closed over. A root-scope binding holds no borrowed
+     * scope chain it closed over. A root-scope binding holds no listener's
      * event (see `rootScope`).
      */
     public containsPlatformEvent(
@@ -576,7 +562,7 @@ export class BindingScopes {
         }
         if (
             value.dataType &&
-            this.context.dataTypes.carriesBorrowedPlatformEvent(value.dataType)
+            this.context.dataTypes.carriesPlatformEvent(value.dataType)
         ) {
             return true;
         }
@@ -617,7 +603,7 @@ export class BindingScopes {
                 for (let index = scopes.length - 1; index >= 0; index -= 1) {
                     const binding = scopes[index]!.get(symbol);
                     if (!binding) continue;
-                    if (this.mayHoldBorrowedEvent(scopes[index]!))
+                    if (scopes[index] !== this.rootScope)
                         captured.push(binding.value);
                     break;
                 }
@@ -781,86 +767,6 @@ export class BindingScopes {
         };
         this.programReads().code.set(code, reads);
         return reads;
-    }
-
-    /** See `rootScope`: only a binding outside it can hold a borrowed event. */
-    private mayHoldBorrowedEvent(
-        scope: ReadonlyMap<ts.Symbol, VariableBinding>,
-    ): boolean {
-        return scope !== this.rootScope;
-    }
-
-    private refuseEscapingPlatformEventCapture(
-        identifier: ts.MemberName,
-        scopeIndex: number,
-        value: Value,
-        floor = this.escapingPlatformEventCaptureFloor,
-    ): void {
-        if (
-            floor !== undefined &&
-            scopeIndex < floor &&
-            this.mayHoldBorrowedEvent(this.variableScopes[scopeIndex]!) &&
-            this.containsPlatformEvent(value)
-        ) {
-            this.context.fail(
-                identifier,
-                `An escaping callback cannot capture platform event value ` +
-                    `'${identifier.text}': the event is borrowed only while ` +
-                    "its current handler executes. Copy the specific owned " +
-                    "field needed by the later callback instead.",
-            );
-        }
-    }
-
-    /**
-     * Refuses an escaping callback that reads, directly or through a function
-     * it calls, a binding below `floor` holding a borrowed event.
-     */
-    public refuseEscapingPlatformEventCapturesIn(
-        node: ts.Node,
-        floor = this.escapingPlatformEventCaptureFloor ??
-            (this.context.activeNativeReturnType() !== undefined
-                ? this.variableScopes.length
-                : undefined),
-    ): void {
-        if (floor === undefined) return;
-        const pending: ts.Node[] = [node];
-        if (ts.isIdentifier(node)) {
-            const declaration =
-                this.context.symbols.valueSymbol(node)?.valueDeclaration;
-            const body = declaration && functionOfDeclaration(declaration);
-            if (body) pending.push(body);
-        }
-        const visited = new Set<ts.Node>();
-        const checked = new Set<ts.Symbol>();
-        for (let code = pending.shift(); code; code = pending.shift()) {
-            if (visited.has(code)) continue;
-            visited.add(code);
-            const reads = this.codeReads(code);
-            for (const [symbol, identifier] of reads.names) {
-                if (checked.has(symbol)) continue;
-                checked.add(symbol);
-                for (
-                    let index = Math.min(
-                        floor - 1,
-                        this.variableScopes.length - 1,
-                    );
-                    index >= 0;
-                    index -= 1
-                ) {
-                    const binding = this.variableScopes[index]!.get(symbol);
-                    if (!binding) continue;
-                    this.refuseEscapingPlatformEventCapture(
-                        identifier,
-                        index,
-                        binding.value,
-                        floor,
-                    );
-                    break;
-                }
-            }
-            pending.push(...reads.calls);
-        }
     }
 
     /**

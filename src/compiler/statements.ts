@@ -4968,7 +4968,10 @@ export class StatementLowerer {
                         code: `${target.cpp} = ${value.cpp};`,
                     });
                 } else if (
-                    (target.kind === "data" || target.kind === "promise") &&
+                    (target.kind === "data" ||
+                        target.kind === "promise" ||
+                        // A stored event reads as the event it holds.
+                        target.eventStorageCpp !== undefined) &&
                     (operator === "=" || isJsonValue(target)) &&
                     context.dataLowerer.emitAssignment(unwrapped)
                 ) {
@@ -5041,9 +5044,15 @@ export class StatementLowerer {
                     context.emitDiscardedValue(value);
                     return;
                 } else {
-                    // A compile-time array a later assignment replaces is
-                    // stored: the declaration is lowered again with storage.
-                    if (target.kind === "tuple")
+                    // A compile-time array or a dispatched event a later
+                    // assignment replaces is stored: the declaration is
+                    // lowered again with storage.
+                    if (
+                        target.kind === "tuple" ||
+                        ((target.kind === "platform-keyboard-event" ||
+                            target.kind === "platform-mouse-event") &&
+                            target.eventStorageCpp === undefined)
+                    )
                         requireDynamicBindingStorage(
                             context.checker,
                             unwrapped.left,

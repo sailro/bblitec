@@ -26,11 +26,12 @@ SDL_Event mouse_motion(float dx, float dy) {
 int main() {
     bbl::PlatformMouseEvent mouse;
     mouse.client_x = 42;
-    bbl::js::BorrowedEvent borrowed(mouse);
-    const auto copy = borrowed;
-    assert(&copy.as<bbl::PlatformMouseEvent>() == &mouse);
+    bbl::js::BaseEventRef event(mouse);
+    const auto copy = event;
+    assert(&copy.as<bbl::PlatformMouseEvent>() == &event.as<bbl::PlatformMouseEvent>());
+    assert(copy.as<bbl::PlatformMouseEvent>().client_x == 42);
     copy.prevent_default();
-    assert(mouse.default_prevented);
+    assert(mouse.is_default_prevented());
     bool rejected = false;
     try {
         (void)copy.as<bbl::PlatformKeyboardEvent>();

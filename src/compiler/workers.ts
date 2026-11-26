@@ -255,7 +255,7 @@ function uncloneablePosition(
             return refuse("an ArrayBufferView without its element class");
         case "numberindex":
             return refuse("a numeric index view");
-        case "borrowed-platform-event":
+        case "platform-event":
             return refuse("a platform event");
         case "function":
             // structuredClone throws DataCloneError where it meets one.

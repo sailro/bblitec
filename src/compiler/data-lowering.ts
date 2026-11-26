@@ -308,7 +308,6 @@ import {
     hasNonNullAssertion,
     isUpdateExpression,
     iteratorMethodCall,
-    rootExpression,
     rootIdentifier,
     argumentAt,
     literalMember,
@@ -790,7 +789,6 @@ interface DataLoweringContext extends Pick<
     | "requireEngine"
     | "storedResourceEngine"
     | "selectResourceOwner"
-    | "refuseBorrowedPlatformEventEscape"
     | "fail"
     | "refuseWithDemand"
     | "dynamicBindings"
@@ -2467,34 +2465,6 @@ export class DataLowerer {
     }
 
     /**
-     * Stores one value into a container that can outlive the current dispatch.
-     * Only event-bearing destination shapes pay the provenance/escape check, so
-     * ordinary generated output remains byte-for-byte unchanged.
-     */
-    public compileForRetainedSink(
-        expression: ts.Expression,
-        dataType: DataType,
-        destination: string,
-    ): string {
-        if (
-            !this.context.dataTypes.carriesBorrowedPlatformEvent(dataType) &&
-            !(
-                dataType.kind === "handle" &&
-                dataType.handle === "dom-event-identity"
-            )
-        ) {
-            return this.compileForSink(expression, dataType);
-        }
-        const value = this.context.compileValue(expression);
-        this.context.refuseBorrowedPlatformEventEscape(
-            value,
-            expression,
-            destination,
-        );
-        return this.compileKnownValueForSink(value, dataType, expression);
-    }
-
-    /**
      * Maps the checker type at a node into the data model, or undefined for
      * non-data types.
      */
@@ -2735,6 +2705,7 @@ export class DataLowerer {
             if (
                 bound?.kind !== "data" &&
                 bound?.kind !== "promise" &&
+                bound?.eventStorageCpp === undefined &&
                 !(
                     bound?.dataType?.kind === "handle" &&
                     bound.dataType.ownedEngine
@@ -4858,10 +4829,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                             (kind) => kind === inner.kind,
                         ) ||
                             // A stored node handle the checker narrows to
-                            // its concrete family (`TransformNode`), or a
-                            // stored DOM event target.
+                            // its concrete family (`TransformNode`), a
+                            // stored DOM event target, or a stored event
+                            // under a structural view of it.
                             inner.kind === "handle" ||
-                            inner.kind === "event-target") &&
+                            inner.kind === "event-target" ||
+                            inner.kind === "platform-event") &&
                         provenPresent(
                             this.context.checker.getTypeAtLocation(expression),
                         ))))
@@ -6337,7 +6310,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             // engine's own property lowering owns everything past it.
             return undefined;
         }
-        if (dataType.kind === "borrowed-platform-event") {
+        if (dataType.kind === "platform-event") {
             // The DataType gets the event through record fields and callback
             // parameters. Its properties still belong to the existing
             // platform-event Value lowering, which knows the supported DOM
@@ -8754,7 +8727,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         };
     }
 
-    /** A node handle stored as optional data that the checker proves present. */
+    /**
+     * A node handle or platform event stored as optional data that the
+     * checker proves present.
+     */
     public presentStoredHandle(
         value: Value,
         expression: ts.Expression,
@@ -8762,13 +8738,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (
             value.kind !== "data" ||
             value.dataType?.kind !== "optional" ||
-            value.dataType.inner.kind !== "handle"
+            (value.dataType.inner.kind !== "handle" &&
+                value.dataType.inner.kind !== "platform-event")
         )
             return undefined;
         const narrowed = this.narrowOptional(value, expression);
-        return narrowed === value
-            ? undefined
-            : this.leafValue(narrowed.cpp, value.dataType.inner);
+        return narrowed === value ? undefined : narrowed;
     }
 
     /**
@@ -8877,7 +8852,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (dataType.kind === "boolean") {
             return { kind: "boolean", cpp, dataType };
         }
-        if (dataType.kind === "borrowed-platform-event") {
+        if (dataType.kind === "platform-event") {
             if (dataType.event === "error" || dataType.event === "rejection") {
                 return {
                     ...windowErrorEventValue(
@@ -8886,6 +8861,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         dataType.event === "rejection",
                     ),
                     dataType,
+                    eventStorageCpp: cpp,
                 };
             }
             return valueForKind(
@@ -8895,6 +8871,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 {
                     cpp: `${cpp}.get()`,
                     dataType,
+                    eventStorageCpp: cpp,
                     ...(dataType.event === "event"
                         ? { platformEventBase: true as const }
                         : {}),
@@ -9556,11 +9533,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
             this.context.reachJsData();
             const values = call.arguments.map((argument) => {
-                const value = this.compileForRetainedSink(
-                    argument,
-                    type.element,
-                    "Array.of",
-                );
+                const value = this.compileForSink(argument, type.element);
                 const name =
                     this.context.allocateTemporaryCppName("array_of_value");
                 this.context.emit({
@@ -11775,7 +11748,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (!created) {
             return undefined;
         }
-        if (created.element.kind === "borrowed-platform-event") {
+        if (created.element.kind === "platform-event") {
             this.context.fail(
                 expression,
                 "A sized Array cannot create default DOM event values; platform events exist only inside their active callback.",
@@ -12056,19 +12029,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                             },
                             iterable,
                         );
-            if (
-                this.context.dataTypes.carriesBorrowedPlatformEvent(
-                    dataType.element,
-                ) ||
-                (dataType.element.kind === "handle" &&
-                    dataType.element.handle === "dom-event-identity")
-            ) {
-                this.context.refuseBorrowedPlatformEventEscape(
-                    source,
-                    iterable,
-                    "Set constructor",
-                );
-            }
             return {
                 kind: "data",
                 cpp: `${cppType}(${values})`,
@@ -12770,7 +12730,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     private compileAssignmentSink(
         expression: ts.Expression,
         dataType: DataType,
-        destination?: string,
         structLocal?: ts.Identifier,
     ): { cpp: string; constructedArray: boolean } {
         const previous = this.assignmentSink;
@@ -12781,14 +12740,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         };
         this.assignmentSink = assignment;
         try {
-            const cpp =
-                destination === undefined
-                    ? this.compileForSink(expression, dataType)
-                    : this.compileForRetainedSink(
-                          expression,
-                          dataType,
-                          destination,
-                      );
+            const cpp = this.compileForSink(expression, dataType);
             return { cpp, constructedArray: assignment.constructed };
         } finally {
             this.assignmentSink = previous;
@@ -13348,7 +13300,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return value.ownedCpp;
         }
         if (
-            dataType.kind !== "borrowed-platform-event" &&
+            dataType.kind !== "platform-event" &&
             value.dataType &&
             this.spanCompatible(value.dataType, dataType)
         ) {
@@ -14894,9 +14846,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * string-keyed dictionary `resultCpp` of type `dataType`, as a spread
      * and `Object.assign` do: a `?` field, or a key a conditional spread
      * wrote, while it is own; a class's keys in the order its instances
-     * create them; a view's instance's into a document dictionary. An
-     * existing dictionary keeps what it receives (`escapes`, the copy's
-     * name), as a store does. Returns false for a source
+     * create them; a view's instance's into a document dictionary.
+     * Returns false for a source
      * `spreadOwnEntries` does not read.
      */
     public copyOwnEntriesInto(
@@ -14904,18 +14855,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         dataType: DataType<"map">,
         source: Value,
         node: ts.Node,
-        escapes?: string,
     ): boolean {
         const spread = this.spreadOwnEntries(source, node);
         if (!spread) return false;
         const copy = (entries: readonly OwnEntry[]): void => {
             for (const { key, value, presence } of entries) {
-                if (escapes)
-                    this.context.refuseBorrowedPlatformEventEscape(
-                        value,
-                        node,
-                        escapes,
-                    );
                 const cpp = this.compileKnownValueForSink(
                     value,
                     dataType.value,
@@ -15225,10 +15169,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     index,
                     literalMemberValue,
                     (member) =>
-                        this.compileForRetainedSink(
+                        this.compileForSink(
                             literalMemberValue(member)!,
                             dataType.value,
-                            "Record entry",
                         ),
                 );
                 this.context.emit({
@@ -15267,10 +15210,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 index,
                 literalMemberValue,
                 (member) =>
-                    this.compileForRetainedSink(
+                    this.compileForSink(
                         literalMemberValue(member)!,
                         dataType.value,
-                        "Record entry",
                     ),
             )}}`;
         });
@@ -15690,13 +15632,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     `${operation === "spread" ? "Spread" : operation === "rest" ? "Object rest" : operation} property '${entry.key}' cannot be retained in the narrower '${target.type.name}' storage.`,
                 );
             }
-            this.context.refuseBorrowedPlatformEventEscape(
-                entry.value,
-                source,
-                operation === "Object.assign"
-                    ? operation
-                    : `object ${operation}`,
-            );
             this.context.dataTypes.requireEngineFieldStorage(
                 sourceField,
                 source,
@@ -16452,6 +16387,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (
             (target?.kind !== "data" &&
                 target?.kind !== "promise" &&
+                target?.eventStorageCpp === undefined &&
                 !(
                     target?.dataType?.kind === "handle" &&
                     target.dataType.ownedEngine
@@ -16461,16 +16397,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return false;
         }
         const kind = target.dataType.kind;
-        if (
-            this.context.dataTypes.carriesBorrowedPlatformEvent(target.dataType)
-        ) {
-            const value = this.context.compileValue(expression.right);
-            this.context.refuseBorrowedPlatformEventEscape(
-                value,
-                expression.right,
-                "a reassigned local",
-            );
-        }
         // An empty optional slot filled from a literal or an absence takes
         // fresh storage that no alias names.
         const right = this.context.unwrap(expression.right);
@@ -16544,10 +16470,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             : this.compileAssignmentSink(
                   expression.right,
                   target.dataType,
-                  undefined,
                   structLocal,
               );
-        const storage = target.resourceStorageCpp ?? target.cpp;
+        const storage =
+            target.resourceStorageCpp ?? target.eventStorageCpp ?? target.cpp;
         // Storage assigned its own read keeps the value it holds; C++
         // diagnoses the self-assignment.
         if (value.cpp !== storage || !isCppPath(storage))
@@ -17574,10 +17500,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const guard = this.logicalAssignmentGuard(expression, target);
         if (guard === undefined) return target;
         this.emitGuardedStore(guard, () => {
-            const value = this.compileForRetainedSink(
+            const value = this.compileForSink(
                 expression.right,
                 entry.dataType.value,
-                "logical assignment",
             );
             this.context.emit({
                 kind: "expression",
@@ -18076,7 +18001,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     const right = this.context.unwrap(expression.right);
                     this.context.emit({
                         kind: "expression",
-                        code: `${selected} = ${this.compileForRetainedSink(expression.right, type, "logical assignment")};`,
+                        code: `${selected} = ${this.compileForSink(expression.right, type)};`,
                     });
                     const previous = this.assignedRights.get(right);
                     this.assignedRights.set(right, result);
@@ -18274,11 +18199,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         this.emitGuardedStore(guard, () => {
             const converted = scalarKind
                 ? undefined
-                : this.compileAssignmentSink(
-                      expression.right,
-                      targetType!,
-                      "logical assignment",
-                  );
+                : this.compileAssignmentSink(expression.right, targetType!);
             const value =
                 scalarKind === "number"
                     ? this.context.compileNumber(expression.right, "double")
@@ -18946,28 +18867,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 const assignedValue = this.context.compileValue(
                     expression.right,
                 );
-                if (
-                    this.context.dataTypes.carriesBorrowedPlatformEvent(
-                        narrowed.dataType.key,
-                    )
-                ) {
-                    this.context.refuseBorrowedPlatformEventEscape(
-                        keyValue,
-                        left.argumentExpression,
-                        "Map key assignment",
-                    );
-                }
-                if (
-                    this.context.dataTypes.carriesBorrowedPlatformEvent(
-                        narrowed.dataType.value,
-                    )
-                ) {
-                    this.context.refuseBorrowedPlatformEventEscape(
-                        assignedValue,
-                        expression.right,
-                        "Map value assignment",
-                    );
-                }
                 const key = this.compileKnownValueForSink(
                     keyValue,
                     narrowed.dataType.key,
@@ -19102,9 +19001,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (!target) {
             return false;
         }
-        const targetRoot = rootExpression(left, (chain) =>
-            this.context.unwrap(chain),
-        );
         const invalidateRootRecordSnapshot = (): void =>
             this.invalidateRecordFieldSnapshot(left);
         if (
@@ -19123,21 +19019,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             });
             invalidateRootRecordSnapshot();
             return true;
-        }
-        if (
-            target.dataType &&
-            this.context.dataTypes.carriesBorrowedPlatformEvent(target.dataType)
-        ) {
-            this.context.refuseBorrowedPlatformEventEscape(
-                this.context.compileValue(expression.right),
-                expression.right,
-                ts.isElementAccessExpression(left)
-                    ? "container element assignment"
-                    : targetRoot.kind === ts.SyntaxKind.ThisKeyword ||
-                        target.classStoredField
-                      ? "class field assignment"
-                      : "data field assignment",
-            );
         }
         if (target.kind === "number") {
             let targetCpp = target.cpp;
@@ -19212,7 +19093,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return true;
         }
         if (
-            (target.kind === "data" || isHandleKind(target.kind)) &&
+            (target.kind === "data" ||
+                isHandleKind(target.kind) ||
+                target.eventStorageCpp !== undefined) &&
             target.dataType
         ) {
             if (
@@ -19293,7 +19176,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             );
             this.context.emit({
                 kind: "expression",
-                code: `${target.resourceStorageCpp ?? target.storedEngineCpp ?? target.cpp} = ${value.cpp};`,
+                code: `${target.resourceStorageCpp ?? target.storedEngineCpp ?? target.eventStorageCpp ?? target.cpp} = ${value.cpp};`,
             });
             this.context.recordDataAssignmentMetadata(
                 target,
@@ -19409,23 +19292,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                             element,
                             "Destructuring source elements require a concrete data type.",
                         );
-                    if (compiled)
-                        this.context.refuseBorrowedPlatformEventEscape(
-                            compiled,
-                            element,
-                            "a destructuring source",
-                        );
                     const initializer = compiled
                         ? this.compileKnownValueForSink(
                               compiled,
                               elementType,
                               element,
                           )
-                        : this.compileForRetainedSink(
-                              element,
-                              elementType,
-                              "a destructuring source",
-                          );
+                        : this.compileForSink(element, elementType);
                     const cpp =
                         this.context.allocateTemporaryCppName(
                             "destructure_value",
@@ -19773,11 +19646,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     "A destructuring setter requires a concrete parameter type.",
                 );
             const item = readForTarget(type);
-            this.context.refuseBorrowedPlatformEventEscape(
-                item,
-                name,
-                "a destructuring assignment",
-            );
             const cpp = this.context.allocateTemporaryCppName(
                 "destructure_argument",
             );
@@ -19873,11 +19741,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             });
         }
         const item = readForTarget(targetType);
-        this.context.refuseBorrowedPlatformEventEscape(
-            item,
-            name,
-            "a destructuring assignment",
-        );
         let cpp = this.compileKnownValueForSink(item, targetType, name);
         // Legacy nullable resource locals store std::optional, while data
         // fields and arrays retain JavaScript's null/undefined wrapper.
@@ -20102,11 +19965,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             initialization: "default",
         });
         this.emitGuardedStore(absent, () => {
-            const replacement = this.compileForRetainedSink(
-                fallback,
-                type,
-                "a destructuring default",
-            );
+            const replacement = this.compileForSink(fallback, type);
             this.context.emit({
                 kind: "expression",
                 code: `${cpp} = ${replacement};`,
@@ -20980,7 +20839,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (
             isHandleKind(value.kind) ||
             value.dataType?.kind === "handle" ||
-            value.dataType?.kind === "borrowed-platform-event" ||
+            value.dataType?.kind === "platform-event" ||
             value.kind === "platform-mouse-event" ||
             value.kind === "platform-keyboard-event"
         ) {
@@ -23586,16 +23445,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         value.dataType &&
                         dataTypesEqual(value.dataType, dataType)
                     ) {
-                        if (
-                            this.context.dataTypes.carriesBorrowedPlatformEvent(
-                                dataType.element,
-                            )
-                        )
-                            this.context.refuseBorrowedPlatformEventEscape(
-                                value,
-                                spread,
-                                "Array spread",
-                            );
                         copiedRecordSources.push(value);
                         return {
                             ...value,
@@ -23721,17 +23570,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         // retains every element. Otherwise the new alias escapes tracking.
         if (copiedRecordSources) copiedRecordSources.push(iterable);
         else this.invalidateRecordArrayFacts(iterable);
-        if (
-            this.context.dataTypes.carriesBorrowedPlatformEvent(
-                dataType.element,
-            )
-        ) {
-            this.context.refuseBorrowedPlatformEventEscape(
-                iterable,
-                spread,
-                "Array spread",
-            );
-        }
         if (
             iterable.kind === "handle-collection" &&
             iterable.handleCollection &&
@@ -24015,7 +23853,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         };
                     }
                     return {
-                        statement: `${result}.push_back(${this.compileForRetainedSink(element, dataType.element, "Array literal")});`,
+                        statement: `${result}.push_back(${this.compileForSink(element, dataType.element)});`,
                         known: undefined,
                     };
                 };
@@ -24042,12 +23880,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     unwrapped.elements,
                     index,
                     (member) => member,
-                    (member) =>
-                        this.compileForRetainedSink(
-                            member,
-                            dataType.element,
-                            "Array literal",
-                        ),
+                    (member) => this.compileForSink(member, dataType.element),
                 );
                 if (!pins[index]) return cpp;
                 // This is already sink storage. Projecting it to a Value

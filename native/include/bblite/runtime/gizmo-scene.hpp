@@ -38,7 +38,7 @@ std::shared_ptr<PointerDragDispatcher> create_pointer_drag_dispatcher(Engine&, U
                                                                       bool host_canvas);
 js::Callback<void()> register_pointer_drag(const std::shared_ptr<PointerDragDispatcher>&,
                                            PointerDragHandle);
-js::Callback<void(js::BorrowedEvent)>
+js::Callback<void(js::BaseEventRef)>
 pointer_drag_listener(const std::shared_ptr<PointerDragDispatcher>&, unsigned int event);
 void set_pointer_drag_cleanup(const std::shared_ptr<PointerDragDispatcher>&, js::Callback<void()>);
 

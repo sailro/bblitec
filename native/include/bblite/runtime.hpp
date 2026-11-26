@@ -90,7 +90,7 @@ template <typename K, typename V> class Map;
 template <std::size_t N> class Tuple;
 class U8Array;
 class ArrayBuffer;
-class BorrowedEvent;
+class BaseEventRef;
 } // namespace js
 
 inline constexpr float pi = 3.14159265358979323846f;

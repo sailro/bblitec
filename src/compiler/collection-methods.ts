@@ -309,11 +309,7 @@ export function compileEntryCollection(
                     pair.elements[0],
                 );
             } else {
-                const cpp = lowerer.compileForRetainedSink(
-                    pair.elements[0]!,
-                    type.key,
-                    "Map key",
-                );
+                const cpp = lowerer.compileForSink(pair.elements[0]!, type.key);
                 const name =
                     lowerer.context.allocateTemporaryCppName("map_key");
                 lowerer.context.emit({
@@ -324,11 +320,7 @@ export function compileEntryCollection(
                 });
                 key = lowerer.leafValue(name, type.key);
             }
-            const value = lowerer.compileForRetainedSink(
-                pair.elements[1]!,
-                type.value,
-                "Map value",
-            );
+            const value = lowerer.compileForSink(pair.elements[1]!, type.value);
             const valueName =
                 lowerer.context.allocateTemporaryCppName("map_value");
             lowerer.context.emit({

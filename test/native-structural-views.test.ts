@@ -6,7 +6,10 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
-import { runTranspiled } from "./self-checking-program.js";
+import {
+    checkKeyboardWindowProgram,
+    runTranspiled,
+} from "./self-checking-program.js";
 
 const preamble = `
     import { createEngine } from "@babylonjs/lite";
@@ -63,11 +66,11 @@ test("structural event views retain the dispatch owner across helpers, methods a
     `);
     assert.match(
         result.cpp,
-        /Callback<std::string\(bbl::js::Borrowed<const bbl::PlatformKeyboardEvent>\)>/,
+        /Callback<std::string\(bbl::js::EventRef<const bbl::PlatformKeyboardEvent>\)>/,
     );
     assert.match(
         result.cpp,
-        /Callback<double\(bbl::js::Borrowed<const bbl::PlatformMouseEvent>\)>/,
+        /Callback<double\(bbl::js::EventRef<const bbl::PlatformMouseEvent>\)>/,
     );
     const tools = optionalNativeFixtureTools(false);
     if (!tools) {
@@ -431,26 +434,38 @@ ${result.cpp}
     );
 });
 
-test("borrowed structural views cannot escape dispatch through stored callbacks or containers", () => {
-    for (const body of [
-        `function save(event: Readonly<Pick<KeyboardEvent, "code">>): void {
-            setTimeout(() => console.log(event.code), 0);
+test("structural event views kept past dispatch through stored callbacks or containers read the event", async (t) => {
+    // The queued microtask takes the application realm.
+    await checkKeyboardWindowProgram(
+        t,
+        "native-structural-views/escaping",
+        `
+        queueMicrotask(() => {});
+        const seen: string[] = [];
+        function save(event: Readonly<Pick<KeyboardEvent, "code">>): void {
+            setTimeout(() => { seen.push("timer " + event.code); }, 0);
         }
         const callbacks: Array<typeof save> = [save];
-        window.addEventListener("keydown", event => callbacks[0]!(event));`,
-        `const saved: Pick<KeyboardEvent, "code">[] = [];
-        window.addEventListener("keydown", event => saved.push(event));`,
-        `class Keeper {
+        const saved: Pick<KeyboardEvent, "code">[] = [];
+        class Keeper {
             saved: Pick<KeyboardEvent, "code"> | null = null;
             save(event: Pick<KeyboardEvent, "code">): void { this.saved = event; }
         }
         const keeper = new Keeper();
-        window.addEventListener("keydown", event => keeper.save(event));`,
-    ])
-        assert.throws(
-            () => compileSource(preamble + body),
-            /escaping callback cannot capture platform event|borrowed platform event cannot escape/,
-        );
+        window.addEventListener("keydown", (event) => callbacks[0]!(event));
+        window.addEventListener("keydown", (event) => { saved.push(event); });
+        window.addEventListener("keydown", (event) => keeper.save(event));
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "a", code: "KeyA" }));
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "b", code: "KeyB" }));
+        setTimeout(() => {
+            seen.push("array " + saved.map((event) => event.code).join(" "));
+            seen.push("field " + keeper.saved!.code);
+            const expected = "timer KeyA,timer KeyB,array KeyA KeyB,field KeyB";
+            if (seen.join() !== expected) throw new Error(seen.join());
+            globalThis.close();
+        }, 0);
+    `,
+    );
 });
 
 test("structural event storage refuses invented owners and unsupported members", () => {
@@ -465,7 +480,7 @@ test("structural event storage refuses invented owners and unsupported members",
                     readers[0]!({code: "KeyA"});
                 });
             `),
-        /borrowed DOM keyboard event must come from the active synchronous platform callback/,
+        /A DOM keyboard event must be a platform event of that type/,
     );
     assert.throws(
         () =>
@@ -498,7 +513,7 @@ test("a structural DOM annotation also accepts ordinary records without a dispat
     `);
     assert.doesNotMatch(
         result.cpp,
-        /Borrowed<const bbl::PlatformKeyboardEvent>/,
+        /EventRef<const bbl::PlatformKeyboardEvent>/,
     );
     const tools = optionalNativeFixtureTools(false);
     if (!tools) {

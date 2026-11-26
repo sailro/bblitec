@@ -66,6 +66,10 @@ struct DomEventState {
     bool default_prevented = false;
     /** Set only while the owning realm invokes listeners; never transported. */
     Engine* dispatch_engine = nullptr;
+    /** The realm that last dispatched the event, whose targets it keeps naming
+     * once the dispatch ends (`Event.target`), while that realm lives. */
+    Engine* owner_engine = nullptr;
+    std::weak_ptr<const int> owner_lifetime;
 
     [[nodiscard]] DomEventTarget exposed_target() const { return target_override.value_or(target); }
     void stop_propagation() noexcept { propagation_stopped = true; }
@@ -105,12 +109,36 @@ template <typename Event> DomEventState& dom_event_state(const Event& event) {
 }
 
 /**
+ * A payload's canceled flag. Every copy of the payload shares it, as every
+ * reference to one JavaScript event does; an event made from a payload takes
+ * its own (`detached`).
+ */
+class SharedEventFlag {
+public:
+    operator bool() const noexcept { return *value_; }
+    SharedEventFlag& operator=(bool value) noexcept {
+        *value_ = value;
+        return *this;
+    }
+    [[nodiscard]] SharedEventFlag detached() const {
+        SharedEventFlag flag;
+        *flag.value_ = *value_;
+        return flag;
+    }
+    [[nodiscard]] const void* identity() const noexcept { return value_.get(); }
+
+private:
+    std::shared_ptr<bool> value_ = std::make_shared<bool>(false);
+};
+
+/**
  * What every platform event payload carries: its DOM dispatch state while it
- * travels a DOM path, and its canceled flag, which a payload without one keeps
- * alone and one with one shares with every view of that event.
+ * travels a DOM path, and its canceled flag. Copies of a payload share both,
+ * so a copy a closure or a data structure keeps is the same event: it acts on
+ * and reads the state of the dispatch, and its final state once that ends.
  */
 struct PlatformEventFlags {
-    mutable bool default_prevented = false;
+    mutable SharedEventFlag default_prevented;
     std::shared_ptr<DomEventState> dom{};
 
     void prevent_default() const noexcept {
@@ -125,20 +153,59 @@ struct PlatformEventFlags {
     }
     void stop_propagation() const { dom_event_state(*this).stop_propagation(); }
     void stop_immediate_propagation() const { dom_event_state(*this).stop_immediate_propagation(); }
+    /** Event identity (`===`): the dispatch state every copy of a payload shares, else its flag. */
+    [[nodiscard]] const void* identity() const noexcept {
+        return dom ? static_cast<const void*>(dom.get()) : default_prevented.identity();
+    }
 };
 
-/** Event identity (`===`): the dispatch state every copy of a payload shares, else the payload. */
 [[nodiscard]] inline bool operator==(const PlatformEventFlags& left,
                                      const PlatformEventFlags& right) noexcept {
-    return left.dom ? left.dom == right.dom : &left == &right;
+    return left.identity() == right.identity();
 }
 
 template <typename Event> Engine& dom_event_owner(const Event& event) {
-    const auto* owner = dom_event_state(event).dispatch_engine;
-    if (!owner)
-        throw std::logic_error("The event has no active owning document.");
-    return *dom_event_state(event).dispatch_engine;
+    const auto& state = dom_event_state(event);
+    if (state.dispatch_engine)
+        return *state.dispatch_engine;
+    if (!state.owner_engine || state.owner_lifetime.expired())
+        throw std::logic_error("The event has no live owning document.");
+    return *state.owner_engine;
 }
+
+/**
+ * One dispatch of an event by the realm of `owner`, whose targets the event
+ * keeps naming once the dispatch ends. Its end clears what only a dispatch
+ * has: the phase, current target, path and stop flags.
+ */
+class DomDispatchScope {
+public:
+    DomDispatchScope(DomEventState& state, Engine* owner, std::weak_ptr<const int> owner_lifetime)
+        : state_(state) {
+        if (state.dispatching)
+            throw std::logic_error("The same event is already being dispatched.");
+        state.dispatching = true;
+        state.dispatch_engine = owner;
+        if (owner) {
+            state.owner_engine = owner;
+            state.owner_lifetime = std::move(owner_lifetime);
+        }
+    }
+    DomDispatchScope(const DomDispatchScope&) = delete;
+    DomDispatchScope& operator=(const DomDispatchScope&) = delete;
+    ~DomDispatchScope() {
+        state_.phase = 0;
+        state_.current_target.reset();
+        state_.path.clear();
+        state_.propagation_stopped = false;
+        state_.immediate_propagation_stopped = false;
+        state_.dispatching = false;
+        state_.dispatch_engine = nullptr;
+    }
+
+private:
+    DomEventState& state_;
+};
 
 } // namespace bbl
 

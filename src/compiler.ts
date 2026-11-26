@@ -28,6 +28,7 @@ import {
     isEngineScopedHandleKind,
     isInputSnapshotHandleKind,
 } from "./compiler/data-types/handles.js";
+import { platformEventPayloadCpp } from "./compiler/data-types/scalars.js";
 import {
     forEachAnalysisNode,
     precedesForwardRead,
@@ -8510,24 +8511,6 @@ class Compiler implements LoweringServices {
         declared?: DataType,
     ): void {
         const sharedStorage = this.classFieldNeedsSharedStorage(name);
-        const declaredData = declared ?? this.dataLowerer.dataTypeAt(name);
-        const unwrappedInitializer = this.unwrap(initializer);
-        if (
-            declaredData &&
-            this.dataTypes.carriesBorrowedPlatformEvent(declaredData) &&
-            unwrappedInitializer.kind !== ts.SyntaxKind.NullKeyword &&
-            !(
-                ts.isIdentifier(unwrappedInitializer) &&
-                unwrappedInitializer.text === "undefined" &&
-                !this.bindings.lookupOptional(unwrappedInitializer)
-            )
-        ) {
-            this.refuseBorrowedPlatformEventEscape(
-                this.compileValue(initializer),
-                initializer,
-                "class field assignment",
-            );
-        }
         const nullableResource = this.nullableResourceKind(name);
         const nullableInitializer = nullableResource
             ? this.compileValue(initializer)
@@ -9581,17 +9564,23 @@ class Compiler implements LoweringServices {
                           value.absenceTagType &&
                             storage === value.absenceTagStorageCpp
                           ? this.dataTypes.cppType(value.absenceTagType)
-                          : value.dataType
-                            ? this.dataTypes.cppType(value.dataType)
-                            : isHandleKind(value.kind)
-                              ? handleCppType(value.kind)
-                              : value.kind === "number"
-                                ? "double"
-                                : value.kind === "boolean"
-                                  ? "bool"
-                                  : value.kind === "string"
-                                    ? "std::string"
-                                    : undefined;
+                          : // So is an event's: a local holding the event
+                            // read through it holds its payload.
+                            value.dataType?.kind === "platform-event" &&
+                              value.eventStorageCpp !== undefined &&
+                              storage !== value.eventStorageCpp
+                            ? platformEventPayloadCpp(value.dataType)
+                            : value.dataType
+                              ? this.dataTypes.cppType(value.dataType)
+                              : isHandleKind(value.kind)
+                                ? handleCppType(value.kind)
+                                : value.kind === "number"
+                                  ? "double"
+                                  : value.kind === "boolean"
+                                    ? "bool"
+                                    : value.kind === "string"
+                                      ? "std::string"
+                                      : undefined;
         if (cppType)
             this.registerNativeBindingType(
                 storage,
@@ -10167,14 +10156,6 @@ class Compiler implements LoweringServices {
                 this.conditions.compileCondition(statement.expression),
             );
             return;
-        }
-        if (this.dataTypes.carriesBorrowedPlatformEvent(returnType)) {
-            const value = this.compileValue(statement.expression);
-            this.refuseBorrowedPlatformEventEscape(
-                value,
-                statement.expression,
-                "a function return",
-            );
         }
         const returned = this.dataLowerer.compileForSink(
             statement.expression,
@@ -11174,18 +11155,6 @@ class Compiler implements LoweringServices {
             : undefined;
     }
 
-    public refuseBorrowedPlatformEventEscape(
-        value: Value,
-        node: ts.Node,
-        destination: string,
-    ): void {
-        if (!this.bindings.containsPlatformEvent(value)) return;
-        this.fail(
-            node,
-            `A borrowed platform event cannot escape its synchronous dispatch frame through ${destination}. Copy only owned scalar/string fields needed later.`,
-        );
-    }
-
     /**
      * The evaluator's own unwrap -- one rule for what a reader sees
      * through, including the pin's `wgsl` tag -- which records every await
@@ -11424,7 +11393,7 @@ class Compiler implements LoweringServices {
             }
         }
         const cpp = this.dataLowerer.compileForSink(argument, dataType);
-        if (dataType.kind === "borrowed-platform-event") {
+        if (dataType.kind === "platform-event") {
             // The erased Event view returns itself from get(), so its wrapper
             // must outlive the inlined parameter reference.
             const storage = this.allocateTemporaryCppName("event_argument");
@@ -11617,10 +11586,6 @@ class Compiler implements LoweringServices {
                 });
                 dataType = { ...dataType, identity: true };
             }
-            this.bindings.refuseEscapingPlatformEventCapturesIn(
-                expression,
-                this.bindings.variableScopes.length,
-            );
             const cpp = this.userFunctions.compileStoredDataFunction(
                 this,
                 expression,

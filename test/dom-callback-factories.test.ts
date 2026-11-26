@@ -1,10 +1,10 @@
-import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { cppFunction, runRmlUiFixture } from "./native-fixture.js";
 import { hostUiOptions } from "./host-page-fixture.js";
+import { checkKeyboardWindowProgram } from "./self-checking-program.js";
 
 test("callbacks passed through helpers keep per-evaluation identity and removal", (t) => {
     const directory = resolve("artifacts/dom-callback-factories");
@@ -264,23 +264,26 @@ test("callbacks passed through helpers keep per-evaluation identity and removal"
     });
 });
 
-test("named inline callbacks keep platform event borrows within dispatch", () => {
-    for (const eventType of ["Event", "MouseEvent"]) {
-        for (const body of [
-            "setTimeout(() => event.preventDefault(), 0);",
-            "saved = event;",
-        ]) {
-            assert.throws(
-                () =>
-                    compileSource(`
-                        const element = document.createElement("button");
-                        let saved: ${eventType} | null = null;
-                        element.addEventListener("click", function handle(event: ${eventType}): void {
-                            ${body}
-                        });
-                    `),
-                /escaping callback cannot capture platform event|borrowed platform event cannot escape/,
-            );
-        }
-    }
+test("named inline callbacks keep the platform event past its dispatch", async (t) => {
+    // A named listener keeps its event in a timer and in a module binding:
+    // both are the dispatched event, and the timer's cancel reaches it.
+    for (const eventType of ["Event", "KeyboardEvent"])
+        await checkKeyboardWindowProgram(
+            t,
+            `dom-callback-factories/named-${eventType}`,
+            `
+            queueMicrotask(() => {});
+            let saved: ${eventType} | null = null;
+            window.addEventListener("keydown", function handle(event: ${eventType}): void {
+                setTimeout(() => event.preventDefault(), 0);
+                saved = event;
+            });
+            const dispatched = new KeyboardEvent("keydown", { key: "a", code: "KeyA", cancelable: true });
+            window.dispatchEvent(dispatched);
+            setTimeout(() => {
+                if (saved !== dispatched || !dispatched.defaultPrevented) throw new Error("named listener");
+                globalThis.close();
+            }, 0);
+        `,
+        );
 });

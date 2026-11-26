@@ -800,10 +800,10 @@ const WEB_PLATFORM_HEADERS: readonly (readonly [
     [["uninhabited-object"], "pal_media_stream"],
     // A stored error or rejection listener spells the realm's error event.
     [
-        ["borrowed-platform-event"],
+        ["platform-event"],
         "pal_application_errors",
         (type) =>
-            type.kind === "borrowed-platform-event" &&
+            type.kind === "platform-event" &&
             (type.event === "error" || type.event === "rejection"),
     ],
 ];
@@ -911,11 +911,11 @@ export function touchListDataType(): DataType {
     return { kind: "vector", element: { kind: "handle", handle: "touch" } };
 }
 
-export function borrowedPlatformEventKind(
+export function platformEventKind(
     symbol: ts.Symbol | undefined,
-): DataType<"borrowed-platform-event">["event"] | undefined {
+): DataType<"platform-event">["event"] | undefined {
     if (!symbol || !declaredInDomLibrary(symbol)) return undefined;
-    // Extended events and DataTransfer borrow the checked dispatch payload.
+    // Extended events and DataTransfer view the checked dispatch payload.
     if (
         [
             "Event",
@@ -6549,11 +6549,11 @@ export class DataTypeRegistry {
         )
             return { kind: "event-target" };
         if (platformHandle) return { kind: "handle", handle: platformHandle };
-        const borrowedEvent = borrowedPlatformEventKind(type.symbol);
-        if (borrowedEvent) {
+        const platformEvent = platformEventKind(type.symbol);
+        if (platformEvent) {
             return {
-                kind: "borrowed-platform-event",
-                event: borrowedEvent,
+                kind: "platform-event",
+                event: platformEvent,
             };
         }
         if (
@@ -6843,7 +6843,7 @@ export class DataTypeRegistry {
                           this.storedElementType(elementType, node);
                 if (
                     symbolName === "WeakSet" &&
-                    element?.kind === "borrowed-platform-event"
+                    element?.kind === "platform-event"
                 )
                     return {
                         kind: "set",
@@ -10419,11 +10419,7 @@ export class DataTypeRegistry {
         if (partial || proxy || component || call || instanceViews) {
             this.referenceStructNames.add(provisionalName);
         }
-        if (
-            fields.some((field) =>
-                this.carriesBorrowedPlatformEvent(field.type),
-            )
-        ) {
+        if (fields.some((field) => this.carriesPlatformEvent(field.type))) {
             // A synchronous callback observes one JavaScript payload object. Making
             // the whole record reference-backed ensures a handler's field mutation
             // is visible to the dispatcher after the call.
@@ -12259,18 +12255,18 @@ export class DataTypeRegistry {
     }
 
     /**
-     * Whether a value of this shape physically contains a borrowed event.
+     * Whether a value of this shape physically contains a platform event.
      *
      * Function signatures deliberately stop the walk: a stored handler may
      * accept an event-bearing payload without itself containing a live event.
      */
-    public carriesBorrowedPlatformEvent(
+    public carriesPlatformEvent(
         type: DataType,
         seen = new EmissionSet<string>(),
     ): boolean {
         return containsDataKind(
             type,
-            "borrowed-platform-event",
+            "platform-event",
             (name) => this.structFieldTypes(name),
             false,
             seen,
@@ -13955,7 +13951,7 @@ export class DataTypeRegistry {
                 `struct ${definition.name}${this.isReferenceStruct(definition.name) ? "Data" : ""} {`,
                 // Scalar members are value-initialized, so a record built
                 // field by field never exposes an indeterminate value. Class
-                // members keep their own construction: some (a borrowed
+                // members keep their own construction: some (a platform
                 // event view) have no default constructor to name.
                 ...definition.fields.map(
                     (field) =>

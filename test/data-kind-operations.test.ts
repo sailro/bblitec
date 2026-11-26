@@ -12,7 +12,7 @@ test("stored-type traversal distinguishes callback signatures from contained res
     const callback: DataType = {
         kind: "function",
         parameters: [
-            { kind: "borrowed-platform-event", event: "mouse" },
+            { kind: "platform-event", event: "mouse" },
             { kind: "handle", handle: "mesh" },
         ],
     };
@@ -32,13 +32,7 @@ test("stored-type traversal distinguishes callback signatures from contained res
         true,
     );
     assert.equal(
-        containsDataKind(
-            root,
-            "borrowed-platform-event",
-            fields,
-            false,
-            new Set(),
-        ),
+        containsDataKind(root, "platform-event", fields, false, new Set()),
         false,
     );
     assert.equal(

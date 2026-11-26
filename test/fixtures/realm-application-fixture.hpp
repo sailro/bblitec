@@ -32,7 +32,7 @@ int run_window_application(WorkerEntry initialize, EngineOptions) {
                                 [] { return double{FIXTURE_DEVICE_PIXEL_RATIO}; });
 #endif
 #ifdef FIXTURE_APPLICATION_ERRORS
-    ApplicationErrors handlers(loop);
+    ApplicationErrors handlers(loop, window_document_engine());
     fixture_application_errors = &handlers;
 #else
     loop.on_error([](std::exception_ptr error) { std::rethrow_exception(error); });

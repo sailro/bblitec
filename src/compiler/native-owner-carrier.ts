@@ -22,7 +22,7 @@ export function nativeStructuralViewType(value: Value): DataType | undefined {
         value.kind === "platform-mouse-event"
     )
         return {
-            kind: "borrowed-platform-event",
+            kind: "platform-event",
             event: value.platformEventBase
                 ? "event"
                 : value.kind === "platform-keyboard-event"

@@ -205,7 +205,6 @@ interface DeclarationContext
             | "compileStringLiteral"
             | "constArrayLiteral"
             | "defaultEngine"
-            | "refuseBorrowedPlatformEventEscape"
             | "emitDiscardedValue"
             | "emitExpressionAsStatement"
             | "callbacks"
@@ -1002,7 +1001,7 @@ export class DeclarationLowerer {
             return;
         }
         if (
-            dataType.kind === "borrowed-platform-event" &&
+            dataType.kind === "platform-event" &&
             declaration &&
             assignsOnlyConstructedEvents(
                 declaration,
@@ -1011,10 +1010,10 @@ export class DeclarationLowerer {
             )
         )
             dataType = { kind: "handle", handle: "dom-event" };
-        if (dataType.kind === "borrowed-platform-event") {
+        if (dataType.kind === "platform-event") {
             this.context.fail(
                 name,
-                `Variable '${name.text}' cannot default-construct a borrowed DOM event; bind it from an active platform callback.`,
+                `Variable '${name.text}' cannot default-construct a DOM event; bind it from a platform event.`,
             );
         }
         if (
@@ -3349,12 +3348,6 @@ export class DeclarationLowerer {
                 callback,
                 enclosingBody,
             );
-        if (escapes) {
-            this.context.bindings.refuseEscapingPlatformEventCapturesIn(
-                callback,
-                this.context.bindings.variableScopes.length,
-            );
-        }
         const storage = this.context.emitNativeCallbackStorage(
             cppName,
             `${returnCpp}(${parameterTypes.join(", ")})`,

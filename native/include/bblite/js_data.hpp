@@ -24,6 +24,7 @@
 #endif
 #include <chrono>
 #include <cmath>
+#include <concepts>
 #include <cstddef>
 #include <coroutine>
 #include <cstdint>
@@ -906,86 +907,74 @@ template <typename V, typename T, typename Make>
 }
 
 /**
- * A non-owning reference whose constructor cannot represent null.
- *
- * Platform event payloads use this only while their synchronous dispatch
- * frame is active. The compiler rejects every retained copy; the wrapper
- * keeps ordinary record copies cheap without making the event an owning or
- * default-constructible JavaScript value.
+ * A JavaScript reference to a typed platform event (MouseEvent,
+ * KeyboardEvent). It owns a copy of the payload, which shares the event's
+ * identity, dispatch state and canceled flag with every other copy
+ * (`PlatformEventFlags`), so it stays valid once the dispatch ends.
  */
-template <typename T> class Borrowed {
+template <typename T> class EventRef {
 public:
-    explicit Borrowed(T& value) noexcept : value_(std::addressof(value)) {}
+    explicit EventRef(T& value) : value_(std::make_shared<T>(value)) {}
 
     [[nodiscard]] T& get() const noexcept { return *value_; }
+    [[nodiscard]] const void* identity() const noexcept { return value_->identity(); }
+    [[nodiscard]] bool operator==(const EventRef& other) const noexcept {
+        return identity() == other.identity();
+    }
 
 private:
-    T* value_;
+    std::shared_ptr<T> value_;
 };
 
 /**
- * The common DOM Event view borrows dispatch state and cancellation from its
- * payload, including when it crosses a helper typed as Event.
- *
- * MouseEvent and KeyboardEvent retain their typed Borrowed<T> wrappers. This
- * erased facade accepts either without introducing a third platform-event
- * record or making arbitrary DOM objects storable.
+ * A JavaScript reference to a platform event as the common DOM Event, also
+ * where it crosses a helper typed as Event. Like `EventRef`, it owns its
+ * payload, of whichever platform event type.
  */
-class BorrowedEvent {
+class BaseEventRef {
 public:
-    template <typename T>
-        requires requires(const T& value) { value.prevent_default(); }
-    explicit BorrowedEvent(const T& value) noexcept
-        : value_(std::addressof(value)), type_(&type_tag<T>),
-          prevent_default_([](const void* borrowed) noexcept {
-              static_cast<const T*>(borrowed)->prevent_default();
-          }),
-          default_prevented_([](const void* borrowed) noexcept {
-              if constexpr (requires(const T & event) { event.is_default_prevented(); })
-                  return static_cast<const T*>(borrowed)->is_default_prevented();
-              else
-                  return static_cast<const T*>(borrowed)->default_prevented;
-          }) {
-        dom = value.dom;
-    }
+    template <std::derived_from<PlatformEventFlags> T>
+    explicit BaseEventRef(std::shared_ptr<const T> value)
+        : dom(value->dom), flags_(value.get()), type_(&type_tag<T>), value_(std::move(value)) {}
+    template <std::derived_from<PlatformEventFlags> T>
+    explicit BaseEventRef(const T& value) : BaseEventRef(std::make_shared<const T>(value)) {}
 
-    [[nodiscard]] const BorrowedEvent& get() const noexcept { return *this; }
-    void prevent_default() const noexcept { prevent_default_(value_); }
-    [[nodiscard]] bool is_default_prevented() const noexcept { return default_prevented_(value_); }
+    [[nodiscard]] const BaseEventRef& get() const noexcept { return *this; }
+    [[nodiscard]] const void* identity() const noexcept { return flags_->identity(); }
+    [[nodiscard]] bool operator==(const BaseEventRef& other) const noexcept {
+        return identity() == other.identity();
+    }
+    void prevent_default() const noexcept { flags_->prevent_default(); }
+    [[nodiscard]] bool is_default_prevented() const noexcept {
+        return flags_->is_default_prevented();
+    }
     void stop_propagation() const { bbl::dom_event_state(*this).stop_propagation(); }
     void stop_immediate_propagation() const {
         bbl::dom_event_state(*this).stop_immediate_propagation();
     }
     std::shared_ptr<bbl::DomEventState> dom;
-    [[nodiscard]] BorrowedEvent retaining(std::shared_ptr<const void> owner) const {
-        auto result = *this;
-        result.owner_ = std::move(owner);
-        return result;
-    }
 
     template <typename T> [[nodiscard]] const T& payload() const {
         if (type_ != &type_tag<T>) {
-            throw std::runtime_error("Borrowed DOM event has the wrong payload type.");
+            throw std::runtime_error("The DOM event has the wrong payload type.");
         }
-        return *static_cast<const T*>(value_);
+        return *static_cast<const T*>(value_.get());
     }
 
     template <typename T> [[nodiscard]] const T& as() const {
         const auto& value = payload<T>();
         if constexpr (requires { value.has_mouse_payload(); }) {
             if (!value.has_mouse_payload())
-                throw std::runtime_error("Borrowed DOM event has no mouse payload.");
+                throw std::runtime_error("The DOM event has no mouse payload.");
         }
         return value;
     }
 
 private:
     template <typename T> static inline const char type_tag = 0;
-    const void* value_;
-    std::shared_ptr<const void> owner_;
+    const PlatformEventFlags* flags_;
     const void* type_;
-    void (*prevent_default_)(const void*) noexcept;
-    bool (*default_prevented_)(const void*) noexcept;
+    std::shared_ptr<const void> value_;
 };
 
 /** A Uint8Array view. Subarrays share storage; slices own a copy. */
@@ -1447,19 +1436,47 @@ template <typename T> [[nodiscard]] inline std::vector<T> array_to_vector(const 
     return std::vector<T>(values.begin(), values.end());
 }
 
+/**
+ * The slot an indexed write fills in an Array whose element type has no
+ * default value (an event reference): it replaces an element or appends one
+ * at the end. A write further past the end would leave holes that no value
+ * of the type represents, and throws.
+ */
+template <typename T> class ArrayAppendSlot {
+public:
+    ArrayAppendSlot(Array<T>& target, std::size_t index) : target_(target), index_(index) {}
+    ArrayAppendSlot& operator=(T value) {
+        if (index_ < target_.size())
+            target_[index_] = std::move(value);
+        else if (index_ == target_.size())
+            target_.push_back(std::move(value));
+        else
+            throw std::runtime_error("This Array cannot hold holes: write its elements in order.");
+        return *this;
+    }
+
+private:
+    Array<T>& target_;
+    std::size_t index_;
+};
+
 /** JavaScript indexed writes grow an Array and leave default-valued holes. */
 template <typename T>
-[[nodiscard]] inline T& array_index_write(Array<T>& target, std::size_t index) {
-    if (index >= target.size()) {
-        if (index == std::numeric_limits<std::size_t>::max()) {
-            // The sentinel `array_index` maps every unrepresentable double
-            // to. Without this refusal `resize(index + 1)` wraps to
-            // `resize(0)` and silently truncates the array.
-            throw std::runtime_error("Array index write out of range.");
+[[nodiscard]] inline decltype(auto) array_index_write(Array<T>& target, std::size_t index) {
+    if constexpr (!std::default_initializable<T>) {
+        return ArrayAppendSlot<T>(target, index);
+    } else {
+        if (index >= target.size()) {
+            if (index == std::numeric_limits<std::size_t>::max()) {
+                // The sentinel `array_index` maps every unrepresentable double
+                // to. Without this refusal `resize(index + 1)` wraps to
+                // `resize(0)` and silently truncates the array.
+                throw std::runtime_error("Array index write out of range.");
+            }
+            target.resize(index + 1);
         }
-        target.resize(index + 1);
+        return target[index];
     }
-    return target[index];
 }
 
 /**
@@ -1540,9 +1557,11 @@ public:
     {
         return has_value() == other.has_value() && (!has_value() || value() == other.value());
     }
-    [[nodiscard]] bool operator==(const T& other) const
-        requires requires(const T& left, const T& right) { left == right; }
-    {
+    /** Whether this holds a value equal to `other`, of any type a `T` compares with. */
+    template <typename U>
+        requires(!std::same_as<U, Nullable> &&
+                 requires(const T& left, const U& right) { left == right; })
+    [[nodiscard]] bool operator==(const U& other) const {
         return has_value() && value() == other;
     }
     void gc_trace(const TraceVisitor& visitor) const { visitor(owned_); }
@@ -5846,8 +5865,8 @@ array_store_borrowed(Values& values, double index, const char* site) {
  * JavaScript stores a plain property instead of an element) refuses.
  */
 template <typename T>
-[[nodiscard]] inline T& array_index_write_checked(Array<T>& values, double index,
-                                                  const char* site) {
+[[nodiscard]] inline decltype(auto) array_index_write_checked(Array<T>& values, double index,
+                                                              const char* site) {
     if (!(index >= 0.0 && std::floor(index) == index && index < 4294967295.0)) [[unlikely]] {
         throw_index_error(site, "write", index, values.size());
     }
@@ -5855,8 +5874,8 @@ template <typename T>
 }
 // An accessor's array handle shares the storage the element write changes.
 template <typename T>
-[[nodiscard]] inline T& array_index_write_checked(Array<T>&& values, double index,
-                                                  const char* site) {
+[[nodiscard]] inline decltype(auto) array_index_write_checked(Array<T>&& values, double index,
+                                                              const char* site) {
     return array_index_write_checked(values, index, site);
 }
 
@@ -6685,6 +6704,18 @@ inline void set_random_override(Callback<double()> callback) {
 }
 
 } // namespace bbl::js
+
+namespace bbl {
+
+/** The JavaScript value of an event's optional target (`currentTarget`, `relatedTarget`). */
+inline js::Nullable<DomEventTargetValue> dom_target_value(Engine& engine,
+                                                          std::optional<DomEventTarget> target) {
+    if (!target)
+        return std::nullopt;
+    return dom_target_value(engine, *target);
+}
+
+} // namespace bbl
 
 #include <bblite/js_text_codec.hpp>
 #include <bblite/js_search_params.hpp>

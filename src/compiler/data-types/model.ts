@@ -223,8 +223,8 @@ interface DataKinds {
     numberindex: {
         kind: "numberindex";
     };
-    "borrowed-platform-event": {
-        kind: "borrowed-platform-event";
+    "platform-event": {
+        kind: "platform-event";
         event: "event" | "mouse" | "keyboard" | "error" | "rejection";
     };
     string: {

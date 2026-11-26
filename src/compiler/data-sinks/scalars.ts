@@ -65,18 +65,18 @@ function expressionBoolean(
     return lowerer.context.conditions.compileCondition(unwrapped);
 }
 
-function expressionBorrowedPlatformEvent(
-    dataType: DataType<"borrowed-platform-event">,
+function expressionPlatformEvent(
+    dataType: DataType<"platform-event">,
     lowerer: DataSinkHost,
     _expression: ts.Expression,
     unwrapped: ts.Expression,
 ): string {
     const value = lowerer.context.compileValue(unwrapped);
     return (
-        valueBorrowedPlatformEvent(dataType, lowerer, value, unwrapped) ??
+        valuePlatformEvent(dataType, lowerer, value, unwrapped) ??
         lowerer.context.fail(
             unwrapped,
-            `A borrowed DOM ${dataType.event} event must come from the active synchronous platform callback.`,
+            `A DOM ${dataType.event} event must be a platform event of that type.`,
         )
     );
 }
@@ -498,14 +498,24 @@ function valueBoolean(
     return undefined;
 }
 
-function valueBorrowedPlatformEvent(
-    dataType: DataType<"borrowed-platform-event">,
+function valuePlatformEvent(
+    dataType: DataType<"platform-event">,
     lowerer: DataSinkHost,
     value: Value,
     _node: ts.Node,
 ): string | undefined {
-    if (value.kind === "dom-event" && dataType.event === "event")
-        return `${value.cpp}.borrowed_event()`;
+    if (value.kind === "dom-event") {
+        // A constructed event is stored as a reference to its payload.
+        const reference =
+            dataType.event === "event"
+                ? "event_ref"
+                : dataType.event === "mouse"
+                  ? "mouse_ref"
+                  : dataType.event === "keyboard"
+                    ? "keyboard_ref"
+                    : undefined;
+        return reference && `${value.cpp}.${reference}()`;
+    }
     const compatible =
         dataType.event === "error" || dataType.event === "rejection"
             ? value.nativeErrorEvent &&
@@ -518,7 +528,7 @@ function valueBorrowedPlatformEvent(
               : value.kind === `platform-${dataType.event}-event`;
     if (!compatible) return undefined;
     return dataType.event === "event"
-        ? `bbl::js::BorrowedEvent(${value.cpp})`
+        ? `bbl::js::BaseEventRef(${value.cpp})`
         : `${lowerer.context.dataTypes.cppType(dataType)}(${value.cpp})`;
 }
 
@@ -667,7 +677,7 @@ export const scalarsSinks: DataSinkOperations<
     | "boolean"
     | "string"
     | "json"
-    | "borrowed-platform-event"
+    | "platform-event"
 > = {
     "module-namespace": {
         expression: expressionKnownValue,
@@ -854,8 +864,8 @@ export const scalarsSinks: DataSinkOperations<
     boolean: { expression: expressionBoolean, value: valueBoolean },
     string: { expression: expressionString, value: valueString },
     json: { expression: expressionJson, value: valueJson },
-    "borrowed-platform-event": {
-        expression: expressionBorrowedPlatformEvent,
-        value: valueBorrowedPlatformEvent,
+    "platform-event": {
+        expression: expressionPlatformEvent,
+        value: valuePlatformEvent,
     },
 };

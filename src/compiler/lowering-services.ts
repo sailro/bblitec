@@ -765,11 +765,6 @@ export interface LoweringServices {
     moduleFunctionDeclaration(
         identifier: ts.Identifier,
     ): ts.FunctionDeclaration | undefined;
-    refuseBorrowedPlatformEventEscape(
-        value: Value,
-        node: ts.Node,
-        destination: string,
-    ): void;
     /** Bound, so a walk can take it as its unwrap. */
     readonly unwrap: (expression: ts.Expression) => ts.Expression;
     /** As unwrap, but an await that suspends (a worker realm's) is kept. */

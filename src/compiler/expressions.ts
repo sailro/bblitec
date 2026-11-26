@@ -374,7 +374,6 @@ export interface ExpressionContext
             | "emitUiDatasetProperty"
             | "emitUiElementProperty"
             | "emitUiStyleValue"
-            | "refuseBorrowedPlatformEventEscape"
             | "resolveRecordValue"
             | "expectKind"
             | "expectSameEngine"
@@ -2904,9 +2903,7 @@ export class ExpressionLowerer {
     ): Value {
         if (
             dataType.kind === "vector" &&
-            !this.context.dataTypes.carriesBorrowedPlatformEvent(
-                dataType.element,
-            ) &&
+            !this.context.dataTypes.carriesPlatformEvent(dataType.element) &&
             ["number", "boolean", "string", "enum", "union", "struct"].includes(
                 dataType.element.kind,
             )

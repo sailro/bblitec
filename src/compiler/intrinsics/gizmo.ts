@@ -319,7 +319,7 @@ export function compileCameraDeferralOptions(
             );
         }
         const event = {
-            kind: "borrowed-platform-event",
+            kind: "platform-event",
             event: "mouse",
         } as const;
         const predicate = context.compileStoredDataFunction(callback, {
@@ -333,7 +333,7 @@ export function compileCameraDeferralOptions(
                 cpp: !takesEvent
                     ? predicate
                     : callback.parameters.length
-                      ? `[predicate = ${predicate}](const bbl::PlatformMouseEvent& event) { return static_cast<bool>(predicate(bbl::js::Borrowed<const bbl::PlatformMouseEvent>(event))); }`
+                      ? `[predicate = ${predicate}](const bbl::PlatformMouseEvent& event) { return static_cast<bool>(predicate(bbl::js::EventRef<const bbl::PlatformMouseEvent>(event))); }`
                       : `[predicate = ${predicate}](const bbl::PlatformMouseEvent&) { return static_cast<bool>(predicate()); }`,
             },
         ];

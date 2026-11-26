@@ -1739,7 +1739,7 @@ export class NativeFunctionLowerer {
                 !mapped ||
                 mapped.kind === "function" ||
                 this.context.dataTypes.carriesHandle(mapped) ||
-                this.context.dataTypes.carriesBorrowedPlatformEvent(mapped) ||
+                this.context.dataTypes.carriesPlatformEvent(mapped) ||
                 (options.rejectCarriedFunctionReturn &&
                     this.context.dataTypes.carriesFunction(mapped))
             ) {

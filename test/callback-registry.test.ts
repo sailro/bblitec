@@ -2,17 +2,15 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import test, { type TestContext } from "node:test";
-import { runInNewContext } from "node:vm";
-import ts from "typescript";
+import test from "node:test";
 
-import { CompileError, compileSource } from "../src/compiler.js";
+import { compileSource } from "../src/compiler.js";
 import {
-    headlessRealmHost,
     optionalNativeFixtureTools,
     runGeneratedProgram,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { checkKeyboardWindowProgram } from "./self-checking-program.js";
 
 const nativeTools = optionalNativeFixtureTools();
 for (const workers of [false, true])
@@ -65,7 +63,7 @@ const platformPreamble = `
     await createEngine(canvas);
 `;
 
-test("shares a borrowed mouse payload across synchronous registry callbacks", (t) => {
+test("shares a dispatched mouse event across synchronous registry callbacks", (t) => {
     const result = compileSource(`
         import { createEngine } from "@babylonjs/lite";
 
@@ -132,11 +130,11 @@ test("shares a borrowed mouse payload across synchronous registry callbacks", (t
 
     assert.match(
         result.cpp,
-        /bbl::js::Borrowed<const bbl::PlatformMouseEvent> domEvent;/,
+        /bbl::js::EventRef<const bbl::PlatformMouseEvent> domEvent;/,
     );
     assert.match(
         result.cpp,
-        /MousePayloadData\{bbl::js::Borrowed<const bbl::PlatformMouseEvent>\(/,
+        /MousePayloadData\{bbl::js::EventRef<const bbl::PlatformMouseEvent>\(/,
     );
     assert.match(
         result.cpp,
@@ -168,7 +166,7 @@ test("shares a borrowed mouse payload across synchronous registry callbacks", (t
     if (!nativeTools) return t.skip("Native fixture compiler unavailable.");
     runGeneratedProgram(
         nativeTools,
-        "borrowed-mouse-registry",
+        "event-mouse-registry",
         `
 #define main generated_main
 ${result.cpp}
@@ -476,7 +474,7 @@ test("distinguishes callback expressions in static and runtime loops", (t) => {
     runGeneratedProgram(nativeTools, "callback-loop-identities", result.cpp);
 });
 
-test("borrows keyboard and base Event views from their active callbacks", () => {
+test("keeps keyboard and base Event references in records", () => {
     const keyboard = compileSource(`
         ${platformPreamble}
         interface KeyPayload {
@@ -492,7 +490,7 @@ test("borrows keyboard and base Event views from their active callbacks", () => 
     `);
     assert.match(
         keyboard.cpp,
-        /bbl::js::Borrowed<const bbl::PlatformKeyboardEvent> event;/,
+        /bbl::js::EventRef<const bbl::PlatformKeyboardEvent> event;/,
     );
     assert.match(keyboard.cpp, /->event\.get\(\)\.code/);
     assert.match(keyboard.cpp, /->event\.get\(\)\.prevent_default\(\)/);
@@ -509,11 +507,11 @@ test("borrows keyboard and base Event views from their active callbacks", () => 
             payload.consumed = true;
         });
     `);
-    assert.match(base.cpp, /bbl::js::BorrowedEvent event;/);
+    assert.match(base.cpp, /bbl::js::BaseEventRef event;/);
     assert.match(base.cpp, /->event\.get\(\)\.prevent_default\(\)/);
 });
 
-test("inlined class parameters keep borrowed event wrappers alive", () => {
+test("inlined class parameters pass owned event references", () => {
     for (const eventType of ["MouseEvent", "KeyboardEvent", "Event"]) {
         const target = eventType === "KeyboardEvent" ? "window" : "canvas";
         const eventName =
@@ -531,474 +529,217 @@ test("inlined class parameters keep borrowed event wrappers alive", () => {
             handler.on(event => event.preventDefault());
             ${target}.addEventListener("${eventName}", (event) => handler.consume(event));
         `);
-        // The caller names the wrapper; the shared method takes it by value
-        // and borrows the event from its own parameter.
+        // The caller names the reference; the shared method takes it by
+        // value and reads the event from its own parameter.
         assert.match(
             result.cpp,
-            /const auto (\w+event_argument\w*) = bbl::js::Borrowed[^;]+;\s*(?:static_cast<void>\()?bbl::js::make_closure\([^\n]*\(bbl::js::Borrowed(?:<[^>]+>|Event)\(\1\.get\(\)\)\)\)?;/,
+            /const auto (\w+event_argument\w*) = bbl::js::(?:EventRef<[^>]+>|BaseEventRef)\([^;]+;\s*(?:static_cast<void>\()?bbl::js::make_closure\([^\n]*\(bbl::js::(?:EventRef<[^>]+>|BaseEventRef)\(\1\.get\(\)\)\)\)?;/,
         );
         assert.match(
             result.cpp,
-            /\[\[maybe_unused\]\] const auto& \w+ = fn\d+_recursive_arg_0\.get\(\);/,
+            /\[\[maybe_unused\]\] const auto& \w+ = bbl::js::snapshot_value\(fn\d+_recursive_arg_0\.get\(\)\);/,
         );
+        // A reference into a temporary wrapper would dangle.
         assert.doesNotMatch(
             result.cpp,
-            /const auto& \w+ = bbl::js::Borrowed[^;]+\.get\(\);/,
+            /const auto& \w+ = bbl::js::(?:EventRef<[^>]+>|BaseEventRef)\([^;]+\.get\(\);/,
         );
     }
 });
 
-test("refuses every store of a borrowed event at the store", () => {
-    interface StoreCase {
-        name: string;
-        /** Module-scope statements the store targets. */
-        declarations: readonly string[];
-        /** The one listener line that stores (or captures) the event. */
-        body: string;
-        /** A later timer reading the module binding, were the store admitted. */
-        read?: string;
-        /** The line the refusal names, when it is not the body's. */
-        at?: string;
-        pattern: RegExp;
-    }
-    const rows: StoreCase[] = [
-        {
-            name: "array",
-            declarations: ["const saved: Payload[] = [];"],
-            body: "saved.push(payload);",
-            read: "reads += saved.length;",
-            pattern: /through Array\.push/,
-        },
-        {
-            name: "set",
-            declarations: ["const saved = new Set<Payload>();"],
-            body: "saved.add(payload);",
-            read: "reads += saved.size;",
-            pattern: /through Set\.add/,
-        },
-        {
-            name: "map",
-            declarations: ["const saved = new Map<string, Payload>();"],
-            body: 'saved.set("event", payload);',
-            read: "reads += saved.size;",
-            pattern: /through Map\.set value/,
-        },
-        {
-            name: "array-map",
-            declarations: ["const source: number[] = [1];"],
-            body: "const mapped = source.map(() => payload);",
-            pattern: /through Array\.map result/,
-        },
-        {
-            name: "class-field",
-            declarations: [
-                "class Keeper {",
-                "    private saved: Payload | null = null;",
-                "    keep(payload: Payload): void { this.saved = payload; }",
-                "}",
-                "const keeper = new Keeper();",
-            ],
-            body: "keeper.keep(payload);",
-            at: "this.saved = payload;",
-            pattern: /through (?:class field assignment|a reassigned local)/,
-        },
-        {
-            name: "outer-record-field",
-            declarations: [
-                "interface Holder { saved: Payload | null; }",
-                "const holder: Holder = { saved: null };",
-            ],
-            body: "holder.saved = payload;",
-            read: "if (holder.saved) reads += 1;",
-            pattern: /through data field assignment/,
-        },
-        {
-            name: "object-assign",
-            declarations: [
-                "interface Holder { saved: Payload | null; }",
-                "const holder: Holder = { saved: null };",
-            ],
-            body: "Object.assign(holder, { saved: payload });",
-            read: "if (holder.saved) reads += 1;",
-            pattern: /through Object\.assign/,
-        },
-        {
-            name: "property-alias",
-            declarations: [
-                "const holder: { last: MouseEvent | null } = { last: null };",
-            ],
-            body: "const alias = holder; alias.last = event;",
-            read: "if (holder.last) reads += 1;",
-            pattern: /through data field assignment/,
-        },
-        {
-            name: "module-let",
-            declarations: ["let saved: MouseEvent | null = null;"],
-            body: "saved = event;",
-            read: "if (saved) reads += 1;",
-            pattern: /through a reassigned local/,
-        },
-        ...(
-            [
-                ["nullish", "??="],
-                ["or", "||="],
-                ["and", "&&="],
-            ] as const
-        ).map(([kind, operator]) => ({
-            name: `logical-${kind}`,
-            declarations: ["let saved: MouseEvent | null = null;"],
-            body: `saved ${operator} event;`,
-            read: "if (saved) reads += 1;",
-            pattern: /through logical assignment/,
-        })),
-        {
-            name: "array-destructuring",
-            declarations: [
-                "let saved: MouseEvent | null = null;",
-                "let other = 0;",
-            ],
-            body: "[saved, other] = [event, 1];",
-            read: "if (saved) reads += other;",
-            pattern: /through a destructuring source/,
-        },
-        {
-            name: "object-destructuring",
-            declarations: ["let saved: MouseEvent | null = null;"],
-            body: "({ saved } = { saved: event });",
-            read: "if (saved) reads += 1;",
-            pattern: /through a destructuring assignment/,
-        },
-        {
-            name: "element-assignment",
-            declarations: ["const saved: MouseEvent[] = [];"],
-            body: "saved[0] = event;",
-            read: "reads += saved.length;",
-            pattern: /through container element assignment/,
-        },
-        ...(
-            [
-                ["unshift", "saved.unshift(event);"],
-                ["splice", "saved.splice(0, 0, event);"],
-                ["fill", "saved.fill(event);"],
-            ] as const
-        ).map(([method, body]) => ({
-            name: method,
-            declarations: ["const saved: MouseEvent[] = [];"],
-            body,
-            read: "reads += saved.length;",
-            pattern: new RegExp(`through Array\\.${method}`),
-        })),
-        {
-            name: "weakset",
-            declarations: ["const saved = new WeakSet<Event>();"],
-            body: "saved.add(event);",
-            read: "if (saved) reads += 1;",
-            pattern: /through Set\.add/,
-        },
-        {
-            name: "weakset-constructor",
-            declarations: [],
-            body: "const saved = new WeakSet<Event>([event]);",
-            pattern: /through Array literal/,
-        },
-        {
-            name: "weakset-tuple-constructor",
-            declarations: [],
-            body: "const events = [event] as const; const saved = new WeakSet<Event>(events);",
-            pattern: /through Array literal/,
-        },
-        {
-            name: "weakmap-key",
-            declarations: ["const saved = new WeakMap<Event, number>();"],
-            body: "saved.set(event, 1);",
-            read: "if (saved) reads += 1;",
-            pattern: /through Map\.set key/,
-        },
-        {
-            name: "map-key",
-            declarations: ["const saved = new Map<MouseEvent, number>();"],
-            body: "saved.set(event, 1);",
-            read: "reads += saved.size;",
-            pattern: /through Map\.set key/,
-        },
-        {
-            name: "record-entry",
-            declarations: ["const saved: Record<string, MouseEvent> = {};"],
-            body: 'saved["latest"] = event;',
-            read: 'if (saved["latest"]) reads += 1;',
-            pattern: /through Map value assignment/,
-        },
-        {
-            name: "static-field",
-            declarations: [
-                "class Keeper { static saved: MouseEvent | null = null; }",
-            ],
-            body: "Keeper.saved = event;",
-            read: "if (Keeper.saved) reads += 1;",
-            pattern: /through data field assignment/,
-        },
-        {
-            name: "later-closure",
-            declarations: ["let saved = (): void => {};"],
-            body: "saved = () => { event.preventDefault(); };",
-            read: "saved();",
-            pattern:
-                /escaping callback cannot capture platform event value 'event'/,
-        },
-        {
-            name: "timer",
-            declarations: [],
-            body: "setTimeout(() => payload.domEvent.preventDefault(), 0);",
-            pattern:
-                /escaping callback cannot capture platform event value 'payload'/,
-        },
-        {
-            name: "listener",
-            declarations: [],
-            body: 'window.addEventListener("mouseup", () => { payload.domEvent.preventDefault(); });',
-            pattern:
-                /escaping callback cannot capture platform event value 'payload'/,
-        },
-        {
-            name: "stored-closure",
-            declarations: ["const saved = new Set<() => void>();"],
-            body: "const later = (): void => { payload.domEvent.preventDefault(); }; saved.add(later);",
-            pattern:
-                /escaping callback cannot capture platform event value '(?:payload|later)'/,
-        },
-        {
-            name: "nested-record-array",
-            declarations: [
-                "interface Envelope { nested: { payload: Payload }; }",
-                "const saved: Envelope[] = [];",
-            ],
-            body: "const envelope: Envelope = { nested: { payload } }; saved.push(envelope);",
-            pattern: /through Array\.push/,
-        },
-        {
-            // A closure carries the event a function it names reads.
-            name: "declaration-value",
-            declarations: ["const saved = new Set<() => void>();"],
-            body: "saved.add(capture);",
-            at: "function capture",
-            pattern:
-                /escaping callback cannot capture platform event value 'payload'/,
-        },
-        {
-            name: "declaration-call",
-            declarations: ["const saved = new Set<() => void>();"],
-            body: "const later = (): void => capture(); saved.add(later);",
-            pattern:
-                /escaping callback cannot capture platform event value 'later'/,
-        },
-        {
-            name: "arrow-listener",
-            declarations: [],
-            body: 'const later = (): void => { payload.domEvent.preventDefault(); }; window.addEventListener("mouseup", later);',
-            pattern:
-                /escaping callback cannot capture platform event value 'later'/,
-        },
-    ];
-
-    for (const row of rows) {
-        const lines = [
-            'import { createEngine } from "@babylonjs/lite";',
-            "interface Payload { domEvent: MouseEvent; consumed: boolean; }",
-            ...row.declarations,
-            "let reads = 0;",
-            'const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;',
-            "await createEngine(canvas);",
-            'canvas.addEventListener("mousedown", (event) => {',
-            "    const payload: Payload = { domEvent: event, consumed: false };",
-            "    function capture(): void { payload.domEvent.preventDefault(); }",
-            `    ${row.body}`,
-            ...(row.read ? [`    setTimeout(() => { ${row.read} }, 0);`] : []),
-            "});",
-        ];
-        const at = row.at ?? row.body;
-        const line = lines.findIndex((text) => text.includes(at)) + 1;
-        assert.throws(
-            () =>
-                compileSource(lines.join("\n"), {
-                    fileName: `test/borrow-${row.name}.ts`,
-                }),
-            (error: unknown) => {
-                assert.ok(error instanceof CompileError);
-                assert.match(
-                    error.message,
-                    new RegExp(`^test/borrow-${row.name}\\.ts:${line}:\\d+:`),
-                    row.name,
-                );
-                assert.match(error.message, row.pattern, row.name);
-                return true;
-            },
-            row.name,
-        );
-    }
-});
-
-test("follows helper call graphs when checking borrowed callback captures", () => {
-    const cases = [
-        {
-            name: "direct",
-            helpers: "",
-            invoke: "payload.domEvent.preventDefault();",
-        },
-        {
-            name: "one-hop",
-            helpers: `
-                function capture(): void {
-                    payload.domEvent.preventDefault();
+test("a dispatched event kept anywhere is the same event once the dispatch ends", async (t) => {
+    // Each store and each closure keeping the event runs natively and as
+    // JavaScript: what it keeps is the dispatched event, its reads see the
+    // dispatch's final state, and a later preventDefault cancels it.
+    await checkKeyboardWindowProgram(
+        t,
+        "callback-registry/escaping-event-stores",
+        `
+        queueMicrotask(() => {});
+        interface Payload { domEvent: KeyboardEvent; consumed: boolean; }
+        interface Holder { saved: Payload | null; }
+        interface Envelope { nested: { payload: Payload }; }
+        class Keeper {
+            static last: KeyboardEvent | null = null;
+            private saved: Payload | null = null;
+            keep(payload: Payload): void { this.saved = payload; }
+            kept(): Payload | null { return this.saved; }
+        }
+        const keeper = new Keeper();
+        const array: Payload[] = [];
+        const set = new Set<Payload>();
+        const map = new Map<string, Payload>();
+        const source: number[] = [1];
+        let mapped: Payload[] = [];
+        const holder: Holder = { saved: null };
+        const assigned: Holder = { saved: null };
+        const property: { last: KeyboardEvent | null } = { last: null };
+        let saved: KeyboardEvent | null = null;
+        let nullish: KeyboardEvent | null = null;
+        let or: KeyboardEvent | null = null;
+        let and: KeyboardEvent | null = null;
+        let destructured: KeyboardEvent | null = null;
+        let other = 0;
+        let picked: KeyboardEvent | null = null;
+        const elements: KeyboardEvent[] = [];
+        const unshifted: KeyboardEvent[] = [];
+        const spliced: KeyboardEvent[] = [];
+        const filled: KeyboardEvent[] = [];
+        const weak = new WeakSet<Event>();
+        const weakKeys = new WeakMap<Event, number>();
+        const keys = new Map<KeyboardEvent, number>();
+        const record: Record<string, KeyboardEvent> = {};
+        const envelopes: Envelope[] = [];
+        let constructed = new WeakSet<Event>();
+        let tupled = new WeakSet<Event>();
+        const later = new Set<() => void>();
+        let late = (): void => {};
+        let rebound = (): KeyboardEvent | null => null;
+        window.addEventListener("keydown", (event) => {
+            const payload: Payload = { domEvent: event, consumed: false };
+            function capture(): void { payload.domEvent.preventDefault(); }
+            function hop(): void { capture(); }
+            function first(recurse: boolean): void { if (recurse) second(false); }
+            function second(recurse: boolean): void {
+                if (recurse) first(false);
+                payload.domEvent.preventDefault();
+            }
+            switch (event.key) {
+                case "store": {
+                    array.push(payload);
+                    set.add(payload);
+                    map.set("event", payload);
+                    mapped = source.map(() => payload);
+                    keeper.keep(payload);
+                    holder.saved = payload;
+                    Object.assign(assigned, { saved: payload });
+                    const alias = property;
+                    alias.last = event;
+                    saved = event;
+                    nullish ??= event;
+                    or ||= event;
+                    and ??= event;
+                    and &&= event;
+                    [destructured, other] = [event, 1];
+                    ({ picked } = { picked: event });
+                    elements[0] = event;
+                    unshifted.unshift(event);
+                    spliced.splice(0, 0, event);
+                    filled.push(event);
+                    filled.fill(event);
+                    weak.add(event);
+                    weakKeys.set(event, 1);
+                    keys.set(event, 2);
+                    record["latest"] = event;
+                    Keeper.last = event;
+                    const envelope: Envelope = { nested: { payload } };
+                    envelopes.push(envelope);
+                    constructed = new WeakSet<Event>([event]);
+                    const events = [event] as const;
+                    tupled = new WeakSet<Event>(events);
+                    let local = event;
+                    local = event;
+                    rebound = () => local;
+                    break;
                 }
-            `,
-            invoke: "capture();",
-        },
-        {
-            name: "multi-hop",
-            helpers: `
-                function capture(): void {
-                    payload.domEvent.preventDefault();
+                case "timer":
+                    setTimeout(() => payload.domEvent.preventDefault(), 0);
+                    break;
+                case "listener":
+                    window.addEventListener("keyup", () => { payload.domEvent.preventDefault(); });
+                    break;
+                case "stored": {
+                    const run = (): void => { payload.domEvent.preventDefault(); };
+                    later.add(run);
+                    break;
                 }
-                function hop(): void {
-                    capture();
+                case "value":
+                    later.add(capture);
+                    break;
+                case "call": {
+                    const run = (): void => capture();
+                    later.add(run);
+                    break;
                 }
-            `,
-            invoke: "hop();",
-        },
-        {
-            name: "recursive-cycle",
-            helpers: `
-                function first(recurse: boolean): void {
-                    if (recurse) second(false);
+                case "arrow": {
+                    const run = (): void => { payload.domEvent.preventDefault(); };
+                    window.addEventListener("keyup", run);
+                    break;
                 }
-                function second(recurse: boolean): void {
-                    if (recurse) first(false);
-                    payload.domEvent.preventDefault();
-                }
-            `,
-            invoke: "first(true);",
-        },
-    ];
-
-    for (const entry of cases) {
-        assert.throws(
-            () =>
-                compileSource(
-                    `
-                        import { createEngine } from "@babylonjs/lite";
-                        interface Payload {
-                            domEvent: MouseEvent;
-                        }
-                        const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
-                        await createEngine(canvas);
-                        canvas.addEventListener("mousedown", (event) => {
-                            const payload: Payload = { domEvent: event };
-                            ${entry.helpers}
-                            window.addEventListener("mouseup", () => {
-                                ${entry.invoke}
-                            });
-                        });
-                    `,
-                    {
-                        fileName: `test/borrow-helper-${entry.name}.ts`,
-                    },
-                ),
-            (error: unknown) => {
-                assert.ok(error instanceof CompileError);
-                assert.match(
-                    error.message,
-                    new RegExp(
-                        `^test/borrow-helper-${entry.name}\\.ts:\\d+:\\d+:`,
-                    ),
-                );
-                assert.match(
-                    error.message,
-                    /escaping callback cannot capture platform event value 'payload'/,
-                );
-                return true;
-            },
-        );
-    }
-});
-
-/**
- * Runs a Window program that dispatches constructed keyboard events and
- * closes its realm: first as JavaScript, on a browser-like window (Node's
- * EventTarget), then compiled and run natively, where its own assertions
- * must hold the same way.
- */
-async function checkKeyboardWindowProgram(
-    t: TestContext,
-    name: string,
-    source: string,
-): Promise<void> {
-    let closed = false;
-    const failures: string[] = [];
-    runInNewContext(
-        ts.transpileModule(source, {
-            compilerOptions: {
-                target: ts.ScriptTarget.ESNext,
-                module: ts.ModuleKind.None,
-            },
-        }).outputText,
-        {
-            window: new EventTarget(),
-            KeyboardEvent: class extends Event {
-                public readonly key: string;
-                public readonly code: string;
-                public readonly shiftKey: boolean;
-                public constructor(
-                    type: string,
-                    init: EventInit & {
-                        key: string;
-                        code: string;
-                        shiftKey?: boolean;
-                    },
-                ) {
-                    super(type, init);
-                    this.key = init.key;
-                    this.code = init.code;
-                    this.shiftKey = init.shiftKey ?? false;
-                }
-            },
-            queueMicrotask,
-            setTimeout: (callback: () => void, delay: number) =>
-                setTimeout(() => {
-                    try {
-                        callback();
-                    } catch (error) {
-                        failures.push(String(error));
-                    }
-                }, delay),
-            close: () => (closed = true),
-        },
+                case "late":
+                    late = () => { event.preventDefault(); };
+                    break;
+                case "one":
+                    window.addEventListener("keyup", () => { capture(); });
+                    break;
+                case "hop":
+                    window.addEventListener("keyup", () => { hop(); });
+                    break;
+                case "cycle":
+                    window.addEventListener("keyup", () => { first(true); });
+                    break;
+            }
+        });
+        function dispatch(key: string): KeyboardEvent {
+            const event = new KeyboardEvent("keydown", { key, code: "Key" + key, cancelable: true });
+            window.dispatchEvent(event);
+            return event;
+        }
+        const stored = dispatch("store");
+        const cancelled = ["timer", "listener", "stored", "value", "call", "arrow", "late", "one", "hop", "cycle"].map(dispatch);
+        setTimeout(() => {
+            const failures: string[] = [];
+            function check(label: string, ok: boolean): void {
+                if (!ok) failures.push(label);
+            }
+            check("array", array[0]!.domEvent === stored);
+            check("set", Array.from(set)[0]!.domEvent === stored);
+            check("map", map.get("event")!.domEvent === stored);
+            check("array-map", mapped[0]!.domEvent === stored);
+            check("class-field", keeper.kept()!.domEvent === stored);
+            check("record-field", holder.saved!.domEvent === stored);
+            check("object-assign", assigned.saved!.domEvent === stored);
+            check("property-alias", property.last === stored);
+            check("module-let", saved === stored);
+            check("nullish", nullish === stored);
+            check("or", or === stored);
+            check("and", and === stored);
+            check("array-destructuring", destructured === stored && other === 1);
+            check("object-destructuring", picked === stored);
+            check("element", elements[0] === stored);
+            check("unshift", unshifted[0] === stored);
+            check("splice", spliced[0] === stored);
+            check("fill", filled[0] === stored);
+            check("weakset", weak.has(stored));
+            check("weakmap-key", weakKeys.get(stored) === 1);
+            check("map-key", keys.get(stored) === 2);
+            check("record-entry", record["latest"] === stored);
+            check("static-field", Keeper.last === stored);
+            check("nested-record-array", envelopes[0]!.nested.payload.domEvent === stored);
+            check("weakset-constructor", constructed.has(stored));
+            check("weakset-tuple-constructor", tupled.has(stored));
+            check("rebound-local", rebound() === stored);
+            // Reads see the dispatch's final state; a cancel through any copy
+            // cancels the event every copy names.
+            check("final-state", elements[0]!.code === "Keystore" && Keeper.last!.eventPhase === 0 && !saved!.defaultPrevented);
+            holder.saved!.domEvent.preventDefault();
+            check("later-cancel", stored.defaultPrevented && record["latest"]!.defaultPrevented && array[0]!.domEvent.defaultPrevented);
+            for (const run of later) run();
+            late();
+            window.dispatchEvent(new KeyboardEvent("keyup", { key: "up", code: "KeyUp" }));
+            cancelled.forEach((event, index) => check("cancel " + index, event.defaultPrevented));
+            if (failures.length) throw new Error(failures.join());
+            globalThis.close();
+        }, 0);
+    `,
     );
-    for (let turn = 0; turn < 20 && !closed && !failures.length; turn++)
-        await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.deepEqual(failures, []);
-    assert.equal(closed, true);
-    const result = compileSource(source, { fileName: `test/${name}.ts` });
-    if (!nativeTools) {
-        t.skip("Native fixture compiler unavailable.");
-        return;
-    }
-    runGeneratedProgram(
-        nativeTools,
-        `callback-registry/${name}`,
-        result.cpp + headlessRealmHost(),
-        {
-            flags: ["/DBBLITE_WORKERS=1", "/DBBLITE_HAS_UI=1"],
-            timeoutMs: 10000,
-            expectedOutput: "",
-        },
-    );
-}
+});
 
 // The queued microtask takes the application realm.
 test("a dispatched event is identical to its aliases and to the copies records keep of it", async (t) => {
     await checkKeyboardWindowProgram(
         t,
-        "dispatched-event-identity",
+        "callback-registry/dispatched-event-identity",
         `
         queueMicrotask(() => {});
         const seen: string[] = [];
@@ -1018,10 +759,92 @@ test("a dispatched event is identical to its aliases and to the copies records k
     );
 });
 
+test("an escaping callback reads a dispatched event as JavaScript does once the dispatch ends", async (t) => {
+    // A capture-phase handler defers its check past the dispatch, directly,
+    // through a helper and through aliases and records of the event, and
+    // keeps closures that cancel it later; a later handler of the same
+    // dispatch cancels the first event.
+    await checkKeyboardWindowProgram(
+        t,
+        "callback-registry/escaping-event-capture",
+        `
+        queueMicrotask(() => {});
+        const seen: string[] = [];
+        const later: Array<() => void> = [];
+        let last = (): void => {};
+        let isCaptured = (_other: KeyboardEvent): boolean => false;
+        function schedule(callback: () => void): void {
+            setTimeout(callback, 0);
+        }
+        window.addEventListener(
+            "keydown",
+            (event) => {
+                if (event.key !== "Escape") return;
+                schedule(() => {
+                    seen.push(event.code + (event.defaultPrevented ? " prevented" : " free"));
+                });
+                setTimeout(() => {
+                    seen.push(
+                        "phase " + event.eventPhase + " current " + String(event.currentTarget === null) +
+                            " target " + String(event.target === window) + " path " + event.composedPath().length +
+                            " " + event.type + (event.shiftKey ? " shift" : ""),
+                    );
+                }, 0);
+                // Aliases and records of the event are the same event.
+                const alias = event;
+                const wrapped = { event, nested: [{ borrowed: event }] as const };
+                const nested = wrapped.nested;
+                setTimeout(() => {
+                    const record = nested[0];
+                    seen.push(
+                        "alias " + alias.code + " " + String(wrapped.event === alias && record.borrowed === event) +
+                            " " + String(wrapped.nested[0].borrowed.defaultPrevented),
+                    );
+                }, 0);
+                const cancel = (): void => {
+                    event.preventDefault();
+                    seen.push("late " + String(event.defaultPrevented));
+                };
+                later.push(cancel);
+                last = () => {
+                    seen.push("last " + event.code + " " + String(event.defaultPrevented));
+                };
+                isCaptured = (other) => other === event;
+            },
+            { capture: true },
+        );
+        window.addEventListener("keydown", (event) => {
+            seen.push("same " + String(isCaptured(event)));
+            if (event.shiftKey) event.preventDefault();
+        });
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", shiftKey: true, cancelable: true }));
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", cancelable: true }));
+        setTimeout(() => {
+            for (const run of later) run();
+            last();
+            const expected = [
+                "same true",
+                "same true",
+                "Escape prevented",
+                "phase 0 current true target true path 0 keydown shift",
+                "alias Escape true true",
+                "Escape free",
+                "phase 0 current true target true path 0 keydown",
+                "alias Escape true false",
+                "late true",
+                "late true",
+                "last Escape true",
+            ].join();
+            if (seen.join() !== expected) throw new Error(seen.join());
+            globalThis.close();
+        }, 0);
+    `,
+    );
+});
+
 test("a retained closure carries only the bindings its code reads", () => {
-    // A module container typed with events holds none (each store of one
-    // refuses), and closures that read only owned locals escape freely, even
-    // where an enclosing listener's event is in scope.
+    // Closures that read only owned locals escape without the enclosing
+    // listener's event, which is in scope.
     assert.doesNotThrow(() =>
         compileSource(`
             import { createEngine } from "@babylonjs/lite";
@@ -1096,7 +919,7 @@ test("refuses unrelated DOM records and unknown MouseEvent provenance", () => {
                 const fake = {} as MouseEvent;
                 consume(fake);
             `),
-        /must come from the active synchronous platform callback/,
+        /A DOM mouse event must be a platform event of that type/,
     );
 });
 

@@ -86,7 +86,7 @@ export function compilePointerDragRegistration(
                     context.allocateTemporaryCppName("pointer_listener");
                 context.emit({
                     kind: "declaration",
-                    type: "bbl::js::Callback<void(bbl::js::BorrowedEvent)>",
+                    type: "bbl::js::Callback<void(bbl::js::BaseEventRef)>",
                     name: cpp,
                     initializer: `bbl::pointer_drag_listener(${dispatcher}, ${index}u)`,
                 });
@@ -105,7 +105,7 @@ export function compilePointerDragRegistration(
                             identity: true,
                             parameters: [
                                 {
-                                    kind: "borrowed-platform-event",
+                                    kind: "platform-event",
                                     event: "event",
                                 },
                             ],

@@ -9,6 +9,7 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import { checkKeyboardWindowProgram } from "./self-checking-program.js";
 
 const windowRuntime = `
 namespace bbl::pal {
@@ -303,23 +304,25 @@ UiClientRect window_viewport_size() { UiClientRect rect; rect.width = 640.0; rec
     );
 });
 
-test("Window extension records refuse borrowed dispatch events", () => {
-    const directory = resolve("artifacts/window-properties-borrowed");
-    mkdirSync(directory, { recursive: true });
-    writeFileSync(resolve(directory, "worker.ts"), "self.close();");
-    assert.throws(
-        () =>
-            compileSource(
-                `
-                const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
-                worker.terminate();
-                const target = window as Window & {record?: {event: KeyboardEvent}};
-                const before = target.record;
-                window.addEventListener("keydown", event => { target.record = {event}; });
-            `,
-                { fileName: resolve(directory, "entry.ts") },
-            ),
-        /borrowed.*event|event.*dispatch/i,
+test("a Window extension record keeps a dispatched event past its dispatch", async (t) => {
+    // The queued microtask takes the application realm.
+    await checkKeyboardWindowProgram(
+        t,
+        "window-properties/kept-event",
+        `
+        queueMicrotask(() => {});
+        const target = window as Window & { record?: { event: KeyboardEvent } };
+        window.addEventListener("keydown", (event) => { target.record = { event }; });
+        const dispatched = new KeyboardEvent("keydown", { key: "a", code: "KeyA", cancelable: true });
+        window.dispatchEvent(dispatched);
+        setTimeout(() => {
+            const kept = target.record!.event;
+            kept.preventDefault();
+            if (kept !== dispatched || kept.code !== "KeyA" || !dispatched.defaultPrevented)
+                throw new Error("window record");
+            globalThis.close();
+        }, 0);
+    `,
     );
 });
 

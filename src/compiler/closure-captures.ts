@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { EmissionSet, journaled } from "./emission-transaction.js";
 import type { DataType } from "./data-types/model.js";
+import { isPlatformEventReferenceCpp } from "./data-types/scalars.js";
 
 /** An emitted native binding, shared by every expression that reads it. */
 export interface NativeCaptureBinding {
@@ -227,9 +228,19 @@ export class ClosureCaptures {
             .update(JSON.stringify(members))
             .digest("hex")
             .slice(0, 16)}`;
-        // An owned capture is value-initialized; references and borrowed
-        // wrappers are bound wherever the struct is built.
-        const initialized = concrete && !references;
+        // An owned capture is value-initialized, unless its type has no empty
+        // value; references and borrowed wrappers are bound wherever the
+        // struct is built.
+        const initialized = (member: { borrowed: boolean }, index: number) => {
+            const type = types[index];
+            return (
+                concrete &&
+                !references &&
+                !member.borrowed &&
+                type !== undefined &&
+                !isPlatformEventReferenceCpp(type)
+            );
+        };
         return (this.struct = {
             name,
             concrete,
@@ -241,8 +252,8 @@ export class ClosureCaptures {
                       ]),
                 `struct ${name} {`,
                 ...members.map(
-                    (member) =>
-                        `    ${member.type} ${member.name}${initialized && !member.borrowed ? "{}" : ""};`,
+                    (member, index) =>
+                        `    ${member.type} ${member.name}${initialized(member, index) ? "{}" : ""};`,
                 ),
                 `    void gc_trace([[maybe_unused]] const bbl::js::TraceVisitor& visitor) const {`,
                 ...members

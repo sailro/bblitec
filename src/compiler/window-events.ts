@@ -307,7 +307,11 @@ export function compileWindowIdentity(
     return windowIdentity();
 }
 
-/** Error events borrow their native payload for the synchronous dispatch. */
+/**
+ * An error or rejection event the Window dispatches (`ApplicationErrorEvent`):
+ * its target is the Window; its current target is the Window only while the
+ * dispatch runs.
+ */
 export function windowErrorEventValue(
     context: Pick<LoweringServices, "cppString">,
     cpp: string,
@@ -331,11 +335,15 @@ export function windowErrorEventValue(
                 staticString: rejection ? "unhandledrejection" : "error",
             },
             target: windowIdentity(),
-            currentTarget: windowIdentity(),
+            currentTarget: {
+                kind: "data",
+                cpp: `bbl::dom_target_value(bbl::dom_event_owner(${cpp}), bbl::dom_event_state(${cpp}).current_target)`,
+                dataType: { kind: "optional", inner: { kind: "event-target" } },
+            },
             cancelable: { kind: "boolean", cpp: "true", staticBoolean: true },
             defaultPrevented: {
                 kind: "boolean",
-                cpp: `${cpp}.default_prevented`,
+                cpp: `${cpp}.is_default_prevented()`,
             },
             ...(rejection
                 ? { reason: error }

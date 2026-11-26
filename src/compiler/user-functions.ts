@@ -2834,7 +2834,7 @@ export class UserFunctionLowerer {
         mapped: DataType | undefined,
         node: ts.Node,
     ): DataType | undefined {
-        return mapped?.kind === "borrowed-platform-event" &&
+        return mapped?.kind === "platform-event" &&
             ts.isFunctionLike(node) &&
             returnsOnlyConstructedEvents(node, this.checker, (expression) =>
                 libraryGlobal(this.checker, expression),
@@ -4895,8 +4895,7 @@ export class UserFunctionLowerer {
                     "A record argument would bind a dictionary parameter of a shared body.",
                 );
             // A structural projection allocates a new record. Both shared
-            // methods and functions must retain the caller's object identity;
-            // borrowed events additionally keep their dispatch lifetime.
+            // methods and functions must retain the caller's object identity.
             if (
                 !recursive &&
                 parameterType?.kind === "struct" &&
@@ -5035,8 +5034,8 @@ export class UserFunctionLowerer {
                 );
         });
 
-        // A borrowed platform event lives on the dispatch stack of the
-        // listener that received it; a separate native body cannot name it.
+        // A platform event is a local of the listener body that received
+        // it; a separate native body cannot name it.
         if (
             !recursive &&
             rootEntry.captured.some(
@@ -5046,7 +5045,7 @@ export class UserFunctionLowerer {
             )
         )
             throw new SharedCallRequiresInline(
-                "A shared body would capture a borrowed platform event.",
+                "A shared body would capture a platform event.",
             );
         const escapes = this.groupStorageEscapes(context.program, declarations);
         const sharedBody = !recursive;
@@ -7549,7 +7548,7 @@ export class UserFunctionLowerer {
                     type &&
                     !isNativeStructuralView(inner) &&
                     !context.dataTypes.carriesHandle(type) &&
-                    !context.dataTypes.carriesBorrowedPlatformEvent(type)
+                    !context.dataTypes.carriesPlatformEvent(type)
                 ) {
                     // A throwing body still has its declared expression type.
                     // Keep the call in a typed lambda only when lowering proves

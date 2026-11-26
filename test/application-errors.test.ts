@@ -4,9 +4,11 @@ import { resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
+    headlessRealmHost,
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import { runWindowProgramAsJavaScript } from "./self-checking-program.js";
 
 test("application errors dispatch before engine creation with native cancellation and rejection timing", (t) => {
     const directory = resolve("artifacts/application-errors");
@@ -94,14 +96,6 @@ test("application errors dispatch before engine creation with native cancellatio
     const result = compileSource(source, { fileName: entry });
     assert.ok(result.manifest.features.includes("platform:window"));
     assert.match(result.cpp, /window_on_application_error/);
-    const escaping = source.replace(
-        "errors++;",
-        "setTimeout(() => { if (event.message) globalThis.close(); }, 0); errors++;",
-    );
-    assert.throws(
-        () => compileSource(escaping, { fileName: entry }),
-        /escaping callback cannot capture platform event|borrowed platform event cannot escape/,
-    );
     const tools = optionalNativeFixtureTools(false);
     if (!tools) {
         t.skip("Native fixture compiler unavailable.");
@@ -129,7 +123,7 @@ test("application errors dispatch before engine creation with native cancellatio
                 const js::RealmScope scope;
                 EventLoop loop;
                 WorkerRealm realm(loop);
-                ApplicationErrors handlers(loop);
+                ApplicationErrors handlers(loop, document);
                 errors = &handlers;
                 loop.set_timeout([&] { std::cerr << "application did not finish"; loop.close(); }, 100);
                 loop.run([&] { initialize(realm); });
@@ -147,7 +141,8 @@ test("application errors dispatch before engine creation with native cancellatio
             {
                 const bbl::js::RealmScope scope;
                 bbl::pal::EventLoop loop;
-                bbl::pal::ApplicationErrors handlers(loop);
+                bbl::Engine owner;
+                bbl::pal::ApplicationErrors handlers(loop, owner);
                 int calls = 0;
                 handlers.add(false, 1, [&](bbl::pal::ApplicationErrorEvent& event) {
                     ++calls;
@@ -216,3 +211,130 @@ int main() {
         { timeoutMs: 10000 },
     );
 });
+
+test("an escaping callback reads an error or rejection event as JavaScript does once the dispatch ends", async (t) => {
+    // Each listener defers its reads past the dispatch; a later listener of
+    // the same dispatch cancels the event, which the deferred reads see. The
+    // queued microtask takes the application realm.
+    const source = `
+        queueMicrotask(() => {});
+        const seen: string[] = [];
+        let cancelLater = (): void => {};
+        function onError(event: ErrorEvent): void {
+            seen.push("during " + String(event.currentTarget === window));
+            setTimeout(() => {
+                seen.push(
+                    "error " + event.message + " " + String(event.defaultPrevented) +
+                        " " + String(event.currentTarget === null) + " " + String(event.target === window),
+                );
+            }, 0);
+            cancelLater = () => event.preventDefault();
+        }
+        window.addEventListener("error", onError);
+        window.addEventListener("error", (event: ErrorEvent) => event.preventDefault());
+        window.addEventListener("unhandledrejection", (event: PromiseRejectionEvent) => {
+            setTimeout(() => {
+                seen.push(
+                    "rejection " + event.reason.message + " " + String(event.defaultPrevented) +
+                        " " + String(event.currentTarget === null),
+                );
+            }, 0);
+        });
+        window.addEventListener("unhandledrejection", (event: PromiseRejectionEvent) => event.preventDefault());
+        setTimeout(() => { throw new Error("failure"); }, 0);
+        async function reject(): Promise<void> { throw new Error("rejected"); }
+        reject();
+        setTimeout(() => {
+            setTimeout(() => {
+                cancelLater();
+                const expected = [
+                    "during true",
+                    "error failure true true true",
+                    "rejection rejected true true",
+                ].join();
+                if (seen.sort().join() !== expected) throw new Error(seen.join());
+                globalThis.close();
+            }, 0);
+        }, 0);
+    `;
+    await runAsJavaScript(source);
+    const result = compileSource(source, {
+        fileName: "test/escaping-error-events.ts",
+    });
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(
+        tools,
+        "application-errors/escaping-events",
+        result.cpp + headlessRealmHost({ errors: true }),
+        {
+            flags: ["/DBBLITE_WORKERS=1", "/DBBLITE_HAS_UI=1"],
+            timeoutMs: 10000,
+            expectedOutput: "",
+        },
+    );
+});
+
+/**
+ * Runs a Window program as JavaScript, on a browser-like window (Node's
+ * EventTarget): an error a timer throws and an unhandled rejection dispatch
+ * their events on it, and one no listener cancels fails the run.
+ */
+async function runAsJavaScript(source: string): Promise<void> {
+    const window = new EventTarget();
+    class ErrorEvent extends Event {
+        public constructor(
+            type: string,
+            public readonly error: unknown,
+            public readonly message: string,
+        ) {
+            super(type, { cancelable: true });
+        }
+    }
+    class PromiseRejectionEvent extends Event {
+        public constructor(
+            type: string,
+            public readonly reason: unknown,
+        ) {
+            super(type, { cancelable: true });
+        }
+    }
+    const failures: string[] = [];
+    const report = (event: Event, text: string): void => {
+        if (window.dispatchEvent(event)) failures.push(text);
+    };
+    const onRejection = (reason: unknown): void =>
+        report(
+            new PromiseRejectionEvent("unhandledrejection", reason),
+            String(reason),
+        );
+    // The test runner fails a run on an unhandled rejection; the program's
+    // own are its Window's while it runs.
+    const runnerListeners = process.listeners("unhandledRejection");
+    process.removeAllListeners("unhandledRejection");
+    process.on("unhandledRejection", onRejection);
+    try {
+        await runWindowProgramAsJavaScript(
+            source,
+            { window },
+            failures,
+            (error) => {
+                // The program's Error is its own realm's.
+                const message =
+                    typeof error === "object" &&
+                    error !== null &&
+                    "message" in error
+                        ? String(error.message)
+                        : String(error);
+                report(new ErrorEvent("error", error, message), message);
+            },
+        );
+    } finally {
+        process.off("unhandledRejection", onRejection);
+        for (const listener of runnerListeners)
+            process.on("unhandledRejection", listener);
+    }
+}

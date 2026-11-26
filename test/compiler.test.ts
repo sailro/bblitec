@@ -13233,71 +13233,10 @@ test("carries retained mousedown cancellation from the executed callback", () =>
     );
 });
 
-test("refuses platform event aliases captured by escaping callbacks", () => {
-    const escapingCases = [
-        {
-            declaration: "const alias = event;",
-            use: "alias.preventDefault();",
-            name: "alias",
-        },
-        {
-            declaration: "const wrapped = { event };",
-            use: "wrapped.event.preventDefault();",
-            name: "wrapped",
-        },
-        {
-            declaration:
-                "const wrapped = { nested: [{ borrowed: event }] as const };" +
-                " const nested = wrapped.nested;",
-            use:
-                "const record = nested[0];" +
-                " record.borrowed.preventDefault();",
-            name: "nested",
-        },
-        {
-            declaration:
-                "const wrapped = { nested: [{ borrowed: event }] as const };",
-            use: "wrapped.nested[0].borrowed.preventDefault();",
-            name: "wrapped",
-        },
-    ];
-    for (const escaping of escapingCases) {
-        assert.throws(
-            () =>
-                compileSource(
-                    `
-                        import { createEngine } from "@babylonjs/lite";
-                        async function main(): Promise<void> {
-                            await createEngine({});
-                            const button = document.createElement("button");
-                            button.addEventListener("mousedown", (event: MouseEvent) => {
-                                ${escaping.declaration}
-                                button.addEventListener("pointerup", () => {
-                                    ${escaping.use}
-                                });
-                            });
-                            document.body.appendChild(button);
-                        }
-                        void main();
-                    `,
-                    { fileName: "test/escaped-platform-event.ts" },
-                ),
-            (error: unknown) => {
-                assert.ok(error instanceof CompileError);
-                assert.match(
-                    error.message,
-                    /^test\/escaped-platform-event\.ts:\d+:\d+:/,
-                );
-                assert.match(
-                    error.message,
-                    new RegExp(
-                        `escaping callback cannot capture platform event value '${escaping.name}'`,
-                    ),
-                );
-                return true;
-            },
-        );
-    }
+// An escaping callback's captures of the event, through aliases and
+// records, are copies of it (callback-registry.test.ts runs them against
+// JavaScript).
+test("a listener reads its event in place and hands later callbacks owned fields", () => {
     assert.doesNotThrow(() =>
         compileSource(`
             import { createEngine } from "@babylonjs/lite";
@@ -17387,7 +17326,7 @@ test("registers a callback returned by a local factory as a platform listener", 
     );
     assert.match(
         result.cpp,
-        /\(\*v_onDown_owner\)\(bbl::js::Borrowed<const bbl::PlatformKeyboardEvent>\(v_bblite_dom_event_\d+\)\)/,
+        /\(\*v_onDown_owner\)\(bbl::js::EventRef<const bbl::PlatformKeyboardEvent>\(v_bblite_dom_event_\d+\)\)/,
     );
 });
 

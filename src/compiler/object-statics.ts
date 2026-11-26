@@ -116,7 +116,6 @@ type ObjectStaticContext = Pick<
     | "storageTakenDuringAttempt"
     | "program"
     | "evaluationOrder"
-    | "refuseBorrowedPlatformEventEscape"
     | "useNativeValue"
     | "resolveRecordValue"
     | "unwrap"
@@ -1114,21 +1113,6 @@ function compileObjectAssign(
               ]
             : pairs;
     };
-    // An existing target keeps what it receives, as a field store does.
-    const sourcePairs = (
-        source: ts.Expression,
-        value?: Value,
-    ): Array<[string, Value]> => {
-        const pairs = readPairs(source, value, true);
-        if (!fresh)
-            for (const [, value] of pairs)
-                context.refuseBorrowedPlatformEventEscape(
-                    value,
-                    source,
-                    "Object.assign",
-                );
-        return pairs;
-    };
     if (isJsonValue(target)) {
         const owner = context.bindings.pinValueToTemporary(
             target,
@@ -1228,7 +1212,7 @@ function compileObjectAssign(
             : target;
         const properties = (writable(result).recordProperties ??= {});
         for (const source of sources) {
-            for (const [key, value] of sourcePairs(source)) {
+            for (const [key, value] of readPairs(source, undefined, true)) {
                 const existing = properties[key];
                 // A property with native storage takes the store there; the
                 // record then reads its storage rather than a folded value.
@@ -1302,7 +1286,7 @@ function compileObjectAssign(
                 );
                 return;
             }
-            for (const [key, value] of sourcePairs(source, sourceValue)) {
+            for (const [key, value] of readPairs(source, sourceValue, true)) {
                 const field = context.dataTypes.structField(
                     structType.name,
                     key,
@@ -1377,11 +1361,10 @@ function compileObjectAssign(
                     mapType,
                     value,
                     source,
-                    fresh ? undefined : "Object.assign",
                 )
             )
                 return;
-            for (const [key, pair] of sourcePairs(source, value))
+            for (const [key, pair] of readPairs(source, value, true))
                 context.emit({
                     kind: "expression",
                     code: `${owner.cpp}.set(${context.cppString(key)}, ${context.dataLowerer.compileKnownValueForSink(pair, mapType.value, source)});`,
@@ -1406,7 +1389,7 @@ function compileObjectAssign(
         );
         const ownerType = context.checker.getTypeAtLocation(targetExpression);
         sources.forEach((source, index) => {
-            for (const [key, value] of sourcePairs(source, values[index]))
+            for (const [key, value] of readPairs(source, values[index], true))
                 storeLoweredRecordProperty(
                     context,
                     owner,
@@ -1972,10 +1955,6 @@ function definitionAccessor(
             false,
             ts.isArrowFunction(callback) ? undefined : target,
         );
-    context.bindings.refuseEscapingPlatformEventCapturesIn(
-        callback,
-        context.bindings.variableScopes.length,
-    );
     context.callbacks.hoistForwardCallbackBindings(callback, true);
     const receiverType: DataType<"struct"> = {
         kind: "struct",

@@ -1,7 +1,7 @@
 import { CPP_SCALAR } from "../../lowering/cpp-types.js";
 import { handleCppType } from "./handles.js";
 import type { DataKindOperations } from "./contracts.js";
-import type { TypedArrayKind } from "./model.js";
+import type { DataType, TypedArrayKind } from "./model.js";
 import { typedArrayCppType, typedArrayStem } from "./typed-arrays.js";
 
 /** A payload-free kind; `traced` is its native type's `gc_traceable`. */
@@ -39,6 +39,32 @@ function typedArray(kind: TypedArrayKind) {
         ...reseatingLeaf(typedArrayCppType(kind), typedArrayStem(kind), true),
         sharesStorage: true as const,
     };
+}
+
+const BASE_EVENT_REF = "bbl::js::BaseEventRef";
+const EVENT_REF = "bbl::js::EventRef";
+
+/**
+ * Whether native type `cpp` is a platform event reference, which has no
+ * empty value: whoever holds one is built from an event.
+ */
+export function isPlatformEventReferenceCpp(cpp: string): boolean {
+    const type = cpp.replace(/^const /, "");
+    return type === BASE_EVENT_REF || type.startsWith(`${EVENT_REF}<`);
+}
+
+/**
+ * The C++ type a platform event reference reads (`.get()`): the base event
+ * reads as its reference, the others as their payload.
+ */
+export function platformEventPayloadCpp(
+    type: DataType<"platform-event">,
+): string {
+    return type.event === "event"
+        ? BASE_EVENT_REF
+        : type.event === "error" || type.event === "rejection"
+          ? "bbl::pal::ApplicationErrorEvent"
+          : `bbl::Platform${type.event === "mouse" ? "Mouse" : "Keyboard"}Event`;
 }
 
 export const scalarKinds: DataKindOperations<
@@ -105,7 +131,7 @@ export const scalarKinds: DataKindOperations<
     | "json"
     | "event-target"
     | "uninhabited-object"
-    | "borrowed-platform-event"
+    | "platform-event"
     | "handle"
     | TypedArrayKind
 > = {
@@ -271,18 +297,17 @@ export const scalarKinds: DataKindOperations<
         sharesStorage: true,
     },
     json: reseatingLeaf("bbl::js::JsonValue", "json", false, true),
-    "borrowed-platform-event": {
+    "platform-event": {
         cpp: (type) =>
             type.event === "event"
-                ? "bbl::js::BorrowedEvent"
-                : type.event === "error" || type.event === "rejection"
-                  ? "bbl::js::Borrowed<bbl::pal::ApplicationErrorEvent>"
-                  : `bbl::js::Borrowed<const bbl::Platform${type.event === "mouse" ? "Mouse" : "Keyboard"}Event>`,
-        key: (type) => `borrowed(${type.event})`,
+                ? BASE_EVENT_REF
+                : `${EVENT_REF}<${type.event === "error" || type.event === "rejection" ? "" : "const "}${platformEventPayloadCpp(type)}>`,
+        key: (type) => `event(${type.event})`,
         equal: (left, right) => left.event === right.event,
         children: () => [],
         byReference: false,
         tracedEdges: "never",
+        reseats: true,
     },
     handle: {
         cpp: (type) =>
