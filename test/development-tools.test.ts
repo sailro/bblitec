@@ -212,7 +212,7 @@ test("discovers the CMake, Ninja, clang-cl, and vcpkg bundled with Visual Studio
     mkdirSync(resolve(sdk, "Include/10.0.26100.0"), { recursive: true });
 
     const environment: NodeJS.ProcessEnv = {
-        PATH: "",
+        Path: "",
         VSINSTALLDIR: vs,
         "ProgramFiles(x86)": programFilesX86,
     };
@@ -225,6 +225,17 @@ test("discovers the CMake, Ninja, clang-cl, and vcpkg bundled with Visual Studio
     assert.equal(windows.compiler, clang);
     assert.equal(windows.ninja, ninja);
     assert.match(windows.environment.INCLUDE ?? "", /10\.0\.26100\.0/);
+    // Windows' inherited `Path` gives way to the tools' PATH.
+    assert.deepEqual(
+        Object.keys(windows.environment).filter(
+            (key) => key.toLowerCase() === "path",
+        ),
+        ["PATH"],
+    );
+    assert.equal(
+        windows.environment.PATH?.split(";")[1],
+        resolve(msvc, "bin/Hostx64/x64"),
+    );
 
     const tools = discoverDevelopmentTools(options);
     assert.equal(tools.cmake, cmake);

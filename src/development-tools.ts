@@ -116,7 +116,7 @@ function executableNames(command: string, platform: NodeJS.Platform): string[] {
 }
 
 /** Resolve a command exactly as a child process would, without invoking it. */
-function findExecutable(
+export function findExecutable(
     command: string | undefined,
     options: ToolDiscoveryOptions = {},
 ): string | undefined {
@@ -262,7 +262,13 @@ export function discoverWindowsBuildTools(
         ninja,
         compiler,
         environment: {
-            ...environment,
+            // One PATH: a child process and findExecutable read whichever
+            // spelling (Windows' `Path`) comes first.
+            ...Object.fromEntries(
+                Object.entries(environment).filter(
+                    ([key]) => key.toLowerCase() !== "path",
+                ),
+            ),
             PATH: [
                 dirname(compiler),
                 join(msvc, "bin", "Hostx64", "x64"),

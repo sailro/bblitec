@@ -16,7 +16,9 @@ import { runNativeFixtureCompiler } from "./native-fixture.js";
  * std::current_exception, std::make_exception_ptr and std::rethrow_exception
  * copy those exceptions without their copy constructors (double-freed strings,
  * shared pointers released twice). native/CMakeLists.txt therefore gives that
- * compiler a PCH of C headers only.
+ * compiler a PCH of C headers only; the fixture harness's precompiled
+ * preambles have each unit check a throw of every class they throw
+ * (native-fixture.ts, `exceptionRecord`).
  */
 
 const HEADER = `#pragma once
@@ -134,6 +136,27 @@ test("clang-cl records a thrown class's copy constructor only when the unit itse
             s.includes("Thrown"),
         ),
         [BITWISE],
+    );
+    // A throw of the class that the unit checks, never called, names the
+    // constructor again for the PCH's own throws.
+    const record = join(directory, "record.hpp");
+    writeFileSync(
+        record,
+        "inline void recorded(const Thrown& value) { throw value; }\n",
+    );
+    const recorded = build("recorded", [
+        ...NO_TIMESTAMP,
+        "-Xclang",
+        "-include-pch",
+        "-Xclang",
+        pch,
+        `/FI${record}`,
+    ]);
+    assert.deepEqual(
+        catchableTypes(tools.compiler, recorded).filter((s) =>
+            s.includes("Thrown"),
+        ),
+        [COPIED],
     );
 });
 
