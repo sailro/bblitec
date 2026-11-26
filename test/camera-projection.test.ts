@@ -291,7 +291,7 @@ test("projection intrinsic keeps f32 storage across ArrayLike calls", () => {
         assert.match(
             result.cpp,
             new RegExp(
-                `static_cast<double>\\(bbl::js::array_index_checked\\(v_\\w*matrix, ${index}\\.0,`,
+                `static_cast<double>\\(bbl::js::number_at\\(v_\\w*matrix, ${index}\\.0\\)`,
             ),
         );
     assert.doesNotMatch(result.cpp, /bbl::js::F64Array[^;]*v_vp\.begin\(\)/);

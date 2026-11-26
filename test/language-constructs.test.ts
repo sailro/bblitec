@@ -6933,6 +6933,18 @@ checkInRealm(
 );
 
 checkInRealm(
+    "structured-clone-of-a-view-copies-own-fields-not-prototype-getters",
+    `
+    interface Flag { readonly on: boolean; }
+    class Switch { count = 0; get on(): boolean { return this.count > 0; } view(): Flag { return this; } }
+    const flags: Flag[] = [{ on: false }, new Switch().view()];
+    const out = flags.map((flag) => JSON.stringify(structuredClone(flag))).join("|");
+    if (out !== '{"on":false}|{"count":0}') throw new Error(out);
+    globalThis.close();
+`,
+);
+
+checkInRealm(
     "structured-clone-rest-records-options-and-errors",
     `
     interface Pose { readonly x: number; readonly yaw: number }
@@ -6982,18 +6994,6 @@ test("structuredClone refuses shapes without a clone codec", () => {
                 "class K { n = 1; } const k = structuredClone(new K()); const n = k.n;",
             ),
         /structuredClone 'value' is an instance of class K/,
-    );
-    // A class's prototype getter is no own property to serialize.
-    assert.throws(
-        () =>
-            compileSource(`
-            interface Flag { readonly on: boolean; }
-            class Switch { count = 0; get on(): boolean { return this.count > 0; } view(): Flag { return this; } }
-            const flags: Flag[] = [{ on: false }, new Switch().view()];
-            const copies = flags.map((flag) => structuredClone(flag));
-            if (copies.length !== 2) throw new Error("copies");
-            `),
-        /Property 'on' is an accessor/,
     );
     for (const options of [
         "{ transfer: [bytes.buffer] }",
