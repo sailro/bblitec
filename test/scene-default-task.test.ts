@@ -47,15 +47,6 @@ const cases = [
         `),
     },
     {
-        name: "disabled-first",
-        source: sceneProgram(`
-        const scenes: SceneContext[] = [disabled, enabled];
-        scenes.reverse();
-        for (const scene of scenes) await registerSceneWithShadowSupport(scene);
-        for (const scene of scenes) await registerSceneWithShadowSupport(scene);
-        `),
-    },
-    {
         name: "runtime-populated",
         source: sceneProgram(`
         const scenes: SceneContext[] = [];

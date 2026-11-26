@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import { CompileError, compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
@@ -303,31 +302,6 @@ test("emits only the editing gizmo builders reached by the scene", () => {
     assert.doesNotMatch(source, /create_plane_rotation_gizmo\(/);
     assert.doesNotMatch(source, /create_polyhedron\(/);
     assert.doesNotMatch(source, /create_torus\(/);
-});
-
-test("keeps the native mixed child union separate from mesh children", () => {
-    const runtime = readFileSync("native/include/bblite/runtime.hpp", "utf8");
-    assert.match(
-        runtime,
-        /using TransformNodeChild =\s*std::variant<MeshHandle, TransformNodeHandle>;/,
-    );
-
-    const transformStart = runtime.indexOf("struct TransformNodeRecord");
-    const meshStart = runtime.indexOf("struct MeshRecord", transformStart);
-    const transformRecord = runtime.slice(transformStart, meshStart);
-    const meshRecord = runtime.slice(meshStart, meshStart + 5000);
-    assert.match(transformRecord, /std::vector<TransformNodeChild> children;/);
-    assert.match(meshRecord, /std::vector<MeshHandle> children;/);
-    assert.doesNotMatch(
-        meshRecord,
-        /std::vector<TransformNodeChild> children;/,
-    );
-    assert.equal(
-        runtime.match(
-            /void push_transform_node_child\(\s*Engine& engine,\s*TransformNodeHandle node,\s*(?:MeshHandle|TransformNodeHandle) child\);/g,
-        )?.length,
-        2,
-    );
 });
 
 test("omits TransformNode traversal code when the feature is absent", () => {

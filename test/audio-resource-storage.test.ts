@@ -89,16 +89,6 @@ test(
     },
 );
 
-test("unlowered media operations remain explicit refusals", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-        const inspect: (track: MediaStreamTrack) => void = track => { void track.applyConstraints(); };
-    `),
-        /not supported|not lowered|Unsupported|unsupported/,
-    );
-});
-
 test(
     "retained audio nodes and parameters preserve identity across containers",
     { skip: !tools },

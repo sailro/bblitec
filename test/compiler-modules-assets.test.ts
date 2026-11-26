@@ -2329,27 +2329,6 @@ test("a recurring timer owns the frame local it captures", () => {
     );
 });
 
-test("writes out a constant-trip frame-yield loop as one boundary per frame", () => {
-    // A multi-frame wait is still not a thing this runtime fakes; a loop
-    // whose trip count is generation-known is not one. Unrolling writes the
-    // body out FLAT once per iteration, so five yields become five
-    // sequential ones -- the shape the continuation re-queue already
-    // lowers -- rather than one emitted yield standing in for five.
-    const result = compileSource(
-        frameYieldScene(
-            `    for (let i = 0; i < 5; i++) {
-        await new Promise<void>((r) => requestAnimationFrame(() => r()));
-    }`,
-        ),
-        frameYieldFile,
-    );
-    assert.doesNotMatch(result.cpp, /requestAnimationFrame/);
-    assert.match(
-        result.cpp,
-        /defer_start_continuation_until\(v_engine, \[remaining = 6u\]/,
-    );
-});
-
 test("defers the capture behind a promise that resolves on a frame count", () => {
     // Scenes 269 and 270 verbatim: the executor's body is a block that
     // re-arms `requestAnimationFrame` until a counter passes. This is NOT

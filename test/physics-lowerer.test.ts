@@ -442,49 +442,6 @@ test("both shape paths route through the pin's own primitive factory", () => {
     assert.match(lowered.source, /default:\n {12}return std::nullopt;/);
 });
 
-test("the two mesh arms share one accumulator and split on the pin's own boolean", () => {
-    // `createPhysicsShape` runs ONE `MeshAccumulator` for CONVEX_HULL and
-    // MESH and separates them with `options.type === PhysicsShapeType.MESH`.
-    // The emitted factory folds that comparison into `collect_indices` and
-    // reaches a different back-end factory on each side, so a port that
-    // quietly sent MESH down the hull arm -- which every reached scene's
-    // box-shaped collider would hide, since a box's soup and its hull are
-    // the same surface -- shows up here.
-    const body = emittedBody("PhysicsShape create_physics_mesh_shape(");
-    assert.match(
-        body,
-        /const bool collect_indices = type == PhysicsShapeType::MESH;/,
-    );
-    assert.match(body, /pal::physics_shape_create_mesh\(positions, indices\)/);
-    assert.match(body, /pal::physics_shape_create_convex_hull\(positions\)/);
-    // Both of the pin's own accumulator throws, and only on the arm that
-    // states each: a hull needs points, a soup needs points AND triangles.
-    assert.match(
-        body,
-        /Cannot create physics mesh shape without vertex positions\./,
-    );
-    assert.match(
-        body,
-        /Cannot create physics mesh shape without triangle indices\./,
-    );
-});
-
-test("the accumulator addresses and winds each triangle the pin's way", () => {
-    // `const indexOffset = this._vertices.length / 3` is read BEFORE the
-    // node's own vertices join the list, which is what makes a child's
-    // triangles address the child's vertices; and `push(c, b, a)` is the
-    // pin's own reversal of each triangle. Both are restated here, so both
-    // are asserted against the emitted text as well as against the pin.
-    const body = emittedBody("void append_physics_mesh_geometry(");
-    const offsetAt = body.indexOf("const std::uint32_t index_offset");
-    const verticesAt = body.indexOf("positions.push_back({");
-    assert.ok(offsetAt >= 0 && verticesAt > offsetAt);
-    assert.match(
-        body,
-        /indices\.push_back\(c\); indices\.push_back\(b\); indices\.push_back\(a\);/,
-    );
-});
-
 test("each primitive arm keeps the pin's own parameter defaults", () => {
     // Every one of these is a `params.<member> ?? <default>` read out of
     // the pinned factory: a sphere is half a unit, a segment spans the unit

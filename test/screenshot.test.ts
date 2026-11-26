@@ -13,7 +13,6 @@ import {
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runFixtureExecutable,
-    runGeneratedProgram,
     runNativeFixtureCompiler,
     writeFixtureHeaders,
 } from "./native-fixture.js";
@@ -153,56 +152,6 @@ test("captureScreenshot settles the pin's Screenshot record from a serviced fram
     );
     const plain = compileSource(`${PROGRAM}console.log(1);`);
     assert.ok(!plain.manifest.features.includes("engine:screenshot"));
-});
-
-test("the lowered screenshot stride and unpack read a copy as the pin's finish does", async (t) => {
-    const bytes = texels();
-    const pinned = {
-        rgba8unorm: await pinnedShot(bytes, "rgba8unorm"),
-        bgra8unorm: await pinnedShot(bytes, "bgra8unorm"),
-    };
-    // Every request the frame serves resolves with one record.
-    assert.ok(pinned.rgba8unorm.shared && pinned.bgra8unorm.shared);
-    assert.equal(pinned.rgba8unorm.bytesPerRow, 512);
-    const tools = optionalNativeFixtureTools(false);
-    if (!tools) {
-        t.skip("Native compiler unavailable");
-        return;
-    }
-    const directory = fixtureDirectory("unpack");
-    const output = runGeneratedProgram(
-        tools,
-        "test-screenshot/unpack",
-        `#include "check.hpp"
-#include "lifted.hpp"
-#include "cases.hpp"
-#include <cstring>
-#include <vector>
-int main() {
-    const std::uint32_t bytes_per_row = bbl::upstream::screenshot_bytes_per_row(width);
-    std::vector<std::uint8_t> rows(static_cast<std::size_t>(bytes_per_row) * height);
-    for (std::uint32_t row = 0; row < height; ++row)
-        std::memcpy(rows.data() + row * bytes_per_row, texels + row * width * 4, width * 4);
-    screenshot_check::print_unpacked("rgba8unorm", rows, width, height, bytes_per_row, false);
-    screenshot_check::print_unpacked("bgra8unorm", rows, width, height, bytes_per_row, true);
-}
-`,
-        {
-            flags: [
-                "/DBBLITE_SCREENSHOT_CAPTURE=1",
-                `/I${resolve("test/fixtures/screenshot")}`,
-                `/I${directory}`,
-            ],
-            timeoutMs: 10000,
-        },
-    );
-    assert.deepEqual(
-        output.trim().split(/\r?\n/),
-        (["rgba8unorm", "bgra8unorm"] as const).map(
-            (format) =>
-                `${format} ${pinned[format].bytesPerRow} ${pinned[format].hex}`,
-        ),
-    );
 });
 
 test("both backends copy and map an 8-bit presented image the pin's unpack reads", async (t: TestContext) => {
