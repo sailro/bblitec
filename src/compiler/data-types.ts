@@ -590,7 +590,8 @@ export const classTagMember = "bbl_class_tag";
 
 /**
  * The member a struct of instance views keeps the instance a view stands
- * for in (`bbl::js::ViewedObject`); the runtime's `instance_view` names it.
+ * for in (`bbl::js::ViewedObject`); the runtime's `bbl::js::ViewedRecord`
+ * requires it.
  */
 const viewedMember = "bbl_viewed";
 

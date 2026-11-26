@@ -847,14 +847,24 @@ private:
     JsonValue (*document_)(const ViewedObject&) = nullptr;
 };
 
+/**
+ * A record type whose records can be an instance's view: the compiler gives
+ * its struct the member `bbl_viewed` (`viewedMember`), where an instance's
+ * view keeps the instance (`instance_view`).
+ */
+template <typename V>
+concept ViewedRecord = requires(V& record) {
+    { record.bbl_viewed } -> std::same_as<ViewedObject&>;
+};
+
 /** The object a record that may be an instance's view is: that instance, or the record itself. */
-template <typename V> [[nodiscard]] const void* viewed_object(const Ref<V>& record) {
+template <ViewedRecord V> [[nodiscard]] const void* viewed_object(const Ref<V>& record) {
     const auto* view = record.get();
     return view && view->bbl_viewed.get() ? view->bbl_viewed.get() : view;
 }
 
 /** `viewed_object`'s weak-collection key. */
-template <typename V>
+template <ViewedRecord V>
 [[nodiscard]] std::weak_ptr<const void> viewed_identity(const Ref<V>& record) {
     const auto* view = record.get();
     return view && view->bbl_viewed.get() ? view->bbl_viewed.identity() : record.weak_identity();
@@ -889,7 +899,7 @@ template <typename V> InstanceViews<V>& instance_views() {
  * write the instance: `make` builds it the first time, and again only after
  * no reference holds the last one, when nothing can tell the two apart.
  */
-template <typename V, typename T, typename Make>
+template <ViewedRecord V, typename T, typename Make>
 [[nodiscard]] Ref<V> instance_view(const Ref<T>& object, Make&& make) {
     if (!object)
         return {};
