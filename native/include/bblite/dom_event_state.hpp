@@ -127,6 +127,12 @@ struct PlatformEventFlags {
     void stop_immediate_propagation() const { dom_event_state(*this).stop_immediate_propagation(); }
 };
 
+/** Event identity (`===`): the dispatch state every copy of a payload shares, else the payload. */
+[[nodiscard]] inline bool operator==(const PlatformEventFlags& left,
+                                     const PlatformEventFlags& right) noexcept {
+    return left.dom ? left.dom == right.dom : &left == &right;
+}
+
 template <typename Event> Engine& dom_event_owner(const Event& event) {
     const auto* owner = dom_event_state(event).dispatch_engine;
     if (!owner)

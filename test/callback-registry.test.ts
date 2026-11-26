@@ -2,10 +2,13 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import { runInNewContext } from "node:vm";
+import ts from "typescript";
 
 import { CompileError, compileSource } from "../src/compiler.js";
 import {
+    headlessRealmHost,
     optionalNativeFixtureTools,
     runGeneratedProgram,
     runNativeFixtureCompiler,
@@ -916,6 +919,103 @@ test("follows helper call graphs when checking borrowed callback captures", () =
             },
         );
     }
+});
+
+/**
+ * Runs a Window program that dispatches constructed keyboard events and
+ * closes its realm: first as JavaScript, on a browser-like window (Node's
+ * EventTarget), then compiled and run natively, where its own assertions
+ * must hold the same way.
+ */
+async function checkKeyboardWindowProgram(
+    t: TestContext,
+    name: string,
+    source: string,
+): Promise<void> {
+    let closed = false;
+    const failures: string[] = [];
+    runInNewContext(
+        ts.transpileModule(source, {
+            compilerOptions: {
+                target: ts.ScriptTarget.ESNext,
+                module: ts.ModuleKind.None,
+            },
+        }).outputText,
+        {
+            window: new EventTarget(),
+            KeyboardEvent: class extends Event {
+                public readonly key: string;
+                public readonly code: string;
+                public readonly shiftKey: boolean;
+                public constructor(
+                    type: string,
+                    init: EventInit & {
+                        key: string;
+                        code: string;
+                        shiftKey?: boolean;
+                    },
+                ) {
+                    super(type, init);
+                    this.key = init.key;
+                    this.code = init.code;
+                    this.shiftKey = init.shiftKey ?? false;
+                }
+            },
+            queueMicrotask,
+            setTimeout: (callback: () => void, delay: number) =>
+                setTimeout(() => {
+                    try {
+                        callback();
+                    } catch (error) {
+                        failures.push(String(error));
+                    }
+                }, delay),
+            close: () => (closed = true),
+        },
+    );
+    for (let turn = 0; turn < 20 && !closed && !failures.length; turn++)
+        await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(failures, []);
+    assert.equal(closed, true);
+    const result = compileSource(source, { fileName: `test/${name}.ts` });
+    if (!nativeTools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(
+        nativeTools,
+        `callback-registry/${name}`,
+        result.cpp + headlessRealmHost(),
+        {
+            flags: ["/DBBLITE_WORKERS=1", "/DBBLITE_HAS_UI=1"],
+            timeoutMs: 10000,
+            expectedOutput: "",
+        },
+    );
+}
+
+// The queued microtask takes the application realm.
+test("a dispatched event is identical to its aliases and to the copies records keep of it", async (t) => {
+    await checkKeyboardWindowProgram(
+        t,
+        "dispatched-event-identity",
+        `
+        queueMicrotask(() => {});
+        const seen: string[] = [];
+        window.addEventListener("keydown", (event) => {
+            const alias = event;
+            const wrapped = { event };
+            seen.push(event.code + String(alias === event) + String(wrapped.event === alias) + String(wrapped.event !== event));
+        });
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "a", code: "KeyA" }));
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "b", code: "KeyB" }));
+        setTimeout(() => {
+            const expected = "KeyAtruetruefalse,KeyBtruetruefalse";
+            if (seen.join() !== expected) throw new Error(seen.join());
+            globalThis.close();
+        }, 0);
+    `,
+    );
 });
 
 test("a retained closure carries only the bindings its code reads", () => {
