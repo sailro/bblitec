@@ -10041,11 +10041,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 "vector",
                 "tuple",
                 "product",
+                "map",
                 "set",
             ].includes(type.kind) ||
             isOpaqueReference(type) ||
             isTypedArrayType(type) ||
-            (type.kind === "map" && !type.weak) ||
             (type.kind === "optional" && comparable(type.inner)) ||
             (type.kind === "union" && type.members.every(comparable)) ||
             (type.kind === "struct" &&

@@ -3742,7 +3742,29 @@ check(
     if (mark() !== 1 || note(gauges[1]!, "again") !== 2 || note(world.tallies[1]!, "instance") !== 3 || gauges[0] !== loose)
         throw new Error("keyed by the instance");
     if (annotate(world) !== 1 || !gauges[1]!.tight || gauges[1] !== world.tallies[1]) throw new Error("world");
-    if (notes.has(loose)) throw new Error("loose");
+    if (notes.has(loose) || handed !== notes) throw new Error("loose");
+    `,
+);
+
+check(
+    "weak collections compare, search and key by identity",
+    `
+    interface Owner { id: number }
+    const notes = new WeakMap<object, string[]>();
+    const other = new WeakMap<object, string[]>();
+    const handed: unknown = notes;
+    if (handed !== notes || handed === other || !(notes === notes)) throw new Error("weak map identity");
+    const key: Owner = { id: 1 };
+    notes.set(key, ["a"]);
+    const seen = new WeakSet<Owner>();
+    const seenHanded: unknown = seen;
+    seen.add(key);
+    if (seenHanded !== seen || seen === new WeakSet<Owner>() || !seen.has(key)) throw new Error("weak set identity");
+    const kept = [notes, other];
+    if (kept.indexOf(other) !== 1 || !kept.includes(notes) || kept.lastIndexOf(notes) !== 0 || kept.includes(new WeakMap<object, string[]>()))
+        throw new Error("search");
+    const named = new Map<WeakMap<object, string[]>, string>([[notes, "notes"]]);
+    if (named.get(notes) !== "notes" || named.has(other) || notes.get(key)![0] !== "a") throw new Error("keyed");
     `,
 );
 

@@ -2896,6 +2896,10 @@ template <typename V> class WeakMap {
     std::shared_ptr<Storage> storage_ = make_gc_shared<Storage>();
 
 public:
+    /** JavaScript's `===`, searches and Map keys: one weak map whatever names it. */
+    [[nodiscard]] bool operator==(const WeakMap& other) const { return storage_ == other.storage_; }
+    [[nodiscard]] const void* identity() const { return storage_.get(); }
+
     [[nodiscard]] typename MapGetResult<V>::Type get(const WeakIdentity& key) const {
         storage_->prune();
         const auto found = storage_->entries.find(key);
