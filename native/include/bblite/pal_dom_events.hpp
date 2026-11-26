@@ -1405,14 +1405,16 @@ public:
     }
     /** This event as a MouseEvent reference, which shares its identity and state. */
     [[nodiscard]] js::EventRef<const PlatformMouseEvent> mouse_ref() const {
-        return js::EventRef<const PlatformMouseEvent>(mouse());
+        return js::EventRef<const PlatformMouseEvent>(
+            std::shared_ptr<const PlatformMouseEvent>(payload_, &mouse()));
     }
     /** This constructed KeyboardEvent as a reference, which shares its identity and state. */
     [[nodiscard]] js::EventRef<const PlatformKeyboardEvent> keyboard_ref() const {
         const auto* keys = keyboard();
         if (!keys)
             throw std::logic_error("The event is not a KeyboardEvent.");
-        return js::EventRef<const PlatformKeyboardEvent>(*keys);
+        return js::EventRef<const PlatformKeyboardEvent>(
+            std::shared_ptr<const PlatformKeyboardEvent>(payload_, keys));
     }
     void prevent_default() const { event().prevent_default(); }
     void stop_propagation() const { event().stop_propagation(); }

@@ -908,13 +908,16 @@ template <typename V, typename T, typename Make>
 
 /**
  * A JavaScript reference to a typed platform event (MouseEvent,
- * KeyboardEvent). It owns a copy of the payload, which shares the event's
- * identity, dispatch state and canceled flag with every other copy
- * (`PlatformEventFlags`), so it stays valid once the dispatch ends.
+ * KeyboardEvent). It owns a copy of the payload, or shares the payload its
+ * owner keeps; either shares the event's identity, dispatch state and
+ * canceled flag with every other copy (`PlatformEventFlags`), so it stays
+ * valid once the dispatch ends.
  */
 template <typename T> class EventRef {
 public:
     explicit EventRef(T& value) : value_(std::make_shared<T>(value)) {}
+    /** A reference to a payload `value` already shares (as an aliasing pointer to its owner). */
+    explicit EventRef(std::shared_ptr<T> value) : value_(std::move(value)) {}
 
     [[nodiscard]] T& get() const noexcept { return *value_; }
     [[nodiscard]] const void* identity() const noexcept { return value_->identity(); }
