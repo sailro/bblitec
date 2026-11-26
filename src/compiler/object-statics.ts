@@ -539,22 +539,15 @@ export function ownArray(
         );
     const pushed = (ordered: readonly OwnEntry[]): string =>
         ordered.map((entry) => pushes.get(entry)!).join(" ");
-    // A class pushes its keys in the order its instances create them.
-    const orders =
-        struct &&
-        context.dataTypes.classKeyOrders(
-            owner.dataType.name,
-            entries,
-            (entry) => entry.key,
-        );
     const build = `${context.dataTypes.cppType(arrayType)} own; ${viewed}${
-        orders
-            ? context.dataTypes
-                  .classTagBranches(
-                      `own_owner${access}`,
-                      orders.map((ordered) => [pushed(ordered)]),
-                  )
-                  .join(" ")
+        struct
+            ? context.dataTypes.classOrderedStatements(
+                  owner.dataType.name,
+                  `own_owner${access}`,
+                  entries,
+                  (entry) => entry.key,
+                  pushed,
+              )
             : pushed(entries)
     } return own;`;
     return {
@@ -597,32 +590,40 @@ function fixedOwnEntries(
     node: ts.Node,
 ): Array<[string, Value]> | undefined {
     const entries = ownEntries(context, owner, node);
-    if (entries && !ownKeysFixed(context, owner, entries, node))
-        context.fail(
-            node,
-            owner.kind === "record"
-                ? "Enumerating a record whose keys a conditional spread decides as a fixed list requires known own keys; its keys and values enumerate as arrays."
-                : entries.some((entry) => entry.presence !== undefined)
-                  ? "Enumerating a struct with optional properties as a fixed list requires known own keys; its keys and values enumerate as arrays."
-                  : owner.dataType?.kind === "struct" &&
-                      context.dataTypes.viewsInstances(owner.dataType.name)
-                    ? "Enumerating a record that may be a class instance's view as a fixed list requires the instance's keys; its keys and values enumerate as arrays."
-                    : "Enumerating a class hierarchy instance whose classes create their keys in different orders as a fixed list requires one order; its keys and values enumerate as arrays.",
-        );
+    const unfixed = entries && unfixedOwnKeys(context, owner, entries, node);
+    if (unfixed) context.fail(node, unfixedOwnKeysRefusals[unfixed]);
     return entries?.map(({ key, value }) => [key, value]);
 }
 
-/** Whether `owner`'s own `entries` are the same keys on every run. */
-function ownKeysFixed(
+/** Why a fixed list refuses own keys (`unfixedOwnKeys`). */
+const unfixedOwnKeysRefusals = {
+    spread: "Enumerating a record whose keys a conditional spread decides as a fixed list requires known own keys; its keys and values enumerate as arrays.",
+    presence:
+        "Enumerating a struct with optional properties as a fixed list requires known own keys; its keys and values enumerate as arrays.",
+    view: "Enumerating a record that may be a class instance's view as a fixed list requires the instance's keys; its keys and values enumerate as arrays.",
+    order: "Enumerating a class hierarchy instance whose classes create their keys in different orders as a fixed list requires one order; its keys and values enumerate as arrays.",
+} as const;
+
+/**
+ * What may make `owner`'s own `entries` differ between runs: a record
+ * member a conditional spread writes, a struct property that may be absent,
+ * the instance a view stands for, or its classes' key orders. Undefined
+ * where they are the same keys on every run.
+ */
+function unfixedOwnKeys(
     context: OwnEntryContext,
     owner: Value,
     entries: readonly OwnEntry[],
     node: ts.Node,
-): boolean {
-    return (
-        entries.every((entry) => entry.presence === undefined) &&
-        ownKeysKnown(context, owner, node)
-    );
+): keyof typeof unfixedOwnKeysRefusals | undefined {
+    if (entries.some((entry) => entry.presence !== undefined))
+        return owner.kind === "record" ? "spread" : "presence";
+    if (ownKeysKnown(context, owner, node)) return undefined;
+    if (owner.kind === "record") return "spread";
+    return owner.dataType?.kind === "struct" &&
+        context.dataTypes.viewsInstances(owner.dataType.name)
+        ? "view"
+        : "order";
 }
 
 /** Common own-property projection for Object keys, values, entries and assign. */
@@ -994,7 +995,8 @@ function compileObjectAssign(
                 const entries = ownEntries(context, value, source);
                 return (
                     entries !== undefined &&
-                    !ownKeysFixed(context, value, entries, source)
+                    unfixedOwnKeys(context, value, entries, source) !==
+                        undefined
                 );
             }),
         )

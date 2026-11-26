@@ -3428,12 +3428,6 @@ export class StatementLowerer {
                         return present ? `if (${present}) ${push}` : push;
                     })
                     .join(" ");
-            // A class lists its keys in the order its instances create them.
-            const orders = context.dataTypes.classKeyOrders(
-                dataType.name,
-                presence,
-                ({ field }) => field.sourceName,
-            );
             // A view lists the keys of the instance it stands for.
             const view = context.dataTypes.viewedDocument(
                 dataType.name,
@@ -3442,16 +3436,13 @@ export class StatementLowerer {
             );
             if (view) context.reachJson();
             return {
-                keysCpp: `[&] { ${view ? `if (${view.viewCpp}) return ${view.documentCpp}.own_keys(); ` : ""}bbl::js::Array<std::string> own; ${
-                    orders
-                        ? context.dataTypes
-                              .classTagBranches(
-                                  `${object}${access}`,
-                                  orders.map((ordered) => [pushes(ordered)]),
-                              )
-                              .join(" ")
-                        : pushes(presence)
-                } return own; }()`,
+                keysCpp: `[&] { ${view ? `if (${view.viewCpp}) return ${view.documentCpp}.own_keys(); ` : ""}bbl::js::Array<std::string> own; ${context.dataTypes.classOrderedStatements(
+                    dataType.name,
+                    `${object}${access}`,
+                    presence,
+                    ({ field }) => field.sourceName,
+                    pushes,
+                )} return own; }()`,
                 ...(optional.length
                     ? {
                           presentCpp: (key: string) =>

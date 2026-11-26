@@ -11263,6 +11263,29 @@ export class DataTypeRegistry {
         ];
     }
 
+    /**
+     * The statements `statements` spells for `items` of a record of struct
+     * `name` (fields or entries, keyed by `key`) in the order its class
+     * creates its keys: where its classes create them in different orders
+     * (`classKeyOrders`), a branch per class on the record `ownerCpp`
+     * names (`classTagBranches`).
+     */
+    public classOrderedStatements<T>(
+        name: string,
+        ownerCpp: string,
+        items: readonly T[],
+        key: (item: T) => string,
+        statements: (ordered: readonly T[]) => string,
+    ): string {
+        const orders = this.classKeyOrders(name, items, key);
+        return orders
+            ? this.classTagBranches(
+                  ownerCpp,
+                  orders.map((ordered) => [statements(ordered)]),
+              ).join(" ")
+            : statements(items);
+    }
+
     /** Whether a class-backed struct stands for a hierarchy and stores a class tag. */
     public classStructTagged(name: string): boolean {
         return this.structsByKey.get(`class#${name}`)?.classTag === true;
