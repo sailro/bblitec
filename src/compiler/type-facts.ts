@@ -2,7 +2,10 @@ import ts from "typescript";
 import { declaredSymbol, libraryName, calledDeclaration } from "./symbols.js";
 import {
     nonNullOperand,
+    outermostWrapper,
+    truthinessSelection,
     unwrapExpression,
+    valueConsumer,
     wrappedParent,
     objectLiteralMembers,
     optionalChainReceivers,
@@ -1041,6 +1044,90 @@ export function presentValuesTruthy(
 export function isNullable(type: ts.Type): boolean {
     const absent = nullability(type);
     return absent.null || absent.undefined;
+}
+
+/** The operators whose operands ToNumeric reads, `undefined` as NaN. */
+const numericOperators: ReadonlySet<ts.SyntaxKind> = new Set([
+    ts.SyntaxKind.LessThanToken,
+    ts.SyntaxKind.LessThanEqualsToken,
+    ts.SyntaxKind.GreaterThanToken,
+    ts.SyntaxKind.GreaterThanEqualsToken,
+    ts.SyntaxKind.MinusToken,
+    ts.SyntaxKind.AsteriskToken,
+    ts.SyntaxKind.SlashToken,
+    ts.SyntaxKind.PercentToken,
+    ts.SyntaxKind.AsteriskAsteriskToken,
+    ts.SyntaxKind.AmpersandToken,
+    ts.SyntaxKind.BarToken,
+    ts.SyntaxKind.CaretToken,
+    ts.SyntaxKind.LessThanLessThanToken,
+    ts.SyntaxKind.GreaterThanGreaterThanToken,
+    ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken,
+    ts.SyntaxKind.MinusEqualsToken,
+    ts.SyntaxKind.AsteriskEqualsToken,
+    ts.SyntaxKind.SlashEqualsToken,
+    ts.SyntaxKind.PercentEqualsToken,
+    ts.SyntaxKind.AsteriskAsteriskEqualsToken,
+    ts.SyntaxKind.AmpersandEqualsToken,
+    ts.SyntaxKind.BarEqualsToken,
+    ts.SyntaxKind.CaretEqualsToken,
+    ts.SyntaxKind.LessThanLessThanEqualsToken,
+    ts.SyntaxKind.GreaterThanGreaterThanEqualsToken,
+    ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken,
+]);
+
+/**
+ * Whether JavaScript's `undefined` and NaN give one result wherever the
+ * number `read` yields goes, so a read that misses its element may yield
+ * NaN for `undefined`: an operand of an arithmetic, bitwise or relational
+ * operator, of `+` beside a number, of an equality with a number that is no
+ * other element read (two missed reads are equal `undefined`s but unequal
+ * NaNs), of `-`, `+`, `~` or `!`, a condition, or the left of `||`.
+ */
+export function readsUndefinedAsNaN(
+    checker: ts.TypeChecker,
+    read: ts.Expression,
+): boolean {
+    const at = outermostWrapper(read);
+    // A synthesized read has no consumer in the source.
+    const consumed: ts.Node | undefined = at.parent;
+    if (!consumed) return false;
+    const isNumber = (other: ts.Expression): boolean =>
+        holdsOnly(checker.getTypeAtLocation(other), ["number"]);
+    const consumer = valueConsumer(at);
+    switch (consumer.kind) {
+        case "tested":
+            return !ts.isTypeOfExpression(consumed);
+        case "operand":
+            return (
+                consumer.yielded === undefined ||
+                (truthinessSelection(consumer.selection) === "||" &&
+                    ts.isBinaryExpression(consumer.selection) &&
+                    consumer.selection.left === at)
+            );
+        case "compared": {
+            const { left, right } = consumer.comparison;
+            const other = left === at ? right : left;
+            return (
+                isNumber(other) &&
+                !ts.isElementAccessExpression(unwrapExpression(other))
+            );
+        }
+        case "operator": {
+            const { left, right, operatorToken } = consumer.operator;
+            return operatorToken.kind === ts.SyntaxKind.PlusToken
+                ? isNumber(left === at ? right : left)
+                : numericOperators.has(operatorToken.kind);
+        }
+        case "assigned": {
+            const { left, operatorToken } = consumer.assignment;
+            return operatorToken.kind === ts.SyntaxKind.PlusEqualsToken
+                ? isNumber(left)
+                : numericOperators.has(operatorToken.kind);
+        }
+        default:
+            return false;
+    }
 }
 
 /** A type the checker's flow narrowed to exclude null and undefined. */

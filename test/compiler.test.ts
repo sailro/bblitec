@@ -1235,10 +1235,7 @@ test("materializes private module state observed by an exported function", () =>
             .length,
         2,
     );
-    assert.match(
-        result.cpp,
-        new RegExp(`bbl::js::array_at_or_default\\(${values[1]},`),
-    );
+    assert.match(result.cpp, new RegExp(`bbl::js::number_at\\(${values[1]},`));
 });
 
 test("materializes mutable module state used only at call time", () => {
@@ -1334,10 +1331,7 @@ test("materializes state populated by a dependent registrar module", () => {
         result.cpp,
         new RegExp(`${values[1]}\\.push_back\\(11\\.0\\)`),
     );
-    assert.match(
-        result.cpp,
-        new RegExp(`bbl::js::array_at_or_default\\(${values[1]},`),
-    );
+    assert.match(result.cpp, new RegExp(`bbl::js::number_at\\(${values[1]},`));
 });
 
 test("keeps pure imported data builders on the static path", () => {
@@ -5390,12 +5384,12 @@ test("spells a missed array slot in text only where the index may miss", () => {
     `);
 
     const missable = result.cpp.match(
-        /\(bbl::js::array_has_index\(v_plain, (v_bblite_element_index_\d+)\) \? bbl::js::concat\(bbl::js::NumberPart\(bbl::js::array_at_or_default\(v_plain, \1\)\)\) : std::string\("undefined"\)\)/g,
+        /\(bbl::js::array_has_index\(v_plain, (v_bblite_element_index_\d+)\) \? bbl::js::concat\(bbl::js::NumberPart\(bbl::js::number_at\(v_plain, \1\)\)\) : std::string\("undefined"\)\)/g,
     );
     assert.equal(missable?.length, 1);
     assert.match(
         result.cpp,
-        /concat_append\(v_text, bbl::js::NumberPart\(bbl::js::array_at_or_default\(v_plain, v_bblite_element_index_\d+\)\)\);/,
+        /concat_append\(v_text, bbl::js::NumberPart\(bbl::js::number_at\(v_plain, v_bblite_element_index_\d+\)\)\);/,
     );
 });
 

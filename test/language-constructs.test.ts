@@ -3608,7 +3608,7 @@ check(
     }
     class Contacts {
         private compactCount = 0;
-        private readonly members: number[] = [0, 0];
+        private readonly members: number[] = [];
         constructor(private readonly view: View) {}
         get compact(): boolean { return this.compactCount > 0; }
         add(slot: number): void { this.compactCount++; this.members[slot] = 1; }
@@ -10866,6 +10866,40 @@ check(
         if (\`n\${names[at]}\${names[0]}\` !== "nundefineda") throw new Error("string enum element past the end");
         at = 0;
         if ("t" + tones[at] !== "t1") throw new Error("numeric enum element in range");
+    }
+    main();
+`,
+);
+
+check(
+    "number array reads past the end are undefined to arithmetic, comparisons and tests",
+    `
+    class Slots {
+        private readonly members: number[] = [];
+        add(slot: number): void { this.members[slot] = 1; }
+        has(slot: number): boolean { return this.members[slot]! > 0; }
+    }
+    function main(): void {
+        const slots = new Slots();
+        slots.add(0);
+        if (!slots.has(0) || slots.has(1)) throw new Error("asserted comparison past the end");
+        const values: number[] = [3];
+        const floats = new Float32Array(2);
+        const pair: [number, number] = [1, 2];
+        let at = 2;
+        let text = String(values[at]! + 1) + (values[at]! * 2) + (values[at]! <= 0) + (values[at]! >= 0);
+        text += "," + (values[at]! === 3) + (values[at]! !== 3) + (values[at]! == 3) + -values[at]! + ~values[at]! + (values[at]! | 0) + !values[at]!;
+        text += "," + (values[at]! || 7) + (values[at]! ? "t" : "f") + (floats[at]! < 1) + (floats[at]! + 1) + (pair[at]! > 0) + (pair[at - 1]! + 1);
+        let sum = 1;
+        sum += values[at]!;
+        let bits = 5;
+        bits |= values[at]!;
+        text += "," + sum + bits + (values[0]! + 1);
+        if (values[at]!) throw new Error("truthy past the end");
+        while (values[at]!) throw new Error("a loop test past the end");
+        if (text !== "NaNNaNfalsefalse,falsetruefalseNaN-10true,7ffalseNaNfalse3,NaN54") throw new Error(text);
+        at = 0;
+        if (values[at]! + 1 !== 4 || !(values[at]! > 2)) throw new Error("in range");
     }
     main();
 `,

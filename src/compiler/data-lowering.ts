@@ -125,6 +125,7 @@ import {
     unionMembers,
     boundedTupleElements,
     stringLiteralValues,
+    readsUndefinedAsNaN,
     recordObjectType,
 } from "./type-facts.js";
 import { HELD_RECORD } from "./value-guards.js";
@@ -7703,14 +7704,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         // compiler proves in bounds — a static index against a
         // statically known length, or the induction variable of a
         // canonical `for (let i = 0; i < arr.length; i++)` over the
-        // same array — keeps the raw fast path. Every other index
-        // reads or writes through a checked accessor that refuses out
-        // of bounds with this access's source location, in every build
-        // configuration. JavaScript would yield `undefined` there; no
-        // reached scene depends on that (a read whose result the
-        // source tests already rides the `array_at_or_default`
-        // found-flag path), so a reached out-of-bounds index is a
-        // scene or compiler defect to surface, not a value to default.
+        // same array — keeps the raw fast path. Other reads preserve
+        // absence in optional storage or convert it to NaN for numeric
+        // consumers; reads with neither representation use the checked
+        // accessor, which throws with the source location on a miss.
         // A vector write stays on the JavaScript growth semantics
         // either way; the checked form only refuses an index no
         // JavaScript array element could have.
@@ -7721,25 +7718,36 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 this.staticGrowthIndex(access));
         const site = (): string =>
             this.context.cppString(this.indexSiteLabel(access));
-        const element =
-            dataType.kind === "vector" && mode === "write"
-                ? proven
-                    ? `bbl::js::array_index_write(${owner.cpp}, ${nativeIndex})`
-                    : `bbl::js::array_index_write_checked(${owner.cpp}, ${index}, ${site()})`
-                : dataType.kind === "vector" &&
-                    dataType.element.kind === "optional" &&
-                    mode === "read" &&
-                    !proven
-                  ? `bbl::js::array_at_or_default(${indexedOwner}, ${index})`
-                  : proven
-                    ? isTypedArrayType(dataType)
-                        ? `bbl::js::typed_array_${mode === "write" ? "slot" : "load"}(${indexedOwner}, ${nativeIndex})`
-                        : `${indexedOwner}[${nativeIndex}]`
-                    : mode === "write" &&
-                        (isTypedArrayType(dataType) ||
-                            dataType.kind === "tuple")
-                      ? `bbl::js::array_store_checked(${indexedOwner}, ${index}, ${site()})`
-                      : `bbl::js::array_index_checked(${indexedOwner}, ${index}, ${site()})`;
+        // A missed number whose consumer reads `undefined` as NaN reads NaN.
+        const missReadsNaN =
+            mode === "read" &&
+            !proven &&
+            (isTypedArrayType(dataType) ||
+                dataType.kind === "tuple" ||
+                (dataType.kind === "table" &&
+                    dataType.dimensions.length === 1) ||
+                ((dataType.kind === "vector" || dataType.kind === "span") &&
+                    dataType.element.kind === "number")) &&
+            readsUndefinedAsNaN(this.context.checker, access);
+        const element = missReadsNaN
+            ? `bbl::js::number_at(${indexedOwner}, ${index})`
+            : dataType.kind === "vector" && mode === "write"
+              ? proven
+                  ? `bbl::js::array_index_write(${owner.cpp}, ${nativeIndex})`
+                  : `bbl::js::array_index_write_checked(${owner.cpp}, ${index}, ${site()})`
+              : dataType.kind === "vector" &&
+                  dataType.element.kind === "optional" &&
+                  mode === "read" &&
+                  !proven
+                ? `bbl::js::array_at_or_default(${indexedOwner}, ${index})`
+                : proven
+                  ? isTypedArrayType(dataType)
+                      ? `bbl::js::typed_array_${mode === "write" ? "slot" : "load"}(${indexedOwner}, ${nativeIndex})`
+                      : `${indexedOwner}[${nativeIndex}]`
+                  : mode === "write" &&
+                      (isTypedArrayType(dataType) || dataType.kind === "tuple")
+                    ? `bbl::js::array_store_checked(${indexedOwner}, ${index}, ${site()})`
+                    : `bbl::js::array_index_checked(${indexedOwner}, ${index}, ${site()})`;
         // Keep fresh containers and retained typed-array owners alive until
         // the index finishes. Numeric writes return a slot that owns its view;
         // reads return values. This expression stays behind its source guard.
@@ -7796,7 +7804,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 const value: Value = {
                     ...this.leafValue(indexed, dataType.element),
                     ...slot,
-                    nativeLvalue: true,
+                    ...(missReadsNaN ? {} : { nativeLvalue: true as const }),
                     nativeCaptures: owner.nativeCaptures ?? [],
                     ...(owner.readOnly ? { readOnly: true as const } : {}),
                     ...(ownedRead &&
@@ -8592,11 +8600,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             attributes: "[[maybe_unused]] ",
         });
         this.context.reachJsData();
+        // A missed number is `undefined`, which arithmetic reads as NaN.
         const indexed =
-            ownerType.kind === "numberindex" ||
-            ownerType.kind === "tuple" ||
-            (ownerType.kind === "table" && element.kind === "number") ||
-            isTypedArrayType(ownerType)
+            element.kind === "number"
                 ? `bbl::js::number_at(${owner.cpp}, ${indexTemporary})`
                 : `bbl::js::array_at_or_default(${owner.cpp}, ${indexTemporary})`;
         const found = `bbl::js::array_has_index(${owner.cpp}, ${indexTemporary})`;
