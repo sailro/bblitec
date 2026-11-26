@@ -2530,7 +2530,7 @@ export class ExpressionLowerer {
             };
         }
         const array =
-            resultType?.kind === "vector"
+            resultType === undefined || resultType.kind === "vector"
                 ? ownArray(this.context, object, resultType, projection, call)
                 : undefined;
         if (array) return array;

@@ -16031,6 +16031,35 @@ check(
 `,
 );
 
+check(
+    "object-entries-and-values-of-run-time-own-keys-iterate-and-map",
+    `
+    interface Opt { label: string; count: number; detail?: string }
+    const items: Opt[] = [];
+    items.push({ label: "tag", count: 1 });
+    items.push({ label: "tag", count: 2, detail: "extra" });
+    items.push({ label: "u", count: 3, detail: undefined });
+    let seen = "";
+    for (const item of items) {
+        seen += Object.entries(item).map(([k, v]) => k + "=" + v).join("+") + ";";
+        for (const [k, v] of Object.entries(item)) seen += k + ":" + typeof v + ",";
+        seen += Object.values(item).length + "|" + Object.keys(item).join(",") + ";";
+    }
+    if (seen !== "label=tag+count=1;label:string,count:number,2|label,count;label=tag+count=2+detail=extra;label:string,count:number,detail:string,3|label,count,detail;label=u+count=3+detail=undefined;label:string,count:number,detail:undefined,3|label,count,detail;") throw new Error("optional keys " + seen);
+    class Base { label = "tag"; }
+    class Left extends Base { detail = "extra"; }
+    const shapes: Base[] = [];
+    shapes.push(new Base());
+    shapes.push(new Left());
+    let walked = "";
+    for (const shape of shapes) {
+        for (const [k, v] of Object.entries(shape)) walked += k + "=" + v + "+";
+        walked += Object.values(shape).join("+") + ";";
+    }
+    if (walked !== "label=tag+tag;label=tag+detail=extra+tag+extra;") throw new Error("hierarchy keys " + walked);
+`,
+);
+
 test("union arms holding an undefined field another arm makes optional refuse its own-key presence", () => {
     assert.throws(
         () =>

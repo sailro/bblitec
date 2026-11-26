@@ -1,5 +1,5 @@
 import { writable } from "./emission-transaction.js";
-import { knownCondition, presentCopy } from "./values/model.js";
+import { knownCondition, presentCopy, valueDataType } from "./values/model.js";
 import {
     compileShaderMaterialViewDefinitions,
     nativeShaderViewRevision,
@@ -423,6 +423,8 @@ export function ownEntries(
  * The own keys, values or `[key, value]` entries of a compile-time record
  * or a struct as a fresh array, built at run time so a key joins it only
  * while it is own. Undefined when every key is known (a fixed list).
+ * Without a `resultType` (the checker types the values `any`), the values
+ * share the lane their own storages join to (`ownedArrayType`).
  */
 export function ownArray(
     context: OwnEntryContext &
@@ -431,7 +433,7 @@ export function ownArray(
             "cppString" | "captureEmittedLines" | "reachJsData"
         >,
     owner: Value,
-    resultType: DataType<"vector">,
+    resultType: DataType<"vector"> | undefined,
     projection: "keys" | "values" | "entries",
     node: ts.Node,
 ): Value | undefined {
@@ -458,7 +460,9 @@ export function ownArray(
         node,
     )!;
     context.reachJsData();
-    const element = resultType.element;
+    const arrayType =
+        resultType ?? ownArrayType(context, entries, projection, node);
+    const element = arrayType.element;
     const pushes: string[] = [];
     const emitted = context.captureEmittedLines(() => {
         for (const { key, value, presence } of entries) {
@@ -484,15 +488,45 @@ export function ownArray(
             node,
             `A ${struct ? "struct" : "record"}'s own properties enumerate as an array when each value converts to its element in place.`,
         );
-    const build = `${context.dataTypes.cppType(resultType)} own; ${pushes.join(" ")} return own;`;
+    const build = `${context.dataTypes.cppType(arrayType)} own; ${pushes.join(" ")} return own;`;
     return {
         kind: "data",
         cpp: struct
             ? `[](const auto& own_owner) { ${build} }(${owner.cpp})`
             : `[&]() { ${build} }()`,
-        dataType: resultType,
+        dataType: arrayType,
         freshData: true,
     };
+}
+
+/** The array an own-property projection stores: its values share one lane. */
+function ownArrayType(
+    context: OwnEntryContext,
+    entries: readonly OwnEntry[],
+    projection: "keys" | "values" | "entries",
+    node: ts.Node,
+): DataType<"vector"> {
+    if (projection === "keys")
+        return { kind: "vector", element: { kind: "string" } };
+    const values = context.dataTypes.ownedArrayType(
+        entries.map(
+            ({ key, value }) =>
+                valueDataType(value) ??
+                context.fail(
+                    node,
+                    `Enumerating own property '${key}' as an array element requires a stored value.`,
+                ),
+        ),
+    );
+    return projection === "values"
+        ? values
+        : {
+              kind: "vector",
+              element: context.dataTypes.tupleStorage([
+                  { kind: "string" },
+                  values.element,
+              ]),
+          };
 }
 
 /**
@@ -721,7 +755,7 @@ function compileObjectEntries(
             : raw;
     const resultType = context.dataLowerer.dataTypeAt(call);
     const array =
-        resultType?.kind === "vector"
+        resultType === undefined || resultType.kind === "vector"
             ? ownArray(context, owner, resultType, "entries", call)
             : undefined;
     if (array) return array;
