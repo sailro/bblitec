@@ -15550,12 +15550,6 @@ test("dynamic object and built-in boundaries refuse explicitly", () => {
             /String\.indexOf expects a search string and an optional position/,
         ],
         [
-            `interface M { a?: number; b?: string }
-            const ms: M[] = [{ a: 1 }];
-            console.log(Object.assign({}, ms[0]!));`,
-            /Enumerating a struct with optional properties as a fixed list requires known own keys/,
-        ],
-        [
             `const names = ["a"]; console.log(/^a/m.test(names[0]!));`,
             /Reached RegExp literals support the g, i and u flags, not 'm'/,
         ],
@@ -15563,6 +15557,16 @@ test("dynamic object and built-in boundaries refuse explicitly", () => {
     for (const [source, message] of refusals)
         assert.throws(() => compileSource(source), message);
 });
+
+check(
+    "Object.assign onto a fresh literal copies a struct's optional keys as the run holds them",
+    `
+    interface M { a?: number; b?: string }
+    const ms: M[] = [{ a: 1 }, { b: "x" }, {}];
+    const out = ms.map((m) => JSON.stringify(Object.assign({}, m))).join("|");
+    if (out !== '{"a":1}|{"b":"x"}|{}') throw new Error(out);
+    `,
+);
 
 check(
     "null-defaults-take-null-and-undefined-arguments",
@@ -22052,6 +22056,30 @@ check(
     function run(): string { const R: Record<string, number> = { a: 1 }; const extra = { c: 3 }; Object.assign(R, { a: 5, b: 2 }, extra); return Object.keys(R).join() + ":" + R["a"] + R["b"] + R["c"]; }
     function same(): number { const R: Record<string, number> = { a: 1 }; const result = Object.assign(R, { b: 2 }); result["c"] = 3; return Object.keys(R).length; }
     if (run() !== "a,b,c:523" || same() !== 3) throw new Error("assign " + run() + same());
+    `,
+);
+check(
+    "Object.assign into a Record copies a source's optional and class-ordered keys as the run holds them",
+    `
+    class A { a = 1; }
+    class B extends A { b = 2; c = 5; }
+    class C extends A { c = 3; b = 4; }
+    const items: A[] = [new A(), new B(), new C()];
+    let out = "";
+    for (const item of items) {
+        const target: Record<string, number> = { z: 0 };
+        Object.assign(target, item);
+        out += JSON.stringify(target) + ";";
+    }
+    interface Opt { a: number; b?: number; }
+    const opts: Opt[] = [{ a: 1 }, { a: 2, b: 3 }];
+    for (const opt of opts) {
+        const target: Record<string, number> = {};
+        Object.assign(target, opt);
+        out += Object.keys(target).join() + "=" + Object.values(target).join() + ";";
+    }
+    const want = '{"z":0,"a":1};{"z":0,"a":1,"b":2,"c":5};{"z":0,"a":1,"c":3,"b":4};a=1;a,b=2,3;';
+    if (out !== want) throw new Error(out);
     `,
 );
 check(

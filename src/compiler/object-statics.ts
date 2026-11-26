@@ -1365,10 +1365,24 @@ function compileObjectAssign(
             ),
         );
         sources.forEach((source, index) => {
-            for (const [key, value] of sourcePairs(source, values[index]))
+            const value = values[index]!;
+            // A struct's optional and class-ordered keys are copied as
+            // the run holds them, as a spread copies them.
+            if (
+                value.kind === "data" &&
+                context.dataLowerer.copyOwnEntriesInto(
+                    owner.cpp,
+                    mapType,
+                    value,
+                    source,
+                    fresh ? undefined : "Object.assign",
+                )
+            )
+                return;
+            for (const [key, pair] of sourcePairs(source, value))
                 context.emit({
                     kind: "expression",
-                    code: `${owner.cpp}.set(${context.cppString(key)}, ${context.dataLowerer.compileKnownValueForSink(value, mapType.value, source)});`,
+                    code: `${owner.cpp}.set(${context.cppString(key)}, ${context.dataLowerer.compileKnownValueForSink(pair, mapType.value, source)});`,
                 });
         });
         return owner;

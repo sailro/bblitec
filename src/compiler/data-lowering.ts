@@ -14870,8 +14870,84 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
-     * The own entries a spread of `source` copies into a document
-     * dictionary. Spread snapshots the fields, not the root object's
+     * Copies `source`'s own entries (`spreadOwnEntries`) into the
+     * string-keyed dictionary `resultCpp` of type `dataType`, as a spread
+     * and `Object.assign` do: a `?` field, or a key a conditional spread
+     * wrote, while it is own; a class's keys in the order its instances
+     * create them; a view's instance's into a document dictionary. An
+     * existing dictionary keeps what it receives (`escapes`, the copy's
+     * name), as a store does. Returns false for a source
+     * `spreadOwnEntries` does not read.
+     */
+    public copyOwnEntriesInto(
+        resultCpp: string,
+        dataType: DataType<"map">,
+        source: Value,
+        node: ts.Node,
+        escapes?: string,
+    ): boolean {
+        const spread = this.spreadOwnEntries(source, node);
+        if (!spread) return false;
+        const copy = (entries: readonly OwnEntry[]): void => {
+            for (const { key, value, presence } of entries) {
+                if (escapes)
+                    this.context.refuseBorrowedPlatformEventEscape(
+                        value,
+                        node,
+                        escapes,
+                    );
+                const cpp = this.compileKnownValueForSink(
+                    value,
+                    dataType.value,
+                    node,
+                );
+                this.emitWhileOwn(presence?.ownCpp, () =>
+                    this.context.emit({
+                        kind: "expression",
+                        code: `${resultCpp}.set(${this.context.cppString(key)}, ${cpp});`,
+                    }),
+                );
+            }
+        };
+        const byClass = spread.byClass;
+        const copyFields = (): void => {
+            if (!byClass) return copy(spread.entries);
+            for (const line of this.context.dataTypes.classTagBranches(
+                byClass.classOwnerCpp,
+                byClass.orders.map((entries) =>
+                    this.context
+                        .captureEmittedLines(() => copy(entries))
+                        .map((line) => `    ${line}`),
+                ),
+            ))
+                this.context.emit(line);
+        };
+        const view = spread.view;
+        if (!view) {
+            copyFields();
+            return true;
+        }
+        if (dataType.value.kind !== "json")
+            this.context.fail(
+                node,
+                "A record that may be a class instance's view copies the instance's own keys into a document dictionary only.",
+            );
+        this.context.emit({ kind: "open", code: `if (${view.viewCpp}) {` });
+        this.context.emit({
+            kind: "expression",
+            code: `    bbl::js::json_spread_into(${resultCpp}, ${view.documentCpp});`,
+        });
+        this.context.emit({ kind: "branch", code: "} else {" });
+        this.context.increaseIndent();
+        copyFields();
+        this.context.decreaseIndent();
+        this.context.emit({ kind: "close", code: "}" });
+        return true;
+    }
+
+    /**
+     * The own entries a spread or `Object.assign` of `source` copies into
+     * a dictionary. A copy snapshots the fields, not the root object's
      * identity, so a struct's native field storage (read through one copy)
      * and a plain compile-time record's members are enumerated without
      * boxing an unowned root record. Undefined for any other source, and
@@ -14882,7 +14958,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      */
     private spreadOwnEntries(
         source: Value,
-        property: ts.SpreadAssignment,
+        node: ts.Node,
     ):
         | {
               readonly entries: readonly OwnEntry[];
@@ -14906,7 +14982,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             )
                 return undefined;
             return {
-                entries: ownEntries(this.ownObjectContext(), source, property)!,
+                entries: ownEntries(this.ownObjectContext(), source, node)!,
             };
         }
         if (source.kind !== "data" || source.dataType?.kind !== "struct")
@@ -14922,7 +14998,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.ownObjectContext(),
             { ...source, cpp: snapshot },
             source.dataType,
-            property,
+            node,
         );
         const dataTypes = this.context.dataTypes;
         const access = dataTypes.memberAccess(source.dataType.name);
@@ -14934,7 +15010,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const view = dataTypes.viewedDocument(
             source.dataType.name,
             `${snapshot}${access}`,
-            property,
+            node,
         );
         return {
             entries,
@@ -15030,71 +15106,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         dataType.value.kind === "json"
                     ) {
                         this.context.reachJson();
-                        const spread = this.spreadOwnEntries(source, property);
-                        if (spread) {
-                            // A `?` field, or a key a conditional spread
-                            // wrote, is copied while it is own.
-                            const copy = (
-                                entries: readonly OwnEntry[],
-                            ): void => {
-                                for (const {
-                                    key,
-                                    value,
-                                    presence,
-                                } of entries) {
-                                    const cpp = this.compileKnownValueForSink(
-                                        value,
-                                        dataType.value,
-                                        property,
-                                    );
-                                    this.emitWhileOwn(presence?.ownCpp, () =>
-                                        this.context.emit({
-                                            kind: "expression",
-                                            code: `${result}.set(${this.context.cppString(key)}, ${cpp});`,
-                                        }),
-                                    );
-                                }
-                            };
-                            // A class copies its keys in the order its
-                            // instances create them.
-                            const byClass = spread.byClass;
-                            const copyFields = (): void => {
-                                if (!byClass) return copy(spread.entries);
-                                for (const line of this.context.dataTypes.classTagBranches(
-                                    byClass.classOwnerCpp,
-                                    byClass.orders.map((entries) =>
-                                        this.context
-                                            .captureEmittedLines(() =>
-                                                copy(entries),
-                                            )
-                                            .map((line) => `    ${line}`),
-                                    ),
-                                ))
-                                    this.context.emit(line);
-                            };
-                            // A view copies the instance it stands for.
-                            const view = spread.view;
-                            if (!view) copyFields();
-                            else {
-                                this.context.emit({
-                                    kind: "open",
-                                    code: `if (${view.viewCpp}) {`,
-                                });
-                                this.context.emit({
-                                    kind: "expression",
-                                    code: `    bbl::js::json_spread_into(${result}, ${view.documentCpp});`,
-                                });
-                                this.context.emit({
-                                    kind: "branch",
-                                    code: "} else {",
-                                });
-                                this.context.increaseIndent();
-                                copyFields();
-                                this.context.decreaseIndent();
-                                this.context.emit({ kind: "close", code: "}" });
-                            }
+                        if (
+                            this.copyOwnEntriesInto(
+                                result,
+                                dataType,
+                                source,
+                                property,
+                            )
+                        )
                             continue;
-                        }
                         const value = this.compileKnownValueForSink(
                             source,
                             dataType.value,
