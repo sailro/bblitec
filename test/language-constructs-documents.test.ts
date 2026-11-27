@@ -677,6 +677,33 @@ check(
 `,
 );
 
+// `Object.freeze` returns the new array it is given: a local holding it is
+// still the one new array, stored as numbers wherever it goes.
+check(
+    "a-frozen-new-array-of-parsed-elements-stays-one-array",
+    `
+    interface Row { readonly villager: number; readonly ids: readonly number[] }
+    interface Group { readonly ids: readonly number[] }
+    const groups = new Map<number, Group>();
+    let measured = 0;
+    const measure = (ids: readonly number[]): number => ids.length;
+    const measures: Array<typeof measure> = [measure];
+    function restore(rows: readonly Row[], loose: boolean): void {
+        for (const row of rows) {
+            const ids = Object.freeze(loose ? row.ids.filter((id) => id > 0) : [...row.ids]);
+            if (ids.length === 0) continue;
+            measured += measures[0]!(ids);
+            groups.set(row.villager, { ids });
+        }
+    }
+    const rows = (JSON.parse('{"rows":[{"villager":1,"ids":[3,0,4]},{"villager":2,"ids":[0]}]}') as { rows: Row[] }).rows;
+    restore(rows, true);
+    if (measured !== 2 || groups.get(1)!.ids.join() !== "3,4" || groups.has(2)) throw new Error("loose");
+    restore(rows, false);
+    if (measured !== 6 || groups.get(2)!.ids.join() !== "0") throw new Error("kept");
+`,
+);
+
 check(
     "spread-of-a-method-record-keeps-its-key-order",
     `
