@@ -76,6 +76,8 @@ const pointerNames = new Set([
     "beforeinput",
     "input",
     "change",
+    // A search field's cancel action, after its input or change.
+    "search",
     "cancel",
     // A details element's disclosure change, a non-bubbling task-queued event.
     "toggle",

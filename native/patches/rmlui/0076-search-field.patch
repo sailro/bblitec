@@ -1,0 +1,366 @@
+Search fields: an input of type search keeps a cancel button (a 'searchcancel' part after its text, Chromium's
+-webkit-search-cancel-button) sized by Chromium's rule (9px at a 13px font, scaled with the font size and rounded,
+within 5px to 21px), centered across the content box at its end. The text neither enters nor paints under the
+button's margin box (Element::SetClipAreaRightInset). The button hides while the field is empty; a click on it, or
+Escape in a non-empty field, empties the field and dispatches 'search' (cleared); Enter dispatches 'search' after
+its change.
+diff --git a/Include/RmlUi/Core/Element.h b/Include/RmlUi/Core/Element.h
+index bf6f4ae..7263949 100644
+--- a/Include/RmlUi/Core/Element.h
++++ b/Include/RmlUi/Core/Element.h
+@@ -118,6 +118,10 @@ public:
+ 	/// Returns the area the element uses as its clip area.
+ 	/// @return The box area used as the element's clip area.
+ 	BoxArea GetClipArea() const;
++	/// Narrows the clip area from its right edge, which then always clips: a control part beside the content, such
++	/// as a search field's cancel button, keeps the content from painting under it.
++	void SetClipAreaRightInset(float inset);
++	float GetClipAreaRightInset() const;
+ 
+ 	/// Sets the dimensions of the element's scrollable overflow rectangle. This is the tightest fitting box surrounding
+ 	/// all of this element's logical children, and the element's padding box.
+@@ -749,6 +753,7 @@ private:
+ 
+ 	// Defines which box area to use for clipping; this is usually padding, but may be content.
+ 	BoxArea clip_area;
++	float clip_area_right_inset = 0;
+ 
+ 	// Original tag this element came from.
+ 	String tag;
+diff --git a/Source/Core/Element.cpp b/Source/Core/Element.cpp
+index 9887d95..f551eb4 100644
+--- a/Source/Core/Element.cpp
++++ b/Source/Core/Element.cpp
+@@ -429,6 +429,16 @@ BoxArea Element::GetClipArea() const
+ 	return clip_area;
+ }
+ 
++void Element::SetClipAreaRightInset(float inset)
++{
++	clip_area_right_inset = inset;
++}
++
++float Element::GetClipAreaRightInset() const
++{
++	return clip_area_right_inset;
++}
++
+ void Element::SetScrollableOverflowRectangle(Vector2f _scrollable_overflow_rectangle, bool clamp_scroll_offset)
+ {
+ 	if (scrollable_overflow_rectangle != _scrollable_overflow_rectangle)
+diff --git a/Source/Core/ElementText.cpp b/Source/Core/ElementText.cpp
+index 763c744..bbf2315 100644
+--- a/Source/Core/ElementText.cpp
++++ b/Source/Core/ElementText.cpp
+@@ -73,7 +73,8 @@ static TextOverflowResolved ResolveTextOverflow(Element* parent, FontFaceHandle
+ 		return result;
+ 	};
+ 
+-	const float overflow_width = parent->GetScrollLeft() + box.GetSize().x + AccumulateRightSideEdgesUpTo(box, clip_area);
++	const float overflow_width =
++		parent->GetScrollLeft() + box.GetSize().x + AccumulateRightSideEdgesUpTo(box, clip_area) - parent->GetClipAreaRightInset();
+ 
+ 	String overflow_text =
+ 		(text_overflow == Style::TextOverflow::String ? parent->GetComputedValues().text_overflow_string() : Ellipsis(font_face_handle));
+diff --git a/Source/Core/ElementUtilities.cpp b/Source/Core/ElementUtilities.cpp
+index f32fbc9..565f7a2 100644
+--- a/Source/Core/ElementUtilities.cpp
++++ b/Source/Core/ElementUtilities.cpp
+@@ -152,8 +152,10 @@ bool ElementUtilities::GetClippingRegion(Element* element, Rectanglei& out_clip_
+ 		if (((clip_always || clip_enabled) && num_ignored_clips == 0) || force_clip_current_element)
+ 		{
+ 			const BoxArea clip_area = (force_clip_current_element ? BoxArea::Border : clipping_element->GetClipArea());
++			const float right_inset = (force_clip_current_element ? 0.f : clipping_element->GetClipAreaRightInset());
+ 			const bool has_clipping_content =
+-				(clip_always || force_clip_current_element || clipping_element->GetClientWidth() < clipping_element->GetScrollWidth() - 0.5f ||
++				(clip_always || force_clip_current_element || right_inset > 0.f ||
++					clipping_element->GetClientWidth() < clipping_element->GetScrollWidth() - 0.5f ||
+ 					clipping_element->GetClientHeight() < clipping_element->GetScrollHeight() - 0.5f);
+ 			bool disable_scissor_clipping = false;
+ 
+@@ -187,6 +189,7 @@ bool ElementUtilities::GetClippingRegion(Element* element, Rectanglei& out_clip_
+ 				// Shrink the scissor region to the element's client area.
+ 				Vector2f element_offset = clipping_element->GetAbsoluteOffset(clip_area).Round();
+ 				Vector2f element_size = clipping_element->GetRenderBox(clip_area).GetFillSize();
++				element_size.x = Math::Max(element_size.x - right_inset, 0.f);
+ 				Rectanglef element_region = Rectanglef::FromPositionSize(element_offset, element_size);
+ 
+ 				clip_region = element_region.IntersectIfValid(clip_region);
+diff --git a/Source/Core/Elements/ElementFormControlInput.cpp b/Source/Core/Elements/ElementFormControlInput.cpp
+index 3550269..d86131a 100644
+--- a/Source/Core/Elements/ElementFormControlInput.cpp
++++ b/Source/Core/Elements/ElementFormControlInput.cpp
+@@ -105,6 +105,8 @@ void ElementFormControlInput::OnAttributeChange(const ElementAttributes& changed
+ 
+ 		if (new_type_name == "password")
+ 			type = MakeUnique<InputTypeText>(this, InputTypeText::OBSCURED);
++		else if (new_type_name == "search")
++			type = MakeUnique<InputTypeText>(this, InputTypeText::VISIBLE, true);
+ 		else if (new_type_name == "radio")
+ 			type = MakeUnique<InputTypeRadio>(this);
+ 		else if (new_type_name == "checkbox")
+diff --git a/Source/Core/Elements/InputTypeText.cpp b/Source/Core/Elements/InputTypeText.cpp
+index b1d1f0b..11ba954 100644
+--- a/Source/Core/Elements/InputTypeText.cpp
++++ b/Source/Core/Elements/InputTypeText.cpp
+@@ -1,5 +1,8 @@
+ #include "InputTypeText.h"
++#include "../../../Include/RmlUi/Core/ComputedValues.h"
+ #include "../../../Include/RmlUi/Core/ElementUtilities.h"
++#include "../../../Include/RmlUi/Core/Factory.h"
++#include "../../../Include/RmlUi/Core/Math.h"
+ #include "../../../Include/RmlUi/Core/Elements/ElementFormControlInput.h"
+ #include "../../../Include/RmlUi/Core/PropertyIdSet.h"
+ #include "../../../Include/RmlUi/Core/StyleSheetSpecification.h"
+@@ -8,15 +11,34 @@
+ 
+ namespace Rml {
+ 
+-InputTypeText::InputTypeText(ElementFormControlInput* element, Visibility visibility) : InputType(element)
++InputTypeText::InputTypeText(ElementFormControlInput* element, Visibility visibility, bool search) : InputType(element)
+ {
+ 	if (visibility == VISIBLE)
+ 		widget = MakeUnique<WidgetTextInputSingleLine>(element);
+ 	else
+ 		widget = MakeUnique<WidgetTextInputSingleLinePassword>(element);
++
++	if (search)
++	{
++		// Chromium's -webkit-search-cancel-button: a part of the field after its text, which the field focuses for
++		// and the text's clip leaves visible.
++		ElementPtr button = Factory::InstanceElement(element, "*", "searchcancel", XMLAttributes());
++		button->SetProperty("focus", "none");
++		button->SetProperty("clip", "1");
++		cancel_button = element->AppendChild(std::move(button), false);
++		widget->SetSearch(true);
++		UpdateCancelButtonVisibility();
++	}
+ }
+ 
+-InputTypeText::~InputTypeText() {}
++InputTypeText::~InputTypeText()
++{
++	if (cancel_button)
++	{
++		widget->SetRightReserve(0);
++		element->RemoveChild(cancel_button);
++	}
++}
+ 
+ void InputTypeText::OnUpdate()
+ {
+@@ -30,14 +52,60 @@ void InputTypeText::OnRender()
+ 
+ void InputTypeText::OnResize()
+ {
++	LayoutCancelButton();
+ 	widget->OnResize();
+ }
+ 
+ void InputTypeText::OnLayout()
+ {
++	LayoutCancelButton();
+ 	widget->OnLayout();
+ }
+ 
++void InputTypeText::LayoutCancelButton()
++{
++	if (!cancel_button)
++		return;
++	// Chromium's LayoutThemeDefault::AdjustSearchFieldCancelButtonStyle: 9px at its 13px control font, scaled with the
++	// font size and rounded, within 5px to 21px, in CSS pixels.
++	const float dp_ratio = ElementUtilities::GetDensityIndependentPixelRatio(element);
++	const float font_size = element->GetComputedValues().font_size() / dp_ratio;
++	const float side = Math::Round(Math::Clamp(9.f * font_size / 13.f, 5.f, 21.f)) * dp_ratio;
++
++	const Box& field = element->GetBox();
++	const Vector2f content_position = field.GetPosition(BoxArea::Content);
++	const Vector2f content_size = field.GetSize(BoxArea::Content);
++	const ComputedValues& computed = cancel_button->GetComputedValues();
++	const float margin_left = ResolveValue(computed.margin_left(), content_size.x);
++	const float margin_right = ResolveValue(computed.margin_right(), content_size.x);
++
++	Box box{Vector2f(side)};
++	box.SetEdge(BoxArea::Margin, BoxEdge::Left, margin_left);
++	box.SetEdge(BoxArea::Margin, BoxEdge::Right, margin_right);
++	cancel_button->SetBox(box);
++	// A flex item at the end of the field's content, centered across it; it never scrolls with the text.
++	cancel_button->SetOffset(
++		content_position + Vector2f(content_size.x - margin_right - side, 0.5f * (content_size.y - side)), element, true);
++	widget->SetRightReserve(margin_left + side + margin_right);
++}
++
++void InputTypeText::UpdateCancelButtonVisibility()
++{
++	if (!cancel_button)
++		return;
++	// Chromium's SearchInputType::UpdateCancelButtonVisibility.
++	if (widget->GetAttributeValue().empty())
++	{
++		cancel_button->SetProperty("opacity", "0");
++		cancel_button->SetProperty("pointer-events", "none");
++	}
++	else
++	{
++		cancel_button->RemoveProperty("opacity");
++		cancel_button->RemoveProperty("pointer-events");
++	}
++}
++
+ bool InputTypeText::OnAttributeChange(const ElementAttributes& changed_attributes)
+ {
+ 	bool dirty_layout = false;
+@@ -55,7 +123,10 @@ bool InputTypeText::OnAttributeChange(const ElementAttributes& changed_attribute
+ 
+ 	it = changed_attributes.find("value");
+ 	if (it != changed_attributes.end())
++	{
+ 		widget->OnValueAttributeChanged(it->second.Get<String>());
++		UpdateCancelButtonVisibility();
++	}
+ 
+ 	it = changed_attributes.find("placeholder");
+ 	if (it != changed_attributes.end())
+@@ -80,7 +151,13 @@ void InputTypeText::OnPropertyChange(const PropertyIdSet& changed_properties)
+ 		widget->GenerateCursor();
+ }
+ 
+-void InputTypeText::ProcessDefaultAction(Event& /*event*/) {}
++void InputTypeText::ProcessDefaultAction(Event& event)
++{
++	// The context clicks the field it focused for the press; the press and release were on the button when the button
++	// is both active and hovered.
++	if (cancel_button && event == EventId::Click && cancel_button->IsPseudoClassSet("active") && cancel_button->IsPseudoClassSet("hover"))
++		widget->ClearSearch();
++}
+ 
+ bool InputTypeText::GetIntrinsicDimensions(Vector2f& dimensions, float& /*ratio*/)
+ {
+diff --git a/Source/Core/Elements/InputTypeText.h b/Source/Core/Elements/InputTypeText.h
+index 515c021..13bf992 100644
+--- a/Source/Core/Elements/InputTypeText.h
++++ b/Source/Core/Elements/InputTypeText.h
+@@ -14,7 +14,8 @@ class InputTypeText : public InputType {
+ public:
+ 	enum Visibility { VISIBLE, OBSCURED };
+ 
+-	InputTypeText(ElementFormControlInput* element, Visibility visibility = VISIBLE);
++	/// @param[in] search A search field, with a cancel button after its text that empties it.
++	InputTypeText(ElementFormControlInput* element, Visibility visibility = VISIBLE, bool search = false);
+ 	virtual ~InputTypeText();
+ 
+ 	/// Called every update from the host element.
+@@ -56,9 +57,16 @@ public:
+ 	void SetCompositionRange(int range_start, int range_end) override;
+ 
+ private:
++	/// Sizes and places the cancel button, reserving its margin box after the text.
++	void LayoutCancelButton();
++	/// Hides the cancel button of an empty field.
++	void UpdateCancelButtonVisibility();
++
+ 	int size = 20;
+ 
+ 	UniquePtr<WidgetTextInput> widget;
++	/// A search field's cancel button, or null.
++	Element* cancel_button = nullptr;
+ };
+ 
+ } // namespace Rml
+diff --git a/Source/Core/Elements/WidgetTextInput.cpp b/Source/Core/Elements/WidgetTextInput.cpp
+index d412b7f..2017d46 100644
+--- a/Source/Core/Elements/WidgetTextInput.cpp
++++ b/Source/Core/Elements/WidgetTextInput.cpp
+@@ -585,6 +585,12 @@ void WidgetTextInput::ProcessEvent(Event& event)
+ 		case Input::KI_RETURN:
+ 		{
+ 			LineBreak();
++			if (search)
++			{
++				Dictionary parameters;
++				parameters["cleared"] = Variant(false);
++				parent->DispatchEvent("search", parameters);
++			}
+ 		}
+ 		break;
+ 
+@@ -634,6 +640,13 @@ void WidgetTextInput::ProcessEvent(Event& event)
+ 		// Ignore tabs so input fields can be navigated through with keys.
+ 		case Input::KI_TAB: return;
+ 
++		case Input::KI_ESCAPE:
++		{
++			if (search)
++				ClearSearch();
++		}
++		break;
++
+ 		default: break;
+ 		}
+ 
+@@ -1631,7 +1644,32 @@ float WidgetTextInput::GetLineHeight() const
+ 
+ float WidgetTextInput::GetAvailableWidth() const
+ {
+-	return parent->GetClientWidth() - parent->GetBox().GetFrameSize(BoxArea::Padding).x;
++	return Math::Max(parent->GetClientWidth() - parent->GetBox().GetFrameSize(BoxArea::Padding).x - right_reserve, 0.f);
++}
++
++void WidgetTextInput::SetRightReserve(float width)
++{
++	if (width == right_reserve)
++		return;
++	right_reserve = width;
++	parent->SetClipAreaRightInset(width);
++	ForceFormattingOnNextLayout();
++}
++
++void WidgetTextInput::SetSearch(bool _search)
++{
++	search = _search;
++}
++
++bool WidgetTextInput::ClearSearch()
++{
++	if (parent->IsDisabled() || GetAttributeValue().empty())
++		return false;
++	parent->SetValue(String());
++	Dictionary parameters;
++	parameters["cleared"] = Variant(true);
++	parent->DispatchEvent("search", parameters);
++	return true;
+ }
+ 
+ float WidgetTextInput::GetAvailableHeight() const
+diff --git a/Source/Core/Elements/WidgetTextInput.h b/Source/Core/Elements/WidgetTextInput.h
+index ff04868..b43f789 100644
+--- a/Source/Core/Elements/WidgetTextInput.h
++++ b/Source/Core/Elements/WidgetTextInput.h
+@@ -73,6 +73,17 @@ public:
+ 
+ 	/// Returns the used line height.
+ 	float GetLineHeight() const;
++
++	/// Reserves a width at the right of the content area for a control part beside the text, which the text neither
++	/// enters nor paints under.
++	void SetRightReserve(float width);
++	/// Makes the field a search field: Escape clears a non-empty field (see ClearSearch), and Enter dispatches
++	/// "search" (its "cleared" parameter false) after the line break's change.
++	void SetSearch(bool search);
++	/// Empties a non-empty, enabled field and dispatches "search" (its "cleared" parameter true) at its element: a
++	/// search field's cancel action.
++	/// @return True if the field was cleared.
++	bool ClearSearch();
+ 	
+ 	/// Updates the cursor, if necessary.
+ 	void OnUpdate();
+@@ -233,6 +244,9 @@ private:
+ 
+ 	/// Returns the width available for the text contents without overflowing, that is, the content area subtracted by any scrollbar.
+ 	float GetAvailableWidth() const;
++
++	float right_reserve = 0;
++	bool search = false;
+ 	/// Returns the height available for the text contents without overflowing, that is, the content area subtracted by any scrollbar.
+ 	float GetAvailableHeight() const;
+ 
