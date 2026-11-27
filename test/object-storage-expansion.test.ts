@@ -204,6 +204,39 @@ test("conflicting native object views name each storage and where it was demande
         refusalClass(message),
         "A structural record has conflicting native object storage demands. '…' at '…' and '…' at '…'.",
     );
+
+    // A retained element is one of the targets an event target holds: a
+    // record type viewing both is viewed as that event target.
+    const element = {
+        ...source,
+        native: {
+            type,
+            node: second,
+            storage: {
+                kind: "handle",
+                handle: "ui-element",
+                ownedEngine: true,
+            },
+        },
+    } as const;
+    assert.deepEqual(
+        mergeNativeRecordStorage(frontend.checker, element, eventTarget)?.native
+            ?.storage,
+        { kind: "event-target" },
+    );
+    assert.equal(
+        mergeNativeRecordStorage(frontend.checker, eventTarget, element),
+        undefined,
+    );
+    for (const demands of [
+        [element, eventTarget],
+        [eventTarget, element],
+    ])
+        registry().prepareRecordComponents(
+            new Map(),
+            demands,
+            frontend.program,
+        );
 });
 
 check(

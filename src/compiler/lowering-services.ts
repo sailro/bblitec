@@ -72,6 +72,12 @@ export type NativeReturnValueCompiler = (
 ) => string;
 
 /** A shader stage's text and the uniforms it reads its lifted numbers from. */
+/** Entry-lifetime storage (`LoweringServices.entryStorage`): its binding and C++ type. */
+export interface EntryStorage {
+    readonly binding: NativeCaptureBinding;
+    readonly type: string;
+}
+
 export interface ShaderSourceText {
     source: string;
     dynamicUniforms: Array<{
@@ -877,6 +883,7 @@ export interface LoweringServices {
     /** The entry's engine binding where no explicit engine parameter scopes the body. */
     entryEngineInScope(): string | undefined;
     requirePresentationHost(node: ts.Node): string;
+    entryStorage(owner: ts.Node, stem: string, cppType: string): EntryStorage;
     pbrLightmapEnabled(): boolean;
     reachFeature(feature: Feature, site?: ts.Node | string): void;
     /**

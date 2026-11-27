@@ -116,6 +116,7 @@ import {
     classViewSite,
     dictionaryStorage,
     documentStorageSite,
+    joinedNativeStorage,
     nativeViewSite,
     NativeRecordStorageRequired,
     refusingRecordDemand,
@@ -1567,10 +1568,26 @@ type ObjectView = { readonly site: RecordStorageSite } & (
     | { readonly instance: ts.ClassLikeDeclaration }
 );
 
-function sameObjectView(left: ObjectView, right: ObjectView): boolean {
-    return "storage" in left
-        ? "storage" in right && dataTypesEqual(left.storage, right.storage)
-        : "instance" in right && left.instance === right.instance;
+/**
+ * The one view holding the objects of views `held` and `next`: one class's
+ * instances, or native owners one storage holds (`joinedNativeStorage`).
+ */
+function joinedObjectView(
+    held: ObjectView,
+    next: ObjectView,
+): ObjectView | undefined {
+    if ("instance" in held)
+        return "instance" in next && held.instance === next.instance
+            ? held
+            : undefined;
+    if (!("storage" in next)) return undefined;
+    const storage = joinedNativeStorage(held.storage, next.storage);
+    return (
+        storage && {
+            storage,
+            site: dataTypesEqual(storage, held.storage) ? held.site : next.site,
+        }
+    );
 }
 
 /**
@@ -2678,10 +2695,9 @@ export class DataTypeRegistry {
                 this.withRecordDemand(demand, () => {
                     const identity = this.structIdentity(demand.type);
                     const previous = this.objectViews.get(identity);
+                    const joined = previous && joinedObjectView(previous, view);
                     const held =
-                        previous && !sameObjectView(previous, view)
-                            ? previous.site
-                            : undefined;
+                        previous && !joined ? previous.site : undefined;
                     const asked = documentStorageSite(demand);
                     if (
                         ("storage" in view &&
@@ -2701,7 +2717,7 @@ export class DataTypeRegistry {
                                 ),
                             ),
                         );
-                    this.objectViews.set(identity, view);
+                    this.objectViews.set(identity, joined ?? view);
                 });
             for (const join of demand.joins ?? []) {
                 const known = joins.get(join.source);

@@ -140,8 +140,26 @@ export function documentStorageSite(
 }
 
 /**
+ * The one native storage holding the owners of two views: their common
+ * storage, or a DOM event target beside a retained element, which is one
+ * of the targets it holds (`eventTargetCpp`). Undefined where none does.
+ */
+export function joinedNativeStorage(
+    left: DataType,
+    right: DataType,
+): DataType | undefined {
+    if (dataTypesEqual(left, right)) return left;
+    const element = (type: DataType): boolean =>
+        type.kind === "handle" && type.handle === "ui-element";
+    return (left.kind === "event-target" && element(right)) ||
+        (element(left) && right.kind === "event-target")
+        ? { kind: "event-target" }
+        : undefined;
+}
+
+/**
  * The two object views `previous` and `next` hold that no one object is:
- * two native owners of distinct storage, or a native owner and a class.
+ * two native owners no one storage holds, or a native owner and a class.
  */
 function objectViewConflict(
     previous: NativeRecordStorageDemand | undefined,
@@ -150,7 +168,7 @@ function objectViewConflict(
     if (
         previous?.native &&
         next.native &&
-        !dataTypesEqual(previous.native.storage, next.native.storage)
+        !joinedNativeStorage(previous.native.storage, next.native.storage)
     )
         return [nativeViewSite(previous.native), nativeViewSite(next.native)];
     const native = previous?.native ?? next.native;
@@ -260,6 +278,17 @@ export function mergeNativeRecordStorage(
             next.classView !== undefined &&
             previous.classView !== next.classView);
     const document = previous?.document || next.document;
+    // Two native owners one storage holds are viewed in it.
+    const joinedStorage =
+        previous?.native &&
+        next.native &&
+        joinedNativeStorage(previous.native.storage, next.native.storage);
+    const native =
+        previous?.native &&
+        (joinedStorage &&
+        !dataTypesEqual(joinedStorage, previous.native.storage)
+            ? { ...previous.native, storage: joinedStorage }
+            : previous.native);
     const accessors = new Map(
         (previous?.accessors ?? []).map((accessor) => [
             accessor.name,
@@ -273,6 +302,7 @@ export function mergeNativeRecordStorage(
         (dictionaryConflict && !previous?.dictionaryConflict) ||
         (next.dictionary !== undefined && previous?.dictionary === undefined) ||
         (next.native !== undefined && previous?.native === undefined) ||
+        native !== previous?.native ||
         (next.classView !== undefined &&
             previous?.classView === undefined &&
             !instanceViews) ||
@@ -307,7 +337,7 @@ export function mergeNativeRecordStorage(
     const merged: NativeRecordStorageDemand = {
         ...previous,
         ...next,
-        ...(previous?.native ? { native: previous.native } : {}),
+        ...(native ? { native } : {}),
         ...(previous?.classView ? { classView: previous.classView } : {}),
         ...(previous?.dictionary ? { dictionary: previous.dictionary } : {}),
         ...(nativeConflict ? { nativeConflict } : {}),
