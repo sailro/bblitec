@@ -547,8 +547,7 @@ function compileDynamicShaderUniformWrite(
     const number: DataType = { kind: "number" };
     // A literal's lanes are each read as the number sink reads one, a
     // parsed member's included.
-    const tuple =
-        input.kind === "tuple" ? (input.tupleElements ?? []) : undefined;
+    const tuple = input.kind === "tuple" ? input.tupleElements : undefined;
     // A value the source types as a number or number array (a parsed
     // member) is stored as that sink reads it.
     const declared = context.dataLowerer.dataTypeAt(argumentAt(call, 2));

@@ -178,7 +178,7 @@ export function compileJsonNamespaceView(
     const source = lowerer.convertedExpression(node);
     context.emitDiscardedValue(namespace);
     const owner = context.moduleNamespaces.value(type);
-    const names = owner.recordOwnKeys ?? [];
+    const names = context.moduleNamespaces.exportNames(type);
     const key = context.allocateTemporaryCppName("namespace_key");
     const body = context.captureManagedClosureLines(() => {
         context.registerNativeBinding(key);
