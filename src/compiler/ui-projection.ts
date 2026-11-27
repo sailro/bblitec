@@ -2507,6 +2507,18 @@ export class UiProjection {
         ["scroll-snap-align", ["none", "start", "end", "center"]],
     ]);
 
+    /**
+     * Presentation properties whose value may instead be a length or a
+     * percentage, which RmlUi's parser reads as CSS does: `vertical-align`
+     * raises the box by it (a percentage of its line height).
+     */
+    private static readonly PRESENTATION_LENGTHS = new EmissionSet<string>([
+        "vertical-align",
+    ]);
+
+    private static readonly PRESENTATION_LENGTH =
+        /^[+-]?(?:(?:\d+(?:\.\d*)?|\.\d+)(?:px|em|rem|vw|vh|%)|0)$/;
+
     private static readonly INERT_UI_STYLE_PROPERTIES = new EmissionSet<string>(
         [
             "-webkit-user-select",
@@ -2873,11 +2885,19 @@ export class UiProjection {
                 );
             }
             const keywords = UiProjection.PRESENTATION_KEYWORDS.get(property);
-            if (keywords && !keywords.includes(literalValue)) {
+            const lengths = UiProjection.PRESENTATION_LENGTHS.has(property);
+            if (
+                keywords &&
+                !keywords.includes(literalValue) &&
+                !(
+                    lengths &&
+                    UiProjection.PRESENTATION_LENGTH.test(literalValue)
+                )
+            ) {
                 this.uiStyleRefusal(
                     site,
                     property,
-                    `only ${keywords.join(", ")} are represented`,
+                    `only ${keywords.join(", ")}${lengths ? ", a px, em, rem, vw or vh length or a percentage" : ""} are represented`,
                 );
             }
             const background = supportedUiImageBackground(
