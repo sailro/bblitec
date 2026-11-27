@@ -110,6 +110,7 @@ export interface AssetIntrinsicContext
             | "staticAssetUrlCandidates"
             | "sourceFiles"
             | "inlinedCallArgument"
+            | "inlinedParameterArgument"
             | "reachJsData"
             | "probeEmission"
             | "runCallOverHeldData"

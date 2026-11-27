@@ -271,6 +271,41 @@ test("runtime img src reads the member values Object.values lists", () => {
         assert.ok(outputs.includes(`assets/ui/${name}.png`), name);
 });
 
+test("runtime img src in a helper inlined at one call reads that call's argument", () => {
+    // `seal` is inlined at `open`'s call with a closed table's member; its
+    // other call passes a string no closed set holds. Each inlined call
+    // reads its own argument, so only that one refuses, and only where the
+    // program reaches it.
+    const program = (reachOther: boolean): string => `
+        type Topic = "red" | "green";
+        function make() {
+            const icon: Readonly<Record<Topic, string>> = { red: "/assets/ui/red.png", green: "/assets/ui/green.png" };
+            const seal = (src: string): HTMLElement => {
+                const img = document.createElement("img");
+                img.src = appUrl(src);
+                return img;
+            };
+            return {
+                open(topic: Topic) { document.body.append(seal(icon[topic])); },
+                other() { document.body.append(seal(localStorage.getItem("icon") ?? "/assets/ui/blue.png")); },
+            };
+        }
+        const dialog = make();
+        const topics: Topic[] = ["red", "green"];
+        dialog.open(topics[Math.floor(Math.random() * 2)]!);
+        ${reachOther ? "dialog.other();" : ""}
+    `;
+    const outputs = compileEntry(program(false)).manifest.assets.map(
+        (asset) => asset.output,
+    );
+    for (const name of ["red", "green"])
+        assert.ok(outputs.includes(`assets/ui/${name}.png`), name);
+    assert.throws(
+        () => compileEntry(program(true)),
+        /An img src write requires sources generation can package/,
+    );
+});
+
 test("runtime img src reads requests a class queue holds in private fields", () => {
     const result = compileEntry(`
         interface Card { name: string; picture?: string }

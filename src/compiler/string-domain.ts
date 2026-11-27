@@ -84,6 +84,7 @@ export type StringDomainContext = Pick<
     | "unwrap"
     | "options"
     | "runCallOverHeldData"
+    | "inlinedParameterArgument"
 >;
 
 /** What a consumer adds to the closed string domain. */
@@ -1340,9 +1341,24 @@ export function stringDomain(
     expression: ts.Expression,
     use: StringDomainUse,
 ): Domain {
+    const query = (inlining: boolean): Domain =>
+        new StringDomain(context, use, inlining).read(
+            expression,
+            [],
+            new Map(),
+        );
     let read: Domain;
     try {
-        read = new StringDomain(context, use).read(expression, [], new Map());
+        // The parameters of the bodies the lowering inlines read their
+        // calls' arguments; where that leaves no closed set, every call's
+        // arguments, which hold those calls' too.
+        try {
+            read = query(true);
+        } catch (error) {
+            if (!(error instanceof UnboundedDomain)) throw error;
+            read = undefined;
+        }
+        if (!read?.length) read = query(false);
     } catch (error) {
         if (error instanceof UnboundedDomain)
             return context.fail(expression, error.message);
@@ -1492,6 +1508,8 @@ class StringDomain {
     constructor(
         private readonly context: StringDomainContext,
         private readonly use: StringDomainUse,
+        /** Whether parameters of inlined bodies read their calls' arguments. */
+        private readonly inlining = false,
     ) {
         this.graph = sourceGraph(context.checker, context.sourceFiles());
         this.scalar = use.scalar;
@@ -2231,6 +2249,13 @@ class StringDomain {
                         environment,
                     );
             }
+            // A body the lowering inlines at one call reads that call's
+            // argument, whatever its other calls pass (`stringDomain`).
+            const inlined =
+                this.inlining && ts.isIdentifier(node)
+                    ? this.context.inlinedParameterArgument(node)
+                    : undefined;
+            if (inlined) return this.read(inlined, projection, environment);
             // A method may be reached through any receiver.
             if (neverRuns(this.graph, owner)) return nothing;
             // Calls through a value it escaped as are unseen.
