@@ -7,6 +7,30 @@ import { documentEngine } from "./window-events.js";
 import { declaredInDomLibrary } from "./symbols.js";
 import { inheritsFrom } from "./type-facts.js";
 
+/**
+ * Whether a type is members picked from DOM element interfaces
+ * (`Pick<HTMLCanvasElement, "getBoundingClientRect">`): every property is
+ * declared by `Element` or an interface of its family, so a value of it is
+ * an element whatever record type stores it.
+ */
+export function picksElementMembers(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): boolean {
+    const properties = checker.getNonNullableType(type).getProperties();
+    return (
+        properties.length > 0 &&
+        properties.every((property) =>
+            (property.declarations ?? []).some(
+                (declaration) =>
+                    ts.isInterfaceDeclaration(declaration.parent) &&
+                    /(^|[a-z])Element$/.test(declaration.parent.name.text) &&
+                    declaredInDomLibrary(property),
+            ),
+        )
+    );
+}
+
 /** Identify a declared DOM receiver without evaluating it. */
 export function isDomReceiver(
     context: Pick<LoweringServices, "checker" | "libraryGlobal">,

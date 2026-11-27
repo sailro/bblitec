@@ -129,6 +129,7 @@ import {
 import {
     elementInterfaceTag,
     isCanvasSurfaceWrite,
+    picksElementMembers,
     eventTargetCpp,
     isDocumentReceiver,
     isDomReceiver,
@@ -1051,10 +1052,17 @@ export class UiProjection {
             ts.isElementAccessExpression(owner)
         ) {
             // This is also an erasure probe, not permission to lower arbitrary
-            // members (such as Set.add or a captured GPU device's queue).
+            // members (such as Set.add or a captured GPU device's queue): an
+            // element's member, or one typed as members picked from one.
             const type = this.context.dataLowerer.dataTypeAt(expression);
             const inner = type?.kind === "optional" ? type.inner : type;
-            if (inner?.kind !== "handle" || inner.handle !== "ui-element") {
+            if (
+                (inner?.kind !== "handle" || inner.handle !== "ui-element") &&
+                !picksElementMembers(
+                    this.context.checker,
+                    this.context.checker.getTypeAtLocation(expression),
+                )
+            ) {
                 return undefined;
             }
         }
