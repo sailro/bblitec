@@ -14497,6 +14497,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 dataType,
                 freshData: true,
             };
+        // A map of another value type is stored as the map sink stores it
+        // (`valueMap`), which joins its records with the target's.
+        if (
+            value.kind === "data" &&
+            value.dataType?.kind === "map" &&
+            dataType.kind === "map"
+        )
+            return {
+                kind: "data",
+                cpp: this.compileKnownValueForSink(value, dataType, source),
+                dataType,
+            };
         this.requireNumericSlot(value, dataType, expression);
         const boxed = this.documentBoxedRecord(value, dataType);
         if (boxed) return boxed;

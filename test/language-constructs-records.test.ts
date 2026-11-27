@@ -703,6 +703,29 @@ check(
 );
 
 check(
+    "a-map-of-records-stored-as-a-map-of-another-record-type-stays-one-map",
+    `
+    interface Brick { variant: number; uh: number; vh: number; wh: number; seed: number }
+    interface Meta { variant: number; rep: { uh: number; vh: number; wh: number } }
+    interface Prepared { bucketMeta: Map<string, Meta>; count: number }
+    let kept: Map<string, { variant: number; rep: Brick }> | null = null;
+    function prepare(bricks: readonly Brick[]): Prepared {
+        const entries = bricks.map((brick): [string, { variant: number; rep: Brick }] => [\`\${brick.variant}\`, { variant: brick.variant, rep: brick }]);
+        const bucketMeta = new Map(entries.map(([key, bucket]) => [key, { variant: bucket.variant, rep: bucket.rep }]));
+        kept = bucketMeta;
+        return { bucketMeta, count: entries.length };
+    }
+    const brick = (variant: number): Brick => ({ variant, uh: 1, vh: 2, wh: 3, seed: 0.5 });
+    const bricks = [brick(0), brick(1)];
+    const prepared = prepare(bricks);
+    prepared.bucketMeta.get("1")!.rep.vh = 5;
+    if (bricks[1]!.vh !== 5 || prepared.bucketMeta.get("0")!.rep !== bricks[0]) throw new Error("one record");
+    prepared.bucketMeta.delete("0");
+    if (kept!.size !== 1 || kept!.get("1")!.rep.seed !== 0.5) throw new Error("one map");
+`,
+);
+
+check(
     "records-of-two-unions-take-one-layout",
     `
     interface A { tag: "a"; v: number }
