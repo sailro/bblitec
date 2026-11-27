@@ -3858,17 +3858,38 @@ public:
                 if ((event_type == "color-input" && std::string_view(name) != "input") ||
                     (event_type == "color-change" && std::string_view(name) != "change"))
                     continue;
-                if (engine.dom_input) {
-                    PlatformMouseEvent payload;
-                    payload.payload_kind = DomInputEventKind::Event;
-                    const auto input =
-                        dom_event(payload, name, dom_ui_path(engine, element), true, false);
-                    input.dom->composed = std::string_view(name) == "input";
-                    dispatch_dom_pointer(engine, input);
-                }
-                dispatch_ui_listeners(ui_element(engine, element), name, PlatformMouseEvent{});
+                dispatch_form_event(engine, element, name);
             }
             event.StopPropagation();
+            return;
+        }
+        if (event_type == "form-search") {
+            if (projecting)
+                return;
+            auto* control = rmlui_dynamic_cast<Rml::ElementFormControl*>(event.GetCurrentElement());
+            if (!control)
+                throw std::runtime_error("Native search event requires a form control.");
+            event.StopPropagation();
+            if (!event.GetParameter("cleared", false)) {
+                // Enter: Chromium's implicit submission posts a task firing search. A program
+                // without a realm loop fires it at once; a Window display posts its events to
+                // the realm.
+                const auto fire = [&engine = engine, element = element] {
+                    if (element.value < engine.ui_elements.size())
+                        dispatch_form_event(engine, element, "search");
+                };
+                if (auto* loop = pal::EventLoop::current_if_any())
+                    loop->post(fire);
+                else
+                    fire();
+                return;
+            }
+            // The cancel action emptied the field (Chromium's SetValueForUser, then OnSearch):
+            // an input event while the field is focused, else a change event, then search.
+            ui_set_form_value(engine, element, control->GetValue());
+            dispatch_form_event(engine, element,
+                                control->IsPseudoClassSet("focus") ? "input" : "change");
+            dispatch_form_event(engine, element, "search");
             return;
         }
         if (::bbl::pal::runtime_trace_enabled()) {
@@ -3923,6 +3944,18 @@ public:
     }
 
 private:
+    /** A bubbling, non-cancelable event a native edit fires at the control. */
+    static void dispatch_form_event(Engine& engine, UiElementHandle element, const char* name) {
+        if (engine.dom_input) {
+            PlatformMouseEvent payload;
+            payload.payload_kind = DomInputEventKind::Event;
+            const auto input = dom_event(payload, name, dom_ui_path(engine, element), true, false);
+            input.dom->composed = std::string_view(name) == "input";
+            dispatch_dom_pointer(engine, input);
+        }
+        dispatch_ui_listeners(ui_element(engine, element), name, PlatformMouseEvent{});
+    }
+
     Engine& engine;
     UiElementHandle element;
     std::string event_type;
@@ -6422,6 +6455,8 @@ struct UiRmlRuntime {
                                                      &control_arrow_decorator);
             Rml::Factory::RegisterDecoratorInstancer("bbl-native-scroll-arrow",
                                                      &control_arrow_decorator);
+            Rml::Factory::RegisterDecoratorInstancer("bbl-native-search-cancel",
+                                                     &search_cancel_decorator);
 #if defined(_WIN32)
             platform_fonts = std::make_unique<Win32UiFontEngine>(*Rml::GetFontEngineInterface());
 #elif defined(__ANDROID__) || defined(SDL_PLATFORM_IOS)
@@ -7493,6 +7528,12 @@ struct UiRmlRuntime {
             add_listener("form-change", "change");
             projected.event_listeners_attached["form-change"] = true;
         }
+        const bool search = record.tag == "input" && input_type != record.attributes.end() &&
+                            input_type->second == "search";
+        if (search && !projected.event_listeners_attached["form-search"]) {
+            add_listener("form-search", "search");
+            projected.event_listeners_attached["form-search"] = true;
+        }
         if (!projected.event_listeners_attached["focus"]) {
             add_listener("focus", "focus");
             projected.event_listeners_attached["focus"] = true;
@@ -7503,7 +7544,8 @@ struct UiRmlRuntime {
         }
         for (const auto& [event, callbacks] : record.event_callbacks) {
             if (event == "toggle" || projected.event_listeners_attached[event] ||
-                (editable && (event == "input" || event == "change"))) {
+                (editable && (event == "input" || event == "change")) ||
+                (search && event == "search")) {
                 continue;
             }
             add_listener(event, event == "input" ? "change" : event);
@@ -9339,6 +9381,7 @@ struct UiRmlRuntime {
     UiRangeDecoratorInstancer range_decorator{control_scheme_properties};
     UiControlMarkDecoratorInstancer control_mark_decorator{control_scheme_properties};
     UiControlArrowDecoratorInstancer control_arrow_decorator;
+    UiSearchCancelDecoratorInstancer search_cancel_decorator{control_scheme_properties};
     Rml::ElementInstancerGeneric<UiButtonElement> button_instancer;
     Rml::ElementInstancerGeneric<UiCanvasElement> canvas_instancer;
     Rml::ElementInstancerGeneric<UiSelectElement> select_instancer;

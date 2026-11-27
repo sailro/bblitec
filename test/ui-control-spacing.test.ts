@@ -37,8 +37,15 @@ test("appearance and logical spacing preserve stylesheet and inline declarations
         );
 });
 
-test("constructed text, password, range, checkbox and color controls share native type assignment", () => {
-    for (const type of ["text", "password", "range", "checkbox", "color"]) {
+test("constructed text, search, password, range, checkbox and color controls share native type assignment", () => {
+    for (const type of [
+        "text",
+        "search",
+        "password",
+        "range",
+        "checkbox",
+        "color",
+    ]) {
         const result = compileSource(
             `import {createEngine} from '@babylonjs/lite';await createEngine({});const input=document.createElement('input');input.type=${JSON.stringify(type.toUpperCase())};document.body.appendChild(input);`,
         );

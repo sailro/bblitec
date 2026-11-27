@@ -169,6 +169,7 @@ import {
     isUiMetadataAttribute,
     parseAuthoredMarkup,
     parseAuthoredSvgMarkup,
+    RETAINED_INPUT_TYPES,
     svgContentDocument,
     type UiAuthoredMarkupNode,
 } from "./ui-authored-markup.js";
@@ -6515,20 +6516,14 @@ export class UiProjection {
                     this.assignedStaticString(assigned).toLowerCase();
                 if (inputType !== "file") {
                     if (
-                        [
-                            "text",
-                            "password",
-                            "range",
-                            "checkbox",
-                            "color",
-                        ].includes(inputType) &&
+                        RETAINED_INPUT_TYPES.has(inputType) &&
                         !element.uiFileInput
                     ) {
                         return `bbl::ui_set_attribute(${engine}, ${element.cpp}, "type", ${this.context.cppString(inputType)})`;
                     }
                     this.context.fail(
                         assigned.site,
-                        `Retained native <input> type '${inputType}' is not represented; static text, password, range, checkbox, color and file inputs are supported, without changing a file input into another control.`,
+                        `Retained native <input> type '${inputType}' is not represented; static text, search, password, range, checkbox, color and file inputs are supported, without changing a file input into another control.`,
                     );
                 }
                 writable(element).uiFileInput = true;

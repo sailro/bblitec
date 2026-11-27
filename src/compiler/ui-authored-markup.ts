@@ -84,13 +84,21 @@ const TAG_ATTRIBUTES: ReadonlyMap<string, ReadonlySet<string>> = new Map(
     }).map(([tag, names]) => [tag, new Set(names)]),
 );
 
-const INPUT_TYPES = new Set(["text", "password", "range", "checkbox", "color"]);
+/** The input types a retained native control represents (a file input aside). */
+export const RETAINED_INPUT_TYPES: ReadonlySet<string> = new Set([
+    "text",
+    "search",
+    "password",
+    "range",
+    "checkbox",
+    "color",
+]);
 
 /**
  * The admitted input types that block implicit submission: Enter in one
  * submits the form holding it, and a native form never submits.
  */
-const IMPLICIT_SUBMISSION_TYPES = new Set(["text", "password"]);
+const IMPLICIT_SUBMISSION_TYPES = new Set(["text", "search", "password"]);
 
 /** Whether static markup creates a form control. */
 export function createsFormControls(markup: string): boolean {
@@ -183,10 +191,10 @@ export function parseAuthoredMarkup(
                 if (
                     tag === "input" &&
                     name === "type" &&
-                    !INPUT_TYPES.has(value.toLowerCase())
+                    !RETAINED_INPUT_TYPES.has(value.toLowerCase())
                 )
                     fail(
-                        `<input> type '${value}' is not represented; text, password, range, checkbox and color inputs are supported.`,
+                        `<input> type '${value}' is not represented; text, search, password, range, checkbox and color inputs are supported.`,
                     );
                 attributes.push({
                     name,
@@ -201,7 +209,7 @@ export function parseAuthoredMarkup(
                 )
             )
                 fail(
-                    "has a <form> holding a text or password <input>, whose Enter submits it; native forms never submit.",
+                    "has a <form> holding a text, search or password <input>, whose Enter submits it; native forms never submit.",
                 );
             const children = convert(
                 node.children ?? [],
