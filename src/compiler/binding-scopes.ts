@@ -72,6 +72,7 @@ import {
 } from "./parameter-effects.js";
 import { metadataFieldsForKind } from "./values/metadata.js";
 import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
+import { freshCallable } from "./callable-records.js";
 import { isNativeOwnerRecord } from "./native-owner-carrier.js";
 import { recordPropertyKeys } from "./object-statics.js";
 import { parameterProjectionIsReadOnly } from "./parameter-projection-effects.js";
@@ -1312,6 +1313,40 @@ export class BindingScopes {
                 "parameter_document",
                 argument ?? identifier,
             );
+        }
+        // A new function object handed to a callable record parameter is
+        // its record once, where the parameter is bound: every read of the
+        // parameter, a loop's included, is that one object.
+        if (
+            narrowed.kind === "callback" &&
+            argument &&
+            freshCallable(this.context.checker, argument)
+        ) {
+            // The parameter's type as this call instantiates it.
+            const parameterType =
+                this.context.checker.getContextualType(argument);
+            const declared =
+                parameterType &&
+                this.context.dataTypes.fromStoredTsType(
+                    parameterType,
+                    argument,
+                );
+            if (
+                declared?.kind === "struct" &&
+                this.context.dataTypes.structCall(declared.name)
+            )
+                narrowed = this.pinValueToTemporary(
+                    this.context.dataLowerer.leafValue(
+                        this.context.dataLowerer.compileKnownValueForSink(
+                            narrowed,
+                            declared,
+                            argument,
+                        ),
+                        declared,
+                    ),
+                    "parameter_callable",
+                    argument,
+                );
         }
         if (
             narrowed.kind === "record" &&

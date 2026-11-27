@@ -84,7 +84,51 @@ export function recordIdentity(
         (object.objectFlags &
             (ts.ObjectFlags.Anonymous | ts.ObjectFlags.Instantiated)) ===
             (ts.ObjectFlags.Anonymous | ts.ObjectFlags.Instantiated);
-    return instantiated ? type : (type.aliasSymbol ?? type.symbol ?? type);
+    return instantiated
+        ? type
+        : (type.aliasSymbol ?? type.symbol ?? unionIdentity(checker, type));
+}
+
+/**
+ * @unjournaled Pure functions of the checked program, kept across replays:
+ * a number for each member identity a union identity names, and, per
+ * checker, the first union seen of each set of member shapes.
+ */
+const memberNumbers = new WeakMap<ts.Symbol | ts.Type, number>();
+let nextMemberNumber = 0;
+const unionsByMembers = new WeakMap<ts.TypeChecker, Map<string, ts.Type>>();
+
+/**
+ * An unnamed type's identity: the type itself, but for a union, one union
+ * per set of its members' shapes (each member's identity and property
+ * names). The checker types an object literal afresh each time it is
+ * asked, so a union of literals is a new checker type at each ask.
+ */
+function unionIdentity(checker: ts.TypeChecker, type: ts.Type): ts.Type {
+    const members = unionMembers(type);
+    if (members.length < 2) return type;
+    const key = members
+        .map((member) => {
+            const identity = recordIdentity(checker, member);
+            let number = memberNumbers.get(identity);
+            if (number === undefined) {
+                number = nextMemberNumber++;
+                memberNumbers.set(identity, number);
+            }
+            const names = checker
+                .getPropertiesOfType(member)
+                .map((property) => property.name)
+                .sort();
+            return `${number}:${names.join(".")}`;
+        })
+        .sort()
+        .join(",");
+    let byMembers = unionsByMembers.get(checker);
+    if (!byMembers)
+        unionsByMembers.set(checker, (byMembers = new Map<string, ts.Type>()));
+    let known = byMembers.get(key);
+    if (!known) byMembers.set(key, (known = type));
+    return known;
 }
 
 /**
@@ -722,14 +766,12 @@ export function widensField(
     wide: ts.Type,
     narrow: ts.Type,
 ): boolean {
-    const present = checker.getNonNullableType(wide);
+    const arms = unionMembers(checker.getNonNullableType(wide));
     const other = checker.getNonNullableType(narrow);
     return (
-        present.isUnion() &&
-        !other.isUnion() &&
-        present.types.some((arm) =>
-            layoutsHoldBoth(checker, arm, other, new Map()),
-        )
+        arms.length > 1 &&
+        unionMembers(other).length === 1 &&
+        arms.some((arm) => layoutsHoldBoth(checker, arm, other, new Map()))
     );
 }
 

@@ -36,7 +36,12 @@ import {
 } from "./replay-storage.js";
 import { StorageDemand } from "./storage-demand.js";
 import { EmissionSet, EmissionTransaction } from "./emission-transaction.js";
-import { coverLoweredAgain, keepingCoverage } from "./source-coverage.js";
+import {
+    coverageMark,
+    coverLoweredAgain,
+    coverRollback,
+    keepingCoverage,
+} from "./source-coverage.js";
 import {
     bindingNameIdentifiers,
     hasDeclareModifier,
@@ -1190,6 +1195,7 @@ export class SurveyCollector {
             for (;;) {
                 let met: unknown;
                 const begun = this.bodiesBegun();
+                const lowered = coverageMark();
                 try {
                     context.transaction(lower);
                     return;
@@ -1205,8 +1211,10 @@ export class SurveyCollector {
                     context.callbacks.retryForwardMiss(met, () =>
                         this.withdrawBodies(begun),
                     )
-                )
+                ) {
+                    coverRollback(lowered, "replay|forward binding");
                     continue;
+                }
                 // A demand its replay refused is the statement's refusal; a
                 // storage demand applies at once and the statement lowers
                 // again with it; any other replay rolls its statement back
@@ -1219,16 +1227,25 @@ export class SurveyCollector {
                 const applied = refusal ? false : this.applied(attempt, met);
                 if (applied === true) {
                     taken = met as Error;
+                    coverRollback(lowered, `demand|${replayText(taken)}`);
                     if (attempt.root) attempt.root.stale = true;
                     continue;
                 }
                 const refused =
                     applied instanceof CompileError ? applied : refusal;
+                const recorded =
+                    refused && (!taken || applied instanceof CompileError);
+                coverRollback(
+                    lowered,
+                    recorded
+                        ? `refusal|${refused.fileName}:${refused.line}|${refusalClass(refused.detail)}`
+                        : `demand|${replayText(refused ? taken! : (met as Error))}`,
+                );
                 // A refusal once this pass took a demand for the statement
                 // can come of storage lowered before the demand (a layout
                 // already built): the next pass lowers it afresh. A demand
                 // its application refused is refused all the same.
-                if (refused && (!taken || applied instanceof CompileError))
+                if (recorded)
                     this.record(attempt, context.checker, statement, refused);
                 else {
                     this.demanded(

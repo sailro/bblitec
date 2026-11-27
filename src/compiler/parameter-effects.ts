@@ -2043,7 +2043,11 @@ export function fixedLengthParameterWrites(
                 case "argument": {
                     if (!own || use.spread) break;
                     if (use.at.length > 0) return null;
-                    const nested = argumentFixedLengthWrites(checker, use);
+                    const nested = callFixedLengthWrites(
+                        checker,
+                        use.call,
+                        use.index,
+                    );
                     if (nested === undefined) return null;
                     lanes = Math.max(lanes, nested);
                     break;
@@ -2059,22 +2063,26 @@ export function fixedLengthParameterWrites(
     return written ?? undefined;
 }
 
-function argumentFixedLengthWrites(
+/**
+ * How many leading elements `call` writes through the array it is handed
+ * as argument `index`, keeping the array's length and identity to itself
+ * (`fixedLengthParameterWrites` of every body it reaches); undefined when
+ * that is not proven.
+ */
+function callFixedLengthWrites(
     checker: ts.TypeChecker,
-    use: Extract<ParameterUse, { kind: "argument" }>,
+    call: ts.CallExpression | ts.NewExpression,
+    index: number,
 ): number | undefined {
-    const target = callTarget(checker, use.call);
+    const target = callTarget(checker, call);
     if (target.kind === "library") {
-        const callee = namedMember(
-            checker,
-            unwrapExpression(use.call.expression),
-        );
+        const callee = namedMember(checker, unwrapExpression(call.expression));
         return callee && storingDataMethods.has(callee.name) ? undefined : 0;
     }
     if (target.kind !== "bodies" || target.engine) return undefined;
     let lanes = 0;
     for (const body of target.bodies) {
-        const binding = argumentBinding(use.call, body, use.index);
+        const binding = argumentBinding(call, body, index);
         const nested =
             binding &&
             fixedLengthParameterWrites(target.checker, body, binding);
@@ -2082,6 +2090,29 @@ function argumentFixedLengthWrites(
         lanes = Math.max(lanes, nested);
     }
     return lanes;
+}
+
+/**
+ * Whether the call `argument` is handed to keeps that array's length and
+ * identity to itself, writing at most its first `length` elements
+ * (`callFixedLengthWrites`): a fixed-length tuple can be the array.
+ */
+export function argumentKeepsLength(
+    checker: ts.TypeChecker,
+    argument: ts.Expression,
+    length: number,
+): boolean {
+    const use = outermostWrapper(argument);
+    const call = use.parent;
+    if (
+        !(ts.isCallExpression(call) || ts.isNewExpression(call)) ||
+        call.expression === use
+    )
+        return false;
+    const index = call.arguments?.indexOf(use) ?? -1;
+    if (index < 0) return false;
+    const written = callFixedLengthWrites(checker, call, index);
+    return written !== undefined && written <= length;
 }
 
 /** Array methods that read their receiver's elements and return none of them. */

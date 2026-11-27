@@ -1662,9 +1662,9 @@ std::shared_ptr<MutationObserver> create_mutation_observer(MutationObserver::Cal
     return observer;
 }
 std::shared_ptr<MediaQueryList> create_media_query(std::string query) {
-    auto media =
-        js::make_gc_shared<MediaQueryList>(std::move(query), window_device_pixel_ratio,
-                                           system_reduced_motion, window_input_capabilities);
+    auto media = js::make_gc_shared<MediaQueryList>(
+        std::move(query), window_device_pixel_ratio, system_reduced_motion,
+        window_input_capabilities, window_viewport_size);
     current_document().media.push_back(media);
     return media;
 }

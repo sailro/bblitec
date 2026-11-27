@@ -34,6 +34,7 @@ import {
     arrayLentForCall,
 } from "../record-observations.js";
 import { unwrapExpression } from "../syntax.js";
+import { argumentKeepsLength } from "../parameter-effects.js";
 import {
     absenceKind,
     admitsUndefined,
@@ -619,8 +620,9 @@ function convertedElementsCopy(
  * A number array holding a tuple is the tuple itself, and can grow. The
  * tuple's fixed native storage cannot follow that growth, so it is adopted
  * only when nothing else holds the tuple, the callee it is handed to only
- * reads it or the slot is typed as a readonly array; a tuple binding
- * instead takes growable array storage, and any other tuple refuses.
+ * reads it or keeps its length (writing elements the tuple has), or the
+ * slot is typed as a readonly array; a tuple binding instead takes growable
+ * array storage, and any other tuple refuses.
  */
 function requireGrowableTuple(
     lowerer: DataSinkHost,
@@ -630,11 +632,17 @@ function requireGrowableTuple(
     const converted = lowerer.convertedExpression(node);
     const expression = converted && unwrapExpression(converted);
     if (unaliasedValue(lowerer, value, node)) return;
-    // A callee that only reads the array cannot grow or retain it, nor can
-    // a slot typed as a readonly array.
+    // A callee that only reads the array, or keeps its length, cannot grow
+    // or retain it, nor can a slot typed as a readonly array.
     if (
         expression &&
         (argumentOnlyRead(lowerer.context.checker, expression) ||
+            (value.dataType?.kind === "tuple" &&
+                argumentKeepsLength(
+                    lowerer.context.checker,
+                    expression,
+                    value.dataType.arity,
+                )) ||
             storedAsReadonlyArray(lowerer.context.checker, converted))
     )
         return;

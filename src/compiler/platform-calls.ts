@@ -5,7 +5,10 @@ import { journaled } from "./emission-transaction.js";
 import { deferredCapabilityDescriptor } from "./deferred-capabilities.js";
 import ts from "typescript";
 import { namedMember, resolvedDomApi, type NamedMember } from "./symbols.js";
-import { DOCUMENT_ELEMENT_FROM_POINT } from "./dom-lowerings.js";
+import {
+    DOCUMENT_ELEMENT_FROM_POINT,
+    CAPTION_ELEMENT_REFUSAL,
+} from "./dom-lowerings.js";
 import {
     uiComputedStyleRead,
     unrepresentedComputedStyle,
@@ -1686,6 +1689,8 @@ export class PlatformCalls {
             }
             if (!svg && normalizedTag === "video")
                 this.ui.requireRetainedVideo(call);
+            if (!svg && normalizedTag === "caption")
+                this.context.fail(call, CAPTION_ELEMENT_REFUSAL);
             this.context.reachFeature("ui:rml", call);
             if (svg) this.context.reachFeature("ui:inline-svg", call);
             if (svg && tag === "image")

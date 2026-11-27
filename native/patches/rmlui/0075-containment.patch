@@ -1,0 +1,181 @@
+CSS Containment 2 layout and paint containment. 'contain' parses CSS's values (none, content, or any of layout, paint and
+style; style containment scopes counters only and changes nothing here, size containment fails to parse). A contained
+box is a stacking context and the containing block of its positioned descendants, and paint containment clips its
+content to the padding box as 'clip: always' does.
+diff --git a/Include/RmlUi/Core/ComputedValues.h b/Include/RmlUi/Core/ComputedValues.h
+index cae3d4e..07f5101 100644
+--- a/Include/RmlUi/Core/ComputedValues.h
++++ b/Include/RmlUi/Core/ComputedValues.h
+@@ -283,6 +283,7 @@ namespace Style {
+ 		bool              has_local_perspective()      const { return rare.has_local_perspective; }
+ 		AlignContent      align_content()              const { return GetLocalPropertyKeyword(PropertyId::AlignContent, AlignContent::Stretch); }
+ 		Isolation         isolation()                  const { return GetLocalPropertyKeyword(PropertyId::Isolation, Isolation::Auto); }
++	Contain           contain()                    const { return GetLocalPropertyKeyword(PropertyId::Contain, Contain::None); }
+ 		AlignItems        justify_items()              const { return GetLocalPropertyKeyword(PropertyId::JustifyItems, AlignItems::Stretch); }
+ 		AlignSelf         justify_self()               const { return GetLocalPropertyKeyword(PropertyId::JustifySelf, AlignSelf::Auto); }
+ 		AlignItems        align_items()                const { return GetLocalPropertyKeyword(PropertyId::AlignItems, AlignItems::Stretch); }
+diff --git a/Include/RmlUi/Core/ID.h b/Include/RmlUi/Core/ID.h
+index 5ae812c..79e0587 100644
+--- a/Include/RmlUi/Core/ID.h
++++ b/Include/RmlUi/Core/ID.h
+@@ -202,6 +202,7 @@ enum class PropertyId : uint8_t {
+ 	BorderSpacingX,
+ 	BorderSpacingY,
+ 	TableLayout,
++	Contain,
+ 
+ 	NumDefinedIds,
+ 	FirstCustomId = NumDefinedIds,
+diff --git a/Include/RmlUi/Core/StyleTypes.h b/Include/RmlUi/Core/StyleTypes.h
+index 2f06627..1fe15ea 100644
+--- a/Include/RmlUi/Core/StyleTypes.h
++++ b/Include/RmlUi/Core/StyleTypes.h
+@@ -92,6 +92,8 @@ namespace Style {
+ 	enum class BoxOrient : uint8_t { Horizontal, Vertical, InlineAxis, BlockAxis };
+ 	enum class Position : uint8_t { Static, Relative, Absolute, Fixed };
+ 	enum class Isolation : uint8_t { Auto, Isolate };
++// CSS containment the box applies: layout and paint containment, without the 'style' and 'size' kinds.
++enum class Contain : uint8_t { None, Layout, Paint, LayoutPaint };
+ 
+ 	using Top = LengthPercentageAuto;
+ 	using Right = LengthPercentageAuto;
+diff --git a/Source/Core/Element.cpp b/Source/Core/Element.cpp
+index 520bf02..9887d95 100644
+--- a/Source/Core/Element.cpp
++++ b/Source/Core/Element.cpp
+@@ -1966,7 +1966,8 @@ void Element::OnPropertyChange(const PropertyIdSet& changed_properties)
+ 		changed_properties.Contains(PropertyId::TransformOriginY) || changed_properties.Contains(PropertyId::TransformOriginZ);
+ 
+ 	// Update the z-index and stacking context.
+-	if (changed_properties.Contains(PropertyId::ZIndex) || changed_properties.Contains(PropertyId::Isolation) || filter_or_mask_changed || perspective_changed || transform_changed ||
++	if (changed_properties.Contains(PropertyId::ZIndex) || changed_properties.Contains(PropertyId::Isolation) ||
++		changed_properties.Contains(PropertyId::Contain) || filter_or_mask_changed || perspective_changed || transform_changed ||
+ 		changed_properties.Contains(PropertyId::ClipPath) || changed_properties.Contains(PropertyId::Opacity))
+ 	{
+ 		const Style::ZIndex z_index_property = meta->computed_values.z_index();
+@@ -1977,6 +1978,7 @@ void Element::OnPropertyChange(const PropertyIdSet& changed_properties)
+ 		const bool enable_local_stacking_context = (z_index_property.type != Style::ZIndex::Auto || local_stacking_context_forced ||
+ 			meta->computed_values.has_filter() || meta->computed_values.has_backdrop_filter() || meta->computed_values.has_mask_image() ||
+ 			meta->computed_values.has_local_transform() || meta->computed_values.has_local_perspective() || meta->computed_values.isolation() == Style::Isolation::Isolate ||
++			meta->computed_values.contain() != Style::Contain::None ||
+ 			has_clip_path || meta->computed_values.group_opacity() < 1.f);
+ 
+ 		if (z_index != new_z_index || local_stacking_context != enable_local_stacking_context)
+diff --git a/Source/Core/ElementStyle.cpp b/Source/Core/ElementStyle.cpp
+index 00ea036..ddcc204 100644
+--- a/Source/Core/ElementStyle.cpp
++++ b/Source/Core/ElementStyle.cpp
+@@ -1807,6 +1807,7 @@ void ElementStyle::ComputeValue(Style::ComputedValues& values, float dp_ratio, V
+ 	case PropertyId::BorderSpacingX:
+ 	case PropertyId::BorderSpacingY:
+ 	case PropertyId::TableLayout:
++	case PropertyId::Contain:
+ 		break;
+ 	// Invalid properties
+ 	case PropertyId::Invalid:
+diff --git a/Source/Core/ElementUtilities.cpp b/Source/Core/ElementUtilities.cpp
+index 965ba21..f32fbc9 100644
+--- a/Source/Core/ElementUtilities.cpp
++++ b/Source/Core/ElementUtilities.cpp
+@@ -142,7 +142,9 @@ bool ElementUtilities::GetClippingRegion(Element* element, Rectanglei& out_clip_
+ 		const bool force_clip_current_element = (force_clip_self && clipping_element == element);
+ 		const ComputedValues& clip_computed = clipping_element->GetComputedValues();
+ 		const bool clip_enabled = (clip_computed.overflow_x() != Style::Overflow::Visible || clip_computed.overflow_y() != Style::Overflow::Visible);
+-		const bool clip_always = (clip_computed.clip() == Clip::Type::Always);
++		// Paint containment clips the content to the padding box, as 'clip: always' does.
++		const bool clip_always = (clip_computed.clip() == Clip::Type::Always || clip_computed.contain() == Style::Contain::Paint ||
++			clip_computed.contain() == Style::Contain::LayoutPaint);
+ 		const bool clip_none = (clip_computed.clip() == Clip::Type::None);
+ 		const int clip_number = clip_computed.clip().GetNumber();
+ 
+diff --git a/Source/Core/Layout/ContainerBox.cpp b/Source/Core/Layout/ContainerBox.cpp
+index 07f88e1..8a223c3 100644
+--- a/Source/Core/Layout/ContainerBox.cpp
++++ b/Source/Core/Layout/ContainerBox.cpp
+@@ -112,7 +112,8 @@ ContainerBox::ContainerBox(Type type, Element* element, ContainerBox* parent_con
+ 		overflow_x = computed.overflow_x();
+ 		overflow_y = computed.overflow_y();
+ 		is_absolute_positioning_containing_block = (computed.position() != Style::Position::Static || computed.has_local_transform() ||
+-			computed.has_local_perspective() || computed.has_filter() || computed.has_backdrop_filter() || computed.has_mask_image());
++			computed.has_local_perspective() || computed.has_filter() || computed.has_backdrop_filter() || computed.has_mask_image() ||
++			computed.contain() != Style::Contain::None);
+ 	}
+ }
+ 
+diff --git a/Source/Core/StyleSheetSpecification.cpp b/Source/Core/StyleSheetSpecification.cpp
+index d9b84f5..1e023e6 100644
+--- a/Source/Core/StyleSheetSpecification.cpp
++++ b/Source/Core/StyleSheetSpecification.cpp
+@@ -1,6 +1,8 @@
+ #include "../../Include/RmlUi/Core/StyleSheetSpecification.h"
+ #include "../../Include/RmlUi/Core/PropertyDefinition.h"
+ #include "../../Include/RmlUi/Core/PropertyIdSet.h"
++#include "../../Include/RmlUi/Core/StringUtilities.h"
++#include "../../Include/RmlUi/Core/StyleTypes.h"
+ #include "IdNameMap.h"
+ #include "PropertyParserAnimation.h"
+ #include "PropertyParserBoxShadow.h"
+@@ -20,6 +22,39 @@ namespace Rml {
+ 
+ static StyleSheetSpecification* instance = nullptr;
+ 
++// CSS 'contain' (CSS Containment 2): none, content, or any of layout, paint and style. Style containment scopes counters and quotes
++// only, so it changes nothing here; size containment fails to parse.
++class PropertyParserContain final : public PropertyParser {
++public:
++	bool ParseValue(Property& property, const String& value, const ParameterMap& /*parameters*/) const override
++	{
++		StringList tokens;
++		StringUtilities::ExpandString(tokens, StringUtilities::ToLower(value), ' ', true);
++		bool layout = false, paint = false, style = false;
++		if (tokens.size() == 1 && tokens[0] == "content")
++			layout = paint = true;
++		else if (tokens.size() != 1 || tokens[0] != "none")
++		{
++			for (const String& token : tokens)
++			{
++				bool* flag = token == "layout" ? &layout : token == "paint" ? &paint : token == "style" ? &style : nullptr;
++				if (!flag || *flag)
++					return false;
++				*flag = true;
++			}
++			if (tokens.empty())
++				return false;
++		}
++		const Style::Contain contain = layout && paint ? Style::Contain::LayoutPaint
++			: layout                                   ? Style::Contain::Layout
++			: paint                                    ? Style::Contain::Paint
++			                                           : Style::Contain::None;
++		property.value = Variant(static_cast<int>(contain));
++		property.unit = Unit::KEYWORD;
++		return true;
++	}
++};
++
+ struct DefaultStyleSheetParsers : NonCopyMoveable {
+ 	PropertyParserNumber number = PropertyParserNumber(Unit::NUMBER);
+ 	PropertyParserNumber length = PropertyParserNumber(Unit::LENGTH, Unit::PX);
+@@ -42,6 +77,7 @@ struct DefaultStyleSheetParsers : NonCopyMoveable {
+ 	PropertyParserRatio ratio = PropertyParserRatio();
+ 	PropertyParserNumber resolution = PropertyParserNumber(Unit::X);
+ 	PropertyParserBoxShadow box_shadow = PropertyParserBoxShadow(&color, &length);
++	PropertyParserContain contain = PropertyParserContain();
+ };
+ 
+ StyleSheetSpecification::StyleSheetSpecification() :
+@@ -268,6 +304,7 @@ void StyleSheetSpecification::RegisterDefaultParsers()
+ 	RegisterParser("ratio", &default_parsers->ratio);
+ 	RegisterParser("resolution", &default_parsers->resolution);
+ 	RegisterParser("box_shadow", &default_parsers->box_shadow);
++	RegisterParser("contain", &default_parsers->contain);
+ }
+ 
+ void StyleSheetSpecification::RegisterDefaultProperties()
+@@ -501,6 +538,7 @@ void StyleSheetSpecification::RegisterDefaultProperties()
+ 	RegisterShorthand(ShorthandId::BorderSpacing, "border-spacing", "-rmlui-border-spacing-horizontal, -rmlui-border-spacing-vertical",
+ 		ShorthandType::Replicate);
+ 	RegisterProperty(PropertyId::TableLayout, "table-layout", "auto", false, true).AddParser("keyword", "auto, fixed");
++	RegisterProperty(PropertyId::Contain, "contain", "none", false, true).AddParser("contain");
+ 	RegisterProperty(PropertyId::AlignItems, "align-items", "stretch", false, true).AddParser("keyword", "flex-start, flex-end, center, baseline, stretch, start, end");
+ 	RegisterShorthand(ShorthandId::PlaceItems, "place-items", "align-items, justify-items", ShorthandType::Replicate);
+ 	RegisterProperty(PropertyId::AlignSelf, "align-self", "auto", false, true).AddParser("keyword", "auto, flex-start, flex-end, center, baseline, stretch, start, end");

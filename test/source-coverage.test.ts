@@ -97,6 +97,39 @@ test("survey coverage exposes refused and incomplete containing statements", () 
     );
 });
 
+test("survey coverage names what rolled back a statement that lowered", () => {
+    const source = `
+        let count = 0;
+        function step(value: number): number {
+            const next = count + value;
+            return next;
+        }
+        const total = step(2) + (new FinalizationRegistry(() => {}) ? 1 : 0);
+        localStorage.setItem("count", String(count + total));
+    `;
+    const collector = new SourceCoverage();
+    collector.run(() =>
+        surveySource(source, { fileName: resolve("coverage-rollback.ts") }),
+    );
+    const realm = collector.report().realms[0]!;
+    const body = realm.sites.find(
+        (site) =>
+            source.slice(site.start, site.end) ===
+            "const next = count + value;",
+    );
+    assert.equal(body?.state, "rolled-back");
+    assert.deepEqual(body.rolledBackBy?.length, 1);
+    assert.match(
+        body.rolledBackBy[0]!,
+        /^refusal\|.*coverage-rollback\.ts:7\|/,
+    );
+    assert.ok(
+        realm.sites
+            .filter((site) => site.state !== "rolled-back")
+            .every((site) => site.rolledBackBy === undefined),
+    );
+});
+
 test("imported initializer refusals retain original statement identities and survey recovery", () => {
     const directory = mkdtempSync(join(tmpdir(), "bblite-import-coverage-"));
     const dependency = join(directory, "dependency.ts");

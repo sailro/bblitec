@@ -1,6 +1,8 @@
 #include <bblite/pal_window_objects.hpp>
 #include <bblite/pal_event_loop.hpp>
+#include <algorithm>
 #include <cctype>
+#include <iterator>
 #include <set>
 #include <stdexcept>
 #include <bblite/js_data.hpp>
@@ -34,14 +36,29 @@ bool name_media_feature(UiMediaCondition& condition, std::string_view name,
 
 MediaQueryList::MediaQueryList(std::string query, double (*read_pixel_ratio)(),
                                bool (*read_motion_preference)(),
-                               InputCapabilities (*read_input_capabilities)())
+                               InputCapabilities (*read_input_capabilities)(),
+                               UiClientRect (*read_viewport)())
     : read_pixel_ratio_(read_pixel_ratio), read_motion_preference_(read_motion_preference),
-      read_input_capabilities_(read_input_capabilities) {
+      read_input_capabilities_(read_input_capabilities), read_viewport_(read_viewport) {
     const auto refuse = [] {
         throw std::invalid_argument(
-            "Only resolution, reduced-motion, pointer and hover media queries are admitted by "
-            "the Window realm.");
+            "Only resolution, viewport width and height bounds, reduced-motion, pointer and hover "
+            "media queries are admitted by the Window realm.");
     };
+    // A nonnegative CSS decimal followed by `unit`, as `(resolution: 1.5dppx)` spells it.
+    const auto measure = [&](std::optional<std::string_view> value, std::string_view unit) {
+        if (!value || !value->ends_with(unit))
+            refuse();
+        const auto number = value->substr(0, value->size() - unit.size());
+        std::size_t parsed = 0;
+        const auto measured = detail::css_decimal(number, parsed);
+        if (!measured || parsed != number.size() || *measured < 0)
+            refuse();
+        return *measured;
+    };
+    double* const bounds[] = {&min_width_, &max_width_, &min_height_, &max_height_};
+    constexpr std::string_view bound_names[] = {"min-width", "max-width", "min-height",
+                                                "max-height"};
     // An `and` conjunction of features, each named once; resolution stands alone.
     const std::string lowered = js::string_lower(query);
     std::string_view rest = detail::trim_css_token(lowered);
@@ -64,13 +81,14 @@ MediaQueryList::MediaQueryList(std::string query, double (*read_pixel_ratio)(),
             refuse();
         if (!media_.empty())
             media_ += " and ";
-        if (name == "resolution" && value && value->ends_with("dppx")) {
-            const auto number = value->substr(0, value->size() - 4);
-            std::size_t parsed = 0;
-            resolution_ = detail::css_decimal(number, parsed);
-            if (!resolution_ || parsed != number.size())
-                refuse();
+        const auto bound = std::find(std::begin(bound_names), std::end(bound_names), name);
+        if (name == "resolution") {
+            resolution_ = measure(value, "dppx");
             media_ += "(resolution: " + js::number_to_string(*resolution_) + "dppx)";
+        } else if (bound != std::end(bound_names)) {
+            const double pixels = measure(value, "px");
+            *bounds[bound - std::begin(bound_names)] = pixels;
+            media_ += "(" + std::string(name) + ": " + js::number_to_string(pixels) + "px)";
         } else if (name_media_feature(condition_, name, value)) {
             media_ += "(" + std::string(name) + (value ? ": " + std::string(*value) : "") + ")";
         } else {
@@ -89,6 +107,9 @@ MediaQueryList::MediaQueryList(std::string query, double (*read_pixel_ratio)(),
         refuse();
     if (condition_.names_input() && !read_input_capabilities_)
         throw std::invalid_argument("Input media queries require native device capabilities.");
+    if ((min_width_ >= 0 || max_width_ >= 0 || min_height_ >= 0 || max_height_ >= 0) &&
+        !read_viewport_)
+        throw std::invalid_argument("Viewport media queries require the window's viewport.");
     matches_ = matches();
 }
 
@@ -101,6 +122,15 @@ bool MediaQueryList::matches() const {
         device.reduced_motion = read_motion_preference_();
     if (condition_.names_input())
         device.input = read_input_capabilities_();
+    if (min_width_ >= 0 || max_width_ >= 0 || min_height_ >= 0 || max_height_ >= 0) {
+        const UiClientRect viewport = read_viewport_();
+        const auto within = [](double size, double minimum, double maximum) {
+            return (minimum < 0 || size >= minimum) && (maximum < 0 || size <= maximum);
+        };
+        if (!within(viewport.width, min_width_, max_width_) ||
+            !within(viewport.height, min_height_, max_height_))
+            return false;
+    }
     return condition_.matches(device);
 }
 
