@@ -14,7 +14,7 @@ import type { DataSinkHost } from "./data-sinks/contracts.js";
 import { calledFunction, resolvedSymbol } from "./symbols.js";
 
 /** A function expression, or a call whose source returns only new functions. */
-function freshCallable(
+export function freshCallable(
     checker: ts.TypeChecker,
     expression: ts.Expression,
     active = new Set<ts.Node>(),
