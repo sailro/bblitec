@@ -701,6 +701,40 @@ check(
 `,
 );
 
+// So is the result of a body inlined with early returns, through a function
+// returning its call.
+check(
+    "tagged-results-of-inlined-early-return-bodies",
+    `
+    interface Spot { x: number; z: number; }
+    const spots: Spot[] = [{ x: 1, z: 2 }, { x: 4, z: 5 }];
+    const gate = new Float32Array([0, 1]);
+    const project = <T>(x: number, keep: (spot: Spot) => T | null): T | null | undefined => {
+        if (gate[1]! < 0.5) return undefined;
+        let best: T | null = null;
+        for (const spot of spots) { const kept = keep(spot); if (kept !== null && spot.x > x) best = kept; }
+        return best;
+    };
+    const scan = (x: number): Spot | null | undefined => project(x, (spot) => spot);
+    const committed = new Map<number, { spot: Spot | null }>();
+    function reach(id: number, x: number): Spot | null {
+        const entry = committed.get(id);
+        if (entry) {
+            const result = scan(x);
+            if (result === undefined) return entry.spot;
+            entry.spot = result;
+            return result;
+        }
+        const spot = scan(x) ?? null;
+        committed.set(id, { spot });
+        return spot;
+    }
+    if (reach(1, 0)?.x !== 4 || reach(1, 9) !== null || committed.get(1)!.spot !== null) throw new Error("inlined tagged results");
+    gate[1] = 0;
+    if (reach(1, 0) !== null) throw new Error("undefined keeps the committed spot");
+`,
+);
+
 test("stored callback results represent both null and undefined", () => {
     assert.doesNotThrow(() =>
         compileSource(
