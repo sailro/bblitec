@@ -735,6 +735,31 @@ check(
 `,
 );
 
+// A member typed unknown read through an element of an absent array's empty
+// fallback is the dynamic value such a read would hold.
+check(
+    "unknown-members-of-empty-fallback-elements",
+    `
+    interface Arch { x: number; spec: unknown }
+    function sameValue(a: unknown, b: unknown): boolean { return Object.is(a, b); }
+    function sameArches(previous: readonly Arch[] | undefined, current: readonly Arch[] | undefined): boolean {
+        const a = previous ?? [];
+        const b = current ?? [];
+        if (a.length !== b.length) return false;
+        for (let i = 0; i < a.length; i++) {
+            const p = a[i]!;
+            const q = b[i]!;
+            if (p.x !== q.x || !sameValue(p.spec, q.spec)) return false;
+        }
+        return true;
+    }
+    const spec = { kind: "round" };
+    const arches: Arch[] = [{ x: 1, spec }];
+    if (!sameArches(undefined, undefined) || !sameArches(arches, [{ x: 1, spec }]) || sameArches(arches, [{ x: 1, spec: { kind: "round" } }]) || sameArches(arches, undefined))
+        throw new Error("unknown members");
+`,
+);
+
 test("stored callback results represent both null and undefined", () => {
     assert.doesNotThrow(() =>
         compileSource(
