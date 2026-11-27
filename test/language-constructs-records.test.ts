@@ -798,6 +798,25 @@ test("records of one array refuse a widened field written through the wider type
         /'Near' record stored as 'Zone' would be a copy of the one object JavaScript keeps, and [^;]*; no shared layout holds both record types/,
     );
 });
+
+test(
+    "a union of literals whose records a replay stores every arm's fields of is one union across replays",
+    { timeout: 120000 },
+    () => {
+        // Each replay types the literals afresh: the union their arms'
+        // fields are demanded for is the same union in the next one.
+        assert.throws(
+            () =>
+                compileSource(`interface Zone { count: number; lodMesh?: boolean | { beyond: number } }
+            const zones = Date.now() > 0 ? [{ count: 1 }, { count: 3, lodMesh: { beyond: 4 } }] : [{ count: 2 }];
+            const kept: Zone[][] = [];
+            kept.push(zones);
+            kept[0]![1]!.lodMesh = true;
+            const unused = zones[1]!.count;`),
+            /'Zone' records stored as '\w+' would lose 'lodMesh'/,
+        );
+    },
+);
 check(
     "fresh-nested-members-are-copied",
     `
