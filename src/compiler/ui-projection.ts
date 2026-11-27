@@ -2349,6 +2349,7 @@ export class UiProjection {
             "bottom",
             "color",
             "color-scheme",
+            "contain",
             "clip",
             "clip-path",
             "clear",
@@ -2881,6 +2882,16 @@ export class UiProjection {
             if (property.length === 0) return;
             this.refuseUnresolvableMath(property, literalValue, site);
             if (UiProjection.isCustomStyleProperty(property)) return;
+            if (
+                property === "contain" &&
+                !UiProjection.admitsUiContain(literalValue)
+            ) {
+                this.uiStyleRefusal(
+                    site,
+                    property,
+                    "only none, content, or layout, paint and style are represented (no size containment)",
+                );
+            }
             if (
                 property === "border-spacing" &&
                 !UiProjection.UI_BORDER_SPACING.test(literalValue)
@@ -3547,6 +3558,22 @@ export class UiProjection {
             );
         }
         return effects.length > 0 ? effects.join(",") : undefined;
+    }
+
+    /**
+     * Whether a CSS `contain` value is one RmlUi represents (patch 0075):
+     * none, content, or layout, paint and style containment; size
+     * containment is not.
+     */
+    private static admitsUiContain(value: string): boolean {
+        const tokens = value.trim().toLowerCase().split(/\s+/);
+        return tokens.length === 1 &&
+            (tokens[0] === "none" || tokens[0] === "content")
+            ? true
+            : new Set(tokens).size === tokens.length &&
+                  tokens.every((token) =>
+                      ["layout", "paint", "style"].includes(token),
+                  );
     }
 
     /** Properties whose values RmlUi reads in its own grammar. */
