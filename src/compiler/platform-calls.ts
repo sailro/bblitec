@@ -7,6 +7,7 @@ import ts from "typescript";
 import { namedMember, resolvedDomApi, type NamedMember } from "./symbols.js";
 import {
     DOCUMENT_ELEMENT_FROM_POINT,
+    CAPTION_ELEMENT_REFUSAL,
     VIDEO_ELEMENT_REFUSAL,
 } from "./dom-lowerings.js";
 import {
@@ -1689,6 +1690,8 @@ export class PlatformCalls {
             }
             if (!svg && normalizedTag === "video")
                 this.context.fail(call, VIDEO_ELEMENT_REFUSAL);
+            if (!svg && normalizedTag === "caption")
+                this.context.fail(call, CAPTION_ELEMENT_REFUSAL);
             this.context.reachFeature("ui:rml", call);
             if (svg) this.context.reachFeature("ui:inline-svg", call);
             if (svg && tag === "image")

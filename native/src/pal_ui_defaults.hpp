@@ -27,7 +27,17 @@ inline constexpr std::string_view ui_user_agent_css =
     "ul,ol{display:block;margin:1em 0;padding-left:40px;}\n"
     "li{display:block;}\n"
     "[hidden],script{display:none;}\n"
-    // Chromium's sectioning and grouping elements, and its heading levels.
+    // Chromium's table defaults. Header and footer groups are row groups laid out in document order;
+    // RmlUi's table layout refuses a first header group after other rows or a first footer group
+    // before them, which Chromium would move.
+    "table{display:table;box-sizing:border-box;border-spacing:2px;border-collapse:separate;}\n"
+    "thead,tbody,tfoot{display:table-row-group;vertical-align:middle;}\n"
+    "table > tr{vertical-align:middle;}\n"
+    "colgroup{display:table-column-group;}\n"
+    "col{display:table-column;}\n"
+    "tr{display:table-row;vertical-align:inherit;}\n"
+    "td,th{display:table-cell;vertical-align:inherit;padding:1px;}\n"
+    "th{font-weight:bold;text-align:center;}\n"    // Chromium's sectioning and grouping elements, and its heading levels.
     "address,article,aside,blockquote,figcaption,figure,footer,form,header,hgroup,main,nav,"
     "section{display:block;}\n"
     "h1{display:block;font-size:2em;font-weight:bold;margin:0.67em 0;}\n"

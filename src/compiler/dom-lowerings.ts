@@ -51,6 +51,10 @@ export const CANVAS_CAPTURE_STREAM = "HTMLCanvasElement.captureStream";
  * native platform layer decodes video (the media elements are
  * `new Audio(url)` alone).
  */
+/** A table caption lays out beside its table's grid, which the native table layout does not represent. */
+export const CAPTION_ELEMENT_REFUSAL =
+    "A <caption> element is a table caption box, which the native table layout does not represent.";
+
 export const VIDEO_ELEMENT_REFUSAL =
     "A <video> element plays decoded video, which no native platform layer provides; the media elements are `new Audio(url)` alone.";
 

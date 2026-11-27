@@ -3922,6 +3922,11 @@ public:
         return (time_ms ? *time_ms : ::bbl::pal::performance_milliseconds()) / 1000.0;
     }
 
+    /** A layout RmlUi does not represent (a table's collapsed borders) refuses at run time. */
+    void LayoutNotRepresented(Rml::Element*, const Rml::String& reason) override {
+        throw std::runtime_error(reason + " is not represented by the native UI layout.");
+    }
+
     void SetMouseCursor(const Rml::String& name) override {
         if (SDL_GetWindowRelativeMouseMode(window)) {
             SDL_HideCursor();

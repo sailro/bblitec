@@ -2342,6 +2342,8 @@ export class UiProjection {
             "border-image",
             ...UI_BORDER_IMAGE_LONGHANDS,
             "border-radius",
+            "border-collapse",
+            "border-spacing",
             "box-sizing",
             "box-shadow",
             "bottom",
@@ -2423,6 +2425,7 @@ export class UiProjection {
             "scrollbar-gutter",
             "scrollbar-width",
             "scrollbar-color",
+            "table-layout",
             "text-align",
             "text-decoration",
             "text-shadow",
@@ -2456,6 +2459,8 @@ export class UiProjection {
         readonly string[]
     > = new Map([
         ["visibility", ["visible", "hidden"]],
+        ["border-collapse", ["separate", "collapse"]],
+        ["table-layout", ["auto", "fixed"]],
         [
             "vertical-align",
             [
@@ -2515,6 +2520,10 @@ export class UiProjection {
     private static readonly PRESENTATION_LENGTHS = new EmissionSet<string>([
         "vertical-align",
     ]);
+
+    /** A table's horizontal and vertical cell spacing: one or two nonnegative lengths. */
+    private static readonly UI_BORDER_SPACING =
+        /^(?:(?:\d+(?:\.\d*)?|\.\d+)(?:px|em|rem|vw|vh)|0)(?:\s+(?:(?:\d+(?:\.\d*)?|\.\d+)(?:px|em|rem|vw|vh)|0))?$/;
 
     private static readonly PRESENTATION_LENGTH =
         /^[+-]?(?:(?:\d+(?:\.\d*)?|\.\d+)(?:px|em|rem|vw|vh|%)|0)$/;
@@ -2872,6 +2881,16 @@ export class UiProjection {
             if (property.length === 0) return;
             this.refuseUnresolvableMath(property, literalValue, site);
             if (UiProjection.isCustomStyleProperty(property)) return;
+            if (
+                property === "border-spacing" &&
+                !UiProjection.UI_BORDER_SPACING.test(literalValue)
+            ) {
+                this.uiStyleRefusal(
+                    site,
+                    property,
+                    "only one or two nonnegative px, em, rem, vw or vh lengths are represented",
+                );
+            }
             if (
                 property === "place-items" &&
                 !/^(?:start|end|center|stretch)(?:\s+(?:start|end|center|stretch))?$/.test(
