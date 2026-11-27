@@ -105,6 +105,8 @@ Rules:
   stores the event target.
 - Callable records retain optional properties when selected beside plain functions. Mixed tuple arrays read absent
   properties on plain functions as `undefined`; reading properties after erasure into bare function storage refuses.
+- A module's function declaration stored as a callable record is one object: every alias and conversion shares its
+  identity and the properties written on it. A nested function declaration so stored refuses.
 - A module `let` assigned only by unreachable functions keeps its initializer. Strict comparisons fold through `const`
   aliases, absent `??` lefts and generation-known booleans.
 - Literals handed to functions keep their facts unless a callee's write reaches a member they hold. Static descriptor

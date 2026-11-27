@@ -50,6 +50,7 @@ import {
 import type {
     LoweringServices,
     EmissionMark,
+    EntryStorage,
     LoweringStatement,
     NativeFunctionBodyOptions,
     ShaderSourceText,
@@ -1415,6 +1416,11 @@ class Compiler implements LoweringServices {
     @journaled public accessor defaultEngineCpp: string | undefined;
     /** Platform owner for an entry that has no source-created Babylon engine. */
     @journaled public accessor presentationHostCpp: string | undefined;
+    /** Storage the entry body declares first, by its owner (`entryStorage`). */
+    private readonly entryStorageOwners = new EmissionMap<
+        ts.Node,
+        EntryStorage
+    >();
     /** First statement after the one engine is created. */
     @journaled private accessor engineCreationInsertion: number | undefined;
     /** Explicit static surface sample count; absence means the pinned default. */
@@ -8060,6 +8066,33 @@ class Compiler implements LoweringServices {
         return this.presentationHostCpp !== undefined;
     }
 
+    /**
+     * The storage `owner` holds for as long as the entry runs, declared
+     * ahead of the entry body, so every statement and closure reaches its
+     * one object: made of `cppType` the first time, as it was afterwards.
+     */
+    public entryStorage(
+        owner: ts.Node,
+        stem: string,
+        cppType: string,
+    ): EntryStorage {
+        const known = this.entryStorageOwners.get(owner);
+        if (known) return known;
+        const name = this.allocateTemporaryCppName(stem);
+        this.registerNativeBindingType(name, cppType);
+        const binding: NativeCaptureBinding = {
+            name,
+            sequence: 0,
+            borrowed: true,
+            allowReference: false,
+            entryLifetime: true,
+        };
+        this.nativeBindings.set(name, binding);
+        const storage = { binding, type: cppType };
+        this.entryStorageOwners.set(owner, storage);
+        return storage;
+    }
+
     public hasFeature(feature: Feature): boolean {
         return this.features.has(feature);
     }
@@ -12990,7 +13023,13 @@ class Compiler implements LoweringServices {
             ...(this.presentationHostCpp
                 ? [{ name: this.presentationHostCpp, type: "bbl::Engine" }]
                 : []),
+            ...[...this.entryStorageOwners.values()].map(
+                ({ binding, type }) => ({ name: binding.name, type }),
+            ),
         ]).map(renderNativeEmission);
+        const entryStorage = [...this.entryStorageOwners.values()].map(
+            ({ binding, type }) => `        ${type} ${binding.name}{};`,
+        );
         // The worker runtime declares the messaging objects storage holds.
         if (!this.options.workers && this.dataTypes.usesWorkerStorage())
             throw new ApplicationRealmRequired();
@@ -13047,10 +13086,11 @@ class Compiler implements LoweringServices {
             body: this.presentationHostCpp
                 ? [
                       `        auto ${this.presentationHostCpp} = bbl::create_engine(bbl::EngineOptions{${this.cppString(this.options.title)}, ${this.options.width}, ${this.options.height}});`,
+                      ...entryStorage,
                       ...body,
                       `        bbl::start_engine(${this.presentationHostCpp});`,
                   ]
-                : body,
+                : [...entryStorage, ...body],
         });
     }
 

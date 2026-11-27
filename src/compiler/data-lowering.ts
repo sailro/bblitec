@@ -701,6 +701,7 @@ interface DataLoweringContext extends Pick<
     | "emissionMark"
     | "reachesEmissionMark"
     | "registerNativeBinding"
+    | "entryStorage"
     | "registerNativeConstBinding"
     | "registerNativeBindingType"
     | "registerNativeTemporary"
