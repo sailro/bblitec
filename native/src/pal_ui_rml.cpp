@@ -7151,11 +7151,19 @@ struct UiRmlRuntime {
         if (!observes_generated_content && !has_generated_content)
             return false;
         std::vector<std::pair<const UiStyleRule*, std::size_t>> rules;
+        // A generated box is no projected element, so the private declaration its rules carry
+        // reaches it here: an absolute box with one inset shrinks to its content
+        // (`UiBackgroundStyles`).
+        std::vector<std::pair<const UiStyleRule*, std::size_t>> absolute_inline_rules;
         std::size_t rule_index = 0;
         for_each_active_style_rule([&](const UiStyleRule& rule) {
-            if (rule.generated != UiGeneratedPart::None && rule.content &&
-                style_rule_media_matches(rule))
-                rules.emplace_back(&rule, rule_index);
+            if (rule.generated != UiGeneratedPart::None && style_rule_media_matches(rule)) {
+                if (rule.content)
+                    rules.emplace_back(&rule, rule_index);
+                std::string declarations = project_ui_style_source(rule.style).private_declarations;
+                if (!take_css_declaration(declarations, "--bbl-absolute-inline").empty())
+                    absolute_inline_rules.emplace_back(&rule, rule_index);
+            }
             ++rule_index;
         });
         bool changed = false;
@@ -7232,6 +7240,18 @@ struct UiRmlRuntime {
                     }
                     box->SetAttribute("bbl-text", text);
                     box->SetAttribute("bbl-wrapped", wrapped);
+                    changed = true;
+                }
+                bool absolute_inline = false;
+                for (const auto& [rule, index] : absolute_inline_rules)
+                    absolute_inline = absolute_inline || (rule->generated == part &&
+                                                          style_selectors.matches(origin, index));
+                if (absolute_inline !=
+                    (box->GetLocalProperty("--bbl-absolute-inline") != nullptr)) {
+                    if (absolute_inline)
+                        box->SetProperty("--bbl-absolute-inline", "1");
+                    else
+                        box->RemoveProperty("--bbl-absolute-inline");
                     changed = true;
                 }
                 const int expected =

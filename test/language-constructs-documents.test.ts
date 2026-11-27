@@ -649,6 +649,61 @@ check(
 `,
 );
 
+// A new array of parsed elements a const local holds, stored where its
+// elements are numbers, is the one array the record keeps: the local holds
+// the elements converted as its initializer builds them.
+check(
+    "a-new-array-of-parsed-elements-stored-as-numbers-stays-one-array",
+    `
+    interface SaveEntry { m: number; q: number[] }
+    interface Save { entries?: SaveEntry[] }
+    interface Row { quantities: number[] }
+    const rows = new Map<number, Row>();
+    let held: number[] = [];
+    function restore(save: Save | undefined, capacity: number): void {
+        for (const entry of save?.entries ?? []) {
+            if (!Array.isArray(entry.q)) continue;
+            const quantities = entry.q.filter((quantity) => Number.isSafeInteger(quantity) && quantity > 0).slice(0, capacity);
+            if (quantities.length > 0) rows.set(entry.m, { quantities });
+            held = quantities;
+        }
+    }
+    restore(JSON.parse('{"entries":[{"m":1,"q":[1,2,0,3]},{"m":2,"q":[0]}]}') as Save, 2);
+    const row = rows.get(1)!;
+    if (row.quantities.join() !== "1,2" || rows.has(2) || held.length !== 0) throw new Error("rows " + row.quantities.join());
+    restore(JSON.parse('{"entries":[{"m":3,"q":[4,5]}]}') as Save, 4);
+    held.push(6);
+    if (rows.get(3)!.quantities.join() !== "4,5,6" || rows.get(3)!.quantities !== held) throw new Error("one array");
+`,
+);
+
+// `Object.freeze` returns the new array it is given: a local holding it is
+// still the one new array, stored as numbers wherever it goes.
+check(
+    "a-frozen-new-array-of-parsed-elements-stays-one-array",
+    `
+    interface Row { readonly villager: number; readonly ids: readonly number[] }
+    interface Group { readonly ids: readonly number[] }
+    const groups = new Map<number, Group>();
+    let measured = 0;
+    const measure = (ids: readonly number[]): number => ids.length;
+    const measures: Array<typeof measure> = [measure];
+    function restore(rows: readonly Row[], loose: boolean): void {
+        for (const row of rows) {
+            const ids = Object.freeze(loose ? row.ids.filter((id) => id > 0) : [...row.ids]);
+            if (ids.length === 0) continue;
+            measured += measures[0]!(ids);
+            groups.set(row.villager, { ids });
+        }
+    }
+    const rows = (JSON.parse('{"rows":[{"villager":1,"ids":[3,0,4]},{"villager":2,"ids":[0]}]}') as { rows: Row[] }).rows;
+    restore(rows, true);
+    if (measured !== 2 || groups.get(1)!.ids.join() !== "3,4" || groups.has(2)) throw new Error("loose");
+    restore(rows, false);
+    if (measured !== 6 || groups.get(2)!.ids.join() !== "0") throw new Error("kept");
+`,
+);
+
 check(
     "spread-of-a-method-record-keeps-its-key-order",
     `

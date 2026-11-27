@@ -557,7 +557,8 @@ Media elements (application realm): `new Audio(url)` with an audio URL, `play`/`
 `loop`, `preload`, `currentTime` (seek), `duration`, `paused`, `ended`, and `timeupdate`/`ended`/`play`/`pause`/
 `canplaythrough`/`error` listeners without payloads.
 An unrouted element plays to the default output; `createMediaElementSource` routes it once (again:
-InvalidStateError), moving its playback into the graph. Other members and attributes refuse.
+InvalidStateError), moving its playback into the graph. Other members and attributes refuse. A `<video>` element
+refuses where the program creates or calls one: nothing decodes video.
 
 ## Shadows and navigation
 

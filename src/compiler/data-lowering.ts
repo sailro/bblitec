@@ -14051,6 +14051,36 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 });
             return;
         }
+        // Parsed elements stored as plain lanes: a const local holding a
+        // new array holds them so, its initializer converting each element
+        // while nothing else holds the array.
+        if (element.kind === "json" && plainLane(target)) {
+            const local = this.newArrayLocal(node);
+            if (local)
+                throw new DynamicBindingStorageRequired(local, {
+                    elements: target,
+                });
+            return;
+        }
+        // Resources stored where any value is (`unknown[]`): a binding
+        // assigned the array holds them as the array does, which refines
+        // the declared or source array it held.
+        if (
+            target.kind === "json" &&
+            presentDataType(element)?.kind === "handle"
+        ) {
+            const declaration = this.assignedDeclaration(node);
+            const held =
+                declaration && this.context.dynamicBindings.get(declaration);
+            if (
+                declaration &&
+                (held === undefined || held === "array" || held === "source")
+            )
+                throw new DynamicBindingStorageRequired(declaration, {
+                    elements: element,
+                });
+            return;
+        }
         const handle = (type: DataType): DataType =>
             type.kind === "optional" ? type.inner : type;
         const from = handle(element);
@@ -14128,6 +14158,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
 
     /** The local a converted expression initializes or plainly assigns, while it has no demanded storage. */
     private assignedBinding(node: ts.Node): ts.VariableDeclaration | undefined {
+        const declaration = this.assignedDeclaration(node);
+        return declaration && !this.context.dynamicBindings.has(declaration)
+            ? declaration
+            : undefined;
+    }
+
+    /** The local a converted expression initializes or plainly assigns. */
+    private assignedDeclaration(
+        node: ts.Node,
+    ): ts.VariableDeclaration | undefined {
         const converted = this.convertedExpression(node);
         if (!converted) return undefined;
         const expression = outermostWrapper(converted, { branches: true });
@@ -14148,9 +14188,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                   ? resolvedSymbol(this.context.checker, parent.left)
                         ?.valueDeclaration
                   : undefined;
-        return declaration &&
-            ts.isVariableDeclaration(declaration) &&
-            !this.context.dynamicBindings.has(declaration)
+        return declaration && ts.isVariableDeclaration(declaration)
             ? declaration
             : undefined;
     }

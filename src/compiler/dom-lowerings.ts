@@ -46,6 +46,14 @@ export const POINTER_CAPTURE_OPERATIONS: ReadonlyMap<string, string> = new Map([
 export const MEDIA_RECORDER_TYPE_SUPPORTED = "MediaRecorder.isTypeSupported";
 export const CANVAS_CAPTURE_STREAM = "HTMLCanvasElement.captureStream";
 
+/**
+ * A video element is refused where the program creates or calls one: no
+ * native platform layer decodes video (the media elements are
+ * `new Audio(url)` alone).
+ */
+export const VIDEO_ELEMENT_REFUSAL =
+    "A <video> element plays decoded video, which no native platform layer provides; the media elements are `new Audio(url)` alone.";
+
 /** The engine's gamepad snapshot (`expressions.ts`). */
 export const NAVIGATOR_GET_GAMEPADS = "Navigator.getGamepads";
 

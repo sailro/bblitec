@@ -52,19 +52,11 @@ export function constObjectLiteral(
             ts.isArrayLiteralExpression(current)
         )
             return { literal: current, frozen };
-        if (ts.isCallExpression(current) && current.arguments.length === 1) {
-            const member = namedMember(
-                checker,
-                unwrapExpression(current.expression),
-            );
-            if (
-                !member ||
-                libraryGlobal(checker, member.expression) !== "Object" ||
-                !["freeze", "seal", "preventExtensions"].includes(member.name)
-            )
-                return undefined;
-            frozen ||= member.name === "freeze";
-            current = unwrapExpression(current.arguments[0]!);
+        if (ts.isCallExpression(current)) {
+            const returned = returnedArgument(checker, current);
+            if (!returned) return undefined;
+            frozen ||= returned.frozen;
+            current = unwrapExpression(returned.argument);
             continue;
         }
         if (!ts.isIdentifier(current)) return undefined;
@@ -80,6 +72,23 @@ export function constObjectLiteral(
         seen.add(declaration);
         current = unwrapExpression(declaration.initializer);
     }
+}
+
+/**
+ * The argument `Object.freeze`, `seal` or `preventExtensions` returns,
+ * which is that object itself, and whether the call freezes it.
+ */
+function returnedArgument(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression,
+): { readonly argument: ts.Expression; readonly frozen: boolean } | undefined {
+    const member = namedMember(checker, unwrapExpression(call.expression));
+    return call.arguments.length === 1 &&
+        member &&
+        libraryGlobal(checker, member.expression) === "Object" &&
+        ["freeze", "seal", "preventExtensions"].includes(member.name)
+        ? { argument: call.arguments[0]!, frozen: member.name === "freeze" }
+        : undefined;
 }
 
 /**
@@ -509,6 +518,10 @@ export function yieldsNewArray(
         return valueOperands(unwrapped).every((operand) =>
             yieldsNewArray(checker, operand),
         );
+    // `Object.freeze(array)` returns the array it is given.
+    const returned =
+        ts.isCallExpression(unwrapped) && returnedArgument(checker, unwrapped);
+    if (returned) return yieldsNewArray(checker, returned.argument);
     return (
         yieldsFreshObject(checker, unwrapped) ||
         callsFreshArrayBuiltin(checker, unwrapped)

@@ -91,6 +91,7 @@ test("generated before and after boxes preserve content, cascade and authored ch
         .item + .tail{padding-left:4px}
         .tail:only-of-type{padding-right:5px}
         .tail::before{content:"/* keep */ @keyframes literal { }"}
+        .tail::after{content:">";position:absolute;right:6px;top:0}
         .hint{color:#334455}
         .hint::placeholder{color:#123456;opacity:0.6}
         :where(#hint)::placeholder{color:red}

@@ -411,3 +411,28 @@ test("a returned record's array of owned resources assigned to a binding is its 
         /struct GroupData \{\s*bbl::js::Array<std::pair<bbl::StoredEngine, bbl::MeshHandle>> meshes;/,
     );
 });
+
+test("a binding of unknown elements assigned arrays of resources holds them as those arrays do", () => {
+    // Converting the array into dynamic elements would be a second array
+    // beside the one the caller and the binding share.
+    const { cpp } = compileSource(`
+        import {addToScene, createBox, createEngine, createSceneContext, type Mesh} from '@babylonjs/lite';
+        interface Publication<T> { publish(items: readonly T[]): void; size(): number }
+        function publication<T>(sink: (items: readonly T[]) => void): Publication<T> {
+            let held: readonly T[] = [];
+            return { publish(items) { held = items; sink(items); }, size: () => held.length };
+        }
+        const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+        const scene = createSceneContext(engine);
+        const meshes = [1, 2].map((size) => { const mesh = createBox(engine, { size }); addToScene(scene, mesh); return { mesh }; }).map((part) => part.mesh);
+        let seen = 0;
+        const casters = publication((set) => { seen += (set as Mesh[]).length; });
+        casters.publish([]);
+        casters.publish([...meshes]);
+        if (casters.size() !== seen) throw new Error("published");
+    `);
+    assert.match(
+        cpp,
+        /\(\*v_\w+_held\) = bbl::js::Array<bbl::MeshHandle>\{\};/,
+    );
+});

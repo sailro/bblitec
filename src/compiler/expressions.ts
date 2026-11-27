@@ -104,6 +104,7 @@ import {
     CRYPTO_GET_RANDOM_VALUES,
     NAVIGATOR_GET_GAMEPADS,
     readsLoweredDomMethod,
+    VIDEO_ELEMENT_REFUSAL,
 } from "./dom-lowerings.js";
 import { probedDomTarget } from "./dom-targets.js";
 import {
@@ -4572,6 +4573,8 @@ export class ExpressionLowerer {
                 this.context.checker.getNonNullableType(
                     this.context.checker.getTypeAtLocation(member.expression),
                 );
+            if (view && libraryName(view) === "HTMLVideoElement")
+                this.context.fail(callee, VIDEO_ELEMENT_REFUSAL);
             if (
                 member &&
                 view &&
