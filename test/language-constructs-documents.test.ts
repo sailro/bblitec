@@ -650,6 +650,36 @@ check(
 );
 
 check(
+    "spread-of-a-method-record-keeps-its-key-order",
+    `
+    interface Binding { readonly id: number; dispose(): void; project(out: number[], x: number): boolean }
+    class Frame {
+        private live = 0;
+        bind(id: number): Binding {
+            this.live++;
+            const binding: Binding = { id, project(out, x) { out[0] = x + id; return true; }, dispose: () => { this.live--; } };
+            return binding;
+        }
+        count(): number { return this.live; }
+    }
+    const frame = new Frame();
+    const ranges = new Map<Binding, number>();
+    function retain(id: number): Binding {
+        const binding = frame.bind(id);
+        const retained = { ...binding };
+        ranges.set(retained, id);
+        return retained;
+    }
+    const kept = retain(4);
+    const out = [0];
+    if (!kept.project(out, 1) || out[0] !== 5 || ranges.get(kept) !== 4) throw new Error("members");
+    if (Object.keys(kept).join() !== "id,project,dispose") throw new Error("keys " + Object.keys(kept).join());
+    kept.dispose();
+    if (frame.count() !== 0) throw new Error("dispose");
+`,
+);
+
+check(
     "declared-record-key-order-indices-conversions-and-copies",
     `
     interface Indexed { b: number; 2: string; a: number; 1: string }

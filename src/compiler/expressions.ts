@@ -7284,6 +7284,8 @@ export class ExpressionLowerer {
         const getters: Record<string, ts.GetAccessorDeclaration> = {};
         const setters: Record<string, ts.SetAccessorDeclaration> = {};
         const ownKeys = new Set<string>();
+        // The keys a struct's record spread made own (`recordKeyStructs`).
+        const keyStructs: Record<string, string> = {};
         const storeProperty = (
             name: string,
             value: Value,
@@ -7441,6 +7443,8 @@ export class ExpressionLowerer {
                             "A struct with optional properties spreads into a dictionary or a struct; a compile-time record needs keys known at generation.",
                         );
                     for (const { key, value, slot } of entries) {
+                        if (!ownKeys.has(key))
+                            keyStructs[key] = spread.dataType.name;
                         if (!slot) {
                             storeProperty(
                                 key,
@@ -7729,6 +7733,9 @@ export class ExpressionLowerer {
             recordMethods: methods,
             recordGetters: getters,
             recordSetters: setters,
+            ...(Object.keys(keyStructs).length > 0
+                ? { recordKeyStructs: keyStructs }
+                : {}),
             // Only a record with code in it needs its scope: a
             // plain property already holds a resolved value.
             ...(closes

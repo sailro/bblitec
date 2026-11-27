@@ -1983,6 +1983,32 @@ function compileKnownDataMethod(
         );
         return written && { ...written, dataType };
     }
+    // A numeric tuple's splice that removes as many lanes as it inserts
+    // keeps its length: it runs on the tuple's own storage, the number
+    // array of exactly its lanes, and returns the removed lanes.
+    if (dataType?.kind === "tuple" && method === "splice") {
+        if (!tupleSpliceKeepsLength(lowerer, call, dataType.arity))
+            lowerer.context.fail(
+                call,
+                `Array.splice on a ${dataType.arity}-element tuple must insert as many elements as it removes, known at generation.`,
+            );
+        const array: DataType<"vector"> = {
+            kind: "vector",
+            element: { kind: "number" },
+        };
+        lowerer.invalidateAliases(narrowed.cpp);
+        return compileArrayValueMethod(
+            lowerer,
+            call,
+            method,
+            {
+                kind: "data",
+                cpp: `bbl::js::Array<double>{(${narrowed.cpp}).retained_storage()}`,
+                dataType: array,
+            },
+            array,
+        );
+    }
     if (dataType?.kind !== "vector" && dataType?.kind !== "span") {
         return undefined;
     }
@@ -2003,6 +2029,47 @@ function compileKnownDataMethod(
             `Array method '${method}' is not supported.`,
         )
     );
+}
+
+/**
+ * Whether `tuple.splice(start, deleteCount, ...items)` on a tuple of
+ * `arity` lanes removes as many lanes as it inserts, by JavaScript's
+ * clamping of `start` and `deleteCount`, all known at generation: a spread
+ * item contributes its tuple's lanes.
+ */
+function tupleSpliceKeepsLength(
+    lowerer: DataLowerer,
+    call: ts.CallExpression,
+    arity: number,
+): boolean {
+    const [startArgument, countArgument, ...items] = call.arguments;
+    if (
+        !startArgument ||
+        ts.isSpreadElement(startArgument) ||
+        (countArgument && ts.isSpreadElement(countArgument))
+    )
+        return false;
+    const start = staticNumberValue(lowerer.context, startArgument);
+    const count = countArgument
+        ? staticNumberValue(lowerer.context, countArgument)
+        : Infinity;
+    if (start === undefined || count === undefined) return false;
+    const from =
+        start < 0
+            ? Math.max(arity + Math.trunc(start), 0)
+            : Math.min(Math.trunc(start), arity);
+    const removed = Math.min(Math.max(Math.trunc(count), 0), arity - from);
+    let inserted = 0;
+    for (const item of items) {
+        if (!ts.isSpreadElement(item)) {
+            inserted++;
+            continue;
+        }
+        const spread = lowerer.dataTypeAt(item.expression);
+        if (spread?.kind !== "tuple") return false;
+        inserted += spread.arity;
+    }
+    return removed === inserted;
 }
 
 /** The selected typed-array arm owns conversion; argument reads retain their views. */

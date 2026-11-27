@@ -2,6 +2,7 @@ import ts from "typescript";
 import { EmissionMap } from "../emission-transaction.js";
 import {
     dataTypesEqual,
+    dropsResourceEngine,
     isAbsentSpreadProperty,
     lackedField,
     slotHoldsOwnPresence,
@@ -1093,6 +1094,15 @@ function storeFieldMember(
     field: DataStructField,
     node: ts.Node,
 ): string {
+    // An array of resources that keep their engine is the one array
+    // JavaScript keeps: the declared field stores it with its owners rather
+    // than a copy without them.
+    if (
+        member.dataType?.kind === "vector" &&
+        dropsResourceEngine(member.dataType, field.type) &&
+        field.declarations?.length
+    )
+        lowerer.context.dataTypes.requireEngineFieldStorage(field, node, true);
     return lowerer.compileMemberForSink(
         member.dataType?.kind === "tuple" &&
             lowerer.context.dataTypes.readonlyArrayField(field)

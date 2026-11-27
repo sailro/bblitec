@@ -203,6 +203,22 @@ export interface CallbackInvocationOptions {
     resultType?: DataType;
 }
 
+/**
+ * The argument counts a call of `parameters` takes, from the `minimum` its
+ * signature requires: up to the parameters it declares, or any more past
+ * a rest parameter.
+ */
+function argumentCountRange(
+    minimum: number,
+    parameters: readonly ts.ParameterDeclaration[],
+): string {
+    if (parameters.some((parameter) => parameter.dotDotDotToken))
+        return `at least ${minimum}`;
+    return minimum >= parameters.length
+        ? `${minimum}`
+        : `${minimum}-${parameters.length}`;
+}
+
 function generationKnownPrimitive(value: Value): boolean {
     return (
         value.kind === "json-null" ||
@@ -8792,7 +8808,7 @@ export class UserFunctionLowerer {
             if (call.arguments.length < minimum)
                 fail(
                     call,
-                    `Function '${refusalName(ir)}' expects ${minimum}-${ir.parameters.length} arguments, received ${call.arguments.length}.`,
+                    `Function '${refusalName(ir)}' expects ${argumentCountRange(minimum, parameters)} arguments, received ${call.arguments.length}.`,
                 );
         }
         // A returned callback can mention its factory's type parameters

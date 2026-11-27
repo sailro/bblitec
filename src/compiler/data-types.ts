@@ -89,6 +89,7 @@ export {
 } from "./data-types/typed-arrays.js";
 export {
     dataTypesEqual,
+    dropsResourceEngine,
     functionArmIndex,
     unrecordedFact,
     passesByReferenceKind,
