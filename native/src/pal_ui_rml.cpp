@@ -1806,6 +1806,164 @@ js::Promise<js::PromiseVoid> ui_decode_image(Engine& engine, UiElementHandle ele
 }
 #endif
 
+/**
+ * A video element's media state. No platform layer decodes video, so the element shows its
+ * poster and every source its resource selection algorithm selects fails as one no decoder
+ * supports, as a browser without the source's codec fails it (docs/fidelity.md).
+ */
+struct UiMediaState {
+    bool muted = false;
+    bool paused = true;
+    /** The selected source failed: `error` is MEDIA_ERR_SRC_NOT_SUPPORTED. */
+    bool failed = false;
+    /** A resource selection waits for its task; a new load algorithm run cancels it. */
+    bool selecting = false;
+    /** Each run of the media element load algorithm. */
+    std::uint64_t load = 0;
+#if BBLITE_WORKERS
+    std::vector<js::Promise<js::PromiseVoid>> pending_plays;
+#endif
+};
+
+namespace {
+UiMediaState& media_state(Engine& engine, UiElementHandle element) {
+    auto& record = ui_element(engine, element);
+    if (record.tag != "video" || record.svg_namespace)
+        throw std::runtime_error("Media playback state requires a video element.");
+    if (!record.media)
+        record.media = std::make_shared<UiMediaState>();
+    return *record.media;
+}
+
+#if BBLITE_WORKERS
+void reject_plays(std::vector<js::Promise<js::PromiseVoid>> plays, std::string message,
+                  std::string name) {
+    for (const auto& play : plays)
+        play.reject(js::dom_exception_error(message, name));
+}
+
+/**
+ * HTML's resource selection algorithm with no decoder. Without a src attribute the network
+ * state stays empty and nothing fires; `preload="none"` (without autoplay) suspends it until
+ * play() asks for the source. Otherwise a task runs the dedicated media source failure steps:
+ * `error` becomes MEDIA_ERR_SRC_NOT_SUPPORTED, a non-bubbling `error` event fires at the
+ * element, and pending play() promises reject with NotSupportedError. The poster stays.
+ */
+void select_media_resource(Engine& engine, UiElementHandle element, bool playing) {
+    auto& state = media_state(engine, element);
+    const auto& record = ui_element(engine, element);
+    if (state.selecting || state.failed || !record.attributes.contains("src"))
+        return;
+    if (!playing && ui_video_preload(engine, element) == "none" &&
+        !record.attributes.contains("autoplay"))
+        return;
+    state.selecting = true;
+    pal::EventLoop::current().post([&engine, element, load = state.load] {
+        if (element.value >= engine.ui_elements.size())
+            return;
+        const auto media = ui_element(engine, element).media;
+        if (!media || media->load != load)
+            return;
+        media->selecting = false;
+        media->failed = true;
+        if (engine.dom_input) {
+            PlatformMouseEvent payload;
+            payload.payload_kind = DomInputEventKind::Event;
+            const auto event =
+                dom_event(payload, "error", dom_ui_path(engine, element), false, false);
+            event.dom->trusted = true;
+            dispatch_dom_pointer(engine, event);
+        }
+        reject_plays(std::exchange(media->pending_plays, {}),
+                     "The element has no supported sources.", "NotSupportedError");
+    });
+}
+#endif
+} // namespace
+
+bool ui_video_muted(Engine& engine, UiElementHandle element) {
+    return media_state(engine, element).muted;
+}
+void ui_video_set_muted(Engine& engine, UiElementHandle element, bool muted) {
+    media_state(engine, element).muted = muted;
+}
+bool ui_video_paused(Engine& engine, UiElementHandle element) {
+    return media_state(engine, element).paused;
+}
+
+std::string ui_video_preload(Engine& engine, UiElementHandle element) {
+    static_cast<void>(media_state(engine, element));
+    const auto& attributes = ui_element(engine, element).attributes;
+    const auto found = attributes.find("preload");
+    // The empty value is the Automatic state; a missing or invalid one Chromium's Metadata.
+    if (found == attributes.end())
+        return "metadata";
+    if (found->second.empty() || ascii_iequals(found->second, "auto"))
+        return "auto";
+    if (ascii_iequals(found->second, "none"))
+        return "none";
+    return "metadata";
+}
+
+void ui_video_pause(Engine& engine, UiElementHandle element) {
+    auto& state = media_state(engine, element);
+#if BBLITE_WORKERS
+    select_media_resource(engine, element, false);
+#endif
+    if (state.paused)
+        return;
+    state.paused = true;
+#if BBLITE_WORKERS
+    reject_plays(std::exchange(state.pending_plays, {}),
+                 "The play() request was interrupted by a call to pause().", "AbortError");
+#endif
+}
+
+#if BBLITE_WORKERS
+js::Promise<js::PromiseVoid> ui_video_play(Engine& engine, UiElementHandle element) {
+    auto& state = media_state(engine, element);
+    if (state.failed)
+        return js::Promise<js::PromiseVoid>::rejected(
+            js::dom_exception_error("The element has no supported sources.", "NotSupportedError"));
+    js::Promise<js::PromiseVoid> promise;
+    state.pending_plays.push_back(promise);
+    state.paused = false;
+    select_media_resource(engine, element, true);
+    return promise;
+}
+
+void ui_video_load(Engine& engine, UiElementHandle element) {
+    auto& state = media_state(engine, element);
+    ++state.load;
+    state.selecting = false;
+    state.failed = false;
+    if (!state.paused) {
+        state.paused = true;
+        reject_plays(std::exchange(state.pending_plays, {}),
+                     "The play() request was interrupted by a new load request.", "AbortError");
+    }
+    select_media_resource(engine, element, false);
+}
+#endif
+
+double ui_dimension_attribute(Engine& engine, UiElementHandle element, std::string_view name) {
+    const auto& attributes = ui_element(engine, element).attributes;
+    if (const auto found = attributes.find(std::string(name)); found != attributes.end())
+        if (const auto value = html_integer(found->second); value && *value >= 0)
+            return *value;
+    return 0;
+}
+
+void ui_set_dimension_attribute(Engine& engine, UiElementHandle element, std::string name,
+                                double value) {
+    // WebIDL unsigned long, then HTML's reflection: a value past 2^31 - 1 stores the default 0.
+    const double integral = std::isfinite(value) ? std::trunc(value) : 0.0;
+    const double modulo = std::fmod(integral, 4294967296.0);
+    const double converted = modulo < 0 ? modulo + 4294967296.0 : modulo;
+    const auto stored = converted <= 2147483647.0 ? static_cast<std::uint32_t>(converted) : 0u;
+    ui_set_attribute(engine, element, std::move(name), std::to_string(stored));
+}
+
 namespace {
 /**
  * HTML's details notification steps: a change of a details element's `open` attribute queues a
@@ -2077,6 +2235,8 @@ void ui_set_attribute(Engine& engine, UiElementHandle element, std::string name,
     if (script && name == "async")
         record.script_force_async = false;
     const bool prepares_script = script && name == "src" && existing == record.attributes.end();
+    // Setting a media element's src runs its load algorithm.
+    const bool loads_media = record.tag == "video" && !record.svg_namespace && name == "src";
     const auto updated = record.attributes.insert_or_assign(std::move(name), std::move(value));
     note_attribute_order(record, updated.first->first);
     if (engine.ui_attribute_changed)
@@ -2086,6 +2246,10 @@ void ui_set_attribute(Engine& engine, UiElementHandle element, std::string name,
 #if BBLITE_WORKERS
     if (updates_image)
         static_cast<void>(image_request(engine, element, true));
+    if (loads_media)
+        ui_video_load(engine, element);
+#else
+    static_cast<void>(loads_media);
 #endif
     mark_ui_changed(engine);
     if (prepares_script)
@@ -6240,6 +6404,10 @@ struct UiRmlRuntime {
             Rml::Factory::RegisterElementInstancer("svg", &svg_instancer);
 #endif
             Rml::Factory::RegisterElementInstancer("input", &input_instancer);
+            // A video without a decoder is a replaced element showing its poster, as an img
+            // shows its src (`projected_attribute_name`).
+            Rml::Factory::RegisterElementInstancer("video",
+                                                   Rml::Factory::GetElementInstancer("img"));
             scrollbar_properties = register_ui_scrollbar_properties();
             control_scheme_properties = register_ui_control_scheme_properties();
             Rml::Factory::RegisterDecoratorInstancer("bbl-native-range", &range_decorator);
@@ -6760,6 +6928,21 @@ struct UiRmlRuntime {
             changed = true;
         }
         throw std::runtime_error("Root font size and CSS length math did not converge.");
+    }
+
+    /**
+     * The RmlUi attribute a retained attribute projects to; none for one RmlUi does not see. A
+     * video renders its poster as an img renders its src; its media source is not rendered.
+     */
+    static std::optional<std::string> projected_attribute_name(const UiElementRecord& record,
+                                                               const std::string& name) {
+        if (record.tag != "video" || record.svg_namespace)
+            return name;
+        if (name == "src")
+            return std::nullopt;
+        if (name == "poster")
+            return "src";
+        return name;
     }
 
     std::string projected_attribute_value(std::string_view name,
@@ -7447,9 +7630,10 @@ struct UiRmlRuntime {
         projected = {};
         projected.element = raw;
         for (const auto& [name, source_value] : record.attributes) {
-            if (name == "style")
+            const auto projected_name = projected_attribute_name(record, name);
+            if (name == "style" || !projected_name)
                 continue;
-            raw->SetAttribute(name,
+            raw->SetAttribute(*projected_name,
                               projected_attribute_value(
                                   name, record.svg_namespace && (name == "fill" || name == "stroke")
                                             ? ui_svg_paint(source_value)
@@ -7656,17 +7840,19 @@ struct UiRmlRuntime {
 
         for (const auto& [name, old_value] : projected.attributes) {
             static_cast<void>(old_value);
-            if (name != "style" && !record.attributes.contains(name)) {
-                raw.RemoveAttribute(name);
+            const auto projected_name = projected_attribute_name(record, name);
+            if (name != "style" && projected_name && !record.attributes.contains(name)) {
+                raw.RemoveAttribute(*projected_name);
             }
         }
         for (const auto& [name, value] : record.attributes) {
-            if (name == "style")
+            const auto projected_name = projected_attribute_name(record, name);
+            if (name == "style" || !projected_name)
                 continue;
             const auto existing = projected.attributes.find(name);
             if (existing == projected.attributes.end() || existing->second != value) {
                 raw.SetAttribute(
-                    name, projected_attribute_value(
+                    *projected_name, projected_attribute_value(
                               name, record.svg_namespace && (name == "fill" || name == "stroke")
                                         ? ui_svg_paint(value)
                                         : value));

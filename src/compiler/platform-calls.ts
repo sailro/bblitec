@@ -5,10 +5,7 @@ import { journaled } from "./emission-transaction.js";
 import { deferredCapabilityDescriptor } from "./deferred-capabilities.js";
 import ts from "typescript";
 import { namedMember, resolvedDomApi, type NamedMember } from "./symbols.js";
-import {
-    DOCUMENT_ELEMENT_FROM_POINT,
-    VIDEO_ELEMENT_REFUSAL,
-} from "./dom-lowerings.js";
+import { DOCUMENT_ELEMENT_FROM_POINT } from "./dom-lowerings.js";
 import {
     uiComputedStyleRead,
     unrepresentedComputedStyle,
@@ -1688,7 +1685,7 @@ export class PlatformCalls {
                 );
             }
             if (!svg && normalizedTag === "video")
-                this.context.fail(call, VIDEO_ELEMENT_REFUSAL);
+                this.ui.requireRetainedVideo(call);
             this.context.reachFeature("ui:rml", call);
             if (svg) this.context.reachFeature("ui:inline-svg", call);
             if (svg && tag === "image")
@@ -2010,6 +2007,32 @@ export class PlatformCalls {
                 cpp: `bbl::ui_decode_image(${this.context.requireEngine(element, call)}, ${element.cpp})`,
                 promiseType: "bbl::js::PromiseVoid",
                 promiseResult: { kind: "void", cpp: "" },
+            };
+        }
+        // A video element without a decoder (docs/fidelity.md): pause() leaves
+        // it paused, and load() and play() run its load and resource
+        // selection algorithms, whose events and promises the application
+        // realm's event loop delivers.
+        if (
+            element &&
+            (callee.name === "play" ||
+                callee.name === "pause" ||
+                callee.name === "load") &&
+            this.ui.declaredUiTag(element, callee.expression) === "video"
+        ) {
+            this.context.expectArgumentCount(call, 0, 0);
+            const engine = this.context.requireEngine(element, call);
+            const media = `bbl::ui_video_${callee.name}(${engine}, ${element.cpp})`;
+            if (callee.name === "pause") return { kind: "void", cpp: media };
+            if (!this.context.options.workers)
+                throw new ApplicationRealmRequired();
+            if (callee.name === "load") return { kind: "void", cpp: media };
+            return {
+                kind: "promise",
+                cpp: media,
+                promiseType: "bbl::js::PromiseVoid",
+                promiseResult: { kind: "void", cpp: "" },
+                impure: true,
             };
         }
         if (element && callee.name === "focus") {
@@ -2382,6 +2405,7 @@ export class PlatformCalls {
             const staticValue = this.ui.tryUiStaticString(argumentAt(call, 1));
             if (
                 ((element.uiTag === "img" && name === "src") ||
+                    (element.uiTag === "video" && name === "poster") ||
                     (element.uiTag === "image" && name === "href")) &&
                 staticValue !== undefined
             )

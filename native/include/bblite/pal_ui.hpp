@@ -44,6 +44,26 @@ double ui_image_width(Engine&, UiElementHandle);
 double ui_image_height(Engine&, UiElementHandle);
 js::Promise<js::PromiseVoid> ui_decode_image(Engine&, UiElementHandle);
 #endif
+/**
+ * A video element without a decoder (docs/fidelity.md): it renders its poster, and its media
+ * element load algorithm fails every source as one no decoder supports
+ * (MEDIA_ERR_SRC_NOT_SUPPORTED). `muted` is the element's muted state, which the `muted`
+ * attribute does not reflect; `preload` reads its keyword.
+ */
+bool ui_video_muted(Engine&, UiElementHandle);
+void ui_video_set_muted(Engine&, UiElementHandle, bool muted);
+bool ui_video_paused(Engine&, UiElementHandle);
+std::string ui_video_preload(Engine&, UiElementHandle);
+void ui_video_pause(Engine&, UiElementHandle);
+#if BBLITE_WORKERS
+/** play(): rejects with NotSupportedError once the source fails, after an `error` event. */
+js::Promise<js::PromiseVoid> ui_video_play(Engine&, UiElementHandle);
+/** load(): the media element load algorithm, which a src write runs too. */
+void ui_video_load(Engine&, UiElementHandle);
+#endif
+/** A reflected `unsigned long` attribute (a video's width/height): its value, or 0. */
+double ui_dimension_attribute(Engine&, UiElementHandle, std::string_view name);
+void ui_set_dimension_attribute(Engine&, UiElementHandle, std::string name, double value);
 UiElementHandle ui_create_text_node(Engine& engine, std::string text);
 /**
  * `node.cloneNode(deep)`: a detached copy of an authored node's tag, text, attributes, inline

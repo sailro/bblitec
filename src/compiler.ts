@@ -202,7 +202,10 @@ import {
 import { browserGeneratedString } from "./compiler/browser-generated-string.js";
 import { compileBrowserTextureFunctionCall } from "./compiler/browser-texture-function.js";
 import { compileExecutedUrlFunctionCall } from "./compiler/executed-url-function.js";
-import { compileExecutedVideoFunctionCall } from "./compiler/executed-video-function.js";
+import {
+    compileExecutedVideoFunctionCall,
+    programBakesVideos,
+} from "./compiler/executed-video-function.js";
 import { compileExecutedGltfFunctionCall } from "./compiler/executed-gltf-function.js";
 import {
     compileEnginePixelRatioCap,
@@ -1466,6 +1469,7 @@ class Compiler implements LoweringServices {
             new ClassHierarchy(checker, program),
             options.workers !== undefined,
             storage,
+            programBakesVideos(checker, program),
         );
         this.dataLowerer = new DataLowerer(this);
         this.classLowerer = new ClassLowerer(this);

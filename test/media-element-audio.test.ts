@@ -345,16 +345,6 @@ test("refused media element forms name their limit", () => {
             ),
         /HTMLAudioElement.volume writes are not lowered/,
     );
-    // No platform layer decodes video: a video element refuses where the
-    // program creates one or first calls one it holds.
-    for (const source of [
-        'const video = document.createElement("video"); video.preload = "none"; document.body.appendChild(video);',
-        "function stop(block: { video: HTMLVideoElement }): void { block.video.pause(); } const stops: Array<typeof stop> = [stop];",
-    ])
-        assert.throws(
-            () => compile(source),
-            /A <video> element plays decoded video, which no native platform layer provides/,
-        );
 });
 
 test("a media element plays, moves, pauses, seeks, ends, loops and crossfades in a LabSound capture", (t) => {
