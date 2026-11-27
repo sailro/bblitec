@@ -150,7 +150,8 @@ the seconds so far). `--converge-storage <passes>` first runs up to that many su
 entry restarts once per pass instead of once per demand. Group by shared
 capability and probe source shapes before implementing. The
 compiler's `--coverage <coverage.json>` (with `--out` or `--survey`) records statement-level retained, refused and
-rolled-back lowering; it does not prove native support. A survey, and an ordinary compile between its attempts, rewrite it every ten minutes
+rolled-back lowering, and for a survey what rolled each rolled-back statement back (`rolledBackBy`: the refusal's site
+and class, or the storage demand); it does not prove native support. A survey, and an ordinary compile between its attempts, rewrite it every ten minutes
 (`complete: false` until it ends).
 
 ### Required files
