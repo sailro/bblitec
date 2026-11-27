@@ -78,7 +78,7 @@ export function constObjectLiteral(
  * The argument `Object.freeze`, `seal` or `preventExtensions` returns,
  * which is that object itself, and whether the call freezes it.
  */
-function returnedArgument(
+export function returnedArgument(
     checker: ts.TypeChecker,
     call: ts.CallExpression,
 ): { readonly argument: ts.Expression; readonly frozen: boolean } | undefined {

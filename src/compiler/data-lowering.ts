@@ -299,6 +299,7 @@ import {
     literalFieldObject,
     mappedElement,
     readOnlyFreshConst,
+    returnedArgument,
     yieldsFreshObject,
     yieldsNewArray,
 } from "./fresh-records.js";
@@ -9600,14 +9601,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         let contextualNode: ts.Expression = call;
         while (
             ts.isCallExpression(contextualNode.parent) &&
-            contextualNode.parent.arguments[0] === contextualNode &&
-            ts.isPropertyAccessExpression(contextualNode.parent.expression) &&
-            this.context.libraryGlobal(
-                contextualNode.parent.expression.expression,
-            ) === "Object" &&
-            ["freeze", "seal", "preventExtensions"].includes(
-                contextualNode.parent.expression.name.text,
-            )
+            returnedArgument(this.context.checker, contextualNode.parent)
+                ?.argument === contextualNode
         )
             contextualNode = contextualNode.parent;
         const contextualTsType =
