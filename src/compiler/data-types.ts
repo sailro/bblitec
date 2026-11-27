@@ -889,7 +889,6 @@ export function platformHandleKind(
     | "gpu-sampler"
     | "custom-event"
     | "dom-event"
-    | "video"
     | undefined {
     if (declaredIn(type.symbol, "dom", "webgpu")) {
         if (libraryName(type) === "GPUDevice") return "gpu-device";
@@ -902,8 +901,6 @@ export function platformHandleKind(
     if (libraryName(type) === "GamepadButton") return "gamepad-button";
     if (libraryName(type) === "Touch") return "touch";
     if (libraryName(type) === "CustomEvent") return "custom-event";
-    // Only a generation-executed producer makes one (executed-video-function.ts).
-    if (libraryName(type) === "HTMLVideoElement") return "video";
     if (["PointerEvent", "WheelEvent", "InputEvent"].includes(type.symbol.name))
         return "dom-event";
     return undefined;
@@ -2023,6 +2020,8 @@ export class DataTypeRegistry {
         private readonly asynchronous = false,
         /** The storage demands this compile replays with; read, never added to. */
         private readonly storage = new ReplayStorage(checker),
+        /** Whether `HTMLVideoElement` storage holds generation-baked videos (`programBakesVideos`). */
+        private readonly bakedVideos = false,
     ) {}
 
     /** Demands a record join; a planning attempt goes on with a copy. */
@@ -6727,6 +6726,14 @@ export class DataTypeRegistry {
         )
             return { kind: "event-target" };
         if (platformHandle) return { kind: "handle", handle: platformHandle };
+        // A program declaring a bounded video producer stores the videos
+        // generation bakes; any other stores retained video elements.
+        if (
+            this.bakedVideos &&
+            libraryName(type) === "HTMLVideoElement" &&
+            declaredInDomLibrary(type.symbol)
+        )
+            return { kind: "handle", handle: "video" };
         const platformEvent = platformEventKind(type.symbol);
         if (platformEvent) {
             return {

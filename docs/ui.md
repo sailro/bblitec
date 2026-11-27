@@ -67,6 +67,12 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 | Events           | transitionend, storage, file drags (first file), gamepadconnected/gamepaddisconnected, CustomEvent, constructed Event/MouseEvent/PointerEvent/InputEvent/KeyboardEvent (keydown and keyup reach the key listeners), `composedPath`                                                                                                                                                                                       | Element CustomEvent dispatch, authored drags, cross-document redispatch                                                                                                                                                |
 | Forms            | Focus/blur and the bubbling focusin/focusout after them, activeElement, `tabIndex`, text/password/checkbox/color/range inputs, textarea, select, output, details/summary, `form.elements.namedItem`, `new FormData(form)` (its entry list; `get`/`has`/`set`/`delete`/iterators), `submit` listeners ([never dispatched](fidelity.md#semantic-contract))                                                                 | Full browser form behavior; `hidden=until-found`; several controls of one name (RadioNodeList) and file inputs in FormData throw NotSupportedError; a FormData submitter                                               |
 
+- A `<video>` is a replaced element painting its `poster` (packaged as an img `src` is) with `object-fit: contain`,
+  its `width`/`height` attributes sizing it over the poster's ratio. `src`, `poster`, `preload`, `loop`, `controls`,
+  `autoplay`, `width` and `height` reflect their attributes; `muted` is its state; `paused`, `ended`, `currentTime`
+  and `duration` read back; `pause()`, `load()` and, in the application realm, `play()` and `error` listeners lower.
+  The source is never packaged or fetched ([fidelity](fidelity.md#semantic-contract)); `currentTime` writes and other
+  media members refuse.
 - Selector structure is parsed at generation with the literal grammar. In a runtime attribute value, a line break
   throws SyntaxError; the delimiting quote, a backslash, tab or NUL throw NotSupportedError.
 - `:hover`/`:active` read the UI's last update, so a listener of the pointer event that changes them sees the earlier
