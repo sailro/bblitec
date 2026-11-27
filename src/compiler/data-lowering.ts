@@ -220,6 +220,7 @@ import {
     functionArmIndex,
     isUndefinedDataType,
     presentDataType,
+    dropsResourceEngine,
     doubleLiteral,
     isNumericSequenceType,
     isTypedArrayType,
@@ -4149,20 +4150,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     : candidate;
             // An array of resources owns each element's engine, as one
             // resource does: the declared field stores it with its owner.
-            const resource = (type: DataType): DataType => {
-                const present = type.kind === "optional" ? type.inner : type;
-                return present.kind === "vector" || present.kind === "span"
-                    ? present.element
-                    : present;
-            };
-            const sourceHandle = resource(retained);
-            const targetHandle = resource(field.type);
             if (
-                sourceHandle.kind === "handle" &&
-                sourceHandle.ownedEngine &&
-                targetHandle.kind === "handle" &&
-                !targetHandle.ownedEngine &&
-                sourceHandle.handle === targetHandle.handle &&
+                dropsResourceEngine(retained, field.type) &&
                 field.declarations?.length
             )
                 owned.push(field);

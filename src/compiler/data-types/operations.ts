@@ -122,6 +122,31 @@ export function presentDataType(
 }
 
 /**
+ * Whether storing `source` as `target` drops the engine its resources
+ * keep: one resource, or an array's elements, of the same handle kind.
+ */
+export function dropsResourceEngine(
+    source: DataType,
+    target: DataType,
+): boolean {
+    const resource = (type: DataType): DataType => {
+        const present = type.kind === "optional" ? type.inner : type;
+        return present.kind === "vector" || present.kind === "span"
+            ? present.element
+            : present;
+    };
+    const from = resource(source);
+    const to = resource(target);
+    return (
+        from.kind === "handle" &&
+        from.ownedEngine === true &&
+        to.kind === "handle" &&
+        !to.ownedEngine &&
+        from.handle === to.handle
+    );
+}
+
+/**
  * The refusal a reading of `fact` meets where `type`, its present value or
  * one of its union members does not record it (`unrecorded`).
  */
