@@ -597,6 +597,37 @@ check(
 `,
 );
 
+test("a call short of its declared signature names that signature's argument counts", () => {
+    // The implementation declares fewer parameters than the interface it
+    // is stored as requires: the count is the called signature's.
+    for (const [signature, call, counts] of [
+        [
+            "add(x: number, y: number, radius: number): number",
+            "batch.add(1, 2)",
+            "3",
+        ],
+        [
+            "add(x: number, y: number, radius: number, scale?: number): number",
+            "batch.add(1, 2)",
+            "3-4",
+        ],
+        [
+            "add(x: number, y: number, radius: number, ...rest: number[]): number",
+            "batch.add(1, 2)",
+            "at least 3",
+        ],
+    ] as const)
+        assert.throws(
+            () =>
+                compileSource(
+                    `interface Batch { ${signature} } function make(): Batch { return { add(x: number, y: number) { return x + y; } }; } const batch = make(); // @ts-expect-error the signature requires the radius\nconsole.log(${call});`,
+                ),
+            new RegExp(
+                `Function 'add' expects ${counts} arguments, received 2\\.`,
+            ),
+        );
+});
+
 test("a missing primitive method refuses effectful arguments", () => {
     assert.throws(
         () =>
