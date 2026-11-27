@@ -145,6 +145,8 @@ import {
     holdsRecord,
     observedUnderOwnType,
     recordCopyObservation,
+    recordFieldIsWritten,
+    type FieldWriteContext,
     type RecordObservationContext,
 } from "./record-observations.js";
 import {
@@ -154,6 +156,8 @@ import {
     isRecordLike,
     layoutsCompatible,
     recordIdentity,
+    type UnwrittenField,
+    widensField,
     type InstantiatedRecord,
     type RecordComponent,
     type RecordComponentKey,
@@ -2542,6 +2546,11 @@ export class DataTypeRegistry {
     private recordComponents: ReadonlyMap<RecordComponentKey, RecordComponent> =
         new Map();
     /**
+     * @unjournaled Set once before lowering: what the program does with
+     * its records (`record-observations.ts`).
+     */
+    private observation: FieldWriteContext | undefined;
+    /**
      * @unjournaled Set once before lowering: the joins earlier replays
      * demanded, by source type.
      */
@@ -2568,6 +2577,7 @@ export class DataTypeRegistry {
         program: ts.Program,
     ): void {
         this.recordComponents = components;
+        this.observation = { program, checker: this.checker };
         const joins = new Map<ts.Type, RecordJoin[]>();
         for (const demand of demands) {
             // A demand no native object can hold stands refused.
@@ -3776,13 +3786,49 @@ export class DataTypeRegistry {
             layout = component.shapes.every((shape) =>
                 this.checker
                     .getPropertiesOfType(shape)
-                    .every(({ name }) => held.has(name)),
+                    .every(
+                        (property) =>
+                            held.has(property.name) &&
+                            !this.widensUnionField(union, shape, property),
+                    ),
             )
                 ? union
                 : null;
             this.unionLayouts.set(component.key, layout);
         }
         return layout ?? undefined;
+    }
+
+    /**
+     * Whether a shape of a union's component types `property` as a union
+     * wider than the union's arms do (`widensField`) and no write replaces
+     * it on the shape's records: the union's own layout cannot hold it, the
+     * component's layout of its shapes can, and the arms' reads find only
+     * their own storage there.
+     */
+    private widensUnionField(
+        union: ts.UnionType,
+        shape: ts.Type,
+        property: ts.Symbol,
+    ): boolean {
+        if (
+            shape === union ||
+            !this.observation ||
+            recordFieldIsWritten(this.observation, shape, property.name)
+        )
+            return false;
+        const own = this.checker.getTypeOfSymbol(property);
+        return union.types.some((arm) => {
+            const declared = arm.getProperty(property.name);
+            return (
+                declared !== undefined &&
+                widensField(
+                    this.checker,
+                    own,
+                    this.checker.getTypeOfSymbol(declared),
+                )
+            );
+        });
     }
 
     /**
@@ -5116,12 +5162,17 @@ export class DataTypeRegistry {
             // (or in one the union shares with it); two unions, or two
             // records, take one layout of all their shapes.
             const sourceUnion = sourceRecord.isUnion();
+            // A field one record types wider than the other is one slot
+            // where no write replaces it through the wider records.
+            const unwritten: UnwrittenField = (owner, property) =>
+                !recordFieldIsWritten(observation, owner, property);
             if (union !== sourceUnion)
                 this.requireUnionHolds(
                     union ? targetType : sourceType,
                     union ? sourceRecord : targetRecord,
                     node,
                     true,
+                    unwritten,
                 );
             // Every property any arm declares takes one storage in the
             // joined layout, including those the union's own fields omit;
@@ -5139,6 +5190,7 @@ export class DataTypeRegistry {
                           this.checker,
                           sourceRecord,
                           targetRecord,
+                          unwritten,
                       )
             ) {
                 this.requireJoin({
@@ -5537,6 +5589,17 @@ export class DataTypeRegistry {
         right: DataType,
     ): DataType | undefined {
         if (dataTypesEqual(left, right)) return left;
+        // A union holding the other storage among its members holds both
+        // (`boolean | { beyond }` beside `{ beyond }`): only a join no
+        // write through the union's records reaches admits it
+        // (`layoutsCompatible`).
+        const holds = (union: DataType, member: DataType): boolean =>
+            union.kind === "union" &&
+            union.members.some((candidate) =>
+                dataTypesEqual(candidate, member),
+            );
+        if (holds(left, right)) return left;
+        if (holds(right, left)) return right;
         // One declared signature stored generically in one layout is that
         // table in both: it holds every concrete signature its calls reach.
         if (
@@ -5619,6 +5682,7 @@ export class DataTypeRegistry {
         member: ts.Type,
         node: ts.Node,
         beforeJoin = false,
+        unwritten?: UnwrittenField,
     ): void {
         const fields = this.structFields(union.name, node, "accessors");
         for (const memberProperty of this.structProperties(member)) {
@@ -5695,7 +5759,17 @@ export class DataTypeRegistry {
                     node,
                     message(),
                 );
-            if (!held || !joined || !dataTypesEqual(joined, held))
+            // Before the join, a member storing a union holding the
+            // layout's storage of the field (`boolean | { beyond }` beside
+            // `{ beyond }`) gives the joined layout that union where no
+            // write replaces the field on its records.
+            const widened =
+                beforeJoin &&
+                held &&
+                joined?.kind === "union" &&
+                !dataTypesEqual(joined, held) &&
+                unwritten?.(member, property.name) === true;
+            if (!held || !joined || (!widened && !dataTypesEqual(joined, held)))
                 this.fail(node, message());
         }
     }

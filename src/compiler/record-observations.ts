@@ -81,6 +81,12 @@ export interface RecordObservationContext {
     readonly evaluationOrder: EvaluationOrder;
 }
 
+/** What asking whether a field is written needs: the program alone. */
+export type FieldWriteContext = Pick<
+    RecordObservationContext,
+    "program" | "checker"
+>;
+
 /**
  * Where a program could tell a copied record from the object JavaScript
  * shares. Storing a record as another record type copies it natively; the
@@ -531,7 +537,7 @@ function foreignArgument(checker: ts.TypeChecker, value: ts.Node): boolean {
  * holds another value (`writeGuardRejects`) is not counted.
  */
 export function recordFieldIsWritten(
-    context: RecordObservationContext,
+    context: FieldWriteContext,
     source: ts.Type,
     property: string,
     keepsPresent = false,
@@ -608,7 +614,7 @@ export function builtRecordFieldIsWritten(
 
 /** {@link recordFieldIsWritten} or {@link builtRecordFieldIsWritten}, kept per type and question. */
 function cachedFieldWrite(
-    context: RecordObservationContext,
+    context: FieldWriteContext,
     source: ts.Type,
     property: string,
     keepsPresent: boolean,
@@ -665,7 +671,7 @@ const writtenFields = new WeakMap<ts.Type, Map<string, boolean>>();
 
 /** {@link cachedFieldWrite}, computed. */
 function fieldWriteFound(
-    context: RecordObservationContext,
+    context: FieldWriteContext,
     source: ts.Type,
     property: string,
     keepsPresent: boolean,
