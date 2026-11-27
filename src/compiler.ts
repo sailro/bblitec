@@ -6597,11 +6597,16 @@ class Compiler implements LoweringServices {
      * inlined call that passes it on, a call's result: a generation run
      * computes that text, and refuses a binding the program writes through.
      */
-    public inlinedCallArgument(identifier: ts.Identifier): boolean {
-        const argument = this.userFunctions.inlinedArgument(
-            identifier,
-            (name) => this.bindings.scopeOf(name),
+    public inlinedParameterArgument(
+        identifier: ts.Identifier,
+    ): ts.Expression | undefined {
+        return this.userFunctions.inlinedArgument(identifier, (name) =>
+            this.bindings.scopeOf(name),
         );
+    }
+
+    public inlinedCallArgument(identifier: ts.Identifier): boolean {
+        const argument = this.inlinedParameterArgument(identifier);
         if (!argument) return false;
         const source = this.unwrap(argument);
         return ts.isCallExpression(source)

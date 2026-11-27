@@ -347,6 +347,7 @@ export interface ExpressionContext
             | "staticAssetUrlCandidates"
             | "sourceFiles"
             | "inlinedCallArgument"
+            | "inlinedParameterArgument"
             | "checker"
             | "program"
             | "sourceFile"
