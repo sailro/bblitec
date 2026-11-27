@@ -139,6 +139,30 @@ if(sum(row(0))!==3||sum(row(1))!==7)throw new Error('table view');
 `,
 );
 
+check(
+    "optional readonly method parameters hand stored callbacks their argument's owner",
+    `
+interface Sink { take?(values:readonly number[]):boolean }
+const kept:Array<readonly number[]>=[];
+const sinks:Sink[]=[{take:values=>{kept.push(values);return values.length>0;}}];
+class Relay {
+    calls=0;
+    pass(sink:Sink,values?:readonly number[]):boolean {
+        this.calls++;
+        return !!values&&!!sink.take?.(values);
+    }
+}
+const relay=new Relay();
+const input:number[]=[1,2];
+const maybe:number[]|undefined=input.length>1?input:undefined;
+if(!relay.pass(sinks[0]!,input.flatMap(value=>[value]))||!relay.pass(sinks[0]!,maybe)||relay.pass(sinks[0]!))
+    throw new Error('calls');
+input.push(3);
+if(kept.length!==2||kept[1]!==input||kept[1]!.length!==3||kept[0]!.length!==2||relay.calls!==3)
+    throw new Error('owners');
+`,
+);
+
 test("array views without represented owners refuse reference equality", () => {
     for (const type of ["ArrayLike<number>", "ArrayLike<number>|null"]) {
         assert.throws(

@@ -3406,10 +3406,15 @@ export class ClassLowerer {
                     : undefined;
             if (!argument) {
                 if (parameter.questionToken) {
-                    const parameterType = this.context.dataTypes.fromTsType(
+                    // An absent array borrows nothing: it is stored as the
+                    // owner a present argument would be.
+                    const declared = this.context.dataTypes.fromTsType(
                         this.context.checker.getTypeAtLocation(parameter),
                         parameter,
                     );
+                    const parameterType =
+                        declared &&
+                        this.context.dataTypes.ownReturnedArray(declared);
                     if (parameterType?.kind === "optional") {
                         this.context.bindings.bindParameterValue(
                             parameter.name,
