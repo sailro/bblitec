@@ -14050,6 +14050,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 });
             return;
         }
+        // Parsed elements stored as plain lanes: a const local holding a
+        // new array holds them so, its initializer converting each element
+        // while nothing else holds the array.
+        if (element.kind === "json" && plainLane(target)) {
+            const local = this.newArrayLocal(node);
+            if (local)
+                throw new DynamicBindingStorageRequired(local, {
+                    elements: target,
+                });
+            return;
+        }
         const handle = (type: DataType): DataType =>
             type.kind === "optional" ? type.inner : type;
         const from = handle(element);

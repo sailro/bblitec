@@ -649,6 +649,34 @@ check(
 `,
 );
 
+// A new array of parsed elements a const local holds, stored where its
+// elements are numbers, is the one array the record keeps: the local holds
+// the elements converted as its initializer builds them.
+check(
+    "a-new-array-of-parsed-elements-stored-as-numbers-stays-one-array",
+    `
+    interface SaveEntry { m: number; q: number[] }
+    interface Save { entries?: SaveEntry[] }
+    interface Row { quantities: number[] }
+    const rows = new Map<number, Row>();
+    let held: number[] = [];
+    function restore(save: Save | undefined, capacity: number): void {
+        for (const entry of save?.entries ?? []) {
+            if (!Array.isArray(entry.q)) continue;
+            const quantities = entry.q.filter((quantity) => Number.isSafeInteger(quantity) && quantity > 0).slice(0, capacity);
+            if (quantities.length > 0) rows.set(entry.m, { quantities });
+            held = quantities;
+        }
+    }
+    restore(JSON.parse('{"entries":[{"m":1,"q":[1,2,0,3]},{"m":2,"q":[0]}]}') as Save, 2);
+    const row = rows.get(1)!;
+    if (row.quantities.join() !== "1,2" || rows.has(2) || held.length !== 0) throw new Error("rows " + row.quantities.join());
+    restore(JSON.parse('{"entries":[{"m":3,"q":[4,5]}]}') as Save, 4);
+    held.push(6);
+    if (rows.get(3)!.quantities.join() !== "4,5,6" || rows.get(3)!.quantities !== held) throw new Error("one array");
+`,
+);
+
 check(
     "spread-of-a-method-record-keeps-its-key-order",
     `
