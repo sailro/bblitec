@@ -1158,6 +1158,31 @@ check(
 `,
 );
 
+check(
+    "a-function-stored-as-a-void-method-discards-what-it-returns",
+    `
+    interface Options { cancel(): boolean }
+    function install(options: Options): { cancel(): void } {
+        let armed = 0;
+        const cancel = (): boolean => {
+            if (armed > 3) return false;
+            armed = 0;
+            return options.cancel();
+        };
+        const keyDown = (key: string): void => { if (key === "Escape" && cancel()) armed++; };
+        keyDown("Escape");
+        if (armed !== 0) throw new Error("first cancel");
+        keyDown("Escape");
+        if (armed !== 1) throw new Error("second cancel " + armed);
+        return { cancel };
+    }
+    let count = 0;
+    const installed = install({ cancel: () => ++count > 1 });
+    installed.cancel();
+    if (count !== 3) throw new Error("count " + count);
+`,
+);
+
 test("an optional property refuses function storage that erased installed properties", () => {
     for (const [writeFirst, parameter] of [
         [true, ""],
