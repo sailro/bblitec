@@ -1899,6 +1899,70 @@ export class DataTypeRegistry {
         if (order) throw order.joinedWith(otherOrders);
     }
 
+    /**
+     * A write of a property struct `target`'s record type declares, through
+     * a record of struct `source`, whose layout lacks it (a parameter of the
+     * wider type bound to a narrower record): JavaScript adds the property
+     * to that one object, so the two record types, the `owner` expression's
+     * under the instantiation in force, join one layout.
+     */
+    public joinWrittenRecordProperty(
+        source: string,
+        target: string,
+        owner: ts.Expression,
+    ): void {
+        const from = this.nativeRecordSources.get(source);
+        const record = this.checker.getNonNullableType(
+            this.checker.getTypeAtLocation(owner),
+        );
+        const to = this.recordDemand(record, owner);
+        if (!from) return;
+        const sourceInstantiation = this.recordInstantiation(
+            from,
+            from.type,
+            source,
+        );
+        const targetInstantiation = this.recordInstantiation(
+            to,
+            record,
+            target,
+        );
+        const component = (
+            demand: NativeRecordStorageDemand,
+            instantiation: InstantiatedRecord | undefined,
+        ) =>
+            this.recordComponents.get(
+                instantiation ?? recordIdentity(this.checker, demand.type),
+            );
+        const sourceComponent = component(from, sourceInstantiation);
+        if (
+            (!sourceInstantiation && !this.joinableRecord(from, from.type)) ||
+            (!targetInstantiation && !this.joinableRecord(to, record)) ||
+            (sourceComponent &&
+                sourceComponent === component(to, targetInstantiation)) ||
+            !(sourceInstantiation || targetInstantiation
+                ? this.structLayoutsCompatible(
+                      this.structFields(source, owner, "accessors"),
+                      this.structFields(target, owner, "accessors"),
+                  )
+                : layoutsCompatible(this.checker, from.type, record))
+        )
+            return;
+        this.requireJoin({
+            ...from,
+            node: owner,
+            joins: [
+                {
+                    source: from.type,
+                    target: record,
+                    ...(sourceInstantiation ? { sourceInstantiation } : {}),
+                    ...(targetInstantiation ? { targetInstantiation } : {}),
+                    kind: "value",
+                },
+            ],
+        });
+    }
+
     /** An observable extra property joins the concrete record layouts that carried it. */
     private retainConvertedRecordProperty(
         name: string,
@@ -3651,16 +3715,28 @@ export class DataTypeRegistry {
      * A generic record type naming type parameters the instantiations in
      * force substitute, as that one instantiation: its generic interface,
      * class or alias with each argument resolved (a generic argument as its
-     * own instantiation), or an intersection with each part resolved
-     * (`H & { id: number }`). Undefined for a type no instantiation
-     * reaches, and for one an argument of which does not resolve.
+     * own instantiation), an intersection with each part resolved
+     * (`H & { id: number }`), or an object literal type a generic function
+     * declares (`{ key: Key }`, or a local alias of one) with every argument
+     * in force. Undefined for a type no instantiation reaches, and for one
+     * an argument of which does not resolve.
      */
     private instantiatedRecordOf(
         type: ts.Type,
     ): InstantiatedRecord | undefined {
         if (!this.mentionsSubstitution(type)) return undefined;
-        const [generic, arguments_] = this.genericArguments(type);
+        const [declared, declaredArguments] = this.genericArguments(type);
+        const literal =
+            !declared &&
+            ((type as ts.ObjectType).objectFlags & ts.ObjectFlags.Anonymous) !==
+                0
+                ? (type.aliasSymbol ?? type.symbol)
+                : undefined;
+        const generic = declared ?? literal;
         if (!generic) return undefined;
+        const arguments_ = literal
+            ? this.substitutedParameters(type)
+            : declaredArguments;
         const resolved = arguments_.map((argument) => {
             const concrete = this.resolveTypeParameter(argument);
             return this.mentionsSubstitution(concrete)
@@ -3670,6 +3746,19 @@ export class DataTypeRegistry {
         return resolved.every((argument) => argument !== undefined)
             ? instantiatedRecord(generic, resolved)
             : undefined;
+    }
+
+    /** The type parameters in force a type mentions, in declaration order. */
+    private substitutedParameters(type: ts.Type): ts.Type[] {
+        const found = new Set<ts.Type>();
+        this.mentionsSubstitution(type, new EmissionSet(), found);
+        const site = (parameter: ts.Type) => parameter.symbol.declarations?.[0];
+        return [...found].sort(
+            (a, b) =>
+                (site(a)?.getSourceFile().fileName ?? "").localeCompare(
+                    site(b)?.getSourceFile().fileName ?? "",
+                ) || (site(a)?.pos ?? 0) - (site(b)?.pos ?? 0),
+        );
     }
 
     /**
@@ -9639,17 +9728,22 @@ export class DataTypeRegistry {
      * instantiations and would otherwise read back the first one's struct.
      * `seen` closes the recursion on self-referential shapes, and every
      * branch is a disjunction over a set, so no answer depends on order.
+     * Given `found`, the walk collects every such parameter instead of
+     * stopping at the first.
      */
     private mentionsSubstitution(
         type: ts.Type,
         seen: Set<ts.Type> = new EmissionSet(),
+        found?: Set<ts.Type>,
     ): boolean {
         if (this.typeArgumentFrames().length === 0 || seen.has(type)) {
             return false;
         }
         seen.add(type);
         if (this.substituteTypeParameter(type)) {
-            return true;
+            if (!found) return true;
+            found.add(type);
+            return false;
         }
         const constituents =
             (type.flags & (ts.TypeFlags.Union | ts.TypeFlags.Intersection)) !==
@@ -9658,7 +9752,7 @@ export class DataTypeRegistry {
                 : [];
         if (
             constituents.some((member) =>
-                this.mentionsSubstitution(member, seen),
+                this.mentionsSubstitution(member, seen, found),
             )
         ) {
             return true;
@@ -9671,7 +9765,9 @@ export class DataTypeRegistry {
             (objectType.objectFlags & ts.ObjectFlags.Reference) !== 0 &&
             this.checker
                 .getTypeArguments(type as ts.TypeReference)
-                .some((argument) => this.mentionsSubstitution(argument, seen))
+                .some((argument) =>
+                    this.mentionsSubstitution(argument, seen, found),
+                )
         ) {
             return true;
         }
@@ -9680,7 +9776,7 @@ export class DataTypeRegistry {
         if (
             (objectType.objectFlags & ts.ObjectFlags.Mapped) !== 0 &&
             type.aliasTypeArguments?.some((argument) =>
-                this.mentionsSubstitution(argument, seen),
+                this.mentionsSubstitution(argument, seen, found),
             )
         ) {
             return true;
@@ -9694,9 +9790,14 @@ export class DataTypeRegistry {
                             this.mentionsSubstitution(
                                 this.checker.getTypeOfSymbol(parameter),
                                 seen,
+                                found,
                             ),
                         ) ||
-                    this.mentionsSubstitution(signature.getReturnType(), seen),
+                    this.mentionsSubstitution(
+                        signature.getReturnType(),
+                        seen,
+                        found,
+                    ),
             )
         ) {
             return true;
@@ -9718,6 +9819,7 @@ export class DataTypeRegistry {
                 this.mentionsSubstitution(
                     this.checker.getTypeOfSymbol(property),
                     seen,
+                    found,
                 ),
             );
     }

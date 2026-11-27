@@ -6676,9 +6676,12 @@ export class UserFunctionLowerer {
         // reads the binding the function had before.
         if (selfIdentifier && selfBinding)
             context.bindings.bindCompileTimeValue(selfIdentifier, selfBinding);
+        // A function stored as a void signature discards what it returns,
+        // as TypeScript's contextual void lets it.
         context.beginNativeFunctionBody(
             bodyResult,
-            asynchronous && !promiseType,
+            (asynchronous && !promiseType) ||
+                (!asynchronous && !generator && !dataType.result),
             {
                 coroutine: asynchronous && !generator,
                 ...(generator ? { generator, runtimeDataLoops: true } : {}),
