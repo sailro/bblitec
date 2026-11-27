@@ -408,6 +408,31 @@ check(
 );
 
 check(
+    "spread-literal-methods-reach-their-object-by-name",
+    `
+    interface Binding { readonly count: number; local: number[]; grow(): number; dispose(): void }
+    const live = new Set<Binding>();
+    function bind(count: number): Binding {
+        const local = [count];
+        let disposed = false;
+        const binding: Binding = { count, local, grow: () => local.push(count), dispose() { disposed = true; } };
+        live.add(binding);
+        return { ...binding, dispose() { binding.dispose(); live.delete(binding); if (disposed) local.length = 0; } };
+    }
+    function retain(count: number): Binding {
+        const binding = bind(count);
+        const retained = { ...binding, dispose() { live.delete(retained); binding.dispose(); } };
+        live.add(retained);
+        return retained;
+    }
+    const kept = retain(2);
+    if (live.size !== 2 || !live.has(kept) || kept.count !== 2 || kept.grow() !== 2 || kept.local.length !== 2) throw new Error("members");
+    kept.dispose();
+    if (live.size !== 0 || kept.local.length !== 0) throw new Error("dispose removed the retained object " + live.size);
+`,
+);
+
+check(
     "element-reads-of-absent-receivers",
     `
     interface Control { u: number; lat?: number }

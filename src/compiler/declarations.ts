@@ -3597,7 +3597,8 @@ export class DeclarationLowerer {
     /**
      * The object literal a record binding's initializer is, when the
      * literal creates the object the binding holds (`withLiteralSelfBinding`):
-     * no spread copies another object into it, and nothing rebinds the name.
+     * a spread copies another object's members into it, and nothing rebinds
+     * the name.
      */
     private selfNamingLiteral(
         name: ts.Identifier,
@@ -3606,7 +3607,6 @@ export class DeclarationLowerer {
     ): ts.ObjectLiteralExpression | undefined {
         return type.kind === "struct" &&
             ts.isObjectLiteralExpression(initializer) &&
-            !initializer.properties.some(ts.isSpreadAssignment) &&
             !this.context.sharedClosures.identifierIsRebound(name)
             ? initializer
             : undefined;
@@ -3756,8 +3756,11 @@ export class DeclarationLowerer {
                     );
                 const source = declaration.initializer;
                 const declared = this.context.symbols.valueSymbol(name);
+                // The literal's own record snapshot is the object it
+                // creates: its methods lower in the sink, after the self
+                // binding exists.
                 const selfLiteral =
-                    !snapshot &&
+                    (!snapshot || snapshot === plainRecordSnapshot) &&
                     !sharedClosureStorage &&
                     declared !== undefined &&
                     initializerNamesBinding(
@@ -4375,13 +4378,19 @@ export class DeclarationLowerer {
         // A record whose own methods name its binding (`batch.keyAt(i)` in a
         // method of `const batch: Batch = {...}`) is one shared object. An
         // object literal binds the name to the object it creates before its
-        // methods capture it; through any other initializer the methods read
-        // a shared cell when they run, after it is filled.
+        // methods capture it; through any other initializer, or a spread the
+        // record declaration copies (`emitSpreadStructDeclaration`), the
+        // methods read a shared cell when they run, after it is filled.
         if (initializerReferencesBinding && annotated.kind === "struct")
             this.context.dataTypes.markStoredObjectReferences(annotated);
-        const selfLiteral = initializerReferencesBinding
-            ? this.selfNamingLiteral(name, annotated, initializer)
-            : undefined;
+        const selfLiteral =
+            initializerReferencesBinding &&
+            !(
+                ts.isObjectLiteralExpression(initializer) &&
+                initializer.properties.some(ts.isSpreadAssignment)
+            )
+                ? this.selfNamingLiteral(name, annotated, initializer)
+                : undefined;
         const selfReferentialBinding =
             initializerReferencesBinding &&
             !selfLiteral &&
