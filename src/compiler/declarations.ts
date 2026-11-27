@@ -3596,9 +3596,9 @@ export class DeclarationLowerer {
 
     /**
      * The object literal a record binding's initializer is, when the
-     * literal creates the object the binding holds (`withLiteralSelfBinding`):
-     * a spread copies another object's members into it, and nothing rebinds
-     * the name.
+     * literal creates the object the binding holds (`withLiteralSelfBinding`)
+     * and nothing rebinds the name; a spread only copies another object's
+     * members into that object.
      */
     private selfNamingLiteral(
         name: ts.Identifier,
