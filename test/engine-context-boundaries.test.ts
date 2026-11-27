@@ -563,4 +563,15 @@ test("an engine field's engine is decided before emission from every store to it
             () => compileSource(source),
             /An implicit resource constructor requires one unambiguous engine context/,
         );
+    // A function the program never calls stores nothing (a look-dev
+    // wrapper beside the scene's own path).
+    const unused = `
+        function unused(other: EngineContext): Deps {
+            return { engine: other, owner: new Owner(other) };
+        }
+    `;
+    assert.match(
+        compileSource(prelude + unused + main).cpp,
+        /bbl::create_standard_material\(/,
+    );
 });

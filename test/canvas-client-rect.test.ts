@@ -80,3 +80,34 @@ test("a record field holding the primary canvas measures it where a later callba
         { expectedOutput: "" },
     );
 });
+
+test("a field typed as members picked from the canvas measures the canvas it holds", (t) => {
+    const result = compileSource(`
+        import {createEngine} from "@babylonjs/lite";
+        interface Deps { canvas: Pick<HTMLCanvasElement, "getBoundingClientRect">; project(x: number): number | null }
+        function command(deps: Deps) {
+            return (x: number): string => {
+                const pixel = deps.project(x);
+                if (pixel === null) return "behind";
+                const rect = deps.canvas.getBoundingClientRect();
+                return pixel < rect.left || pixel >= rect.right ? "off" : "on " + rect.width + "x" + rect.height;
+            };
+        }
+        const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+        await createEngine(canvas);
+        const at = command({ canvas, project: (x) => (x > 0 ? x : null) });
+        const answers = [at(-1), at(10), at(700)];
+        if (answers.join() !== "behind,on 640x360,off") throw new Error(answers.join());
+    `);
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(
+        tools,
+        "canvas-client-rect-picked-members",
+        result.cpp + halfExtentEngine,
+        { expectedOutput: "" },
+    );
+});

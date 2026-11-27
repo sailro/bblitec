@@ -138,6 +138,22 @@ test("element layout extents and rectangles read the retained border box", () =>
     assert.match(cpp, /\(v_bblite_ui_rect_\d+\)->offset_width/);
 });
 
+test("a field typed as members picked from an element measures the element it holds", () => {
+    const cpp = compileEntry(
+        `
+        interface Deps { panel: Pick<HTMLElement, "getBoundingClientRect">; scale: number }
+        function measure(deps: Deps): () => number {
+            return () => { const rect = deps.panel.getBoundingClientRect(); return rect.width * deps.scale + rect.height; };
+        }
+        const panel = document.createElement("div");
+        document.body.appendChild(panel);
+        panel.textContent = String(measure({ panel, scale: 2 })());
+        globalThis.close();
+    `,
+    );
+    assert.match(cpp, /bbl::ui_get_client_rect\([^;]+\)/);
+});
+
 test("record-field controls take their declared interface's tag", () => {
     const cpp = compileEntry(`
         const fields: { input: HTMLInputElement } = { input: document.createElement("input") };
