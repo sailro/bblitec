@@ -3765,7 +3765,7 @@ export class UiProjection {
                         return this.uiStyleRefusal(
                             site,
                             "background",
-                            "gradient layers require supported positions, nonnegative length/percentage sizes and repeat or no-repeat",
+                            "gradient layers require supported positions, nonnegative length/percentage sizes and repeat, repeat-x, repeat-y or no-repeat",
                         );
                     // The layers are the background image the PAL's
                     // background cascade paints, as a longhand's are.

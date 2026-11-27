@@ -1,0 +1,70 @@
+A sized decorator layer marked repeat-x or repeat-y tiles its paint box along that axis only (CSS background-repeat:
+repeat-x, repeat-y): one tile at the placed layer along the other axis, the paint area's clip mask cutting what falls
+outside it, as patch 0059 tiles both axes for repeat.
+
+diff --git a/Include/RmlUi/Core/StyleSheetTypes.h b/Include/RmlUi/Core/StyleSheetTypes.h
+index 4567da5..2141eef 100644
+--- a/Include/RmlUi/Core/StyleSheetTypes.h
++++ b/Include/RmlUi/Core/StyleSheetTypes.h
+@@ -39,8 +39,9 @@ struct DecoratorBox {
+     Style::LengthCalc size_calc[2], position_calc[2];
+     // The box the layer is sized and placed in (CSS background-origin); Auto: its paint (clip) box.
+     BoxArea origin = BoxArea::Auto;
+-    // A sized layer that repeats (CSS background-repeat: repeat) tiles its paint box.
+-    bool repeat = false;
++    // A sized layer that repeats along an axis (CSS background-repeat: repeat, repeat-x, repeat-y) tiles its paint box
++    // along it; x then y.
++    bool repeat[2] = {false, false};
+ };
+ struct DecoratorDeclaration {
+ 	String type;
+diff --git a/Source/Core/ElementEffects.cpp b/Source/Core/ElementEffects.cpp
+index 4377a35..5dd1663 100644
+--- a/Source/Core/ElementEffects.cpp
++++ b/Source/Core/ElementEffects.cpp
+@@ -177,16 +177,20 @@ void ElementEffects::ReloadEffectsData()
+                         const RenderBox*& slot;
+                         ~RestoreBox() { slot = nullptr; }
+                     } restore{element->decorator_render_box};
+-                    if (decorator.box.repeat) {
+-                        // Tiles start at the placed layer and repeat both ways over the paint box, whose
+-                        // clip mask cuts the edge tiles (CSS background-repeat: repeat).
++                    if (decorator.box.repeat[0] || decorator.box.repeat[1]) {
++                        // Tiles start at the placed layer and repeat both ways over the paint box along a repeating
++                        // axis, one tile at the placed layer along the other; the paint box's clip mask cuts the edge
++                        // tiles (CSS background-repeat: repeat, repeat-x, repeat-y).
+                         if (list == &mask_images)
+                             throw std::runtime_error("Repeating UI mask layers are not represented.");
+                         Vector2f start;
+-                        for (int axis = 0; axis < 2; ++axis)
+-                            start[axis] = placed[axis] - Math::RoundUp(placed[axis] / size[axis]) * size[axis];
+-                        const int columns = int(Math::RoundUp((paint_bounds.x - start.x) / size.x));
+-                        const int rows = int(Math::RoundUp((paint_bounds.y - start.y) / size.y));
++                        int counts[2];
++                        for (int axis = 0; axis < 2; ++axis) {
++                            start[axis] = decorator.box.repeat[axis] ? placed[axis] - Math::RoundUp(placed[axis] / size[axis]) * size[axis] : placed[axis];
++                            counts[axis] = decorator.box.repeat[axis] ? int(Math::RoundUp((paint_bounds[axis] - start[axis]) / size[axis])) : 1;
++                        }
++                        const int columns = counts[0];
++                        const int rows = counts[1];
+                         if (columns * rows > 4096)
+                             throw std::runtime_error("A repeating UI background layer exceeds 4096 tiles.");
+                         decorator.rounded_clip = true;
+diff --git a/Source/Core/PropertyParserDecorator.cpp b/Source/Core/PropertyParserDecorator.cpp
+index da50f36..e60b7a6 100644
+--- a/Source/Core/PropertyParserDecorator.cpp
++++ b/Source/Core/PropertyParserDecorator.cpp
+@@ -116,9 +116,11 @@ bool PropertyParserDecorator::ParseValue(Property& property, const String& decor
+ 			{
+ 				if (keyword.empty())
+ 					continue;
+-				if (StringUtilities::ToLower(keyword) == "repeat")
++				const String repeat = StringUtilities::ToLower(keyword);
++				if (repeat == "repeat" || repeat == "repeat-x" || repeat == "repeat-y")
+ 				{
+-					box.repeat = true;
++					box.repeat[0] = box.repeat[0] || repeat != "repeat-y";
++					box.repeat[1] = box.repeat[1] || repeat != "repeat-x";
+ 					continue;
+ 				}
+ 

@@ -38,8 +38,15 @@ test("gradient background layers retain independent dimensions, positions and ne
             uiGradientBackground(value),
             "linear-gradient(red,blue) padding-box repeat / 2px 22px / 50% 50%",
         );
+    // A one-axis repetition tiles along that axis only.
+    assert.equal(
+        uiGradientBackground(
+            "radial-gradient(circle,red 0 2px,transparent 4px) 0 0/7px 78px repeat-y",
+        ),
+        "radial-gradient(circle,red 0 2px,transparent 4px) padding-box repeat-y / 7px 78px / 0 0",
+    );
     for (const value of [
-        "linear-gradient(red,blue) center/2px 22px repeat-x",
+        "linear-gradient(red,blue) center/2px 22px round",
         "linear-gradient(red,blue) center/2px 22px space",
         "linear-gradient(red,blue) center/2px 22px repeat no-repeat",
         "linear-gradient(red,blue) center/-2px 22px no-repeat",
