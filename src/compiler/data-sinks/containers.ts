@@ -52,7 +52,7 @@ import {
 import { NativeRecordStorageRequired } from "../native-record-storage.js";
 import { isJsonValue } from "../json-bridge.js";
 import { readsErasedVoid } from "../undefined-values.js";
-import { absenceOf } from "../values/model.js";
+import { absenceOf, tupleNumberArrayCpp } from "../values/model.js";
 
 function expressionOptional(
     dataType: DataType<"optional">,
@@ -337,7 +337,7 @@ function valueVector(
         requireGrowableTuple(lowerer, value, node);
         lowerer.context.reachJsData();
         lowerer.markEscaped(value);
-        return `bbl::js::Array<double>{(${value.cpp}).retained_storage()}`;
+        return tupleNumberArrayCpp(value.cpp);
     }
     const collection = handleCollectionElements(
         lowerer,

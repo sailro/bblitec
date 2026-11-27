@@ -395,6 +395,11 @@ export function readsNativeStorage(value: Value): boolean {
     );
 }
 
+/** A numeric tuple's `cpp` as the number array it is: its lanes' storage, one array. */
+export function tupleNumberArrayCpp(cpp: string): string {
+    return `bbl::js::Array<double>{(${cpp}).retained_storage()}`;
+}
+
 /** The initializer of a local that owns `value`: a snapshot of existing storage. */
 export function snapshotReadCpp(value: Value): string {
     return readsNativeStorage(value)

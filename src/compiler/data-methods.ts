@@ -20,7 +20,12 @@ import {
     readOnlyDataMethods,
 } from "./receiver-methods.js";
 import ts from "typescript";
-import { knownCondition, staticKeyOf, undefinedValue } from "./values/model.js";
+import {
+    knownCondition,
+    staticKeyOf,
+    tupleNumberArrayCpp,
+    undefinedValue,
+} from "./values/model.js";
 import { hasProvenUndefinedCompletion } from "./undefined-values.js";
 import { absentReceiverMessage } from "./properties.js";
 import { belongsToEntryEngine } from "./data-types/handles.js";
@@ -2003,7 +2008,7 @@ function compileKnownDataMethod(
             method,
             {
                 kind: "data",
-                cpp: `bbl::js::Array<double>{(${narrowed.cpp}).retained_storage()}`,
+                cpp: tupleNumberArrayCpp(narrowed.cpp),
                 dataType: array,
             },
             array,
