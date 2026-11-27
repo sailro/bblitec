@@ -401,6 +401,39 @@ function attemptPlanned(
     planner.attemptStatement(context, statement, lower);
 }
 
+test("a joined demand is a new demand: the demands it joins stay as they were", () => {
+    const { declarationAt } = plannedStatements(`
+        let first = { gain: 1 };
+        let second = { level: 1 };
+    `);
+    const first = new DynamicBindingStorageRequired(
+        declarationAt(0),
+        undefined,
+    );
+    const second = new DynamicBindingStorageRequired(
+        declarationAt(1),
+        undefined,
+    );
+    const names = (demand: StorageDemand): string[] =>
+        demand.requests.map((request) =>
+            request.kind === "dynamic"
+                ? request.declaration.name.getText()
+                : request.kind,
+        );
+    const joined = first.joinedWith([second]);
+    assert.ok(joined instanceof DynamicBindingStorageRequired);
+    assert.notEqual(joined, first);
+    assert.equal(joined.message, first.message);
+    assert.deepEqual(names(joined), ["first", "second"]);
+    assert.deepEqual(names(first), ["first"]);
+    // Joined with a demand that holds it, a demand makes no cycle.
+    assert.deepEqual(names(first.joinedWith([joined])), [
+        "first",
+        "first",
+        "second",
+    ]);
+});
+
 test("a plan ends at a demand whose change later statements may read", () => {
     // Each record `let` demands dynamic storage, an ownership change the
     // next statements may read: the plan ends at the first.
