@@ -3169,26 +3169,32 @@ export class PropertyAccessLowerer {
     }
 
     /**
-     * A base Event view asserted to a keyboard or mouse interface: a
-     * checked view of the payload, which throws when the dispatch carried
-     * another one.
+     * A base Event view asserted to a keyboard or mouse interface (a
+     * pointer or wheel event is a mouse event): a checked view of the
+     * payload, which throws when the dispatch carried another one.
      */
     private assertedPlatformEvent(
         owner: Value,
         ownerExpression: ts.Expression,
     ): Value | undefined {
-        if (this.declaredEventInterface(ownerExpression) === "InputEvent")
+        const declared = this.declaredEventInterface(ownerExpression);
+        if (declared === "InputEvent")
             return valueForKind("platform-mouse-event", {
                 cpp: `${owner.cpp}.payload<bbl::PlatformMouseEvent>()`,
                 ...(owner.engineCpp ? { engineCpp: owner.engineCpp } : {}),
             });
-        const event = platformEventKind(
-            this.context.checker
-                .getNonNullableType(
-                    this.context.checker.getTypeAtLocation(ownerExpression),
-                )
-                .getSymbol(),
-        );
+        const event =
+            declared === "PointerEvent" || declared === "WheelEvent"
+                ? "mouse"
+                : platformEventKind(
+                      this.context.checker
+                          .getNonNullableType(
+                              this.context.checker.getTypeAtLocation(
+                                  ownerExpression,
+                              ),
+                          )
+                          .getSymbol(),
+                  );
         if (event !== "keyboard" && event !== "mouse") return undefined;
         return valueForKind(
             event === "keyboard"

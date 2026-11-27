@@ -141,6 +141,18 @@ test("element tree, text, editability, selection and narrowed event reads run na
             return created;
         }
         window.addEventListener("keydown", escapeFor("window").onKeyDown, { capture: true });
+        // Pointer and wheel events are mouse events: their asserted views read the checked mouse payload.
+        interface Lane { readonly onDown: (event: Event) => void; readonly onWheel: (event: Event) => void }
+        const onDown = (raw: Event): void => {
+            const event = raw as PointerEvent;
+            if (event.pointerId < 0 || event.pointerType === "" || event.clientX < -1e9) record("p");
+        };
+        const onWheel = (raw: Event): void => {
+            if ((raw as WheelEvent).deltaY > 1e9) record("w");
+        };
+        const lane: Lane = { onDown, onWheel };
+        window.addEventListener("pointerdown", lane.onDown, { capture: true });
+        window.addEventListener("wheel", lane.onWheel, { passive: true });
         document.addEventListener("pointerdown", (event) => {
             const target = event.target;
             if (target instanceof HTMLElement && target.isContentEditable) record("E");
@@ -171,6 +183,14 @@ test("element tree, text, editability, selection and narrowed event reads run na
     assert.match(cpp, /bbl::ui_first_child_node\(/);
     assert.match(cpp, /bbl::dom_target_is_node\(/);
     assert.match(cpp, /\.as<bbl::PlatformKeyboardEvent>\(\)\.key/);
+    assert.match(
+        cpp,
+        /\.as<bbl::PlatformMouseEvent>\(\)\.pointer_payload\(\)\.pointer_id/,
+    );
+    assert.match(
+        cpp,
+        /\.as<bbl::PlatformMouseEvent>\(\)\.mouse_payload\(\)\.delta_y/,
+    );
     assert.match(cpp, /window_document_engine\(\)\.document_hidden/);
     runRmlUiFixture(t, "dom-tree-reads", {
         macros: {
