@@ -4029,7 +4029,13 @@ export class UiProjection {
                 );
             if (
                 property.startsWith("--bbl-") &&
-                property !== "--bbl-authored-display"
+                property !== "--bbl-authored-display" &&
+                // A generated box is an element the retained pass sizes
+                // as it sizes an authored one.
+                !(
+                    property === "--bbl-absolute-inline" &&
+                    (part === "before" || part === "after")
+                )
             )
                 this.uiStyleRefusal(
                     site,

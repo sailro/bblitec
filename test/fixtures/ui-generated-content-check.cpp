@@ -126,6 +126,12 @@ int main() {
         assert(text(box(item, Pseudo::After)) == "End");
         assert(text(box(tail, Pseudo::Before)) == "/* keep */ @keyframes literal { }");
         assert(box(item, Pseudo::After)->GetBox().GetSize().y == 15);
+        // An absolute box with one inset and no width shrinks to its content.
+        assert(text(box(tail, Pseudo::After)) == ">");
+        assert(box(tail, Pseudo::After)->GetComputedValues().display() ==
+               Rml::Style::Display::InlineBlock);
+        const float arrow = box(tail, Pseudo::After)->GetBox().GetSize().x;
+        assert(arrow > 0 && arrow < 30);
         assert(raw(item)->GetInnerRML().empty());
         assert(raw(panel)->GetChild(0) == box(panel, Pseudo::Before));
         assert(matches(item, ".panel > .item:empty"));
