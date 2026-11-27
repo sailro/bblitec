@@ -871,6 +871,33 @@ test("records of one object refuse a property no one layout stores both ways", (
 });
 
 check(
+    "records-of-one-array-share-a-field-one-type-widens-to-a-union",
+    `
+    interface Zone { count: number; feather?: { start: number }; lodMesh?: boolean | { beyond: number } }
+    const huge = Date.now() > 0;
+    const zones = huge ? [{ count: 1, feather: { start: 1 } }, { count: 3, lodMesh: { beyond: 4 } }] : [{ count: 2 }, { count: 3, lodMesh: { beyond: 5 } }];
+    const kept: Zone[][] = [];
+    kept.push(zones);
+    let total = 0;
+    for (const zone of kept[0]!) total += zone.count + (zone.lodMesh === true ? 100 : zone.lodMesh ? zone.lodMesh.beyond : 0) + (zone.feather?.start ?? 0);
+    if (total !== 9 || zones[1]!.lodMesh.beyond !== 4 || kept[0] !== zones) throw new Error("widened field");
+`,
+);
+
+test("records of one array refuse a widened field written through the wider type", () => {
+    assert.throws(
+        () =>
+            compileSource(`interface Near { count: number; lodMesh?: { beyond: number } }
+            interface Zone { count: number; lodMesh?: boolean | { beyond: number } }
+            const near: Near[] = [{ count: 1 }, { count: 3, lodMesh: { beyond: 4 } }];
+            const kept: Zone[][] = [];
+            kept.push(near);
+            kept[0]![1]!.lodMesh = true;
+            const unused = near[1]!.lodMesh?.beyond;`),
+        /'Near' record stored as 'Zone' would be a copy of the one object JavaScript keeps, and [^;]*; no shared layout holds both record types/,
+    );
+});
+check(
     "fresh-nested-members-are-copied",
     `
     interface Emit { x: number; y: number; z: number }

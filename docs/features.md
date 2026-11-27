@@ -88,6 +88,9 @@ Rules:
   function filling each of its signatures.
 - A record holding a class instance where a record type it is stored as holds a dynamic value shares that type's
   layout where a copy is observable: the field is a document holding the instance.
+- A record stored as a record type whose field is a union with the record's own field type among its arms
+  (`boolean | { beyond }` beside `{ beyond }`) shares that type's layout where a copy is observable, the field one slot
+  of the union; a write of the field through the wider type refuses.
 - A record binding whose member is written by a run-time key or replaced takes native storage; its fields typed
   `Record<string, unknown>` are documents.
 - A record type a parsed document is stored as is a document, with every record type the program reads out of it
