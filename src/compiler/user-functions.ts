@@ -8752,7 +8752,12 @@ export class UserFunctionLowerer {
                         : "."),
             );
         }
-        return context.dataTypes.ownReturnedArray(type);
+        // A caller telling the returned `null` from `undefined` tags it, as a
+        // shared body's return does (`sharedReturnType`).
+        return context.dataTypes.absenceTaggedStorage(
+            ir.declaration,
+            context.dataTypes.ownReturnedArray(type),
+        );
     }
 
     /**
