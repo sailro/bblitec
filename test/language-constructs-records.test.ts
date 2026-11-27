@@ -675,6 +675,34 @@ check(
 );
 
 check(
+    "a-record-in-a-discriminated-literal-field-is-the-selected-arm",
+    `
+    interface ConeHost { x: number; baseY: number }
+    interface GableHost { cx: number; eaveY: number }
+    interface Envelope { id: number; x: number; baseY: number; radius: number }
+    interface Cone { readonly kind: "cone"; readonly host: ConeHost }
+    interface Gable { readonly kind: "gable"; readonly host: GableHost }
+    interface Disc { readonly kind: "disc"; readonly radius: number }
+    type Carrier = Cone | Gable | Disc;
+    interface Tower { roof: { kind: "cone"; envelope: Envelope } | { kind: "disc"; radius: number } }
+    function append(out: Carrier[], tower: Tower): void {
+        if (tower.roof.kind === "cone") out.push({ kind: "cone", host: tower.roof.envelope });
+        else out.push({ kind: "disc", radius: tower.roof.radius });
+    }
+    const envelope: Envelope = { id: 1, x: 2, baseY: 3, radius: 1 };
+    const out: Carrier[] = [{ kind: "gable", host: { cx: 5, eaveY: 1 } }];
+    for (const tower of [{ roof: { kind: "cone", envelope } }, { roof: { kind: "disc", radius: 4 } }] as Tower[]) append(out, tower);
+    envelope.x = 7;
+    const cone = out[1]!;
+    if (cone.kind !== "cone" || cone.host.x !== 7 || (cone.host as Envelope) !== envelope) throw new Error("one object");
+    cone.host.baseY = 9;
+    if (envelope.baseY !== 9 || JSON.stringify(cone.host) !== '{"id":1,"x":7,"baseY":9,"radius":1}') throw new Error("written through the arm");
+    const gable = out[0]!;
+    if (gable.kind !== "gable" || gable.host.cx !== 5 || out[2]!.kind !== "disc") throw new Error("other arms");
+`,
+);
+
+check(
     "records-of-two-unions-take-one-layout",
     `
     interface A { tag: "a"; v: number }

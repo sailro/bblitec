@@ -9,6 +9,7 @@ import type { Value } from "../types.js";
 import { valueDataType } from "../values/model.js";
 import { writable } from "../emission-transaction.js";
 import { isJsonValue } from "../json-bridge.js";
+import { declaredContextualType } from "../type-facts.js";
 import {
     unwrappedKnownValue,
     type DataSinkHost,
@@ -102,6 +103,27 @@ function unionValue(
         records.length === 1
     )
         memberIndex = type.members.indexOf(records[0]!);
+    // Beside other record types it converts as the one its position
+    // declares: a discriminated literal's field, the member its
+    // discriminant selects.
+    if (
+        memberIndex < 0 &&
+        (source?.kind === "struct" || value.kind === "record") &&
+        records.length > 1 &&
+        expression
+    ) {
+        const declared = declaredContextualType(
+            lowerer.context.checker,
+            expression,
+        );
+        const stored =
+            declared &&
+            lowerer.context.dataTypes.fromStoredTsType(declared, expression);
+        if (stored?.kind === "struct")
+            memberIndex = type.members.findIndex((member) =>
+                dataTypesEqual(member, stored),
+            );
+    }
     // An array stored as the union's one array type converts through the
     // array sink, which decides how its elements are stored as that type's.
     const arrays = type.members.filter((member) => member.kind === "vector");
