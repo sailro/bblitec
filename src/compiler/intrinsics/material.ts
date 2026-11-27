@@ -47,7 +47,7 @@ import {
     compileBlockLoader,
     type NodeMaterialContext,
 } from "../node-material.js";
-import { isTypedArrayType } from "../data-types.js";
+import { isTypedArrayType, type DataType } from "../data-types.js";
 import {
     compileOptionalStaticBoolean,
     conditionalOptionObjects,
@@ -544,24 +544,46 @@ function compileDynamicShaderUniformWrite(
         isTypedArrayType(type) ||
         (type.kind === "vector" && type.element.kind === "number") ||
         (type.kind === "union" && type.members.every(numeric));
+    const number: DataType = { kind: "number" };
+    // A literal's lanes are each read as the number sink reads one, a
+    // parsed member's included.
     const tuple =
-        input.kind === "tuple" &&
-        input.tupleElements?.every((element) => element.kind === "number")
-            ? input.tupleElements
-            : undefined;
-    if (
-        input.kind !== "number" &&
-        !tuple &&
-        !(input.kind === "data" && input.dataType && numeric(input.dataType))
-    )
-        context.fail(
-            argumentAt(call, 2),
-            "Dynamic shader uniform values require a number or numeric array.",
-        );
+        input.kind === "tuple" ? (input.tupleElements ?? []) : undefined;
+    // A value the source types as a number or number array (a parsed
+    // member) is stored as that sink reads it.
+    const declared = context.dataLowerer.dataTypeAt(argumentAt(call, 2));
+    const converted =
+        input.kind === "number" ||
+        tuple ||
+        (input.kind === "data" && input.dataType && numeric(input.dataType))
+            ? undefined
+            : declared &&
+                (declared.kind === "number" ||
+                    (declared.kind === "vector" &&
+                        declared.element.kind === "number"))
+              ? context.dataLowerer.compileKnownValueForSink(
+                    input,
+                    declared,
+                    argumentAt(call, 2),
+                )
+              : context.fail(
+                    argumentAt(call, 2),
+                    "Dynamic shader uniform values require a number or numeric array.",
+                );
     context.reachFeature("material:shader", call);
     const value = tuple
-        ? `std::array<double, ${tuple.length}>{${tuple.map((element) => element.cpp).join(", ")}}`
-        : input.cpp;
+        ? `std::array<double, ${tuple.length}>{${tuple
+              .map((element) =>
+                  element.kind === "number"
+                      ? element.cpp
+                      : context.dataLowerer.compileKnownValueForSink(
+                            element,
+                            number,
+                            argumentAt(call, 2),
+                        ),
+              )
+              .join(", ")}}`
+        : (converted ?? input.cpp);
     return {
         kind: "void",
         cpp: `bbl::set_shader_uniform(${context.requireEngine(material, call)}, ${material.cpp}, ${name.cpp}, ${value})`,
