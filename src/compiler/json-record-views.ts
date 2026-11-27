@@ -162,6 +162,74 @@ export function compileJsonTupleView(
     return cpp;
 }
 
+/**
+ * A module namespace a document holds is the namespace object: its exports
+ * in code-unit order, each read live as `namespace.name` reads it, stored
+ * as a document member (a function by its declared type, boxed).
+ */
+export function compileJsonNamespaceView(
+    lowerer: DataSinkHost,
+    namespace: Value,
+    node: ts.Node,
+): string | undefined {
+    const type = namespace.dataType;
+    if (type?.kind !== "module-namespace") return undefined;
+    const context = lowerer.context;
+    const source = lowerer.convertedExpression(node);
+    context.emitDiscardedValue(namespace);
+    const owner = context.moduleNamespaces.value(type);
+    const names = owner.recordOwnKeys ?? [];
+    const key = context.allocateTemporaryCppName("namespace_key");
+    const body = context.captureManagedClosureLines(() => {
+        context.registerNativeBinding(key);
+        for (const name of names) {
+            let cpp = "";
+            const lines = context.captureEmittedLines(() => {
+                const member = context.moduleNamespaces.member(
+                    owner,
+                    name,
+                    node,
+                )!;
+                cpp = source
+                    ? lowerer.compileReadMemberForSink(
+                          member,
+                          { kind: "json" },
+                          node,
+                          source,
+                          name,
+                      )
+                    : lowerer.compileMemberForSink(
+                          member,
+                          { kind: "json" },
+                          node,
+                          name,
+                      );
+            });
+            context.emit({
+                kind: "open",
+                code: `if (${key} == ${context.cppString(name)}) {`,
+            });
+            for (const line of lines) context.emit(`    ${line}`);
+            context.emit({
+                kind: "control",
+                code: `    return ${cpp};`,
+                transfer: "return",
+            });
+            context.emit({ kind: "close", code: "}" });
+        }
+        context.emit({
+            kind: "control",
+            code: "return {};",
+            transfer: "return",
+        });
+    });
+    context.reachJson();
+    return (
+        `bbl::js::JsonValue::from_module_namespace(${owner.cpp}, ${sharedGetter(lowerer, body, key, "std::string_view")}, ` +
+        `bbl::js::Array<std::string>{${names.map((name) => context.cppString(name)).join(", ")}})`
+    );
+}
+
 /** Plain record facts that either JSON ownership strategy can preserve. */
 export function isPlainJsonRecord(record: Value): boolean {
     return (

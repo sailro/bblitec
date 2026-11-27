@@ -9,6 +9,7 @@ export type DataSinkHost = Pick<
     | "compileStringSink"
     | "compileKnownValueForSink"
     | "compileMemberForSink"
+    | "compileReadMemberForSink"
     | "storeLiteralMember"
     | "convertedExpression"
     | "convertedElementOf"

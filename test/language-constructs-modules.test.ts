@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
@@ -256,6 +257,80 @@ test("module namespace entries fold computed constants and re-exports", async (t
             ),
         /Unsupported call target 'Object\.entries\(table\)\s*\.filter'/,
     );
+});
+
+test("a module namespace in a document slot is the namespace object", async (t) => {
+    const directory = resolve("artifacts/namespace-document");
+    const reference = join(directory, "reference");
+    mkdirSync(reference, { recursive: true });
+    const modules: Record<string, string> = {
+        layout: `
+            export const STRIDE = 3;
+            export const NAME = "layout";
+            export let counter = 1;
+            export function bump(): void { counter++; }
+            export function pack(value: number): number { return value * STRIDE; }`,
+        wider: `
+            export * from "./layout.js";
+            export const EXTRA = 7;`,
+        entry: `
+            import * as layout from "./layout.js";
+            import * as wider from "./wider.js";
+            interface Part {
+                readonly name: string;
+                readonly table: Readonly<Record<string, unknown>>;
+                readonly excluding?: Readonly<Record<string, unknown>>;
+            }
+            function digest(table: Readonly<Record<string, unknown>>, excluding?: Readonly<Record<string, unknown>>): string {
+                return Object.entries(table)
+                    .filter(([name, value]) => typeof value === "number" && (!excluding || excluding[name] !== value))
+                    .map(([name, value]) => \`\${name}=\${value as number}\`)
+                    .sort()
+                    .join(";");
+            }
+            const parts: Part[] = [{ name: "layout", table: layout }, { name: "wider", table: wider, excluding: layout }];
+            parts.push({ name: "plain", table: { Z: Date.now() > 0 ? 1 : 2, A: "a" } });
+            function run(): string {
+                const out: string[] = [];
+                for (const part of parts) out.push(part.name + ":" + digest(part.table, part.excluding));
+                return out.join("|");
+            }
+            if (run() !== "layout:STRIDE=3;counter=1|wider:EXTRA=7|plain:Z=1") throw new Error("digest " + run());
+            layout.bump();
+            if (run() !== "layout:STRIDE=3;counter=2|wider:EXTRA=7|plain:Z=1") throw new Error("live binding " + run());
+            const table = parts[0]!.table;
+            if (Object.keys(table).join() !== "NAME,STRIDE,bump,counter,pack") throw new Error("keys " + Object.keys(table).join());
+            if (Object.keys(parts[1]!.table).join() !== "EXTRA,NAME,STRIDE,bump,counter,pack") throw new Error("re-exported keys");
+            if (typeof table["pack"] !== "function" || (table as Readonly<Record<string, (value: number) => number>>).pack!(2) !== 6) throw new Error("function export");
+            if (table !== parts[1]!.excluding || table === parts[1]!.table) throw new Error("identity");
+            let refused = false;
+            try {
+                (table as Record<string, unknown>)["STRIDE"] = 4;
+            } catch (error) {
+                refused = error instanceof TypeError;
+            }
+            if (!refused || table["STRIDE"] !== 3) throw new Error("export write");`,
+    };
+    // The reference run is an ES module graph: its namespaces are module
+    // namespace exotic objects.
+    writeFileSync(join(reference, "package.json"), '{ "type": "module" }');
+    for (const [name, source] of Object.entries(modules)) {
+        writeFileSync(join(directory, `${name}.ts`), source);
+        writeFileSync(
+            join(reference, `${name}.js`),
+            ts.transpileModule(source, {
+                compilerOptions: {
+                    target: ts.ScriptTarget.ESNext,
+                    module: ts.ModuleKind.ESNext,
+                },
+            }).outputText,
+        );
+    }
+    await import(pathToFileURL(join(reference, "entry.js")).href);
+    const result = compileSource(modules.entry!, {
+        fileName: join(directory, "entry.ts"),
+    });
+    await executeGeneratedAssertions(t, "namespace-document", result.cpp);
 });
 
 test("imported functions read numeric tuples through nullable lanes", async (t) => {

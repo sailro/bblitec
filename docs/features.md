@@ -143,6 +143,9 @@ Rules:
   `JSON.stringify`, a run-time string key) keeps its module's bindings; one of an `any` value keeps every module's.
 - A module namespace in a record slot calls its exports after a presence check; `(await import(x)).f()` calls the
   settled namespace's.
+- A module namespace in a document slot (an `unknown` or `Record<string, unknown>` field) is the namespace object, one
+  per module: its export names in code-unit order, each read live, a function stored as its declared type; writing,
+  defining or deleting an export throws TypeError. A class or enum export there refuses.
 - `for...in` over a number-keyed dictionary yields names in property order; reading it by such a name finds the
   number the name spells. A parsed document's binding takes `++`/`--` as its number.
 - A write to a represented Error's property that no reached source reads back evaluates its value and stores nothing.

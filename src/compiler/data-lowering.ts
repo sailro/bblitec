@@ -13101,15 +13101,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
-     * Stores the member `key` a spread at `spread` copies out of
-     * `source`'s value as `dataType`: no expression of its own names it,
-     * so a sink asking which native owner it holds reads its checked type
+     * Stores the member `key` read at `at` out of `source`'s value as
+     * `dataType` (a spread's member, a module namespace document's): no
+     * expression of its own names it, so a sink asking which native owner
+     * it holds or which function it is reads its checked type
      * (`convertedMember`).
      */
-    private compileSpreadMemberForSink(
+    public compileReadMemberForSink(
         member: Value,
         dataType: DataType,
-        spread: ts.Node,
+        at: ts.Node,
         source: ts.Expression,
         key: string,
     ): string {
@@ -13117,7 +13118,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return this.compileConvertedMember(
             member,
             dataType,
-            spread,
+            at,
             undefined,
             undefined,
             property && {
@@ -15857,7 +15858,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 kind: "expression",
                 code: store(
                     field,
-                    this.compileSpreadMemberForSink(
+                    this.compileReadMemberForSink(
                         sourceValue,
                         field.type,
                         node,
@@ -15968,7 +15969,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                                 kind: "expression",
                                 code: store(
                                     field,
-                                    this.compileSpreadMemberForSink(
+                                    this.compileReadMemberForSink(
                                         entry.value,
                                         field.type,
                                         property,

@@ -470,6 +470,10 @@ public:
     template <typename Getter>
     [[nodiscard]] static JsonValue from_tuple_view(Getter getter, std::size_t length);
 
+    template <typename Getter>
+    [[nodiscard]] static JsonValue from_module_namespace(ModuleNamespace module, Getter getter,
+                                                         bbl::js::Array<std::string> keys);
+
     /**
      * Defines an enumerable accessor property on an owned object: a new key
      * is appended, an existing one keeps its place. A non-configurable
@@ -1583,6 +1587,55 @@ JsonValue JsonValue::from_record_view(Getter getter, bbl::js::Array<std::string>
     JsonValue value;
     value.kind_ = Kind::object;
     value.native_ = make_gc_shared<JsonRecordView<Getter>>(std::move(getter), std::move(keys));
+    return value;
+}
+
+/**
+ * A module namespace object (ECMA-262 module namespace exotic object): its export names in
+ * code-unit order, each read live through `getter`, one object per module. Writing, defining
+ * or deleting an export throws TypeError, as module (strict) code does.
+ */
+template <typename Getter> struct JsonModuleNamespaceView final : JsonNativeObject {
+    ModuleNamespace module;
+    mutable Getter getter;
+    bbl::js::Array<std::string> keys;
+    JsonModuleNamespaceView(ModuleNamespace namespace_object, Getter read,
+                            bbl::js::Array<std::string> names)
+        : module(namespace_object), getter(std::move(read)), keys(std::move(names)) {}
+    JsonValue get(std::string_view key) const override { return getter(key); }
+    bbl::js::Array<std::string> own_keys() const override { return {keys.begin(), keys.end()}; }
+    const std::type_info& type() const override { return typeid(JsonModuleNamespaceView); }
+    const void* identity() const override { return module.identity(); }
+    std::string to_string() const override {
+        throw NamedError("TypeError",
+                         "Cannot convert a module namespace object to a primitive value");
+    }
+    void set(std::string_view key, const JsonValue&) override {
+        throw NamedError("TypeError", "Cannot assign to export '" + std::string(key) +
+                                          "' of a module namespace object");
+    }
+    void remove(std::string_view key) override {
+        if (has_own(key))
+            throw NamedError("TypeError", "Cannot delete export '" + std::string(key) +
+                                              "' of a module namespace object");
+    }
+    void define(std::string_view key, const JsonValue&) override {
+        throw NamedError("TypeError", "Cannot redefine export '" + std::string(key) +
+                                          "' of a module namespace object");
+    }
+    void gc_trace(const TraceVisitor& visitor) const override {
+        visitor(getter);
+        visitor(keys);
+    }
+};
+
+template <typename Getter>
+JsonValue JsonValue::from_module_namespace(ModuleNamespace module, Getter getter,
+                                           bbl::js::Array<std::string> keys) {
+    JsonValue value;
+    value.kind_ = Kind::object;
+    value.native_ =
+        make_gc_shared<JsonModuleNamespaceView<Getter>>(module, std::move(getter), std::move(keys));
     return value;
 }
 
