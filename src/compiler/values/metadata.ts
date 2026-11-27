@@ -61,6 +61,7 @@ const resourceMetadataFields = {
         "retainedNativeRecord",
         "recordProperties",
         "recordPropertyOrder",
+        "recordKeyStructs",
         "recordOwnKeys",
         "declaredOwnKeys",
         "moduleNamespace",

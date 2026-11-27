@@ -181,14 +181,26 @@ export function recordPropertyKeys(owner: Value): string[] {
 
 /**
  * A compile-time record's own keys as a creation copying it makes them own
- * (`RecordKeyOrders`): one a conditional spread wrote only maybe.
+ * (`RecordKeyOrders`): one a conditional spread wrote only maybe, and the
+ * keys a spread of a struct's record made own in that record's order.
  */
 export function recordCreatedKeys(owner: Value): CreatedKeys[] {
-    return recordPropertyKeys(owner).map((key) =>
-        owner.recordProperties?.[key]?.conditionalOwnKey
-            ? { key, maybe: true }
-            : { key },
-    );
+    const created: CreatedKeys[] = [];
+    const spread = new Set<string>();
+    for (const key of recordPropertyKeys(owner)) {
+        const struct = owner.recordKeyStructs?.[key];
+        if (struct === undefined)
+            created.push(
+                owner.recordProperties?.[key]?.conditionalOwnKey
+                    ? { key, maybe: true }
+                    : { key },
+            );
+        else if (!spread.has(struct)) {
+            spread.add(struct);
+            created.push({ struct });
+        }
+    }
+    return created;
 }
 
 /** Change a raw data property without replacing the alias-shared tables. */
@@ -209,6 +221,11 @@ export function deleteRecordProperty(owner: Value, key: string): void {
     if (owner.recordSetters) delete writable(owner.recordSetters)[key];
     const index = owner.recordPropertyOrder?.indexOf(key) ?? -1;
     if (index !== -1) writable(owner.recordPropertyOrder!).splice(index, 1);
+    // A key created again is own where that creation puts it.
+    if (owner.recordKeyStructs?.[key] !== undefined) {
+        const { [key]: _deleted, ...kept } = owner.recordKeyStructs;
+        writable(owner).recordKeyStructs = kept;
+    }
 }
 
 /** A string-typed value's native text, static or data. */

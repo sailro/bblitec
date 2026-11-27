@@ -3348,6 +3348,12 @@ export interface ValueFields {
     recordProperties?: Readonly<Record<string, Value>>;
     /** Mutable creation order for a compile-time record's data and accessor keys. */
     recordPropertyOrder?: readonly string[];
+    /**
+     * The struct whose record a spread made each of these keys own from
+     * (`{ ...record }`): they are own in that record's order
+     * (`recordCreatedKeys`).
+     */
+    recordKeyStructs?: Readonly<Record<string, string>>;
     /** Complete own-key order proven for a native record whose key set cannot change. */
     recordOwnKeys?: readonly string[];
     /**
