@@ -518,11 +518,13 @@ class ModuleInitializerPlanner implements ModuleConstantWrites {
                     if (symbol === undefined) return false;
                     if (!isConst) return rebound(symbol);
                     // A record carrying methods binds here too, so its
-                    // methods have a receiver to run against.
+                    // methods have a receiver to run against, as does a
+                    // call whose closures keep state its uses share.
                     return (
                         hasArraySnapshot(declaration) ||
                         (declaration.initializer !== undefined &&
                             isRecordWithMethods(declaration.initializer)) ||
+                        this.createsReceiverState(declaration) ||
                         isMutatedContainer(this, declaration)
                     );
                 },

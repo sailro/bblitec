@@ -4519,14 +4519,14 @@ export class UserFunctionLowerer {
                     "Recursive function has no callable signature.",
                 );
             }
+            // An expression body returns its value.
             const asyncWithoutValueReturn =
                 isAsyncFunction(declaration) &&
                 (!declaration.body ||
-                    !this.containsValueReturn(
-                        ts.isBlock(declaration.body)
-                            ? declaration.body.statements
-                            : [],
-                    ));
+                    (ts.isBlock(declaration.body) &&
+                        !this.containsValueReturn(
+                            declaration.body.statements,
+                        )));
             const returnTsType = asyncWithoutValueReturn
                 ? undefined
                 : nativeReturnTsType(
