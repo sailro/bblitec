@@ -11329,11 +11329,17 @@ class Compiler implements LoweringServices {
             }
         }
         const unwrapped = this.unwrap(argument);
+        // An optional collection parameter holds its argument's own
+        // collection as a collection parameter does, present or not.
+        const optional = dataType.kind === "optional";
+        const present = (type: DataType): DataType =>
+            optional && type.kind === "optional" ? type.inner : type;
+        const held = present(dataType);
         const collection =
-            dataType.kind === "vector" ||
-            dataType.kind === "span" ||
-            dataType.kind === "map" ||
-            dataType.kind === "set";
+            held.kind === "vector" ||
+            held.kind === "span" ||
+            held.kind === "map" ||
+            held.kind === "set";
         const structural =
             dataType.kind === "struct" ||
             (dataType.kind === "vector" && dataType.element.kind === "struct");
@@ -11350,7 +11356,7 @@ class Compiler implements LoweringServices {
                 collection &&
                 actual.kind === "data" &&
                 actual.dataType &&
-                this.dataLowerer.spanCompatible(actual.dataType, dataType)
+                this.dataLowerer.spanCompatible(present(actual.dataType), held)
             ) {
                 return actual;
             }
