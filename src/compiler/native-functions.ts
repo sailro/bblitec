@@ -469,8 +469,13 @@ export class NativeFunctionLowerer {
                 call,
                 this.context.probeEmission(
                     () =>
+                        // A spread argument's value is the array it spreads.
                         call.arguments.map((argument) =>
-                            this.context.compileValue(argument),
+                            this.context.compileValue(
+                                ts.isSpreadElement(argument)
+                                    ? argument.expression
+                                    : argument,
+                            ),
                         ),
                     () => false,
                 ),
