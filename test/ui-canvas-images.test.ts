@@ -83,7 +83,8 @@ test("Canvas2D transforms, image source rectangles and readbacks lower to native
                 const v = document.createElement("video");
                 c.getContext("2d")!.drawImage(v, 0, 0);
             `),
-        /draws an img or canvas source, not <video>/,
+        // A video element refuses where the program creates it: nothing decodes video.
+        /A <video> element plays decoded video/,
     );
 });
 

@@ -238,9 +238,13 @@ export function uiGradientBackground(value: string): string | undefined {
             continue;
         }
         // A layer repeats unless no-repeat says otherwise: its decorator tiles
-        // the paint box (RmlUi patch 0059). One-axis and spaced repetition
-        // are not represented.
-        if (layer.repeat !== "repeat" && layer.repeat !== "no-repeat")
+        // the paint box along the axes it repeats in (RmlUi patches 0059 and
+        // 0073). Spaced and rounded repetition are not represented.
+        if (
+            !["repeat", "repeat-x", "repeat-y", "no-repeat"].includes(
+                layer.repeat,
+            )
+        )
             return undefined;
         // A gradient has no intrinsic size: an auto size is its box's.
         if (typeof layer.size === "string") return undefined;
@@ -252,7 +256,7 @@ export function uiGradientBackground(value: string): string | undefined {
         // a layer naming no box paints in its padding box.
         const clip = layer.boxed ? layer.clip : layer.origin;
         layers.push(
-            `${layer.image} ${clip}${layer.repeat === "repeat" ? " repeat" : ""} / ${size.join(" ")} / ${layer.position.join(" ")}${layer.origin === clip ? "" : ` / ${layer.origin}`}`,
+            `${layer.image} ${clip}${layer.repeat === "no-repeat" ? "" : ` ${layer.repeat}`} / ${size.join(" ")} / ${layer.position.join(" ")}${layer.origin === clip ? "" : ` / ${layer.origin}`}`,
         );
     }
     return layers.length ? layers.join(",") : undefined;

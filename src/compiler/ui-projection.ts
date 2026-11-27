@@ -2956,7 +2956,7 @@ export class UiProjection {
                 this.uiStyleRefusal(
                     site,
                     property,
-                    "only a literal width, the none, hidden, solid and dashed styles and a literal color are represented",
+                    "only a literal width, the none, hidden, solid, dashed and double styles and a literal color are represented",
                 );
             }
             if (
@@ -2970,7 +2970,7 @@ export class UiProjection {
                     this.uiStyleRefusal(
                         site,
                         property,
-                        "only the none, hidden, solid and dashed border styles are represented",
+                        "only the none, hidden, solid, dashed and double border styles are represented",
                     );
             }
             if (
@@ -3765,7 +3765,7 @@ export class UiProjection {
                         return this.uiStyleRefusal(
                             site,
                             "background",
-                            "gradient layers require supported positions, nonnegative length/percentage sizes and repeat or no-repeat",
+                            "gradient layers require supported positions, nonnegative length/percentage sizes and repeat, repeat-x, repeat-y or no-repeat",
                         );
                     // The layers are the background image the PAL's
                     // background cascade paints, as a longhand's are.

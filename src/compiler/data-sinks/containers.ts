@@ -723,6 +723,23 @@ function valueMap(
     if (value.dataType && dataTypesEqual(value.dataType, dataType)) {
         return value.cpp;
     }
+    // A map's records stored as another record type: JavaScript keeps one
+    // map, so its values join the target's records (`storeRecordAs`) as an
+    // array's elements do, after which the two maps are one type.
+    if (
+        value.kind === "data" &&
+        value.dataType?.kind === "map" &&
+        value.dataType.value.kind === "struct" &&
+        dataType.value.kind === "struct" &&
+        dataTypesEqual(value.dataType.key, dataType.key)
+    )
+        lowerer.context.dataTypes.storeRecordAs(
+            value.dataType.value,
+            dataType.value,
+            node,
+            lowerer.context,
+            { sharedArray: true },
+        );
     return undefined;
 }
 
