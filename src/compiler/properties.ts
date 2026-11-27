@@ -1755,16 +1755,27 @@ export const propertyRules: readonly PropertyRule[] = [
     },
     ...(
         [
-            ["_cpuPositions", "positions", "f32array"],
-            ["_cpuNormals", "normals", "f32array"],
-            ["_cpuUvs", "uvs", "f32array"],
-            ["_cpuIndices", "indices", "u32array"],
+            ["_cpuPositions", "positions", "f32array", true],
+            ["_cpuNormals", "normals", "f32array", true],
+            ["_cpuUvs", "uvs", "f32array", true],
+            ["_cpuIndices", "indices", "u32array", true],
+            // The pin stores these absent as `undefined` from a factory call
+            // that omits them and as `null` once retained geometry lacks
+            // them: one absent state, which a read telling the two apart
+            // refuses.
+            ["_cpuUv2s", "uvs2", "f32array", false],
+            ["_cpuTangents", "tangents", "f32array", false],
+            ["_cpuColors", "colors", "f32array", false],
         ] as const
-    ).map(([property, member, kind]): PropertyRead => ({
+    ).map(([property, member, kind, undefinedOnly]): PropertyRead => ({
         owner: "mesh",
         property,
         value: "data",
-        dataType: { kind: "optional", inner: { kind }, undefinedOnly: true },
+        dataType: {
+            kind: "optional",
+            inner: { kind },
+            ...(undefinedOnly ? { undefinedOnly: true } : {}),
+        },
         helper: "bbl::mesh_cpu_stream_owner",
         helperArgument: `&bbl::MeshCpuStreams::${member}`,
         helperTakesEngine: true,

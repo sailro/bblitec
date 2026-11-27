@@ -23,9 +23,11 @@ test("geometry update adapters retain range presence, result fields and feature 
       const uv=new Float32Array(8).subarray(1,7), t=new Float32Array(14).subarray(1,13);
       const mesh=createMeshFromData(engine,"owned",new Float32Array(9),new Float32Array(9),new Uint32Array([0,1,2]),new Float32Array(6),new Float32Array(6),new Float32Array(12),new Float32Array(12));
       updateMeshGeometry(engine,mesh,p,n,i,uv,uv,t,t);
-      type CpuMesh=Mesh&{_cpuPositions?:Float32Array;_cpuNormals?:Float32Array;_cpuUvs?:Float32Array;_cpuIndices?:Uint32Array};
+      type CpuMesh=Mesh&{_cpuPositions?:Float32Array;_cpuNormals?:Float32Array;_cpuUvs?:Float32Array;_cpuIndices?:Uint32Array;_cpuUv2s?:Float32Array|null;_cpuTangents?:Float32Array|null;_cpuColors?:Float32Array|null};
       const cpu=mesh as CpuMesh;
       if(cpu._cpuPositions!==p||cpu._cpuNormals!==n||cpu._cpuUvs!==uv||cpu._cpuIndices!==i)throw new Error("private CPU owners");
+      const colors=cpu._cpuColors;
+      if(cpu._cpuUv2s!==uv||cpu._cpuTangents!==t||colors!==t||!(colors&&colors.length>=4))throw new Error("private CPU attribute owners");
       const snapshot=getMeshGeometry(mesh);
       if(snapshot===null||snapshot.positions===p||snapshot.indices===i)throw new Error("public copies");
       function ranges(enabled:boolean):MeshGeometryUpdateRanges|undefined {return enabled?{vertices:[{offset:1,count:1}],indices:[{offset:0,count:1}]}:undefined;}
