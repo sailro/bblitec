@@ -103,6 +103,21 @@ check(
 `,
 );
 
+check(
+    "optional-typed-array-beside-a-scalar-fallback",
+    `
+    interface Domain { radius: number; barriers?: Float32Array; tag: string | null }
+    function terms(domain: Domain): readonly unknown[] {
+        const { radius, barriers } = domain;
+        return [radius, barriers ?? "-", domain.tag ?? "none"];
+    }
+    const lanes = new Float32Array([1, 2.5]);
+    const kept = terms({ radius: 1, barriers: lanes, tag: "a" });
+    if (kept[1] !== lanes || JSON.stringify(kept) !== '[1,{"0":1,"1":2.5},"a"]') throw new Error("present " + JSON.stringify(kept));
+    if (JSON.stringify(terms({ radius: 2, tag: null })) !== '[2,"-","none"]') throw new Error("fallback");
+`,
+);
+
 // Hoisted typed-array tables store their elements converted at generation;
 // every element must read back as the value the runtime store produces.
 const hoistedTableValues = [

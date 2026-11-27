@@ -6017,21 +6017,21 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             }
             // A fallback may widen a scalar's literal union, or introduce a
             // different scalar alternative, or a record beside an array
-            // (`frames ?? frame`). Convert both branches through the joined
+            // (`frames ?? frame`), or a scalar beside a typed array
+            // (`lanes ?? "-"`). Convert both branches through the joined
             // type's sinks rather than forcing the fallback into the left
             // operand's narrower storage.
             const emptyArrayJoin = this.elementOrEmptyArray(inner, expression);
+            const arrayJoin =
+                inner.kind === "vector" ||
+                inner.kind === "span" ||
+                isTypedArrayType(inner);
             const joined =
                 !emptyArrayJoin &&
-                [
-                    "enum",
-                    "string",
-                    "number",
-                    "boolean",
-                    "union",
-                    "vector",
-                    "span",
-                ].includes(inner.kind)
+                (arrayJoin ||
+                    ["enum", "string", "number", "boolean", "union"].includes(
+                        inner.kind,
+                    ))
                     ? this.dataTypeAt(expression)
                     : undefined;
             let resultType =
@@ -6041,8 +6041,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 inner.kind === "number" ||
                 inner.kind === "boolean" ||
                 inner.kind === "union" ||
-                ((inner.kind === "vector" || inner.kind === "span") &&
-                    joined?.kind === "union")
+                (arrayJoin && joined?.kind === "union")
                     ? (joined ?? inner)
                     : inner);
             // Flow narrowing may omit a stored tag changed by a called helper.
