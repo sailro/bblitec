@@ -30,8 +30,9 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 ## Window services
 
 - RAF runs on the owner repaint clock; no engine needed.
-- matchMedia: `resolution` alone, or an `and` of the device features a sheet's `@media` admits (reduced-motion, hover,
-  pointer), with change listeners. Other queries and payloads refuse.
+- matchMedia: `resolution` alone, or an `and` of the features a sheet's `@media` admits (px viewport width and height
+  bounds against the window's viewport, reduced-motion, hover, pointer), with change listeners. Other queries and
+  payloads refuse.
 - MutationObserver: attribute notifications (classList writes included), static filters, subtree, disconnect. Records
   and child lists refuse.
   ResizeObserver entries are unavailable.

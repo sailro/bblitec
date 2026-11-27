@@ -54,8 +54,7 @@ export function parseMediaQuery(
         const value = feature[2]?.toLowerCase() ?? bareFeatures.get(name);
         if (value === undefined || named.has(name)) return undefined;
         named.add(name);
-        const bound =
-            surface === "sheet" ? viewportBounds.get(name) : undefined;
+        const bound = viewportBounds.get(name);
         if (
             bound !== undefined ||
             (name === "resolution" && surface === "window")
