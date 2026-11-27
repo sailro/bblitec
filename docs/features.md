@@ -110,6 +110,8 @@ Rules:
   properties on plain functions as `undefined`; reading properties after erasure into bare function storage refuses.
 - A module's function declaration stored as a callable record is one object: every alias and conversion shares its
   identity and the properties written on it. A nested function declaration so stored refuses.
+- A new function (a function literal, or a call returning only new functions) handed to a callable-record parameter
+  is that record once, where the parameter is bound: every read of the parameter is one object.
 - A module `let` assigned only by unreachable functions keeps its initializer. Strict comparisons fold through `const`
   aliases, absent `??` lefts and generation-known booleans.
 - Literals handed to functions keep their facts unless a callee's write reaches a member they hold. Static descriptor
