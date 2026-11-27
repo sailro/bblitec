@@ -2410,11 +2410,14 @@ export class UiProjection {
             "border-image",
             ...UI_BORDER_IMAGE_LONGHANDS,
             "border-radius",
+            "border-collapse",
+            "border-spacing",
             "box-sizing",
             "box-shadow",
             "bottom",
             "color",
             "color-scheme",
+            "contain",
             "clip",
             "clip-path",
             "clear",
@@ -2491,6 +2494,7 @@ export class UiProjection {
             "scrollbar-gutter",
             "scrollbar-width",
             "scrollbar-color",
+            "table-layout",
             "text-align",
             "text-decoration",
             "text-shadow",
@@ -2524,6 +2528,8 @@ export class UiProjection {
         readonly string[]
     > = new Map([
         ["visibility", ["visible", "hidden"]],
+        ["border-collapse", ["separate", "collapse"]],
+        ["table-layout", ["auto", "fixed"]],
         [
             "vertical-align",
             [
@@ -2583,6 +2589,10 @@ export class UiProjection {
     private static readonly PRESENTATION_LENGTHS = new EmissionSet<string>([
         "vertical-align",
     ]);
+
+    /** A table's horizontal and vertical cell spacing: one or two nonnegative lengths. */
+    private static readonly UI_BORDER_SPACING =
+        /^(?:(?:\d+(?:\.\d*)?|\.\d+)(?:px|em|rem|vw|vh)|0)(?:\s+(?:(?:\d+(?:\.\d*)?|\.\d+)(?:px|em|rem|vw|vh)|0))?$/;
 
     private static readonly PRESENTATION_LENGTH =
         /^[+-]?(?:(?:\d+(?:\.\d*)?|\.\d+)(?:px|em|rem|vw|vh|%)|0)$/;
@@ -2940,6 +2950,26 @@ export class UiProjection {
             if (property.length === 0) return;
             this.refuseUnresolvableMath(property, literalValue, site);
             if (UiProjection.isCustomStyleProperty(property)) return;
+            if (
+                property === "contain" &&
+                !UiProjection.admitsUiContain(literalValue)
+            ) {
+                this.uiStyleRefusal(
+                    site,
+                    property,
+                    "only none, content, or layout, paint and style are represented (no size containment)",
+                );
+            }
+            if (
+                property === "border-spacing" &&
+                !UiProjection.UI_BORDER_SPACING.test(literalValue)
+            ) {
+                this.uiStyleRefusal(
+                    site,
+                    property,
+                    "only one or two nonnegative px, em, rem, vw or vh lengths are represented",
+                );
+            }
             if (
                 property === "place-items" &&
                 !/^(?:start|end|center|stretch)(?:\s+(?:start|end|center|stretch))?$/.test(
@@ -3596,6 +3626,22 @@ export class UiProjection {
             );
         }
         return effects.length > 0 ? effects.join(",") : undefined;
+    }
+
+    /**
+     * Whether a CSS `contain` value is one RmlUi represents (patch 0075):
+     * none, content, or layout, paint and style containment; size
+     * containment is not.
+     */
+    private static admitsUiContain(value: string): boolean {
+        const tokens = value.trim().toLowerCase().split(/\s+/);
+        return tokens.length === 1 &&
+            (tokens[0] === "none" || tokens[0] === "content")
+            ? true
+            : new Set(tokens).size === tokens.length &&
+                  tokens.every((token) =>
+                      ["layout", "paint", "style"].includes(token),
+                  );
     }
 
     /** Properties whose values RmlUi reads in its own grammar. */

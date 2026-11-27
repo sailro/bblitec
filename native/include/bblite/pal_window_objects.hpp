@@ -27,7 +27,8 @@ class MediaQueryList {
 public:
     MediaQueryList(std::string query, double (*read_pixel_ratio)(),
                    bool (*read_motion_preference)(),
-                   InputCapabilities (*read_input_capabilities)() = nullptr);
+                   InputCapabilities (*read_input_capabilities)() = nullptr,
+                   UiClientRect (*read_viewport)() = nullptr);
     [[nodiscard]] bool matches() const;
     [[nodiscard]] const std::string& media() const noexcept { return media_; }
     void add_change_listener(js::Callback<void()> callback);
@@ -48,9 +49,12 @@ private:
     /** `(resolution: Ndppx)`, which only a query of it alone names. */
     std::optional<double> resolution_;
     UiMediaCondition condition_;
+    /** The viewport bounds the query names, in CSS pixels and inclusive; negative for none. */
+    double min_width_ = -1, max_width_ = -1, min_height_ = -1, max_height_ = -1;
     double (*read_pixel_ratio_)();
     bool (*read_motion_preference_)();
     InputCapabilities (*read_input_capabilities_)();
+    UiClientRect (*read_viewport_)();
     bool matches_ = false;
     PlatformEventListeners<void()> listeners_;
 };

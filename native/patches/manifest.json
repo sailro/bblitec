@@ -555,6 +555,20 @@
       "variants": ["all"]
     },
     {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0074-table-layout.patch",
+      "purpose": "CSS tables as Chromium lays them out: border-spacing, border-collapse, table-layout, automatic column sizing",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0075-containment.patch",
+      "purpose": "CSS layout and paint containment: stacking context, containing block, padding-box clip",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
       "library": "dawn",
       "file": "native/patches/dawn/0001-android-surface-loss.patch",
       "purpose": "Report Android Vulkan surface loss at the next acquisition without losing the device",

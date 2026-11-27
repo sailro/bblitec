@@ -1,0 +1,1129 @@
+CSS 2.1 17 tables as Chromium lays them out. 'border-collapse', 'border-spacing' (internal horizontal/vertical longhands) and
+'table-layout' are properties: a separate table spaces its cells and its edges by the border spacing, a collapsed one by
+nothing; the 'gap' properties no longer apply to tables. An automatic table layout sizes its columns from every cell's
+min-content and max-content widths, column elements, percentages and spanning cells, and fits an automatic table width into
+the available width (CSS Tables 3, as Chromium's table_layout_utils computes it); a fixed layout keeps the first-row
+algorithm. A table has a shrink-to-fit width. Rows, row groups and columns take no padding, border or margin, and a row's
+height is a minimum. Later rows may add columns, and a cell spanning past the last row ends there. What stays unrepresented
+reaches SystemInterface::LayoutNotRepresented: collapsed borders beside a border, a header group after other rows or a
+footer group before them, baseline-aligned cells, content outside the table structure, and columns after rows.
+diff --git a/Include/RmlUi/Core/ID.h b/Include/RmlUi/Core/ID.h
+index c58cf7a..5ae812c 100644
+--- a/Include/RmlUi/Core/ID.h
++++ b/Include/RmlUi/Core/ID.h
+@@ -37,6 +37,7 @@ enum class ShorthandId : uint8_t {
+ 	PlaceItems,
+ 	GridArea,
+ 	BorderImage,
++	BorderSpacing,
+ 
+ 	NumDefinedIds,
+ 	FirstCustomId = NumDefinedIds,
+@@ -197,6 +198,10 @@ enum class PropertyId : uint8_t {
+ 	Order,
+ 	WebkitBoxOrient,
+ 	WebkitLineClamp,
++	BorderCollapse,
++	BorderSpacingX,
++	BorderSpacingY,
++	TableLayout,
+ 
+ 	NumDefinedIds,
+ 	FirstCustomId = NumDefinedIds,
+diff --git a/Include/RmlUi/Core/SystemInterface.h b/Include/RmlUi/Core/SystemInterface.h
+index c66b52d..0b23f08 100644
+--- a/Include/RmlUi/Core/SystemInterface.h
++++ b/Include/RmlUi/Core/SystemInterface.h
+@@ -60,6 +60,11 @@ public:
+ 
+ 	/// Deactivate keyboard (for touchscreen devices).
+ 	virtual void DeactivateKeyboard();
++
++	/// Called when layout meets a construct it does not represent, such as a table's collapsed borders.
++	/// @param[in] element The element whose layout is not represented.
++	/// @param[in] reason What is not represented.
++	virtual void LayoutNotRepresented(Element* element, const String& reason);
+ };
+ 
+ } // namespace Rml
+diff --git a/Source/Core/ElementStyle.cpp b/Source/Core/ElementStyle.cpp
+index 9ad5898..00ea036 100644
+--- a/Source/Core/ElementStyle.cpp
++++ b/Source/Core/ElementStyle.cpp
+@@ -1802,6 +1802,12 @@ void ElementStyle::ComputeValue(Style::ComputedValues& values, float dp_ratio, V
+ 	case PropertyId::WebkitBoxOrient:
+ 	case PropertyId::WebkitLineClamp:
+ 		break;
++	// Read by the table formatting context with 'GetProperty()'.
++	case PropertyId::BorderCollapse:
++	case PropertyId::BorderSpacingX:
++	case PropertyId::BorderSpacingY:
++	case PropertyId::TableLayout:
++		break;
+ 	// Invalid properties
+ 	case PropertyId::Invalid:
+ 	case PropertyId::NumDefinedIds:
+diff --git a/Source/Core/Layout/ContainerBox.cpp b/Source/Core/Layout/ContainerBox.cpp
+index 287fe73..07f88e1 100644
+--- a/Source/Core/Layout/ContainerBox.cpp
++++ b/Source/Core/Layout/ContainerBox.cpp
+@@ -304,12 +304,9 @@ void TableWrapper::Close(const Vector2f visible_overflow_size, const Box& box, f
+ 
+ float TableWrapper::GetShrinkToFitWidth() const
+ {
+-	// We don't currently support shrink-to-fit layout of tables. However, for the trivial case of a fixed width, we
+-	// simply return that.
+-	if (element->GetComputedValues().width().type == Style::Width::Type::Length)
+-		return box.GetSize().x;
+-
+-	return 0.0f;
++	// An automatic table width fits the table's content into the available width, so a table formatted under a max-content
++	// constraint has its max-content width.
++	return box.GetSize().x;
+ }
+ 
+ String TableWrapper::DebugDumpTree(int depth) const
+diff --git a/Source/Core/Layout/LayoutDetails.cpp b/Source/Core/Layout/LayoutDetails.cpp
+index ff0b92d..be1883a 100644
+--- a/Source/Core/Layout/LayoutDetails.cpp
++++ b/Source/Core/Layout/LayoutDetails.cpp
+@@ -451,13 +451,6 @@ static float MeasureShrinkToFitWidth(Element* element, Vector2f containing_block
+         return Math::Clamp(0.f, minimum, maximum);
+     }
+ 
+-	// Currently we don't support shrink-to-fit width for tables. Just return a zero-sized width.
+-	const Style::Display display = element->GetDisplay();
+-	if (display == Style::Display::Table || display == Style::Display::InlineTable)
+-	{
+-		return 0.f;
+-	}
+-
+ 	// Use a large size for the box content width, so that it is practically unconstrained. This makes the formatting
+ 	// procedure act as if under a maximum content constraint. Children with percentage sizing values may be scaled
+ 	// based on this width (such as 'width' or 'margin'), if so, the layout is considered undefined like in CSS 2.
+diff --git a/Source/Core/Layout/TableFormattingContext.cpp b/Source/Core/Layout/TableFormattingContext.cpp
+index 521dde5..63660d9 100644
+--- a/Source/Core/Layout/TableFormattingContext.cpp
++++ b/Source/Core/Layout/TableFormattingContext.cpp
+@@ -1,6 +1,8 @@
+ #include "TableFormattingContext.h"
+ #include "../../../Include/RmlUi/Core/ComputedValues.h"
++#include "../../../Include/RmlUi/Core/Core.h"
+ #include "../../../Include/RmlUi/Core/Element.h"
++#include "../../../Include/RmlUi/Core/SystemInterface.h"
+ #include "../../../Include/RmlUi/Core/Types.h"
+ #include "ContainerBox.h"
+ #include "LayoutDetails.h"
+@@ -52,10 +54,18 @@ UniquePtr<LayoutBox> TableFormattingContext::Format(ContainerBox* parent_contain
+ 	if (computed_table.height().type != Style::Height::Auto)
+ 		context.table_min_size.y = Math::Max(context.table_min_size.y, context.table_initial_content_size.y);
+ 
+-	context.table_gap = Vector2f(ResolveValue(computed_table.column_gap(), context.table_initial_content_size.x),
+-		ResolveValue(computed_table.row_gap(), context.table_initial_content_size.y));
++	// A separate table spaces its cells and its edges by 'border-spacing'; a collapsed one does not (CSS 2.1 17.6). The 'gap'
++	// properties do not apply to tables.
++	context.collapsed_borders = element_table->GetProperty(PropertyId::BorderCollapse)->Get<int>() == 1;
++	if (!context.collapsed_borders)
++		context.table_gap = Vector2f(element_table->ResolveLength(element_table->GetProperty(PropertyId::BorderSpacingX)->GetNumericValue()),
++			element_table->ResolveLength(element_table->GetProperty(PropertyId::BorderSpacingY)->GetNumericValue()));
++	// A fixed layout needs a table width (CSS 2.1 17.5.2.1).
++	context.fixed_layout =
++		element_table->GetProperty(PropertyId::TableLayout)->Get<int>() == 1 && computed_table.width().type != Style::Width::Auto;
+ 
+ 	context.grid.Build(element_table, *table_wrapper_box);
++	context.ReportUnrepresentedParts();
+ 
+ 	Vector2f table_content_size, table_overflow_size;
+ 	float table_baseline = 0.f;
+@@ -106,29 +116,542 @@ void TableFormattingContext::FormatTable(Vector2f& table_content_size, Vector2f&
+ 	FormatCells(cells, table_overflow_size, rows, columns, table_baseline);
+ }
+ 
++namespace {
++
++// A cell's outer min-content and max-content widths (CSS Tables 3 'computing cell measures'), resolved as Chromium's
++// TableTypes::CreateCellInlineConstraint does. All widths are border-box widths.
++struct CellWidths {
++	float min = 0.f;
++	float max = 0.f;
++	float percent = 0.f; // A percentage width, 0 for none.
++	bool constrained = false;
++
++	// TableTypes::CellInlineConstraint::Encompass.
++	void Encompass(const CellWidths& other)
++	{
++		min = Math::Max(min, other.min);
++		if (constrained == other.constrained)
++			max = Math::Max(max, other.max);
++		else if (constrained)
++			max = Math::Max(max, other.min);
++		else
++			max = Math::Max(min, other.max);
++		constrained = constrained || other.constrained;
++		percent = Math::Max(percent, other.percent);
++	}
++};
++
++// A column's widths in an automatic table layout (TableTypes::Column).
++struct ColumnWidths {
++	float min = 0.f;
++	float max = 0.f;
++	float percent = 0.f;
++	bool constrained = false;
++	bool merged = true;
++	bool sized = false;
++
++	// TableTypes::Column::Encompass for an automatic layout.
++	void Encompass(const CellWidths& cell)
++	{
++		merged = false;
++		if (sized)
++		{
++			min = Math::Max(min, cell.min);
++			max = Math::Max(max, constrained && !cell.constrained ? cell.min : cell.max);
++		}
++		else
++		{
++			min = cell.min;
++			max = cell.max;
++			sized = true;
++		}
++		max = Math::Max(min, max);
++		percent = Math::Max(percent, cell.percent);
++		constrained = constrained || cell.constrained;
++	}
++
++	float ResolvePercent(float target) const { return Math::Max(min, percent * target / 100.f); }
++};
++
++CellWidths MeasureCell(Element* cell, Vector2f containing_block)
++{
++	Box box;
++	LayoutDetails::BuildBox(box, containing_block, cell, BuildBoxMode::UnalignedBlock);
++	const float edges = box.GetSizeAcross(BoxDirection::Horizontal, BoxArea::Border, BoxArea::Padding);
++	const ComputedValues& computed = cell->GetComputedValues();
++	const float to_border_box = computed.box_sizing() == Style::BoxSizing::ContentBox ? edges : 0.f;
++
++	CellWidths result;
++	const Style::Width width = computed.width();
++	const bool css_width = width.type == Style::Width::Length;
++	if (width.type == Style::Width::Percentage)
++		result.percent = width.value;
++	const Style::MinWidth min_width = computed.min_width();
++	const Style::MaxWidth max_width = computed.max_width();
++	const bool css_max = max_width.type == Style::MaxWidth::Length && max_width.value < FLT_MAX;
++
++	float min = LayoutDetails::GetMinContentWidth(cell, box, box.GetSize().y, containing_block) + edges;
++	if (min_width.type == Style::MinWidth::Length)
++		min = Math::Max(min, min_width.value + to_border_box);
++	float content_max = css_width ? width.value + to_border_box : LayoutDetails::GetShrinkToFitWidth(cell, containing_block, true) + edges;
++	if (css_max)
++	{
++		content_max = Math::Min(content_max, max_width.value + to_border_box);
++		min = Math::Min(min, max_width.value + to_border_box);
++	}
++	result.min = min;
++	result.max = Math::Max(min, content_max);
++	result.constrained = css_width;
++	return result;
++}
++
++// Distributes a target width over columns (CSS Tables 3 'width distribution algorithm'), as Chromium's
++// DistributeInlineSizeToComputedInlineSizeAuto does. Merged columns take no width.
++Vector<float> DistributeWidth(float target, const ColumnWidths* columns, const int count, const bool constrained_target)
++{
++	enum { MinGuess, PercentageGuess, SpecifiedGuess, MaxGuess, AboveMax };
++	float guess[AboveMax] = {};
++	float increase[AboveMax] = {};
++	float total_percent = 0.f, total_auto_max = 0.f, total_fixed_max = 0.f;
++	int percent_count = 0, fixed_count = 0, auto_count = 0;
++	for (int i = 0; i < count; i++)
++	{
++		const ColumnWidths& column = columns[i];
++		if (column.merged)
++			continue;
++		if (column.percent > 0.f)
++		{
++			percent_count++;
++			total_percent += column.percent;
++			const float percent_width = column.ResolvePercent(target);
++			guess[MinGuess] += column.min;
++			guess[PercentageGuess] += percent_width;
++			guess[SpecifiedGuess] += percent_width;
++			guess[MaxGuess] += percent_width;
++			increase[PercentageGuess] += percent_width - column.min;
++		}
++		else if (column.constrained)
++		{
++			fixed_count++;
++			total_fixed_max += column.max;
++			guess[MinGuess] += column.min;
++			guess[PercentageGuess] += column.min;
++			guess[SpecifiedGuess] += column.max;
++			guess[MaxGuess] += column.max;
++			increase[SpecifiedGuess] += column.max - column.min;
++		}
++		else
++		{
++			auto_count++;
++			total_auto_max += column.max;
++			guess[MinGuess] += column.min;
++			guess[PercentageGuess] += column.min;
++			guess[SpecifiedGuess] += column.min;
++			guess[MaxGuess] += column.max;
++			increase[MaxGuess] += column.max - column.min;
++		}
++	}
++
++	Vector<float> sizes(count, 0.f);
++	target = Math::Max(target, guess[MinGuess]);
++	int starting_guess = AboveMax;
++	for (int i = MinGuess; i != AboveMax; i++)
++	{
++		if (guess[i] >= target)
++		{
++			starting_guess = i;
++			break;
++		}
++	}
++
++	// Each case hands the rounding remainder to the last column it grows.
++	float remaining = 0.f;
++	int last = -1;
++	auto grow = [&](int i, float base, float delta) {
++		sizes[i] = base + delta;
++		remaining -= delta;
++		last = i;
++	};
++	switch (starting_guess)
++	{
++	case MinGuess:
++		for (int i = 0; i < count; i++)
++			if (!columns[i].merged)
++				sizes[i] = columns[i].min;
++		break;
++	case PercentageGuess:
++	{
++		const float distributable = target - guess[MinGuess];
++		remaining = distributable;
++		for (int i = 0; i < count; i++)
++		{
++			const ColumnWidths& column = columns[i];
++			if (column.merged)
++				continue;
++			if (column.percent > 0.f)
++			{
++				const float column_increase = column.ResolvePercent(target) - column.min;
++				grow(i, column.min,
++					increase[PercentageGuess] > 0.f ? distributable * column_increase / increase[PercentageGuess] : distributable / percent_count);
++			}
++			else
++				sizes[i] = column.min;
++		}
++	}
++	break;
++	case SpecifiedGuess:
++	{
++		const float distributable = target - guess[PercentageGuess];
++		remaining = distributable;
++		for (int i = 0; i < count; i++)
++		{
++			const ColumnWidths& column = columns[i];
++			if (column.merged)
++				continue;
++			if (column.percent > 0.f)
++				sizes[i] = column.ResolvePercent(target);
++			else if (column.constrained)
++				grow(i, column.min,
++					increase[SpecifiedGuess] > 0.f ? distributable * (column.max - column.min) / increase[SpecifiedGuess]
++												   : distributable / fixed_count);
++			else
++				sizes[i] = column.min;
++		}
++	}
++	break;
++	case MaxGuess:
++	{
++		const float distributable = target - guess[SpecifiedGuess];
++		// An exact match (usually an automatic table width) gives every column its max-content width.
++		const bool exact = target == guess[MaxGuess];
++		remaining = exact ? 0.f : distributable;
++		for (int i = 0; i < count; i++)
++		{
++			const ColumnWidths& column = columns[i];
++			if (column.merged)
++				continue;
++			if (column.percent > 0.f)
++				sizes[i] = column.ResolvePercent(target);
++			else if (column.constrained || exact)
++				sizes[i] = column.max;
++			else
++				grow(i, column.min,
++					increase[MaxGuess] > 0.f ? distributable * (column.max - column.min) / increase[MaxGuess] : distributable / auto_count);
++		}
++		if (exact)
++			last = -1;
++	}
++	break;
++	case AboveMax:
++	{
++		const float distributable = target - guess[MaxGuess];
++		remaining = distributable;
++		for (int i = 0; i < count; i++)
++		{
++			const ColumnWidths& column = columns[i];
++			if (column.merged)
++				continue;
++			if (auto_count > 0)
++			{
++				// Auto columns grow, in proportion to their max-content widths.
++				if (column.percent > 0.f)
++					sizes[i] = column.ResolvePercent(target);
++				else if (column.constrained)
++					sizes[i] = column.max;
++				else
++					grow(i, column.max, total_auto_max > 0.f ? distributable * column.max / total_auto_max : distributable / auto_count);
++			}
++			else if (fixed_count > 0 && constrained_target)
++			{
++				if (column.percent > 0.f)
++					sizes[i] = column.ResolvePercent(target);
++				else
++					grow(i, column.max, total_fixed_max > 0.f ? distributable * column.max / total_fixed_max : distributable / fixed_count);
++			}
++			else if (percent_count > 0 && column.percent > 0.f)
++			{
++				grow(i, column.ResolvePercent(target),
++					total_percent != 0.f ? distributable * column.percent / total_percent : distributable / percent_count);
++			}
++		}
++	}
++	break;
++	}
++	if (last >= 0)
++		sizes[last] += remaining;
++	return sizes;
++}
++
++// Distributes a cell spanning several columns over them, as Chromium's DistributeColspanCellToColumnsAuto does.
++void DistributeColspanCell(const CellWidths& cell, ColumnWidths* columns, const int count, const float spacing)
++{
++	float inner_spacing = 0.f;
++	bool first = true;
++	for (int i = 0; i < count; i++)
++	{
++		if (columns[i].merged)
++			continue;
++		if (!first)
++			inner_spacing += spacing;
++		first = false;
++	}
++	const float cell_min = Math::Max(0.f, cell.min - inner_spacing);
++	const float cell_max = Math::Max(0.f, cell.max - inner_spacing);
++
++	if (cell.percent > 0.f)
++	{
++		float columns_percent = 0.f, nonpercent_max = 0.f;
++		int all_count = 0, percent_count = 0, nonpercent_count = 0;
++		for (int i = 0; i < count; i++)
++		{
++			if (columns[i].merged)
++				continue;
++			all_count++;
++			if (columns[i].percent > 0.f)
++			{
++				percent_count++;
++				columns_percent += columns[i].percent;
++			}
++			else
++			{
++				nonpercent_count++;
++				nonpercent_max += columns[i].max;
++			}
++		}
++		const float surplus = cell.percent - columns_percent;
++		if (surplus > 0.f && all_count > percent_count)
++		{
++			for (int i = 0; i < count; i++)
++			{
++				if (columns[i].percent > 0.f || columns[i].merged)
++					continue;
++				columns[i].percent = nonpercent_max != 0.f ? surplus * columns[i].max / nonpercent_max : surplus / nonpercent_count;
++			}
++		}
++	}
++
++	Vector<float> sizes = DistributeWidth(cell_min, columns, count, true);
++	for (int i = 0; i < count; i++)
++		columns[i].min = Math::Max(columns[i].min, sizes[i]);
++	sizes = DistributeWidth(cell_max, columns, count, cell.constrained);
++	for (int i = 0; i < count; i++)
++		columns[i].max = Math::Max(Math::Max(columns[i].min, columns[i].max), sizes[i]);
++}
++
++bool HasBorder(Element* element)
++{
++	const ComputedValues& computed = element->GetComputedValues();
++	return computed.border_top_width() > 0.f || computed.border_right_width() > 0.f || computed.border_bottom_width() > 0.f ||
++		computed.border_left_width() > 0.f;
++}
++
++} // namespace
++
++void TableFormattingContext::ReportUnrepresentedParts() const
++{
++	SystemInterface* system = GetSystemInterface();
++	if (collapsed_borders)
++	{
++		Element* bordered = HasBorder(element_table) ? element_table : nullptr;
++		for (const TableGrid::Row& row : grid.rows)
++			for (Element* element : {row.element_row, row.element_group})
++				if (!bordered && element && HasBorder(element))
++					bordered = element;
++		for (const TableGrid::Column& column : grid.columns)
++			for (Element* element : {column.element_column, column.element_group, column.element_cell})
++				if (!bordered && element && HasBorder(element))
++					bordered = element;
++		for (const TableGrid::Cell& cell : grid.cells)
++			if (!bordered && HasBorder(cell.element_cell))
++				bordered = cell.element_cell;
++		if (bordered)
++			system->LayoutNotRepresented(bordered, "Collapsed table borders (border-collapse: collapse beside a border)");
++	}
++
++	// The first header group lays out above every other row and the first footer group below them (CSS 2.1 17.2). Row groups
++	// keep their document order here.
++	bool header_seen = false, footer_seen = false;
++	for (int i = 0; i < (int)grid.rows.size(); i++)
++	{
++		Element* group = grid.rows[i].element_group;
++		if (!group)
++			continue;
++		const String& tag = group->GetTagName();
++		if (tag == "thead" && !header_seen)
++		{
++			header_seen = true;
++			if (i != 0)
++				system->LayoutNotRepresented(group, "A table header group after other rows");
++		}
++		if (tag == "tfoot" && !footer_seen)
++		{
++			footer_seen = true;
++			if (i + grid.rows[i].group_span != (int)grid.rows.size())
++				system->LayoutNotRepresented(group, "A table footer group before other rows");
++		}
++	}
++}
++
++void TableFormattingContext::DetermineAutoColumnWidths(TrackBoxList& columns, float& table_content_width) const
++{
++	const int num_columns = (int)grid.columns.size();
++	const bool auto_width = element_table->GetComputedValues().width().type == Style::Width::Auto;
++	if (num_columns == 0)
++	{
++		table_content_width =
++			Math::Clamp(auto_width ? 0.f : Math::Max(0.f, table_initial_content_size.x), table_min_size.x, table_max_size.x);
++		return;
++	}
++
++	// Column elements give their columns a width, as TableTypes::CreateColumn reads them; a column group's width is the default
++	// of its columns.
++	Vector<ColumnWidths> widths(num_columns);
++	Element* group = nullptr;
++	int group_remaining = 0;
++	for (int i = 0; i < num_columns; i++)
++	{
++		if (grid.columns[i].element_group)
++		{
++			group = grid.columns[i].element_group;
++			group_remaining = grid.columns[i].group_span;
++		}
++		Element* group_here = group_remaining-- > 0 ? group : nullptr;
++		Element* column_element = grid.columns[i].element_column;
++		for (int j = i - 1; !column_element && j >= 0; j--)
++			if (grid.columns[j].element_column && j + grid.columns[j].column_span > i)
++				column_element = grid.columns[j].element_column;
++		if (!column_element && !group_here)
++			continue;
++		ColumnWidths& column = widths[i];
++		column.sized = true;
++		const ComputedValues* computed = column_element ? &column_element->GetComputedValues() : nullptr;
++		float width = -1.f;
++		if (computed && computed->width().type == Style::Width::Length)
++			width = computed->width().value;
++		else if (group_here && group_here->GetComputedValues().width().type == Style::Width::Length)
++			width = group_here->GetComputedValues().width().value;
++		if (computed && computed->min_width().type == Style::MinWidth::Length)
++			column.min = computed->min_width().value;
++		if (computed && computed->width().type == Style::Width::Percentage)
++			column.percent = computed->width().value;
++		if (width >= 0.f)
++		{
++			column.max = Math::Max(width, column.min);
++			column.constrained = true;
++		}
++		column.merged = !(width > 0.f || column.percent > 0.f);
++	}
++
++	// The cells spanning one column merge into their column; the wider ones distribute over the columns they span.
++	const Vector2f containing_block(table_initial_content_size.x, -1.f);
++	Vector<CellWidths> single(num_columns);
++	Vector<bool> has_single(num_columns, false);
++	struct ColspanCell {
++		CellWidths widths;
++		int start;
++		int span;
++	};
++	Vector<ColspanCell> colspans;
++	for (const TableGrid::Cell& cell : grid.cells)
++	{
++		const CellWidths cell_widths = MeasureCell(cell.element_cell, containing_block);
++		const int span = cell.column_last - cell.column_begin + 1;
++		if (span > 1)
++			colspans.push_back({cell_widths, cell.column_begin, span});
++		else if (has_single[cell.column_begin])
++			single[cell.column_begin].Encompass(cell_widths);
++		else
++		{
++			single[cell.column_begin] = cell_widths;
++			has_single[cell.column_begin] = true;
++		}
++	}
++	for (int i = 0; i < num_columns; i++)
++		if (has_single[i])
++			widths[i].Encompass(single[i]);
++	for (const ColspanCell& colspan : colspans)
++		widths[colspan.start].merged = false;
++	std::stable_sort(colspans.begin(), colspans.end(),
++		[](const ColspanCell& a, const ColspanCell& b) { return a.span == b.span ? a.start < b.start : a.span < b.span; });
++	for (const ColspanCell& colspan : colspans)
++		DistributeColspanCell(colspan.widths, widths.data() + colspan.start, Math::Min(colspan.span, num_columns - colspan.start), table_gap.x);
++
++	// The columns' percentages total at most 100%.
++	float total_percent = 0.f;
++	for (ColumnWidths& column : widths)
++	{
++		if (column.percent > 0.f)
++		{
++			column.percent = Math::Max(0.f, Math::Min(column.percent, 100.f - total_percent));
++			total_percent += column.percent;
++		}
++	}
++
++	// The table's min-content and max-content widths (ComputeGridInlineMinMax), and its spacing.
++	float spacing = table_gap.x;
++	float grid_min = 0.f, grid_max = 0.f, percent_estimate = 0.f, nonpercent_max = 0.f;
++	for (const ColumnWidths& column : widths)
++	{
++		if (!column.merged)
++			spacing += table_gap.x;
++		grid_min += column.min;
++		grid_max += column.max;
++		if (column.percent > 0.f)
++		{
++			if (column.max > 0.f)
++				percent_estimate = Math::Max(percent_estimate, 100.f / column.percent * column.max);
++		}
++		else
++			nonpercent_max += column.max;
++	}
++	if (total_percent > 0.f)
++	{
++		if (nonpercent_max != 0.f)
++			grid_max = Math::Max(grid_max, total_percent >= 100.f ? FLT_MAX : 100.f / (100.f - total_percent) * nonpercent_max);
++		grid_max = Math::Max(grid_max, percent_estimate);
++	}
++	grid_max = Math::Max(grid_min, grid_max);
++	grid_min += spacing;
++	grid_max = grid_max >= FLT_MAX ? FLT_MAX : grid_max + spacing;
++
++	// The used width of the table (CSS Tables 3 'computing the table width'): an automatic width fits its content into the
++	// available width; any width is at least the min-content width.
++	float used = table_initial_content_size.x;
++	if (auto_width)
++		used = Math::Clamp(used, grid_min, grid_max);
++	used = Math::Max(Math::Clamp(used, table_min_size.x, table_max_size.x), grid_min);
++
++	const Vector<float> sizes = DistributeWidth(used - spacing, widths.data(), num_columns, true);
++	TrackMetricList column_metrics(num_columns);
++	for (int i = 0; i < num_columns; i++)
++	{
++		TrackMetric& metric = column_metrics[i];
++		metric.sizing_mode = TrackSizingMode::Fixed;
++		metric.merged = widths[i].merged;
++		metric.fixed_size = metric.merged ? 0.f : sizes[i];
++		metric.min_size = metric.max_size = metric.fixed_size;
++	}
++	table_content_width = BuildColumnBoxes(columns, column_metrics, grid.columns, table_gap.x);
++}
++
+ void TableFormattingContext::DetermineColumnWidths(TrackBoxList& columns, float& table_content_width) const
+ {
++	if (!fixed_layout)
++	{
++		DetermineAutoColumnWidths(columns, table_content_width);
++		return;
++	}
++
+ 	// The column widths are determined entirely by any <col> elements preceding the first row, and <td> elements in the first row.
+ 	// If <col> has a fixed width, that is used. Otherwise, if <td> has a fixed width, that is used. Otherwise the column is 'flexible' width.
+ 	// All flexible widths are then sized to evenly fill the width of the table.
+ 
+-	// Both <col> and <colgroup> can have border/padding which extend beyond the size of <td> and <col>, respectively.
+-	// Margins for <td>, <col>, <colgroup> are merged to produce a single left/right margin for each column, located outside <colgroup>.
+-
+ 	TrackMetricList column_metrics(grid.columns.size());
+ 	TracksSizing sizing(column_metrics, table_initial_content_size.x, table_gap.x);
+ 
+-	// Use the <col> and <colgroup> elements for initializing the respective columns.
++	// Use the <col> elements for initializing the respective columns.
+ 	for (int i = 0; i < (int)column_metrics.size(); i++)
+ 	{
+-		if (Element* element_group = grid.columns[i].element_group)
+-		{
+-			const ComputedAxisSize computed = LayoutDetails::BuildComputedHorizontalSize(element_group->GetComputedValues());
+-			const int span = grid.columns[i].group_span;
+-
+-			sizing.ApplyGroupElement(i, span, computed);
+-		}
+-
+ 		if (Element* element_column = grid.columns[i].element_column)
+ 		{
+ 			const ComputedAxisSize computed = LayoutDetails::BuildComputedHorizontalSize(element_column->GetComputedValues());
+@@ -216,47 +739,23 @@ void TableFormattingContext::DetermineRowHeights(TrackBoxList& rows, BoxList& ce
+ 
+ 	TrackMetricList row_metrics(grid.rows.size());
+ 	TracksSizing sizing(row_metrics, table_initial_content_size.y, table_gap.y);
+-	bool percentage_size_used = false;
+ 
+-	// First look for any <col> and <colgroup> elements preceding any <tr> elements, use them for initializing the respective columns.
++	// Initialize the rows from their <tr> elements.
+ 	for (int i = 0; i < (int)grid.rows.size(); i++)
+ 	{
+-		if (Element* element_group = grid.rows[i].element_group)
+-		{
+-			// The padding/border/margin of column groups are used, but their widths are ignored.
+-			const ComputedAxisSize computed = LayoutDetails::BuildComputedVerticalSize(element_group->GetComputedValues());
+-			const int span = grid.rows[i].group_span;
+-
+-			sizing.ApplyGroupElement(i, span, computed);
+-		}
+-
+ 		if (Element* element_row = grid.rows[i].element_row)
+ 		{
+-			// The padding/border/margin and widths of columns are used.
+ 			const ComputedAxisSize computed = LayoutDetails::BuildComputedVerticalSize(element_row->GetComputedValues());
+-
+-			if (computed.size.type == Style::LengthPercentageAuto::Percentage)
+-				percentage_size_used = true;
+-
+ 			sizing.ApplyTrackElement(i, 1, computed);
+ 		}
+ 	}
+ 
+-	if (table_auto_height && percentage_size_used)
+-	{
+-		Log::Message(Log::LT_WARNING,
+-			"Table has one or more rows that use percentages for height. However, initial table height is undefined, thus "
+-			"these rows will become flattened. Set a fixed height on the table, or use fixed or 'auto' row heights. In element: %s.",
+-			element_table->GetAddress().c_str());
+-	}
+-
+-	// Next, find the height of rows that use auto height.
+-	// Auto height rows set their height according to the largest formatted cell size. This differs from the column width algorithm.
++	// Next, find the height of the rows' cells: a row is at least as tall as they are, its specified height being a minimum
++	// (CSS 2.1 17.5.3). A flexible row grows from that minimum.
+ 	for (int i = 0; i < (int)row_metrics.size(); i++)
+ 	{
+ 		TrackMetric& row_metric = row_metrics[i];
+-
+-		if (row_metric.sizing_mode == TrackSizingMode::Auto)
++		float content_height = 0.f;
+ 		{
+ 			struct CellLastRowComp {
+ 				bool operator()(const TableGrid::Cell& cell, int i) const { return cell.row_last < i; }
+@@ -295,13 +794,19 @@ void TableFormattingContext::DetermineRowHeights(TrackBoxList& rows, BoxList& ce
+ 				const float cell_inrow_height = box.GetSizeAcross(BoxDirection::Vertical, BoxArea::Border) - height_from_spanning_rows;
+ 
+ 				// Now we have the height of the cell, increase the row height to accompany the cell.
+-				row_metric.fixed_size = Math::Max(row_metric.fixed_size, cell_inrow_height);
++				content_height = Math::Max(content_height, cell_inrow_height);
+ 			}
++		}
+ 
+-			row_metric.sizing_mode = TrackSizingMode::Fixed;
+-			row_metric.flex_size = 0.0f;
+-			row_metric.fixed_size = Math::Clamp(row_metric.fixed_size, row_metric.min_size, row_metric.max_size);
++		if (row_metric.sizing_mode == TrackSizingMode::Flexible)
++		{
++			row_metric.min_size = Math::Max(row_metric.min_size, content_height);
++			continue;
+ 		}
++		row_metric.sizing_mode = TrackSizingMode::Fixed;
++		row_metric.flex_size = 0.0f;
++		row_metric.fixed_size = Math::Max(Math::Max(row_metric.fixed_size, row_metric.min_size), content_height);
++		row_metric.max_size = Math::Max(row_metric.max_size, row_metric.fixed_size);
+ 	}
+ 
+ 	// Now all heights should be either fixed or flexible, resolve all flexible heights to fixed.
+@@ -319,16 +824,13 @@ void TableFormattingContext::FormatRows(const TrackBoxList& rows, float table_co
+ 	RMLUI_ASSERT(rows.size() == grid.rows.size());
+ 
+ 	// Size and position the row and row group elements.
++	// Rows and row groups take no padding, border or margin (CSS 2.1 17.6.1): they span the columns, inside the outer spacing.
+ 	auto FormatRow = [this, table_content_width](Element* element, float content_height, float offset_y) {
+ 		Box box;
+-		// We use inline build mode here because we only care about padding, border, and (non-auto) margin.
+-		LayoutDetails::BuildBox(box, table_initial_content_size, element, BuildBoxMode::Inline);
+-		const Vector2f content_size(table_content_width - box.GetSizeAcross(BoxDirection::Horizontal, BoxArea::Margin, BoxArea::Padding),
+-			content_height);
+-		box.SetContent(content_size);
++		box.SetContent(Vector2f(Math::Max(0.f, table_content_width - 2.f * table_gap.x), content_height));
+ 		element->SetBox(box);
+ 
+-		element->SetOffset(table_content_offset + Vector2f(box.GetEdge(BoxArea::Margin, BoxEdge::Left), offset_y), element_table);
++		element->SetOffset(table_content_offset + Vector2f(table_gap.x, offset_y), element_table);
+ 	};
+ 
+ 	for (int i = 0; i < (int)rows.size(); i++)
+@@ -349,16 +851,13 @@ void TableFormattingContext::FormatColumns(const TrackBoxList& columns, float ta
+ 	RMLUI_ASSERT(columns.size() == grid.columns.size());
+ 
+ 	// Size and position the column and column group elements.
++	// Columns and column groups take no padding, border or margin either.
+ 	auto FormatColumn = [this, table_content_height](Element* element, float content_width, float offset_x) {
+ 		Box box;
+-		// We use inline build mode here because we only care about padding, border, and (non-auto) margin.
+-		LayoutDetails::BuildBox(box, table_initial_content_size, element, BuildBoxMode::Inline);
+-		const Vector2f content_size(content_width,
+-			table_content_height - box.GetSizeAcross(BoxDirection::Vertical, BoxArea::Margin, BoxArea::Padding));
+-		box.SetContent(content_size);
++		box.SetContent(Vector2f(content_width, Math::Max(0.f, table_content_height - 2.f * table_gap.y)));
+ 		element->SetBox(box);
+ 
+-		element->SetOffset(table_content_offset + Vector2f(offset_x, box.GetEdge(BoxArea::Margin, BoxEdge::Top)), element_table);
++		element->SetOffset(table_content_offset + Vector2f(offset_x, table_gap.y), element_table);
+ 	};
+ 
+ 	for (int i = 0; i < (int)columns.size(); i++)
+@@ -388,6 +887,10 @@ void TableFormattingContext::FormatCells(BoxList& cells, Vector2f& table_overflo
+ 
+ 		Box& box = cells[cell_index];
+ 		Style::VerticalAlign vertical_align = element_cell->GetComputedValues().vertical_align();
++		// Cells align their content to the top, middle or bottom; aligning baselines across a row is not represented.
++		if (vertical_align.type != Style::VerticalAlign::Top && vertical_align.type != Style::VerticalAlign::Middle &&
++			vertical_align.type != Style::VerticalAlign::Bottom)
++			GetSystemInterface()->LayoutNotRepresented(element_cell, "A table cell's 'vertical-align' other than top, middle or bottom");
+ 
+ 		const float cell_border_height = GetSpanningCellBorderSize(rows, grid_cell.row_begin, grid_cell.row_last);
+ 		const Vector2f cell_offset =
+diff --git a/Source/Core/Layout/TableFormattingContext.h b/Source/Core/Layout/TableFormattingContext.h
+index 33afb3a..6c0ab92 100644
+--- a/Source/Core/Layout/TableFormattingContext.h
++++ b/Source/Core/Layout/TableFormattingContext.h
+@@ -34,6 +34,12 @@ private:
+ 	// Determines the column widths, and populates the columns.
+ 	void DetermineColumnWidths(TrackBoxList& columns, float& table_content_width) const;
+ 
++	// Determines the column widths of an automatic table layout from its cells' content (CSS Tables 3 as Chromium computes it).
++	void DetermineAutoColumnWidths(TrackBoxList& columns, float& table_content_width) const;
++
++	// Report what this table's layout does not represent: collapsed borders, header and footer groups out of order.
++	void ReportUnrepresentedParts() const;
++
+ 	// Generate the initial boxes for all cells, content height may be indeterminate for now (-1).
+ 	void InitializeCellBoxes(BoxList& cells, const TrackBoxList& columns) const;
+ 
+@@ -56,6 +62,9 @@ private:
+ 	TableGrid grid;
+ 
+ 	bool table_auto_height = false;
++	// A fixed table layout sizes columns from the first row; an automatic one from all the cells' content.
++	bool fixed_layout = false;
++	bool collapsed_borders = false;
+ 	Vector2f table_min_size, table_max_size;
+ 	Vector2f table_gap;
+ 	Vector2f table_content_offset;
+diff --git a/Source/Core/Layout/TableFormattingDetails.cpp b/Source/Core/Layout/TableFormattingDetails.cpp
+index 2b0d3a9..9948ba3 100644
+--- a/Source/Core/Layout/TableFormattingDetails.cpp
++++ b/Source/Core/Layout/TableFormattingDetails.cpp
+@@ -1,6 +1,10 @@
+ #include "TableFormattingDetails.h"
+ #include "../../../Include/RmlUi/Core/ComputedValues.h"
++#include "../../../Include/RmlUi/Core/Core.h"
+ #include "../../../Include/RmlUi/Core/Element.h"
++#include "../../../Include/RmlUi/Core/ElementText.h"
++#include "../../../Include/RmlUi/Core/StringUtilities.h"
++#include "../../../Include/RmlUi/Core/SystemInterface.h"
+ #include "ContainerBox.h"
+ #include "LayoutDetails.h"
+ #include <algorithm>
+@@ -8,6 +12,16 @@
+ 
+ namespace Rml {
+ 
++// A table part where CSS wraps stray content in anonymous boxes (CSS 2.1 17.2.1) holds content outside the table structure:
++// collapsible white space disappears there, anything else is not represented.
++static void SkipStrayTablePart(Element* element, const char* part)
++{
++	if (auto text = rmlui_dynamic_cast<ElementText*>(element))
++		if (StringUtilities::StripWhitespace(text->GetText()).empty())
++			return;
++	GetSystemInterface()->LayoutNotRepresented(element, String("Content outside the table structure of a ") + part);
++}
++
+ bool TableGrid::Build(Element* element_table, TableWrapper& table_wrapper)
+ {
+ 	RMLUI_ASSERT(rows.empty() && columns.empty() && cells.empty() && open_cells.empty());
+@@ -52,10 +66,7 @@ bool TableGrid::Build(Element* element_table, TableWrapper& table_wrapper)
+ 				if (display_row != Display::TableRow)
+ 				{
+ 					if (display_row != Display::None)
+-					{
+-						Log::Message(Log::LT_WARNING, "Only table rows are valid children of table row groups. Ignoring element %s.",
+-							element_row->GetAddress().c_str());
+-					}
++						SkipStrayTablePart(element_row, "table row group");
+ 					continue;
+ 				}
+ 
+@@ -80,15 +91,13 @@ bool TableGrid::Build(Element* element_table, TableWrapper& table_wrapper)
+ 		{
+ 			PushColumnGroup(element);
+ 		}
++		else if (display == Display::TableColumn || display == Display::TableColumnGroup)
++		{
++			GetSystemInterface()->LayoutNotRepresented(element, "A table column or column group after the table's rows");
++		}
+ 		else
+ 		{
+-			if (display == Display::TableColumn || display == Display::TableColumnGroup)
+-				Log::Message(Log::LT_WARNING, "Table columns and column groups must precede any table rows. Ignoring element %s.",
+-					element->GetAddress().c_str());
+-			else
+-				Log::Message(Log::LT_WARNING,
+-					"Only table columns, column groups, rows, row groups, and cells are valid children of tables. Ignoring element %s.",
+-					element->GetAddress().c_str());
++			SkipStrayTablePart(element, "table");
+ 		}
+ 	}
+ 
+@@ -98,16 +107,16 @@ bool TableGrid::Build(Element* element_table, TableWrapper& table_wrapper)
+ 		non_parented_cell_elements.clear();
+ 	}
+ 
++	// A cell spanning below the last row ends there.
++	for (Cell& cell : open_cells)
++	{
++		cell.row_last = (int)rows.size() - 1;
++		cells.push_back(cell);
++	}
++
+ 	// Sort cells by the last row they span.
+ 	std::sort(cells.begin(), cells.end(), [](const Cell& a, const Cell& b) { return a.row_last < b.row_last; });
+ 
+-	if (!open_cells.empty())
+-	{
+-		Log::Message(Log::LT_WARNING,
+-			"One or more cells span below the last row in table %s. They will not be formatted. Add additional rows, or adjust the rowspan "
+-			"attribute.",
+-			element_table->GetAddress().c_str());
+-	}
+ 	open_cells.clear();
+ 	open_cells.shrink_to_fit();
+ 
+@@ -206,7 +215,7 @@ void TableGrid::PushRow(Element* element_row, ElementList cell_elements, TableWr
+ 			}
+ 			else if (cell_display != Style::Display::None)
+ 			{
+-				Log::Message(Log::LT_WARNING, "Only table cells are allowed as children of table rows. %s", element_cell->GetAddress().c_str());
++				SkipStrayTablePart(element_cell, "table row");
+ 			}
+ 		}
+ 
+@@ -249,14 +258,9 @@ void TableGrid::PushRow(Element* element_row, ElementList cell_elements, TableWr
+ 
+ 		const int column_last = column + col_span - 1;
+ 
+-		if (column_last >= (int)columns.size())
+-		{
+-			Log::Message(Log::LT_WARNING,
+-				"Too many columns in table row %d while encountering cell: %s\nThe number of columns is %d, as determined by the table columns or "
+-				"the first table row.",
+-				row_index + 1, element_cell->GetAddress().c_str(), (int)columns.size());
+-			break;
+-		}
++		// A later row may extend the table with more columns.
++		while (column_last >= (int)columns.size())
++			columns.push_back({});
+ 
+ 		const Style::Position cell_position = element_cell->GetPosition();
+ 		if (cell_position == Style::Position::Absolute || cell_position == Style::Position::Fixed)
+@@ -298,26 +302,6 @@ void TracksSizing::GetEdgeSizes(float& margin_a, float& margin_b, float& padding
+ 	LayoutDetails::GetEdgeSizes(margin_a, margin_b, padding_border_a, padding_border_b, computed, table_initial_content_size);
+ }
+ 
+-void TracksSizing::ApplyGroupElement(const int index, const int span, const ComputedAxisSize& computed)
+-{
+-	RMLUI_ASSERT(span >= 1 && index + span - 1 < (int)metrics.size());
+-
+-	float margin_a, margin_b;
+-	float padding_border_a, padding_border_b;
+-
+-	GetEdgeSizes(margin_a, margin_b, padding_border_a, padding_border_b, computed);
+-
+-	// Add left/top edges.
+-	TrackMetric& metric_begin = metrics[index];
+-	metric_begin.group_padding_border_a = padding_border_a;
+-	metric_begin.sum_margin_a = margin_a;
+-
+-	// Add right/bottom edges.
+-	TrackMetric& metric_last = metrics[index + span - 1];
+-	metric_last.group_padding_border_b = padding_border_b;
+-	metric_last.sum_margin_b = margin_b;
+-}
+-
+ void TracksSizing::ApplyTrackElement(const int index, const int span, const ComputedAxisSize& computed)
+ {
+ 	RMLUI_ASSERT(span >= 1 && index + span - 1 < (int)metrics.size());
+@@ -329,15 +313,6 @@ void TracksSizing::ApplyTrackElement(const int index, const int span, const Comp
+ 	// We target the content box because track sizes are defined in terms of the border box of cells, equal to the content size of tracks.
+ 	InitializeSize(metric_begin, margin_a, margin_b, padding_border_a, padding_border_b, computed, span, Style::BoxSizing::ContentBox);
+ 
+-	// Add left/top edges. Increment the values because we are merging with any previously set edges.
+-	metric_begin.column_padding_border_a += padding_border_a;
+-	metric_begin.sum_margin_a += margin_a;
+-
+-	// Add right/bottom edges.
+-	TrackMetric& metric_last = metrics[index + span - 1];
+-	metric_last.column_padding_border_b += padding_border_b;
+-	metric_last.sum_margin_b += margin_b;
+-
+ 	// The size of all spanning tracks are distributed equally.
+ 	for (int j = 1; j < span; j++)
+ 	{
+@@ -365,16 +340,9 @@ void TracksSizing::ApplyCellElement(const int index, const int span, const Compu
+ 	// We target the border box because track sizes are defined in terms of the border box of cells.
+ 	InitializeSize(cell_metric, margin_a, margin_b, padding_border_a, padding_border_b, computed, span, Style::BoxSizing::BorderBox);
+ 
+-	cell_metric.sum_margin_a = margin_a;
+-
+ 	// Merge the size determined by this cell with any existing track sizes.
+ 	for (int j = 0; j < span; j++)
+ 	{
+-		if (j == 1)
+-			cell_metric.sum_margin_a = 0;
+-		if (j == span - 1)
+-			cell_metric.sum_margin_b = margin_b;
+-
+ 		// Merge the existing track metrics with the cell sizing data.
+ 		TrackMetric& destination = metrics[index + j];
+ 
+@@ -390,9 +358,6 @@ void TracksSizing::ApplyCellElement(const int index, const int span, const Compu
+ 
+ 		if (destination.max_size == FLT_MAX)
+ 			destination.max_size = cell_metric.max_size;
+-
+-		destination.sum_margin_a += cell_metric.sum_margin_a;
+-		destination.sum_margin_b += cell_metric.sum_margin_b;
+ 	}
+ }
+ 
+@@ -463,17 +428,16 @@ void TracksSizing::InitializeSize(TrackMetric& metric, float& margin_a, float& m
+ 
+ void TracksSizing::ResolveFlexibleSize()
+ {
+-	// The fixed spacing includes the table gaps, and the track and track-group elements' padding, border, and margins.
+-	float sum_fixed_spacing = table_gap * float((int)metrics.size() - 1);
++	// The fixed spacing is the border spacing before, between and after the tracks.
++	float sum_fixed_spacing = metrics.empty() ? 0.f : table_gap;
+ 
+ 	for (const TrackMetric& metric : metrics)
+ 	{
+ 		// Any auto size must have been resolved to either fixed or flexible before running this algorithm.
+ 		RMLUI_ASSERT(metric.sizing_mode == TrackSizingMode::Fixed || metric.sizing_mode == TrackSizingMode::Flexible);
+ 
+-		sum_fixed_spacing += metric.column_padding_border_a + metric.column_padding_border_b;
+-		sum_fixed_spacing += metric.group_padding_border_a + metric.group_padding_border_a;
+-		sum_fixed_spacing += metric.sum_margin_a + metric.sum_margin_b;
++		if (!metric.merged)
++			sum_fixed_spacing += table_gap;
+ 	}
+ 
+ 	float table_available_size = 0.0f;
+@@ -564,7 +528,8 @@ static float InitializeTrackBoxes(TrackBoxList& boxes, const TrackMetricList& me
+ {
+ 	boxes.resize(metrics.size());
+ 
+-	float cursor = 0;
++	// The border spacing comes before, between and after the tracks.
++	float cursor = metrics.empty() ? 0.f : table_gap;
+ 
+ 	// Walk through all the metrics and populate the track box accordingly.
+ 	for (size_t i = 0; i < metrics.size(); i++)
+@@ -582,7 +547,7 @@ static float InitializeTrackBoxes(TrackBoxList& boxes, const TrackMetricList& me
+ 		box.track_size = metric.fixed_size;
+ 
+ 		cursor = box.cell_offset + metric.fixed_size + metric.column_padding_border_b + metric.group_padding_border_b + metric.sum_margin_b;
+-		if (i != metrics.size() - 1)
++		if (!metric.merged)
+ 			cursor += table_gap;
+ 	}
+ 
+diff --git a/Source/Core/Layout/TableFormattingDetails.h b/Source/Core/Layout/TableFormattingDetails.h
+index 2bf67e4..7ca0822 100644
+--- a/Source/Core/Layout/TableFormattingDetails.h
++++ b/Source/Core/Layout/TableFormattingDetails.h
+@@ -80,6 +80,8 @@ struct TrackMetric {
+ 	// The margins are the sum of the margins from all cells, tracks, and group elements.
+ 	float sum_margin_a = 0;
+ 	float sum_margin_b = 0;
++	// A column no cell starts in and no column element sizes takes no size and no spacing (CSS Tables 3 'mergeable').
++	bool merged = false;
+ };
+ 
+ using TrackMetricList = Vector<TrackMetric>;
+@@ -93,11 +95,9 @@ public:
+ 		metrics(metrics), table_initial_content_size(table_initial_content_size), table_gap(table_gap)
+ 	{}
+ 
+-	// Apply group element. This sets the initial size of edges.
+-	void ApplyGroupElement(const int index, const int span, const ComputedAxisSize& computed);
+-	// Apply track element. This merges its edges, and sets the initial content size.
++	// Apply track element. This sets the initial content size; tracks take no padding, border or margin (CSS 2.1 17.6.1).
+ 	void ApplyTrackElement(const int index, const int span, const ComputedAxisSize& computed);
+-	// Apply cell element for column sizing. This merges its content size and margins.
++	// Apply cell element for column sizing. This merges its content size; cells take no margins.
+ 	void ApplyCellElement(const int index, const int span, const ComputedAxisSize& computed);
+ 
+ 	// Convert flexible size to fixed size for all tracks.
+diff --git a/Source/Core/StyleSheetSpecification.cpp b/Source/Core/StyleSheetSpecification.cpp
+index ac7bdf6..d9b84f5 100644
+--- a/Source/Core/StyleSheetSpecification.cpp
++++ b/Source/Core/StyleSheetSpecification.cpp
+@@ -494,6 +494,13 @@ void StyleSheetSpecification::RegisterDefaultProperties()
+ 	RegisterProperty(PropertyId::WebkitBoxOrient, "-webkit-box-orient", "horizontal", false, true)
+ 		.AddParser("keyword", "horizontal, vertical, inline-axis, block-axis");
+ 	RegisterProperty(PropertyId::WebkitLineClamp, "-webkit-line-clamp", "none", false, true).AddParser("keyword", "none").AddParser("number");
++	// CSS 2.1 17.6: the table border models, separate tables' cell spacing, and fixed or automatic column sizing.
++	RegisterProperty(PropertyId::BorderCollapse, "border-collapse", "separate", true, true).AddParser("keyword", "separate, collapse");
++	RegisterProperty(PropertyId::BorderSpacingX, "-rmlui-border-spacing-horizontal", "0px", true, true).AddParser("length");
++	RegisterProperty(PropertyId::BorderSpacingY, "-rmlui-border-spacing-vertical", "0px", true, true).AddParser("length");
++	RegisterShorthand(ShorthandId::BorderSpacing, "border-spacing", "-rmlui-border-spacing-horizontal, -rmlui-border-spacing-vertical",
++		ShorthandType::Replicate);
++	RegisterProperty(PropertyId::TableLayout, "table-layout", "auto", false, true).AddParser("keyword", "auto, fixed");
+ 	RegisterProperty(PropertyId::AlignItems, "align-items", "stretch", false, true).AddParser("keyword", "flex-start, flex-end, center, baseline, stretch, start, end");
+ 	RegisterShorthand(ShorthandId::PlaceItems, "place-items", "align-items, justify-items", ShorthandType::Replicate);
+ 	RegisterProperty(PropertyId::AlignSelf, "align-self", "auto", false, true).AddParser("keyword", "auto, flex-start, flex-end, center, baseline, stretch, start, end");
+diff --git a/Source/Core/SystemInterface.cpp b/Source/Core/SystemInterface.cpp
+index 5750258..5e75ade 100644
+--- a/Source/Core/SystemInterface.cpp
++++ b/Source/Core/SystemInterface.cpp
+@@ -87,4 +87,6 @@ void SystemInterface::ActivateKeyboard(Rml::Vector2f /*caret_position*/, float /
+ 
+ void SystemInterface::DeactivateKeyboard() {}
+ 
++void SystemInterface::LayoutNotRepresented(Element* /*element*/, const String& /*reason*/) {}
++
+ } // namespace Rml
