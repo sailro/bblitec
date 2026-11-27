@@ -5,8 +5,9 @@
 // struct field so named, whatever struct the data model gives a shape.
 // A store's engine is the binding it comes from: a const holding one
 // engine, through const aliases, or a parameter every call or construction
-// of its function passes the same such binding. A store this cannot follow
-// leaves the name's engine unknown.
+// of its function passes the same such binding; a function the program never
+// calls stores nothing. A store this cannot follow leaves the name's engine
+// unknown.
 import ts from "typescript";
 import { identifiersByName, sourceFileNodes } from "./analysis-walk.js";
 import { pinnedHandleKind } from "./data-types.js";
@@ -249,7 +250,8 @@ export class EngineFieldIdentities {
                     return "unknown";
                 roots.push(this.expressionRoot(passed[index], visiting));
             }
-            return roots.length === 0 ? "unknown" : agree(roots);
+            // A function no reference invokes never runs its stores.
+            return agree(roots);
         } finally {
             visiting.delete(symbol);
         }
