@@ -3030,6 +3030,30 @@ export class DataLowerer {
                 );
             if (mode === "write" && owner.staticElementsOwner)
                 this.invalidateStaticElements(owner);
+            // A property the owner's declared record type has and its
+            // record's layout lacks is added to that one object.
+            if (mode === "write" && ownerType?.kind === "struct") {
+                const declared = presentDataType(
+                    this.dataTypeAt(unwrapped.expression),
+                );
+                if (
+                    declared?.kind === "struct" &&
+                    declared.name !== ownerType.name &&
+                    this.context.dataTypes.lacksRecordProperty(
+                        ownerType.name,
+                        unwrapped.name.text,
+                    ) &&
+                    !this.context.dataTypes.lacksRecordProperty(
+                        declared.name,
+                        unwrapped.name.text,
+                    )
+                )
+                    this.context.dataTypes.joinWrittenRecordProperty(
+                        ownerType.name,
+                        declared.name,
+                        unwrapped.expression,
+                    );
+            }
             // A call can yield an intrinsic record or engine handle rather
             // than native data. Its owner has already been evaluated, so
             // continue through the shared property reader before declining

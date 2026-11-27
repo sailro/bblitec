@@ -1882,6 +1882,70 @@ export class DataTypeRegistry {
         if (order) throw order.joinedWith(otherOrders);
     }
 
+    /**
+     * A write of a property struct `target`'s record type declares, through
+     * a record of struct `source`, whose layout lacks it (a parameter of the
+     * wider type bound to a narrower record): JavaScript adds the property
+     * to that one object, so the two record types, the `owner` expression's
+     * under the instantiation in force, join one layout.
+     */
+    public joinWrittenRecordProperty(
+        source: string,
+        target: string,
+        owner: ts.Expression,
+    ): void {
+        const from = this.nativeRecordSources.get(source);
+        const record = this.checker.getNonNullableType(
+            this.checker.getTypeAtLocation(owner),
+        );
+        const to = this.recordDemand(record, owner);
+        if (!from) return;
+        const sourceInstantiation = this.recordInstantiation(
+            from,
+            from.type,
+            source,
+        );
+        const targetInstantiation = this.recordInstantiation(
+            to,
+            record,
+            target,
+        );
+        const component = (
+            demand: NativeRecordStorageDemand,
+            instantiation: InstantiatedRecord | undefined,
+        ) =>
+            this.recordComponents.get(
+                instantiation ?? recordIdentity(this.checker, demand.type),
+            );
+        const sourceComponent = component(from, sourceInstantiation);
+        if (
+            (!sourceInstantiation && !this.joinableRecord(from, from.type)) ||
+            (!targetInstantiation && !this.joinableRecord(to, record)) ||
+            (sourceComponent &&
+                sourceComponent === component(to, targetInstantiation)) ||
+            !(sourceInstantiation || targetInstantiation
+                ? this.structLayoutsCompatible(
+                      this.structFields(source, owner, "accessors"),
+                      this.structFields(target, owner, "accessors"),
+                  )
+                : layoutsCompatible(this.checker, from.type, record))
+        )
+            return;
+        this.requireJoin({
+            ...from,
+            node: owner,
+            joins: [
+                {
+                    source: from.type,
+                    target: record,
+                    ...(sourceInstantiation ? { sourceInstantiation } : {}),
+                    ...(targetInstantiation ? { targetInstantiation } : {}),
+                    kind: "value",
+                },
+            ],
+        });
+    }
+
     /** An observable extra property joins the concrete record layouts that carried it. */
     private retainConvertedRecordProperty(
         name: string,

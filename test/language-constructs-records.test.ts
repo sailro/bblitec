@@ -726,6 +726,29 @@ check(
 );
 
 check(
+    "a-property-a-parameter-type-declares-joins-the-narrower-record-written-through-it",
+    `
+    interface Placement { handle: number; y: number }
+    interface Body { id: number; baseY: number }
+    type NativeEnvelope<T> = T & { hostLocal?: Placement };
+    const place = <T extends { id: number }>(envelope: NativeEnvelope<T>, y: number): NativeEnvelope<T> => {
+        const handle = envelope.id * 10;
+        const placement = envelope.hostLocal ?? (envelope.hostLocal = { handle, y });
+        placement.handle = handle;
+        placement.y = y;
+        return envelope;
+    };
+    const bodies: Body[] = [{ id: 1, baseY: 2 }, { id: 2, baseY: 3 }];
+    for (const body of bodies) place(body, body.baseY);
+    const first: NativeEnvelope<Body> = bodies[0]!;
+    const kept = first.hostLocal;
+    place(first, 7);
+    if (first.hostLocal !== kept || kept?.y !== 7 || kept.handle !== 10) throw new Error("one placement");
+    if ((bodies[1] as NativeEnvelope<Body>).hostLocal?.y !== 3) throw new Error("second body");
+`,
+);
+
+check(
     "records-of-two-unions-take-one-layout",
     `
     interface A { tag: "a"; v: number }
