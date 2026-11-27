@@ -7160,7 +7160,7 @@ struct UiRmlRuntime {
             if (rule.generated != UiGeneratedPart::None && style_rule_media_matches(rule)) {
                 if (rule.content)
                     rules.emplace_back(&rule, rule_index);
-                std::string declarations = project_ui_style_source(rule.style).private_declarations;
+                std::string declarations = filter_private_ui_declarations(rule.style, true);
                 if (!take_css_declaration(declarations, "--bbl-absolute-inline").empty())
                     absolute_inline_rules.emplace_back(&rule, rule_index);
             }
