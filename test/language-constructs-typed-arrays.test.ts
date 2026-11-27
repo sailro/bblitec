@@ -100,6 +100,15 @@ check(
     };
     const read = (index: number): number => (prepared ? prepared[index]! : -1);
     if (!prepare(4) || read(0) !== 0.25 || prepare(0) || read(0) !== -1) throw new Error("rebound nullable binding");
+    function preparer(): (scale: number) => number {
+        let held: ArrayLike<number> | null = null;
+        return (scale: number): number => {
+            held = invert(scale);
+            return held ? held[0]! : -1;
+        };
+    }
+    const prepareHeld = preparer();
+    if (prepareHeld(2) !== 0.5 || prepareHeld(0) !== -1) throw new Error("captured nullable binding");
 `,
 );
 
