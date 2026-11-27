@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { runGeneratedProgram } from "./native-fixture.js";
-import { check, native } from "./language-constructs.js";
+import { check, checkInRealm, native } from "./language-constructs.js";
 
 check(
     "a-rebound-object-binding-reads-its-current-object",
@@ -745,6 +745,31 @@ check(
     place(first, 7);
     if (first.hostLocal !== kept || kept?.y !== 7 || kept.handle !== 10) throw new Error("one placement");
     if ((bodies[1] as NativeEnvelope<Body>).hostLocal?.y !== 3) throw new Error("second body");
+`,
+);
+
+checkInRealm(
+    "a-generic-function-literal-record-stored-as-its-local-alias-is-one-object",
+    `
+    function createSampler<Key, Sample>(resolve: (x: number, key: Key) => Promise<Sample>) {
+        type Entry = { readonly x: number; readonly key: Key; readonly promise: Promise<Sample> };
+        let active: Entry | null = null;
+        const start = (x: number, key: Key): Entry => {
+            if (active && active.x === x && active.key === key) return active;
+            const entry = { x, key, promise: resolve(x, key) };
+            active = entry;
+            void entry.promise.then(() => { if (active === entry) active = null; });
+            return entry;
+        };
+        return { sample: (x: number, key: Key) => start(x, key).promise, pending: () => active !== null };
+    }
+    const sampler = createSampler<string, number>((x, key) => Promise.resolve(x + key.length));
+    const a = sampler.sample(1, "ab");
+    if (a !== sampler.sample(1, "ab") || a === sampler.sample(2, "ab") || !sampler.pending()) throw new Error("shared");
+    void a.then((value) => {
+        if (value !== 3 || sampler.pending()) throw new Error("settled");
+        globalThis.close();
+    });
 `,
 );
 
