@@ -163,6 +163,25 @@ if(kept.length!==2||kept[1]!==input||kept[1]!.length!==3||kept[0]!.length!==2||r
 `,
 );
 
+check(
+    "optional readonly array locals hand stored callbacks their array's owner",
+    `
+interface Sink { take?(values:readonly number[]):boolean }
+const kept:Array<readonly number[]>=[];
+const sinks:Sink[]=[{take:values=>{kept.push(values);return values.length>0;}}];
+function pass(sink:Sink,values?:readonly number[]):boolean {return !!values&&!!sink.take?.(values);}
+const input:number[]=[1,2];
+const maybe:readonly number[]|undefined=input.length>1?input:undefined;
+const absent:readonly number[]|undefined=input.length>5?input:undefined;
+let later:readonly number[]|undefined=undefined;
+if(pass(sinks[0]!,later))throw new Error('unset');
+later=input;
+if(!pass(sinks[0]!,maybe)||pass(sinks[0]!,absent)||!pass(sinks[0]!,later))throw new Error('calls');
+input.push(3);
+if(kept.length!==2||kept[0]!==input||kept[1]!==input||kept[0]!.length!==3)throw new Error('owners');
+`,
+);
+
 test("array views without represented owners refuse reference equality", () => {
     for (const type of ["ArrayLike<number>", "ArrayLike<number>|null"]) {
         assert.throws(

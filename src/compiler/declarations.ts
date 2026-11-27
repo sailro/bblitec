@@ -4273,6 +4273,8 @@ export class DeclarationLowerer {
             (annotated.kind === "handle" &&
                 !ts.isObjectLiteralExpression(initializerLiteral)) ||
             annotated.kind === "span" ||
+            (annotated.kind === "optional" &&
+                annotated.inner.kind === "span") ||
             annotated.kind === "table" ||
             (annotated.kind === "optional" &&
                 annotated.inner.kind === "handle" &&
@@ -4282,8 +4284,9 @@ export class DeclarationLowerer {
                 !ts.isArrayLiteralExpression(initializerLiteral) &&
                 !ts.isConditionalExpression(initializerLiteral))
         ) {
-            // Readonly views keep the legacy static-tuple declaration
-            // semantics; only owning composites (and mutable tuple
+            // Readonly views, optional ones too, keep the legacy static-tuple
+            // declaration semantics (the value's own storage, an array's
+            // owner among them); only owning composites (and mutable tuple
             // locals initialized from array literals or their conditional) take the data
             // path. An optional HANDLE local (`Mesh | undefined` from a
             // search) keeps the value path too: a handle a search
