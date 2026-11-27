@@ -195,6 +195,20 @@ test("inert canvas focus order and packaged image sources lower explicitly", () 
     assert.ok(
         fixed.manifest.assets.some((asset) => asset.output === "tile.png"),
     );
+    // An img's width and height reflect their attributes as unsigned longs.
+    const sized = compile(
+        `const image = document.createElement("img"); image.width = 900; image.height = 675; image.src = "tile.png"; document.body.append(image);`,
+    );
+    for (const [axis, value] of [
+        ["width", 900],
+        ["height", 675],
+    ] as const)
+        assert.match(
+            sized.cpp,
+            new RegExp(
+                `bbl::ui_set_dimension_attribute\\([^;]*"${axis}", ${value}(?:\\.0)?\\);`,
+            ),
+        );
     // A host image's data attributes name both sources: both are packaged
     // and the write selects between them at run time.
     writeFileSync(join(directory, "tall.png"), PNG.sync.write(texture));

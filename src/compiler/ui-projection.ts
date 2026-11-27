@@ -6786,6 +6786,18 @@ export class UiProjection {
             )
         )
             return;
+        // An img's width and height reflect their attributes as unsigned
+        // longs; its getters read its rendered or natural size.
+        if (
+            (property === "width" || property === "height") &&
+            this.declaredUiTag(element, receiver) === "img"
+        ) {
+            this.context.emit({
+                kind: "expression",
+                code: `bbl::ui_set_dimension_attribute(${engine}, ${element.cpp}, ${this.context.cppString(property)}, ${this.assignedNumber(assigned)});`,
+            });
+            return;
+        }
         if (property === "checked") {
             if (element.uiTag && element.uiTag !== "input")
                 this.context.fail(
