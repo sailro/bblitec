@@ -5,7 +5,10 @@ import { journaled } from "./emission-transaction.js";
 import { deferredCapabilityDescriptor } from "./deferred-capabilities.js";
 import ts from "typescript";
 import { namedMember, resolvedDomApi, type NamedMember } from "./symbols.js";
-import { DOCUMENT_ELEMENT_FROM_POINT } from "./dom-lowerings.js";
+import {
+    DOCUMENT_ELEMENT_FROM_POINT,
+    VIDEO_ELEMENT_REFUSAL,
+} from "./dom-lowerings.js";
 import {
     uiComputedStyleRead,
     unrepresentedComputedStyle,
@@ -1684,6 +1687,8 @@ export class PlatformCalls {
                     `Native UI element tag '${tag}' is reserved for the retained projection.`,
                 );
             }
+            if (!svg && normalizedTag === "video")
+                this.context.fail(call, VIDEO_ELEMENT_REFUSAL);
             this.context.reachFeature("ui:rml", call);
             if (svg) this.context.reachFeature("ui:inline-svg", call);
             if (svg && tag === "image")
