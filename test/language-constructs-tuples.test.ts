@@ -681,6 +681,43 @@ test("numeric tuple parameters refuse array parameters that may grow them", () =
         );
 });
 
+// A shared class's method keeps its array parameter's length when it only
+// writes lanes the tuple has: the tuple it is handed is that array, and
+// keeps its fixed storage for the spread that reads it after the call.
+check(
+    "tuple-handed-to-a-method-keeping-its-array-length",
+    `
+    type Lanes = [number, number, number, number];
+    class Pose {
+        x = 0;
+        y = 0;
+        set(x: number, y: number): void { this.x = x; this.y = y; }
+        readInto(out: number[]): void {
+            out[0] = this.x; out[1] = this.y;
+            out[2] = this.x + this.y; out[3] = this.x - this.y;
+        }
+    }
+    const poses = new Map<number, Pose>();
+    for (let i = 0; i < 2; i++) poses.set(i, new Pose());
+    function tracker(sink: { take(a: number, b: number, c: number, d: number): void }): (x: number) => void {
+        const lanes: Lanes = [0, 0, 0, 0];
+        return (x: number): void => {
+            const pose = poses.get(0)!;
+            pose.set(x, 1);
+            pose.readInto(lanes);
+            sink.take(...lanes);
+        };
+    }
+    const seen: number[] = [];
+    const follow = tracker({ take(a, b, c, d) { seen.push(a, b, c, d); } });
+    const list: number[] = [0, 0, 0, 0];
+    follow(Date.now() > 0 ? 3 : 4);
+    poses.get(1)!.set(5, 2);
+    poses.get(1)!.readInto(list);
+    if (seen.join() !== "3,1,4,2" || list.join() !== "5,2,7,3") throw new Error("lanes " + seen.join() + " " + list.join());
+`,
+);
+
 check(
     "tuple-stored-through-a-readonly-array-field",
     `
