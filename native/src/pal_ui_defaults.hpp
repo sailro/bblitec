@@ -17,6 +17,8 @@ inline constexpr std::string_view ui_user_agent_css =
     "div{display:block;}\n"
     // Authored canvases are inline replaced elements unless a page makes them blocks.
     "canvas{display:inline;}\n"
+    // Chromium's video: its poster (docs/fidelity.md) fits its box, keeping its aspect ratio.
+    "video{object-fit:contain;}\n"
     "details,summary{display:block;}\n"
     "summary{tab-index:auto;pointer-events:auto;cursor:pointer;}\n"
     // Chromium's inside disclosure marker: a 0.66em symbol and 0.4em before the text.

@@ -434,6 +434,59 @@ interface ExecutedVideoCallContext extends Pick<
     | "fail"
 > {}
 
+/** @unjournaled A pure function of the checked program (`programBakesVideos`). */
+const bakingPrograms = new WeakMap<ts.Program, boolean>();
+
+/**
+ * Whether `program` declares a bounded video producer
+ * (`executedVideoFunctionShape`): its `HTMLVideoElement` storage holds the
+ * videos generation bakes, not retained video elements, which then refuse
+ * where storage holds them.
+ */
+export function programBakesVideos(
+    checker: ts.TypeChecker,
+    program: ts.Program,
+): boolean {
+    let bakes = bakingPrograms.get(program);
+    if (bakes === undefined) {
+        bakes = program
+            .getSourceFiles()
+            .some(
+                (file) =>
+                    !file.isDeclarationFile &&
+                    !program.isSourceFileFromExternalLibrary(file) &&
+                    file.statements.some(
+                        (statement) =>
+                            executedVideoFunctionShape(checker, statement) !==
+                            undefined,
+                    ),
+            );
+        bakingPrograms.set(program, bakes);
+    }
+    return bakes;
+}
+
+/**
+ * Whether `node` lies in the same-file closure of a bounded video producer:
+ * the video element it creates is the one generation bakes.
+ */
+export function inVideoProducer(
+    checker: ts.TypeChecker,
+    node: ts.Node,
+): boolean {
+    return node
+        .getSourceFile()
+        .statements.some(
+            (statement) =>
+                ts.isFunctionDeclaration(statement) &&
+                executedVideoFunctionShape(checker, statement) !== undefined &&
+                (sameFileClosure(checker, statement, () => false) ?? []).some(
+                    (member) =>
+                        member.pos <= node.pos && node.end <= member.end,
+                ),
+        );
+}
+
 const producerShapes = new EmissionWeakMap<
     ts.Node,
     ExecutedVideoFunctionShape | null

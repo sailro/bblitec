@@ -268,8 +268,9 @@ export function elementDomHandlerFamily(
 }
 
 /**
- * Whether `type` is the load or error a script or img element fires: a
- * task-queued, non-bubbling event of the application realm's resource loads.
+ * Whether `type` is the load or error a script or img element fires, or
+ * the error a video element fires when its source fails: a task-queued,
+ * non-bubbling event of the application realm's resource loads.
  */
 export function resourceLoadEvent(
     context: Pick<Context, "checker" | "options">,
@@ -286,7 +287,12 @@ export function resourceLoadEvent(
                 .getNonNullableType(context.checker.getTypeAtLocation(receiver))
                 .getSymbol()?.name ?? "",
         );
-    if (tag !== "script" && tag !== "img") return false;
+    if (
+        tag !== "script" &&
+        tag !== "img" &&
+        (tag !== "video" || type !== "error")
+    )
+        return false;
     if (!context.options.workers) throw new ApplicationRealmRequired();
     return true;
 }

@@ -1,4 +1,9 @@
 import { isUiTreeRead } from "./properties.js";
+import { numberConstantValue } from "./number-intrinsics.js";
+import {
+    inVideoProducer,
+    programBakesVideos,
+} from "./executed-video-function.js";
 import {
     contextCanvas,
     isStringValue,
@@ -410,6 +415,7 @@ interface UiProjectionContext extends Pick<
     | "enterRuntimeControlFlow"
     | "leaveRuntimeControlFlow"
     | "options"
+    | "program"
     | "probeEmission"
     | "reachFeature"
     | "assetRegistry"
@@ -593,6 +599,50 @@ const UI_IDL_ATTRIBUTES: ReadonlyMap<string, UiIdlAttribute> = new Map<
     ["inputMode", { kind: "input-mode" }],
     ["scrollLeft", { kind: "scroll", left: true }],
     ["scrollTop", { kind: "scroll", left: false }],
+]);
+
+/**
+ * The members of a video element without a decoder (docs/fidelity.md): its
+ * URL, keyword, boolean and dimension attributes, its muted state (which
+ * the `muted` attribute does not reflect), and the readbacks of a media
+ * element whose sources never load.
+ */
+type UiVideoMember =
+    | { kind: "url"; attribute: "src" | "poster" }
+    | { kind: "keyword" }
+    | { kind: "flag"; attribute: "loop" | "controls" | "autoplay" }
+    | { kind: "dimension"; attribute: "width" | "height" }
+    | { kind: "muted" }
+    | { kind: "paused" }
+    | { kind: "readback"; value: "ended" | "currentTime" | "duration" };
+
+const UI_VIDEO_MEMBERS: ReadonlyMap<string, UiVideoMember> = new Map<
+    string,
+    UiVideoMember
+>([
+    ["src", { kind: "url", attribute: "src" }],
+    ["poster", { kind: "url", attribute: "poster" }],
+    ["preload", { kind: "keyword" }],
+    ...(["loop", "controls", "autoplay"] as const).map(
+        (attribute): [string, UiVideoMember] => [
+            attribute,
+            { kind: "flag", attribute },
+        ],
+    ),
+    ...(["width", "height"] as const).map(
+        (attribute): [string, UiVideoMember] => [
+            attribute,
+            { kind: "dimension", attribute },
+        ],
+    ),
+    ["muted", { kind: "muted" }],
+    ["paused", { kind: "paused" }],
+    ...(["ended", "currentTime", "duration"] as const).map(
+        (value): [string, UiVideoMember] => [
+            value,
+            { kind: "readback", value },
+        ],
+    ),
 ]);
 
 /** The `inputmode` keywords (HTML), its missing and invalid states both reading "". */
@@ -801,6 +851,24 @@ export class UiProjection {
         return absolute
             ? `bbl::ui_document_url(${selected}, ${this.context.cppString(deploymentUrl(options).href)})`
             : selected;
+    }
+
+    /**
+     * A retained video element, created at `site` or by the host page: one
+     * meaning of `HTMLVideoElement` storage per program, so a program whose
+     * storage holds generation-baked videos (`programBakesVideos`) refuses
+     * it, but for the producer's own video (`inVideoProducer`).
+     */
+    public requireRetainedVideo(site?: ts.Node): void {
+        if (
+            !programBakesVideos(this.context.checker, this.context.program) ||
+            (site && inVideoProducer(this.context.checker, site))
+        )
+            return;
+        const message =
+            "A retained <video> element cannot share a program with a video producer generation bakes: the program's HTMLVideoElement storage holds the baked videos.";
+        if (site) this.context.fail(site, message);
+        else this.context.failAtFile(message);
     }
 
     public documentEngine(node: ts.Node): string {
@@ -6752,6 +6820,17 @@ export class UiProjection {
         site: ts.Node,
     ): void {
         const engine = this.context.requireEngine(element, site);
+        if (
+            this.emitUiVideoStore(
+                element,
+                engine,
+                receiver,
+                property,
+                assigned,
+                site,
+            )
+        )
+            return;
         if (property === "checked") {
             if (element.uiTag && element.uiTag !== "input")
                 this.context.fail(
@@ -7072,45 +7151,186 @@ export class UiProjection {
         }
         const tag = this.declaredUiTag(element, receiver);
         if (property === "src" && tag === "img") {
-            // Every source the write can select is packaged; the
-            // selection itself runs as written.
-            const right = this.assignedExpression(assigned, property);
-            const sources = this.uiImageSourceCandidates(right);
-            if (!sources) {
-                this.context.emit({
-                    kind: "expression",
-                    code: `bbl::ui_set_attribute(${engine}, ${element.cpp}, "src", ${this.runtimeUiImageSource(right)});`,
-                });
-                return;
-            }
-            for (const source of sources) this.registerImageSource(source);
-            const fixed = this.tryUiStaticString(right);
-            this.context.emit({
-                kind: "expression",
-                code:
-                    `bbl::ui_set_attribute(${engine}, ${element.cpp}, "src", ` +
-                    `${
-                        fixed !== undefined
-                            ? this.context.cppString(
-                                  this.lowerUiAttributeLiteral(
-                                      "src",
-                                      fixed,
-                                      right,
-                                  ),
-                              )
-                            : this.uiStringCpp(
-                                  assigned.site,
-                                  "UI img src",
-                                  assigned.value,
-                              )
-                    });`,
-            });
+            this.emitUiImageSource(element, engine, "src", assigned, property);
             return;
         }
         this.context.fail(
             site,
             `Retained element property '${property}' assignment is not lowered natively.`,
         );
+    }
+
+    /**
+     * An image source attribute write (an img's `src`, a video's
+     * `poster`): every source the write can select is packaged, and the
+     * selection itself runs as written.
+     */
+    private emitUiImageSource(
+        element: Value,
+        engine: string,
+        attribute: "src" | "poster",
+        assigned: UiAssigned,
+        property: string,
+    ): void {
+        const right = this.assignedExpression(assigned, property);
+        const sources = this.uiImageSourceCandidates(right);
+        if (!sources) {
+            this.context.emit({
+                kind: "expression",
+                code: `bbl::ui_set_attribute(${engine}, ${element.cpp}, "${attribute}", ${this.runtimeUiImageSource(right)});`,
+            });
+            return;
+        }
+        for (const source of sources) this.registerImageSource(source);
+        const fixed = this.tryUiStaticString(right);
+        this.context.emit({
+            kind: "expression",
+            code:
+                `bbl::ui_set_attribute(${engine}, ${element.cpp}, "${attribute}", ` +
+                `${
+                    fixed !== undefined
+                        ? this.context.cppString(
+                              this.lowerUiAttributeLiteral(
+                                  attribute,
+                                  fixed,
+                                  right,
+                              ),
+                          )
+                        : this.uiStringCpp(
+                              assigned.site,
+                              `UI ${element.uiTag ?? "img"} ${attribute}`,
+                              assigned.value,
+                          )
+                });`,
+        });
+    }
+
+    /**
+     * A store into a member of a video element without a decoder
+     * (`UI_VIDEO_MEMBERS`); false for any other element or member.
+     */
+    private emitUiVideoStore(
+        element: Value,
+        engine: string,
+        receiver: ts.Expression,
+        property: string,
+        assigned: UiAssigned,
+        site: ts.Node,
+    ): boolean {
+        if (this.declaredUiTag(element, receiver) !== "video") return false;
+        const member = UI_VIDEO_MEMBERS.get(property);
+        if (!member) return false;
+        const store = (code: string): true => {
+            this.context.emit({ kind: "expression", code: `${code};` });
+            return true;
+        };
+        switch (member.kind) {
+            case "url":
+                if (member.attribute === "poster") {
+                    this.emitUiImageSource(
+                        element,
+                        engine,
+                        "poster",
+                        assigned,
+                        property,
+                    );
+                    return true;
+                }
+                // The media source is never fetched: nothing is packaged.
+                return store(
+                    `bbl::ui_set_attribute(${engine}, ${element.cpp}, "src", ${this.uiStringCpp(assigned.site, "UI video src", assigned.value)})`,
+                );
+            case "keyword":
+                return store(
+                    `bbl::ui_set_attribute(${engine}, ${element.cpp}, "preload", ${this.uiStringCpp(assigned.site, "UI video preload", assigned.value)})`,
+                );
+            case "flag":
+                return store(
+                    `bbl::ui_set_boolean_attribute(${engine}, ${element.cpp}, ${this.context.cppString(member.attribute)}, ${this.uiBooleanCpp(assigned.site, `UI video ${member.attribute}`, assigned.value)})`,
+                );
+            case "dimension":
+                return store(
+                    `bbl::ui_set_dimension_attribute(${engine}, ${element.cpp}, ${this.context.cppString(member.attribute)}, ${this.assignedNumber(assigned)})`,
+                );
+            case "muted":
+                return store(
+                    `bbl::ui_video_set_muted(${engine}, ${element.cpp}, ${this.uiBooleanCpp(assigned.site, "UI video muted", assigned.value)})`,
+                );
+            case "paused":
+            case "readback":
+                return this.context.fail(
+                    site,
+                    `HTMLVideoElement.${property} writes are not lowered: a video element without a decoder never loads a source to seek.`,
+                );
+        }
+    }
+
+    /**
+     * A read of a member of a video element without a decoder
+     * (`UI_VIDEO_MEMBERS`); undefined for any other element or member.
+     */
+    public uiVideoRead(
+        element: Value,
+        property: string,
+        receiver: ts.Expression,
+        site: ts.Node,
+    ): Value | undefined {
+        if (this.declaredUiTag(element, receiver) !== "video") return undefined;
+        const member = UI_VIDEO_MEMBERS.get(property);
+        if (!member) return undefined;
+        const engine = this.context.requireEngine(element, site);
+        switch (member.kind) {
+            case "url":
+                // A URL attribute reads resolved against the document URL.
+                return {
+                    kind: "string",
+                    cpp: `bbl::ui_get_url_attribute(${engine}, ${element.cpp}, ${this.context.cppString(member.attribute)}, ${this.context.cppString(deploymentUrl(this.context.options).href)})`,
+                    dataType: { kind: "string" },
+                    freshData: true,
+                    impure: true,
+                };
+            case "keyword":
+                return {
+                    kind: "string",
+                    cpp: `bbl::ui_video_preload(${engine}, ${element.cpp})`,
+                    dataType: { kind: "string" },
+                    freshData: true,
+                    impure: true,
+                };
+            case "flag":
+                return {
+                    kind: "boolean",
+                    cpp: `bbl::ui_has_attribute(${engine}, ${element.cpp}, ${this.context.cppString(member.attribute)})`,
+                    impure: true,
+                };
+            case "dimension":
+                return {
+                    kind: "number",
+                    cpp: `bbl::ui_dimension_attribute(${engine}, ${element.cpp}, ${this.context.cppString(member.attribute)})`,
+                    dataType: { kind: "number" },
+                    impure: true,
+                };
+            case "muted":
+                return {
+                    kind: "boolean",
+                    cpp: `bbl::ui_video_muted(${engine}, ${element.cpp})`,
+                    impure: true,
+                };
+            case "paused":
+                return {
+                    kind: "boolean",
+                    cpp: `bbl::ui_video_paused(${engine}, ${element.cpp})`,
+                    impure: true,
+                };
+            case "readback":
+                // No source ever loads: the playback position stays at 0,
+                // the media never ends and its duration is unknown.
+                return member.value === "ended"
+                    ? { kind: "boolean", cpp: "false" }
+                    : numberConstantValue(
+                          member.value === "currentTime" ? 0 : NaN,
+                      );
+        }
     }
 
     public emitUiStyleProperty(
@@ -7654,6 +7874,7 @@ export class UiProjection {
                     `Native host UI element tag '${element.tag}' is reserved for the retained projection.`,
                 );
             }
+            if (normalizedTag === "video") this.requireRetainedVideo();
             const handle =
                 this.context.allocateTemporaryCppName("host_ui_element");
             if (element.startupScript && normalizedTag !== "script")

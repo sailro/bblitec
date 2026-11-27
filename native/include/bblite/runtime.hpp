@@ -48,6 +48,7 @@ void dispose_thin_instance_gpu(const std::shared_ptr<ThinInstancePoolData>& pool
 struct DomInput;
 struct PlatformCustomEvent;
 struct UiImageRequest;
+struct UiMediaState;
 struct ComputeStorageTextureRegistry;
 struct UniformBufferRegistry;
 struct ComputeTask;
@@ -4701,6 +4702,8 @@ using UiEventListeners = PlatformEventListeners<void(const PlatformMouseEvent&)>
 struct UiElementRecord {
     /** Readiness belongs to the application realm, not the rendered snapshot. */
     std::shared_ptr<UiImageRequest> image_request;
+    /** A video element's media state (`ui_video_*`), created by its first media operation. */
+    std::shared_ptr<UiMediaState> media;
     struct CanvasPoint {
         double x = 0.0;
         double y = 0.0;
