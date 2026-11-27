@@ -425,6 +425,25 @@ check(
 );
 
 check(
+    "non-null-asserted-optional-array-stored-as-an-array",
+    `
+    interface Rect { u: number; w: number }
+    interface Manifest { cells?: Rect[]; names?: string[] }
+    const authored = (manifest: Manifest): boolean => (manifest.cells?.length ?? 0) > 0;
+    function cellsOf(manifest: Manifest): Rect[] {
+        const cells: Rect[] = authored(manifest) ? manifest.cells! : [{ u: 0, w: 1 }];
+        return cells;
+    }
+    const names = (manifest: Manifest): string[] => manifest.names!;
+    const manifests: Manifest[] = [{ cells: [{ u: 0, w: 0.5 }, { u: 0.5, w: 0.5 }], names: ["a"] }, { names: [] }];
+    const first = cellsOf(manifests[0]!);
+    if (first.length !== 2 || first !== manifests[0]!.cells || cellsOf(manifests[1]!)[0]!.w !== 1) throw new Error("cells");
+    names(manifests[1]!).push("b");
+    if (names(manifests[0]!).length !== 1 || manifests[1]!.names!.join() !== "b") throw new Error("names");
+`,
+);
+
+check(
     "strict null and undefined equality follows the operand's type",
     `
     interface Options {

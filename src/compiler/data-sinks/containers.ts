@@ -66,10 +66,9 @@ function expressionOptional(
 function expressionVector(
     dataType: DataType<"vector">,
     lowerer: DataSinkHost,
-    _expression: ts.Expression,
-    unwrapped: ts.Expression,
+    expression: ts.Expression,
 ): string {
-    return lowerer.compileVectorSink(unwrapped, dataType);
+    return lowerer.compileVectorSink(expression, dataType);
 }
 
 /**

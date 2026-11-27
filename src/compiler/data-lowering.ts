@@ -23774,14 +23774,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
     }
 
+    /**
+     * Stores `expression` as an array of `dataType`; a `!` around an
+     * optional array asserts it present.
+     */
     public compileVectorSink(
-        unwrapped: ts.Expression,
+        expression: ts.Expression,
         dataType: DataType & {
             kind: "vector";
         },
         retainElements?: (elements: readonly Value[] | undefined) => void,
         copiedRecordSources?: Value[],
     ): string {
+        const unwrapped = this.context.unwrap(expression);
         if (ts.isArrayLiteralExpression(unwrapped)) {
             this.context.reachJsData();
             const spreads = unwrapped.elements.filter(ts.isSpreadElement);
@@ -24002,7 +24007,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 unwrapped,
             );
         }
-        const value = this.requireDataValue(unwrapped, dataType);
+        const value = this.requireDataValue(unwrapped, dataType, expression);
         this.markEscaped(value);
         return value.cpp;
     }
