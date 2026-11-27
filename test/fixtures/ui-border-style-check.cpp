@@ -31,7 +31,8 @@ Rml::Mesh border_mesh(Rml::Element& element) {
         computed.border_left_style()};
     Rml::Mesh mesh;
     Rml::MeshUtilities::GenerateBackgroundBorder(mesh, element.GetRenderBox(Rml::BoxArea::Padding),
-                                                 Rml::ColourbPremultiplied(0), colors, styles);
+                                                 Rml::ColourbPremultiplied(0, 0, 0, 0), colors,
+                                                 styles);
     return mesh;
 }
 
@@ -109,6 +110,15 @@ int run() {
                            "width:32px;height:32px;border:4px dashed #ffffff;border-radius:50%;");
         ui_add_class_style(engine, sheet, "outlined",
                            "width:20px;height:20px;--bbl-outline:2px dashed #ffffff;");
+        ui_add_class_style(engine, sheet, "double",
+                           "width:20px;height:20px;border:6px double #ffffff;");
+        ui_add_class_style(engine, sheet, "thin-double",
+                           "width:20px;height:20px;border:2px double #ffffff;");
+        ui_add_class_style(engine, sheet, "double-round",
+                           "width:28px;height:28px;border:6px double #ffffff;border-radius:12px;");
+        ui_add_class_style(
+            engine, sheet, "double-left",
+            "width:20px;height:20px;border:6px solid #ffffff;border-left-style:double;");
         ui_append_to_root(engine, sheet);
         const auto make = [&](const char* name, int top) {
             const auto element = ui_create_element(engine, "div");
@@ -125,6 +135,10 @@ int run() {
         const auto mixed = make("mixed", 130);
         const auto ring = make("ring", 160);
         const auto outlined = make("outlined", 220);
+        const auto doubled = make("double", 250);
+        const auto thin_double = make("thin-double", 290);
+        const auto double_round = make("double-round", 330);
+        const auto double_left = make("double-left", 380);
         pal::UiRmlRuntime runtime(engine, window, 640, 480);
         pal::update_ui_rml_runtime(runtime, 640, 480);
         const auto raw = [&](UiElementHandle handle) -> Rml::Element& {
@@ -175,6 +189,34 @@ int run() {
         if (around.size() != 9 || !within(around.front().first, 0, .05f) ||
             !within(around.front().second, 8, .2f))
             throw std::runtime_error("ring runs " + std::to_string(around.size()));
+
+        // Double: a 6px side paints Chromium's thirds, a 2px outer line, a 2px gap and a 2px inner line; a side narrower than
+        // 3px is solid.
+        const auto double_mesh = border_mesh(raw(doubled));
+        const auto across = [](const Rml::Mesh& mesh, float x) {
+            return runs(mesh, 6, [x](float s) { return Rml::Vector2f(x, s); });
+        };
+        const auto stripes = runs(double_mesh, 32, [](float s) { return Rml::Vector2f(16, s); });
+        if (stripes.size() != 4 || !within(stripes[0].second, 2, .15f) ||
+            !within(stripes[1].first, 4, .15f) || !within(stripes[1].second, 6, .15f) ||
+            !within(stripes[2].first, 26, .15f) || !within(stripes[3].first, 30, .15f))
+            throw std::runtime_error("double stripes " + std::to_string(stripes.size()));
+        check(across(border_mesh(raw(thin_double)), 12).size() == 1,
+              "across(border_mesh(raw(thin_double)), 12).size() == 1");
+        // Rounded, each line follows the corner: on the top-left diagonal from its 12px radius center, the outer line lies
+        // 10 to 12px out, the gap 8 to 10px, the inner line 6 to 8px.
+        const auto round_mesh = border_mesh(raw(double_round));
+        const auto diagonal = [&](float distance) {
+            const float d = distance / std::sqrt(2.f);
+            return covered(round_mesh, {12 - d, 12 - d});
+        };
+        check(diagonal(11) && !diagonal(9) && diagonal(7) && !diagonal(5),
+              "diagonal(11) && !diagonal(9) && diagonal(7) && !diagonal(5)");
+        // A solid side beside a double one is all one line.
+        const auto left_mesh = border_mesh(raw(double_left));
+        check(across(left_mesh, 16).size() == 1 &&
+                  runs(left_mesh, 6, [](float s) { return Rml::Vector2f(s, 16); }).size() == 2,
+              "solid top and double left of double_left");
 
         // A dashed outline draws its ring's border dashed.
         auto* ring_element = raw(outlined).QuerySelector("bbl-outline");

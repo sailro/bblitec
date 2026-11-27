@@ -56,6 +56,16 @@ test("border lines keep their style, spell CSS shorthand resets and dashed outli
     assert.match(result.cpp, /border-left-style:hidden/);
     assert.match(result.cpp, /border:1px solid var\(--Edge\)/);
     assert.match(result.cpp, /--bbl-outline:2px dashed #fff/);
+    // Double lines are drawn; double outlines are not.
+    const doubled = compile(
+        ".i{border-bottom:double 6px red}.j{border-style:solid double}",
+    );
+    assert.match(doubled.cpp, /border-bottom:6px double red/);
+    assert.match(doubled.cpp, /border-style:solid double/);
+    assert.throws(
+        () => compile(".k{outline:2px double #fff}"),
+        /Retained UI style property/,
+    );
     // A zero-width outline draws nothing, as none does.
     assert.match(compile(".h{outline:0}").cpp, /--bbl-outline:none/);
     // `text-shadow: none` removes an inherited shadow.
@@ -69,7 +79,6 @@ test("border lines keep their style, spell CSS shorthand resets and dashed outli
     assert.match(written.cpp, /"border-bottom", "3px none"/);
     for (const declaration of [
         "border:1px dotted red",
-        "border-bottom:2px double red",
         "border:1px solid red blue",
         "border-style:groove",
         "border-top-style:solid dashed",

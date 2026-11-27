@@ -1,0 +1,120 @@
+border-*-style: double. A double side three pixels or wider paints two lines and the gap between them, as Chromium paints it
+(box_border_painter.cc, BorderEdge::GetDoubleBorderStripeWidths): the outer line (w + 1) / 3 wide at the outer edge, the inner
+one from (2w + 1) / 3 to the inner edge, in whole pixels, each line a ring of its own whose corners follow the border's radii
+less its offset; a narrower double side is solid. A side of another style beside a double one is all outer line.
+CSS Backgrounds 3: https://www.w3.org/TR/css-backgrounds-3/#border-style
+
+diff --git a/Include/RmlUi/Core/ComputedValues.h b/Include/RmlUi/Core/ComputedValues.h
+index 653fbd3..cae3d4e 100644
+--- a/Include/RmlUi/Core/ComputedValues.h
++++ b/Include/RmlUi/Core/ComputedValues.h
+@@ -48,7 +48,7 @@ namespace Style {
+ 
+ 		bool has_decorator : 1;
+ 		BoxSizing box_sizing : 1;
+-		BorderStyle border_top_style : 2, border_right_style : 2, border_bottom_style : 2, border_left_style : 2;
++		BorderStyle border_top_style : 3, border_right_style : 3, border_bottom_style : 3, border_left_style : 3;
+ 
+ 		LengthPercentageAuto::Type width_type : 2, height_type : 2;
+ 
+diff --git a/Include/RmlUi/Core/StyleTypes.h b/Include/RmlUi/Core/StyleTypes.h
+index 64db825..2f06627 100644
+--- a/Include/RmlUi/Core/StyleTypes.h
++++ b/Include/RmlUi/Core/StyleTypes.h
+@@ -104,7 +104,7 @@ namespace Style {
+ 	enum class BoxSizing : uint8_t { ContentBox, BorderBox };
+ 
+ 	// A border side's line: none and hidden give it no width.
+-	enum class BorderStyle : uint8_t { None, Hidden, Solid, Dashed };
++	enum class BorderStyle : uint8_t { None, Hidden, Solid, Dashed, Double };
+ 
+ 	using ZIndex = NumberAuto;
+ 
+diff --git a/Source/Core/MeshUtilities.cpp b/Source/Core/MeshUtilities.cpp
+index 29bb1cd..68eed39 100644
+--- a/Source/Core/MeshUtilities.cpp
++++ b/Source/Core/MeshUtilities.cpp
+@@ -5,6 +5,7 @@
+ #include "../../Include/RmlUi/Core/Types.h"
+ #include "GeometryBackgroundBorder.h"
+ #include <algorithm>
++#include <cmath>
+ 
+ namespace Rml {
+ 
+@@ -91,10 +92,53 @@ void MeshUtilities::GenerateBackgroundBorder(Mesh& out_mesh, const RenderBox& re
+ 		geometry.DrawBackground(metrics, background_color);
+ 
+ 	const bool dashed = border_styles && std::any_of(border_styles, border_styles + 4, [](Style::BorderStyle style) { return style == Style::BorderStyle::Dashed; });
+-	if (has_border && dashed)
+-		geometry.DrawStyledBorder(metrics, border_widths, border_colors, border_styles);
++	const auto draw_ring = [&](const BorderMetrics& ring, EdgeSizes widths, const ColourbPremultiplied colors[4]) {
++		if (dashed)
++			geometry.DrawStyledBorder(ring, widths, colors, border_styles);
++		else
++			geometry.DrawBorder(ring, widths, colors);
++	};
++	// A double side three pixels or wider paints two lines and the gap between them, as Chromium paints it
++	// (BorderEdge::GetDoubleBorderStripeWidths): the outer line (w + 1) / 3 wide at the outer edge, the inner one from
++	// (2w + 1) / 3 to the inner edge, in whole pixels. A narrower double side is solid.
++	const auto is_double = [&](int side) { return border_styles && border_styles[side] == Style::BorderStyle::Double && border_widths[side] >= 3; };
++	if (has_border && (is_double(0) || is_double(1) || is_double(2) || is_double(3)))
++	{
++		enum { TOP, RIGHT, BOTTOM, LEFT };
++		// Each line is a ring of its own: the outer one inside the border edge, the inner one inside the border edge inset by its
++		// offset, whose radii are the outer ones less that offset. A side of another style is all outer line.
++		EdgeSizes outer_widths = border_widths, offsets = border_widths, inner_widths = {};
++		ColourbPremultiplied inner_colors[4] = {};
++		for (int side = 0; side < 4; side++)
++		{
++			if (!is_double(side))
++				continue;
++			const float width = border_widths[side];
++			outer_widths[side] = std::floor((width + 1.f) / 3.f);
++			offsets[side] = std::floor((2.f * width + 1.f) / 3.f);
++			inner_widths[side] = width - offsets[side];
++			inner_colors[side] = border_colors[side];
++		}
++		const auto inner_size = [](Vector2f size, EdgeSizes by) { return size - Vector2f(by[LEFT] + by[RIGHT], by[TOP] + by[BOTTOM]); };
++		const Vector2f border_position = render_box.GetBorderOffset();
++		const Vector2f border_size = fill_size + Vector2f(border_widths[LEFT] + border_widths[RIGHT], border_widths[TOP] + border_widths[BOTTOM]);
++		draw_ring(GeometryBackgroundBorder::ComputeBorderMetrics(border_position, outer_widths, inner_size(border_size, outer_widths),
++					  render_box.GetBorderRadius()),
++			outer_widths, border_colors);
++
++		const Vector2f line_position = border_position + Vector2f(offsets[LEFT], offsets[TOP]);
++		const Vector2f line_size = inner_size(border_size, offsets);
++		const Vector2f corner_offsets[4] = {{offsets[LEFT], offsets[TOP]}, {offsets[RIGHT], offsets[TOP]}, {offsets[RIGHT], offsets[BOTTOM]},
++			{offsets[LEFT], offsets[BOTTOM]}};
++		CornerSizes line_radii = metrics.outer_radii;
++		for (int corner = 0; corner < 4; corner++)
++			line_radii[corner] = Vector2f(Math::Max(line_radii[corner].x - corner_offsets[corner].x, 0.f),
++				Math::Max(line_radii[corner].y - corner_offsets[corner].y, 0.f));
++		draw_ring(GeometryBackgroundBorder::ComputeBorderMetrics(line_position, inner_widths, inner_size(line_size, inner_widths), line_radii),
++			inner_widths, inner_colors);
++	}
+ 	else if (has_border)
+-		geometry.DrawBorder(metrics, border_widths, border_colors);
++		draw_ring(metrics, border_widths, border_colors);
+ 
+ #if 0
+ 	// Debug draw vertices
+diff --git a/Source/Core/StyleSheetSpecification.cpp b/Source/Core/StyleSheetSpecification.cpp
+index c76f2aa..ac7bdf6 100644
+--- a/Source/Core/StyleSheetSpecification.cpp
++++ b/Source/Core/StyleSheetSpecification.cpp
+@@ -317,10 +317,10 @@ void StyleSheetSpecification::RegisterDefaultProperties()
+ 	RegisterProperty(PropertyId::BorderLeftColor, "border-left-color", "black", false, false).AddParser("color");
+ 	RegisterShorthand(ShorthandId::BorderColor, "border-color", "border-top-color, border-right-color, border-bottom-color, border-left-color", ShorthandType::Box);
+ 
+-	RegisterProperty(PropertyId::BorderTopStyle, "border-top-style", "none", false, true).AddParser("keyword", "none, hidden, solid, dashed");
+-	RegisterProperty(PropertyId::BorderRightStyle, "border-right-style", "none", false, true).AddParser("keyword", "none, hidden, solid, dashed");
+-	RegisterProperty(PropertyId::BorderBottomStyle, "border-bottom-style", "none", false, true).AddParser("keyword", "none, hidden, solid, dashed");
+-	RegisterProperty(PropertyId::BorderLeftStyle, "border-left-style", "none", false, true).AddParser("keyword", "none, hidden, solid, dashed");
++	RegisterProperty(PropertyId::BorderTopStyle, "border-top-style", "none", false, true).AddParser("keyword", "none, hidden, solid, dashed, double");
++	RegisterProperty(PropertyId::BorderRightStyle, "border-right-style", "none", false, true).AddParser("keyword", "none, hidden, solid, dashed, double");
++	RegisterProperty(PropertyId::BorderBottomStyle, "border-bottom-style", "none", false, true).AddParser("keyword", "none, hidden, solid, dashed, double");
++	RegisterProperty(PropertyId::BorderLeftStyle, "border-left-style", "none", false, true).AddParser("keyword", "none, hidden, solid, dashed, double");
+ 	RegisterShorthand(ShorthandId::BorderStyle, "border-style", "border-top-style, border-right-style, border-bottom-style, border-left-style", ShorthandType::Box);
+ 
+ 	RegisterShorthand(ShorthandId::BorderTop, "border-top", "border-top-width, border-top-style, border-top-color", ShorthandType::FallThrough);
