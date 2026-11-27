@@ -1032,3 +1032,20 @@ check(
     if (n !== 11) throw new Error("kept callback " + n);
     `,
 );
+
+check(
+    "a-main-entry-shares-the-state-a-module-factory-call-created",
+    `
+    function createSampler() {
+        let active = 0;
+        return { sample: (x: number) => { active = x; return x; }, pending: () => active !== 0 };
+    }
+    const sampler = createSampler();
+    function main(): void {
+        if (sampler.pending()) throw new Error("fresh");
+        sampler.sample(3);
+        if (!sampler.pending()) throw new Error("pending");
+    }
+    main();
+    `,
+);
