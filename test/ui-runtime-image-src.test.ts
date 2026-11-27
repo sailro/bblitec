@@ -558,6 +558,39 @@ test("runtime img src reads members and parameters TypeScript narrows present", 
     assert.ok(!outputs.includes("assets/ui/blue.png"));
 });
 
+test("runtime img src reads a member path a discriminant narrows present", () => {
+    // \`source\` holds every page; its \`case\` proves \`entry.icon\` present, so
+    // the pages whose entry lacks \`icon\` (a record, parsed data) add nothing.
+    const outputs = compileEntry(`
+        interface Perk { readonly id: string; readonly icon: string }
+        interface Building { readonly kind: string; readonly level: number }
+        type Source = { kind: "guide" } | { kind: "mana"; entry: { max: number } } | { kind: "building"; entry: Building } | { kind: "perk"; entry: Perk };
+        const raw = JSON.parse(localStorage.getItem("b") ?? "[]") as Building[];
+        const perks: readonly Perk[] = [{ id: "a", icon: "/assets/ui/red.png" }, { id: "b", icon: "/assets/ui/green.png" }];
+        const sources: Source[] = [
+            { kind: "guide" },
+            { kind: "mana", entry: { max: 3 } },
+            ...[...raw].sort((a, b) => a.level - b.level).map((entry) => ({ kind: "building" as const, entry })),
+            ...perks.map((entry) => ({ kind: "perk" as const, entry })),
+        ];
+        const card = (entry: Perk): HTMLImageElement => {
+            const img = document.createElement("img");
+            img.src = appUrl(entry.icon);
+            return img;
+        };
+        for (const source of sources) {
+            switch (source.kind) {
+                case "perk":
+                    document.body.append(card(source.entry));
+                    break;
+            }
+        }
+    `).manifest.assets.map((asset) => asset.output);
+    for (const name of ["red", "green"])
+        assert.ok(outputs.includes(`assets/ui/${name}.png`), name);
+    assert.ok(!outputs.includes("assets/ui/blue.png"));
+});
+
 test("runtime img src reads what the functions a call goes through return", () => {
     const result = compileEntry(`
         const shades = ["red", "green"];

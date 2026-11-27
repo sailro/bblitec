@@ -435,6 +435,62 @@ function narrowedPresent(checker: ts.TypeChecker, node: ts.Node): boolean {
     );
 }
 
+/**
+ * The depths below a binding or member read, as `nullishDepths` counts
+ * them, whose member path TypeScript proves present where it is read
+ * (`case "perk": card(source.entry)` reading `entry.icon` through
+ * `source`): some shape of the reference's declared type lacks the path or
+ * holds it optional or nullable, while each shape of its narrowed type
+ * declares every member along it, neither optional nor nullable. `keys` is
+ * the projection's leading run of member names; a cast proves nothing.
+ */
+function narrowedPresentDepths(
+    checker: ts.TypeChecker,
+    node: ts.Node,
+    projection: KeyPath,
+    keys: readonly string[],
+): readonly number[] {
+    const name = ts.isIdentifier(node)
+        ? node
+        : ts.isPropertyAccessExpression(node)
+          ? node.name
+          : undefined;
+    const symbol = name && resolvedSymbol(checker, name);
+    if (!symbol || !keys.length) return [];
+    // The present shapes the member holds in each of `shapes`; undefined
+    // where one lacks it or holds it optional or nullable.
+    const member = (
+        shapes: readonly ts.Type[] | undefined,
+        key: string,
+    ): readonly ts.Type[] | undefined => {
+        const next: ts.Type[] = [];
+        for (const shape of shapes ?? []) {
+            const property = shape.getProperty(key);
+            if (!property || (property.flags & ts.SymbolFlags.Optional) !== 0)
+                return undefined;
+            const type = checker.getTypeOfSymbol(property);
+            const absent = nullability(type);
+            if (absent.undefined || absent.null) return undefined;
+            next.push(...presentMembers(type));
+        }
+        return shapes && next;
+    };
+    let declared: readonly ts.Type[] | undefined = presentMembers(
+        checker.getTypeOfSymbol(symbol),
+    );
+    let narrowed: readonly ts.Type[] | undefined = presentMembers(
+        checker.getTypeAtLocation(node),
+    );
+    const depths: number[] = [];
+    for (const [index, key] of keys.entries()) {
+        declared = member(declared, key);
+        narrowed = member(narrowed, key);
+        if (!narrowed) break;
+        if (!declared) depths.push(projection.length - index - 1);
+    }
+    return depths;
+}
+
 /** The step an access takes. */
 function memberStep(
     access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
@@ -1657,13 +1713,14 @@ class StringDomain {
 
     /**
      * Whether `key` is a member no shape of `node`'s type, as narrowed
-     * there, declares: each shape is an object type without an index
-     * signature, and none an array.
+     * there and awaited (a read sees through a promise), declares: each
+     * shape is an object type without an index signature, and none an array.
      */
     private lacksMember(node: ts.Expression, key: string): boolean {
         const checker = this.context.checker;
+        const read = checker.getTypeAtLocation(node);
         const type = checker.getNonNullableType(
-            checker.getTypeAtLocation(node),
+            checker.getAwaitedType(read) ?? read,
         );
         return unionMembers(type).every(
             (shape) =>
@@ -1766,21 +1823,36 @@ class StringDomain {
         }
         // A binding or member TypeScript narrows to present where it is read
         // (`if (icon) img.src = icon`, `opts.url ? load(opts.url) : none`,
-        // `if (p.kind === "a") use(p.icon)`) is not undefined there: an
-        // omitted argument, a nullish literal or a record lacking it never
-        // reaches the read, as under `??`.
-        if (
-            !this.nullishDepths.includes(projection.length) &&
-            narrowedPresent(this.context.checker, node)
-        ) {
+        // `if (p.kind === "a") use(p.icon)`), or whose members it read
+        // narrows to present, is not undefined there: an omitted argument, a
+        // nullish literal or a record lacking it never reaches the read, as
+        // under `??`.
+        const checker = this.context.checker;
+        const end = projection.findIndex(
+            (step) => step === ANY_KEY || this.callSteps.has(step),
+        );
+        const keys = end < 0 ? projection : projection.slice(0, end);
+        const proven = [
+            ...(narrowedPresent(checker, node) ? [projection.length] : []),
+            ...narrowedPresentDepths(checker, node, projection, keys),
+        ].filter((depth) => !this.nullishDepths.includes(depth));
+        if (proven.length) {
             const nullishDepths = this.nullishDepths;
-            this.nullishDepths = [...nullishDepths, projection.length];
+            this.nullishDepths = [...nullishDepths, ...proven];
             try {
                 return this.value(node, projection, environment);
             } finally {
                 this.nullishDepths = nullishDepths;
             }
         }
+        // Where the member read is present, a value whose type declares it
+        // in no shape is not the one read there, whatever its source.
+        if (
+            keys.length &&
+            this.nullishDepths.includes(projection.length - 1) &&
+            this.lacksMember(node, keys[0]!)
+        )
+            return nothing;
         if (ts.isIdentifier(node)) {
             const symbol = resolvedSymbol(this.context.checker, node);
             if (!symbol) return undefined;
