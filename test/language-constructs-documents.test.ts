@@ -682,7 +682,7 @@ check(
 check(
     "a-frozen-new-array-of-parsed-elements-stays-one-array",
     `
-    interface Row { readonly villager: number; readonly ids: readonly number[] }
+    interface Row { readonly owner: number; readonly ids: readonly number[] }
     interface Group { readonly ids: readonly number[] }
     const groups = new Map<number, Group>();
     let measured = 0;
@@ -693,10 +693,10 @@ check(
             const ids = Object.freeze(loose ? row.ids.filter((id) => id > 0) : [...row.ids]);
             if (ids.length === 0) continue;
             measured += measures[0]!(ids);
-            groups.set(row.villager, { ids });
+            groups.set(row.owner, { ids });
         }
     }
-    const rows = (JSON.parse('{"rows":[{"villager":1,"ids":[3,0,4]},{"villager":2,"ids":[0]}]}') as { rows: Row[] }).rows;
+    const rows = (JSON.parse('{"rows":[{"owner":1,"ids":[3,0,4]},{"owner":2,"ids":[0]}]}') as { rows: Row[] }).rows;
     restore(rows, true);
     if (measured !== 2 || groups.get(1)!.ids.join() !== "3,4" || groups.has(2)) throw new Error("loose");
     restore(rows, false);
