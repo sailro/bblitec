@@ -9179,7 +9179,7 @@ export class DataTypeRegistry {
                             (candidate) =>
                                 candidate &&
                                 dataTypesEqual(
-                                    presentDataType(candidate)!,
+                                    presentDataType(candidate),
                                     nullable.inner,
                                 ),
                         )
