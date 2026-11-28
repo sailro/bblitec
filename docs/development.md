@@ -228,10 +228,11 @@ node dist/src/scene-command.js neutrality <saved-baseline-directory>
   Repeatability exceptions live in the neutrality allowlist; scenes with partitioned live text are unchecked.
 - Documentation-only changes: link and metadata checks. Rendering checks when executable inputs or measurement contracts change.
 
-## Proving a change moved nothing
+## Neutrality
 
-- `neutrality <file> --generated --write` saves a generated-byte baseline; `neutrality <file> --generated` compares after
-  full regeneration. Native/shader changes compare saved differential reports.
+- Neutrality is unchanged rendering: after `npm run sweep`, `neutrality <saved-baseline-directory>` compares each
+  scene's differential report cell by cell against the saved one. It is the only neutrality a change must prove.
+- Generated C++ changes with every new construction; identical generated output is never required.
 - Ocean needs saved native PNGs at 1280×720; live text regions (GPU timing, frame counter) are reported separately.
 
 ## Native builds

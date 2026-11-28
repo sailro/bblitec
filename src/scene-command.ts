@@ -145,11 +145,6 @@ import {
 } from "./scene-registry.js";
 import { holdDistLock } from "./dist-lock.js";
 import { runNeutralityReport } from "./scene-neutrality.js";
-import {
-    compareGeneratedDigest,
-    digestGeneratedTree,
-    parseDigestBaseline,
-} from "./generated-tree.js";
 import { verifyStatus } from "./verify-status.js";
 import {
     canonicalCompiledBackend,
@@ -2241,90 +2236,6 @@ async function runProbe(
 }
 
 /**
- * `scene -- neutrality <baseline.txt> --generated [--write]`: the
- * compile-and-digest half of the neutrality proof. Digests every
- * registry-owned file under `generated/` (sha1, `generated/<path>\t<hash>`
- * lines) and writes or compares the baseline file. It never compiles —
- * run `scene -- compile all` before each invocation, or the digest
- * describes whatever tree the last compile left. Stray top-level
- * directories no registry scene owns are listed loudly and excluded,
- * because hashing a corpus-sweep leftover silently is how two identical
- * compiles digest differently.
- */
-function runGeneratedNeutrality(baselinePath: string, write: boolean): boolean {
-    const { lines, strays } = digestGeneratedTree(
-        "generated",
-        scenes.map((scene) => scene.output),
-    );
-    if (strays.length > 0) {
-        console.warn(
-            `generated/ contains ${strays.length} top-level entr${
-                strays.length === 1 ? "y" : "ies"
-            } no registry scene owns — excluded from the digest ` +
-                "(a corpus sweep or a deleted probe leaves these; remove them):",
-        );
-        for (const stray of strays) console.warn(`  generated/${stray}`);
-    }
-    if (lines.length === 0) {
-        throw new Error(
-            "Nothing to digest under generated/. This command digests, it does not compile — " +
-                "run 'npm run scene -- compile all' first.",
-        );
-    }
-    if (write) {
-        writeFileSync(baselinePath, `${lines.join("\n")}\n`);
-        console.log(
-            `Baseline written: ${lines.length} file(s) -> ${baselinePath}`,
-        );
-        return true;
-    }
-    if (!existsSync(baselinePath)) {
-        throw new Error(
-            `No baseline at ${baselinePath}. Write one before the change with ` +
-                `'scene -- neutrality ${baselinePath} --generated --write' (compile first — this command only digests).`,
-        );
-    }
-    const comparison = compareGeneratedDigest(
-        parseDigestBaseline(readFileSync(baselinePath, "utf8")),
-        lines,
-    );
-    const list = (label: string, paths: string[]): void => {
-        if (paths.length === 0) return;
-        console.log(`\n${label} (${paths.length}):`);
-        const cap = 50;
-        for (const path of paths.slice(0, cap)) console.log(`  ${path}`);
-        if (paths.length > cap) {
-            console.log(`  ... ${paths.length - cap} more`);
-        }
-    };
-    const moved =
-        comparison.added.length +
-        comparison.removed.length +
-        comparison.changed.length;
-    console.log(
-        `${comparison.unchanged} file(s) byte-identical to the baseline, ` +
-            `${comparison.changed.length} changed, ${comparison.added.length} added, ` +
-            `${comparison.removed.length} removed.`,
-    );
-    if (moved === 0) {
-        console.log(
-            "\nNeutral: the generated tree digests identically, so the build stamps, " +
-                "binaries and measurements cannot have moved.",
-        );
-        return true;
-    }
-    list("Changed", comparison.changed);
-    list("Added", comparison.added);
-    list("Removed", comparison.removed);
-    console.log(
-        "\nA change meant to be generation-neutral moved the generated tree. " +
-            "Confirm both digests followed a full 'scene -- compile all' — " +
-            "but if it moves again, it is not neutral.",
-    );
-    return false;
-}
-
-/**
  * `scene -- validate <id|all>`: the validation bundle. Chains the
  * existing stages — compile, shaders, build, parity, the published-table
  * check — with one summary line per stage, stopping at the first failure
@@ -2720,8 +2631,7 @@ async function runSurvey(entry: string): Promise<boolean> {
  * `--orphans` deletes the build trees under `native/` and the top-level
  * entries under `generated/` that no registry entry owns — a corpus
  * sweep or a deregistered scene leaves trees nothing will ever build
- * again, the shader sweep still processes the generated strays, and
- * `neutrality --generated` has to list them loudly on every digest. The
+ * again, and the shader sweep still processes the generated strays. The
  * ownership rule is the registry's, extended by the trees the registry
  * implies: a scene's `buildDirectory` and `output`; its check twin
  * (`generated/<id>-live`, `native/build-<id>-live-release`); and its
@@ -3388,9 +3298,9 @@ const COMMANDS: readonly CommandSpec[] = [
     {
         name: "neutrality",
         argument: "<baseline>",
-        flags: { boolean: ["--generated", "--write"] },
+        flags: {},
         summary:
-            "cell-by-cell compare of report-differential.json against a saved parity directory; --generated digests generated/ as it stands (compile first) against a baseline file, --write saves it",
+            "cell-by-cell compare of report-differential.json against a saved parity directory",
         lock: true,
     },
     {
@@ -3607,19 +3517,9 @@ async function main(): Promise<void> {
         case "probe":
             await runProbe(id!, parsed);
             return;
-        case "neutrality": {
-            const generated = parsed.flags.has("--generated");
-            if (parsed.flags.has("--write") && !generated) {
-                throw new Error(
-                    "neutrality: --write saves a generated-tree baseline and rides --generated.",
-                );
-            }
-            const neutral = generated
-                ? runGeneratedNeutrality(id!, parsed.flags.has("--write"))
-                : runNeutralityReport(id!).neutral;
-            if (!neutral) process.exitCode = 1;
+        case "neutrality":
+            if (!runNeutralityReport(id!).neutral) process.exitCode = 1;
             return;
-        }
         case "survey":
             if (!(await runSurvey(id!))) process.exitCode = 1;
             return;

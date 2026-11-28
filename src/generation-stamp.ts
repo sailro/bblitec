@@ -24,9 +24,8 @@
 // an edited one must miss.
 //
 // The record lives under `artifacts/`, not inside the generated tree:
-// `scene -- neutrality --generated` digests every generated file, and a
-// record that moves with the compiler's own stamp would make two
-// byte-identical generations look different. It carries the input list
+// a record that moves with the compiler's own stamp would make two
+// byte-identical generations differ. It carries the input list
 // itself, so a staleness check never parses a manifest.
 //
 // Two things the input digest deliberately does NOT cover, and what
