@@ -7899,10 +7899,11 @@ struct UiRmlRuntime {
             const auto existing = projected.attributes.find(name);
             if (existing == projected.attributes.end() || existing->second != value) {
                 raw.SetAttribute(
-                    *projected_name, projected_attribute_value(
-                              name, record.svg_namespace && (name == "fill" || name == "stroke")
-                                        ? ui_svg_paint(value)
-                                        : value));
+                    *projected_name,
+                    projected_attribute_value(name, record.svg_namespace &&
+                                                            (name == "fill" || name == "stroke")
+                                                        ? ui_svg_paint(value)
+                                                        : value));
             }
         }
         if (record.tag == "input" &&

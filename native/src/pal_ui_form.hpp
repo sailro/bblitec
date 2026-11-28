@@ -396,8 +396,8 @@ class UiSearchCancelDecorator final : public Rml::Decorator {
 
     static std::vector<Rml::byte> resample(const UiSearchCancelImage& image, int side) {
         const float lod = std::max(
-            0.f, std::log2(static_cast<float>(ui_search_cancel_side) / static_cast<float>(side)) -
-                     .5f);
+            0.f,
+            std::log2(static_cast<float>(ui_search_cancel_side) / static_cast<float>(side)) - .5f);
         Level finer{ui_search_cancel_side, std::vector<float>(image.begin(), image.end())};
         for (int level = 0; level < static_cast<int>(lod) && finer.side > 1; ++level)
             finer = half(finer);
