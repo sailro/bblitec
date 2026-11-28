@@ -1397,24 +1397,29 @@ export function stringDomain(
     expression: ts.Expression,
     use: StringDomainUse,
 ): Domain {
-    const query = (inlining: boolean): Domain =>
-        new StringDomain(context, use, inlining).read(
-            expression,
-            [],
-            new Map(),
-        );
     let read: Domain;
     try {
         // The parameters of the bodies the lowering inlines read their
         // calls' arguments; where that leaves no closed set, every call's
-        // arguments, which hold those calls' too.
+        // arguments, which hold those calls' too. A query that read no
+        // inlined argument reads the same without them.
+        const inlining = new StringDomain(context, use, true);
         try {
-            read = query(true);
+            read = inlining.read(expression, [], new Map());
         } catch (error) {
-            if (!(error instanceof UnboundedDomain)) throw error;
+            if (
+                !(error instanceof UnboundedDomain) ||
+                !inlining.readInlinedArgument
+            )
+                throw error;
             read = undefined;
         }
-        if (!read?.length) read = query(false);
+        if (!read?.length && inlining.readInlinedArgument)
+            read = new StringDomain(context, use).read(
+                expression,
+                [],
+                new Map(),
+            );
     } catch (error) {
         if (error instanceof UnboundedDomain)
             return context.fail(expression, error.message);
@@ -1560,6 +1565,9 @@ class StringDomain {
      * string, a key or a URL.
      */
     private scalar: "number" | "boolean" | undefined;
+
+    /** @unjournaled Whether a parameter read its inlined call's argument (`inlining`). */
+    public readInlinedArgument = false;
 
     constructor(
         private readonly context: StringDomainContext,
@@ -2327,7 +2335,10 @@ class StringDomain {
                 this.inlining && ts.isIdentifier(node)
                     ? this.context.inlinedParameterArgument(node)
                     : undefined;
-            if (inlined) return this.read(inlined, projection, environment);
+            if (inlined) {
+                this.readInlinedArgument = true;
+                return this.read(inlined, projection, environment);
+            }
             // A method may be reached through any receiver.
             if (neverRuns(this.graph, owner)) return nothing;
             // Calls through a value it escaped as are unseen.
