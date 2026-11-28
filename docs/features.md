@@ -106,6 +106,8 @@ Rules:
 - Reached `Iterable<T>` parameters specialize to concrete collection storage, preserving iterator cursor identity.
 - A structural record type given both a retained element and a DOM event target (`target as unknown as EventTarget`)
   stores the event target.
+- A union narrowed to its several record members (`r === "done" ? null : r`) stores as the record type that names
+  them, each record member converted where it is selected.
 - Callable records retain optional properties when selected beside plain functions. Mixed tuple arrays read absent
   properties on plain functions as `undefined`; reading properties after erasure into bare function storage refuses.
 - A module's function declaration stored as a callable record is one object: every alias and conversion shares its

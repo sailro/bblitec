@@ -4888,6 +4888,59 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
     }
 
+    /**
+     * A union the checker narrows to its several record members
+     * (`result === "carried" ? null : result`) stored as one record type:
+     * each record arm converts as that type stores it, and an arm the
+     * narrowing excluded is not held there (selecting it throws, as
+     * `std::get` does). Undefined unless the narrowed type is exactly as
+     * many object types as the union has record members, two or more.
+     */
+    private recordArmsCpp(
+        value: Value,
+        union: DataType<"union">,
+        dataType: DataType<"struct">,
+        narrowing: ts.Expression,
+        node: ts.Node,
+    ): string | undefined {
+        const admitted = unionMembers(
+            this.context.checker.getNonNullableType(
+                this.context.checker.getTypeAtLocation(narrowing),
+            ),
+        );
+        const arms = union.members.flatMap((member, index) =>
+            member.kind === "struct" ? [{ member, index }] : [],
+        );
+        if (
+            arms.length < 2 ||
+            admitted.length !== arms.length ||
+            admitted.some((type) => (type.flags & ts.TypeFlags.Object) === 0)
+        )
+            return undefined;
+        const source = this.context.allocateTemporaryCppName("record_arms");
+        const cases = arms.map(({ member, index }) => {
+            let converted = "";
+            const lines = this.context.captureEmittedLines(() => {
+                converted = this.compileKnownValueForSink(
+                    this.leafValue(`std::get<${index}>(${source})`, member),
+                    dataType,
+                    node,
+                );
+            });
+            return (
+                `    if (${source}.index() == ${index}) {\n` +
+                lines.map((line) => `        ${line}\n`).join("") +
+                `        return ${converted};\n    }\n`
+            );
+        });
+        return (
+            `([&]() -> ${this.context.dataTypes.cppType(dataType)} {\n` +
+            `    const auto& ${source} = ${value.cpp};\n` +
+            cases.join("") +
+            `    throw std::bad_variant_access{};\n}())`
+        );
+    }
+
     private narrowedUnionMemberIndex(
         type: DataType<"union">,
         narrowed: DataType | undefined,
@@ -13349,6 +13402,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             }
         }
         if (value.dataType?.kind === "union" && dataType.kind !== "union") {
+            const records =
+                dataType.kind === "struct" && narrowing
+                    ? this.recordArmsCpp(
+                          value,
+                          value.dataType,
+                          dataType,
+                          narrowing,
+                          node,
+                      )
+                    : undefined;
+            if (records !== undefined) return records;
             const member = this.narrowedUnionMemberIndex(
                 value.dataType,
                 dataType,
