@@ -3034,17 +3034,20 @@ export class DataLowerer {
                 this.invalidateStaticElements(owner);
             // A property the owner's declared record type has and its
             // record's layout lacks is added to that one object.
-            if (mode === "write" && ownerType?.kind === "struct") {
+            if (
+                mode === "write" &&
+                ownerType?.kind === "struct" &&
+                this.context.dataTypes.lacksRecordProperty(
+                    ownerType.name,
+                    unwrapped.name.text,
+                )
+            ) {
                 const declared = presentDataType(
                     this.dataTypeAt(unwrapped.expression),
                 );
                 if (
                     declared?.kind === "struct" &&
                     declared.name !== ownerType.name &&
-                    this.context.dataTypes.lacksRecordProperty(
-                        ownerType.name,
-                        unwrapped.name.text,
-                    ) &&
                     !this.context.dataTypes.lacksRecordProperty(
                         declared.name,
                         unwrapped.name.text,
@@ -4903,16 +4906,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         narrowing: ts.Expression,
         node: ts.Node,
     ): string | undefined {
+        const arms = union.members.flatMap((member, index) =>
+            member.kind === "struct" ? [{ member, index }] : [],
+        );
+        if (arms.length < 2) return undefined;
         const admitted = unionMembers(
             this.context.checker.getNonNullableType(
                 this.context.checker.getTypeAtLocation(narrowing),
             ),
         );
-        const arms = union.members.flatMap((member, index) =>
-            member.kind === "struct" ? [{ member, index }] : [],
-        );
         if (
-            arms.length < 2 ||
             admitted.length !== arms.length ||
             admitted.some((type) => (type.flags & ts.TypeFlags.Object) === 0)
         )

@@ -550,25 +550,28 @@ function compileDynamicShaderUniformWrite(
     const tuple = input.kind === "tuple" ? input.tupleElements : undefined;
     // A value the source types as a number or number array (a parsed
     // member) is stored as that sink reads it.
-    const declared = context.dataLowerer.dataTypeAt(argumentAt(call, 2));
+    const declaredNumeric = (): DataType => {
+        const declared = context.dataLowerer.dataTypeAt(argumentAt(call, 2));
+        return declared &&
+            (declared.kind === "number" ||
+                (declared.kind === "vector" &&
+                    declared.element.kind === "number"))
+            ? declared
+            : context.fail(
+                  argumentAt(call, 2),
+                  "Dynamic shader uniform values require a number or numeric array.",
+              );
+    };
     const converted =
         input.kind === "number" ||
         tuple ||
         (input.kind === "data" && input.dataType && numeric(input.dataType))
             ? undefined
-            : declared &&
-                (declared.kind === "number" ||
-                    (declared.kind === "vector" &&
-                        declared.element.kind === "number"))
-              ? context.dataLowerer.compileKnownValueForSink(
-                    input,
-                    declared,
-                    argumentAt(call, 2),
-                )
-              : context.fail(
-                    argumentAt(call, 2),
-                    "Dynamic shader uniform values require a number or numeric array.",
-                );
+            : context.dataLowerer.compileKnownValueForSink(
+                  input,
+                  declaredNumeric(),
+                  argumentAt(call, 2),
+              );
     context.reachFeature("material:shader", call);
     const value = tuple
         ? `std::array<double, ${tuple.length}>{${tuple
