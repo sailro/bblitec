@@ -1951,10 +1951,8 @@ double ui_dimension_attribute(Engine& engine, UiElementHandle element, std::stri
 void ui_set_dimension_attribute(Engine& engine, UiElementHandle element, std::string name,
                                 double value) {
     // WebIDL unsigned long, then HTML's reflection: a value past 2^31 - 1 stores the default 0.
-    const double integral = std::isfinite(value) ? std::trunc(value) : 0.0;
-    const double modulo = std::fmod(integral, 4294967296.0);
-    const double converted = modulo < 0 ? modulo + 4294967296.0 : modulo;
-    const auto stored = converted <= 2147483647.0 ? static_cast<std::uint32_t>(converted) : 0u;
+    const std::uint32_t converted = js::to_uint32(value);
+    const auto stored = converted <= 2147483647u ? converted : 0u;
     ui_set_attribute(engine, element, std::move(name), std::to_string(stored));
 }
 
