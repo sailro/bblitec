@@ -1913,55 +1913,90 @@ export class DataTypeRegistry {
         owner: ts.Expression,
     ): void {
         const from = this.nativeRecordSources.get(source);
+        if (!from) return;
         const record = this.checker.getNonNullableType(
             this.checker.getTypeAtLocation(owner),
         );
-        const to = this.recordDemand(record, owner);
-        if (!from) return;
-        const sourceInstantiation = this.recordInstantiation(
+        const join = this.recordJoin(
             from,
             from.type,
             source,
-        );
-        const targetInstantiation = this.recordInstantiation(
-            to,
+            this.recordDemand(record, owner),
             record,
             target,
+            "value",
         );
-        const component = (
-            demand: NativeRecordStorageDemand,
-            instantiation: InstantiatedRecord | undefined,
-        ) =>
-            this.recordComponents.get(
-                instantiation ?? recordIdentity(this.checker, demand.type),
-            );
-        const sourceComponent = component(from, sourceInstantiation);
         if (
-            (!sourceInstantiation && !this.joinableRecord(from, from.type)) ||
-            (!targetInstantiation && !this.joinableRecord(to, record)) ||
-            (sourceComponent &&
-                sourceComponent === component(to, targetInstantiation)) ||
-            !(sourceInstantiation || targetInstantiation
+            join &&
+            (join.sourceInstantiation || join.targetInstantiation
                 ? this.structLayoutsCompatible(
                       this.structFields(source, owner, "accessors"),
                       this.structFields(target, owner, "accessors"),
                   )
                 : layoutsCompatible(this.checker, from.type, record))
         )
-            return;
-        this.requireJoin({
-            ...from,
-            node: owner,
-            joins: [
-                {
-                    source: from.type,
-                    target: record,
-                    ...(sourceInstantiation ? { sourceInstantiation } : {}),
-                    ...(targetInstantiation ? { targetInstantiation } : {}),
-                    kind: "value",
-                },
-            ],
-        });
+            this.requireJoin({ ...from, node: owner, joins: [join] });
+    }
+
+    /**
+     * The join storing records of `source` (struct `sourceName`) as
+     * `target` (struct `targetName`) asks for, each generic endpoint under
+     * its own instantiation in force. Undefined where an endpoint cannot
+     * join a record component -- it is not one type under every
+     * instantiation (`joinableRecord`) and names no instantiation in force,
+     * or its struct holds a class's instances -- or where both already
+     * share one.
+     */
+    private recordJoin(
+        source: NativeRecordStorageDemand,
+        sourceRecord: ts.Type,
+        sourceName: string,
+        target: NativeRecordStorageDemand,
+        targetRecord: ts.Type,
+        targetName: string,
+        kind: RecordJoin["kind"],
+    ): RecordJoin | undefined {
+        const sourceInstantiation = this.recordInstantiation(
+            source,
+            sourceRecord,
+            sourceName,
+        );
+        const targetInstantiation = this.recordInstantiation(
+            target,
+            targetRecord,
+            targetName,
+        );
+        const joinable = (
+            demand: NativeRecordStorageDemand,
+            record: ts.Type,
+            name: string,
+            instantiation: InstantiatedRecord | undefined,
+        ): boolean =>
+            instantiation !== undefined ||
+            (this.joinableRecord(demand, record) && !this.isClassStruct(name));
+        const component = (
+            record: ts.Type,
+            instantiation: InstantiatedRecord | undefined,
+        ) =>
+            this.recordComponents.get(
+                instantiation ?? recordIdentity(this.checker, record),
+            );
+        const sourceComponent = component(sourceRecord, sourceInstantiation);
+        if (
+            !joinable(source, sourceRecord, sourceName, sourceInstantiation) ||
+            !joinable(target, targetRecord, targetName, targetInstantiation) ||
+            (sourceComponent !== undefined &&
+                sourceComponent ===
+                    component(targetRecord, targetInstantiation))
+        )
+            return undefined;
+        return {
+            source: sourceRecord,
+            target: targetRecord,
+            ...(sourceInstantiation ? { sourceInstantiation } : {}),
+            ...(targetInstantiation ? { targetInstantiation } : {}),
+            kind,
+        };
     }
 
     /** An observable extra property joins the concrete record layouts that carried it. */
@@ -5210,74 +5245,38 @@ export class DataTypeRegistry {
             return source ? [{ source: source.type, target: target.type }] : [];
         });
         if (this.joinCallableRecordTypes(callableFields)) return;
-        // A record type a generic call's instantiation does not reach is
-        // one type under every instantiation.
-        const joinable = (
-            demand: NativeRecordStorageDemand,
-            record: ts.Type,
-        ): boolean =>
-            this.joinableRecord(demand, record) &&
-            !this.isClassStruct(
-                demand === source ? sourceType.name : targetType.name,
-            );
-        // Each generic endpoint names its own instantiation in force.
-        const instantiation = (
-            demand: NativeRecordStorageDemand | undefined,
-            record: ts.Type | undefined,
-            name: string,
-        ): InstantiatedRecord | undefined =>
-            demand && record
-                ? this.recordInstantiation(demand, record, name)
-                : undefined;
-        const sourceInstantiation = instantiation(
-            source,
-            sourceRecord,
-            sourceType.name,
-        );
-        const targetInstantiation = instantiation(
-            target,
-            targetRecord,
-            targetType.name,
-        );
         const kind: RecordJoin["kind"] = sharedArray
             ? "element"
             : isTypeAssertion(node)
               ? "assertion"
               : "value";
+        const join =
+            source && target && sourceRecord && targetRecord
+                ? this.recordJoin(
+                      source,
+                      sourceRecord,
+                      sourceType.name,
+                      target,
+                      targetRecord,
+                      targetType.name,
+                      kind,
+                  )
+                : undefined;
         // A join an earlier replay demanded that left the two apart refuses.
-        const demanded =
-            sourceRecord &&
+        const demanded = (join: RecordJoin): boolean =>
             this.demandedJoins
-                .get(sourceRecord)
+                .get(join.source)
                 ?.some(
-                    (join) =>
-                        join.target === targetRecord &&
-                        join.sourceInstantiation === sourceInstantiation &&
-                        join.targetInstantiation === targetInstantiation &&
-                        join.kind === kind,
-                );
-        const sourceComponent =
-            sourceRecord &&
-            this.recordComponents.get(
-                sourceInstantiation ??
-                    recordIdentity(this.checker, sourceRecord),
-            );
-        const targetComponent =
-            targetRecord &&
-            this.recordComponents.get(
-                targetInstantiation ??
-                    recordIdentity(this.checker, targetRecord),
-            );
-        if (
-            source &&
-            target &&
-            sourceRecord &&
-            targetRecord &&
-            !demanded &&
-            (sourceInstantiation || joinable(source, sourceRecord)) &&
-            (targetInstantiation || joinable(target, targetRecord)) &&
-            (!sourceComponent || sourceComponent !== targetComponent)
-        ) {
+                    (earlier) =>
+                        earlier.target === join.target &&
+                        earlier.sourceInstantiation ===
+                            join.sourceInstantiation &&
+                        earlier.targetInstantiation ===
+                            join.targetInstantiation &&
+                        earlier.kind === join.kind,
+                ) === true;
+        if (source && sourceRecord && targetRecord && join && !demanded(join)) {
+            const { sourceInstantiation, targetInstantiation } = join;
             // A record stored as a union, or a union's record stored as
             // another record type, keeps its fields in the union's layout
             // (or in one the union shares with it); two unions, or two
@@ -5314,19 +5313,7 @@ export class DataTypeRegistry {
                 this.requireJoin({
                     ...source,
                     type: sourceRecord,
-                    joins: [
-                        {
-                            source: sourceRecord,
-                            target: targetRecord,
-                            ...(sourceInstantiation
-                                ? { sourceInstantiation }
-                                : {}),
-                            ...(targetInstantiation
-                                ? { targetInstantiation }
-                                : {}),
-                            kind,
-                        },
-                    ],
+                    joins: [join],
                 });
                 return;
             }
