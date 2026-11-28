@@ -1906,7 +1906,10 @@ test("retains max-width media cascade and auto resets for live resize", () => {
     );
     assert.match(result.cpp, /right:\s*auto;\s*bottom:\s*auto/);
     const palUi = palUiRmlSource;
-    assert.match(palUi, /"max-width", rule\.max_width/);
+    assert.match(
+        palUi,
+        /for \(const auto& \[feature, bound\] : ui_viewport_features\)/,
+    );
     assert.match(palUi, /context->SetDimensions/);
 });
 

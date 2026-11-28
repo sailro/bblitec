@@ -4603,6 +4603,29 @@ struct UiMediaCondition {
     }
 };
 
+/** A media query's viewport bounds, in CSS pixels and inclusive; negative for none. */
+struct UiViewportBounds {
+    double max_width = -1.0;
+    double min_width = -1.0;
+    double max_height = -1.0;
+    double min_height = -1.0;
+    [[nodiscard]] bool empty() const {
+        return max_width < 0.0 && min_width < 0.0 && max_height < 0.0 && min_height < 0.0;
+    }
+    [[nodiscard]] bool matches(double width, double height) const {
+        return (max_width < 0.0 || width <= max_width) && (min_width < 0.0 || width >= min_width) &&
+               (max_height < 0.0 || height <= max_height) &&
+               (min_height < 0.0 || height >= min_height);
+    }
+};
+/** The media feature that names each viewport bound. */
+inline constexpr std::pair<std::string_view, double UiViewportBounds::*> ui_viewport_features[] = {
+    {"max-width", &UiViewportBounds::max_width},
+    {"min-width", &UiViewportBounds::min_width},
+    {"max-height", &UiViewportBounds::max_height},
+    {"min-height", &UiViewportBounds::min_height},
+};
+
 enum class UiSelectorTestKind : std::uint8_t {
     Tag,
     Id,
@@ -4669,7 +4692,7 @@ struct UiStyleRule {
     std::string secondary{};
     std::string tag{};
     std::string style{};
-    /** The viewport bounds of the rule's media query, in CSS pixels; negative for none. */
+    /** The viewport bounds of the rule's media query, which the generated rule designates. */
     double max_width = -1.0;
     double min_width = -1.0;
     double max_height = -1.0;
@@ -4687,6 +4710,9 @@ struct UiStyleRule {
     UiOrientation orientation = UiOrientation::Any;
     /** The device features of the rule's media query. */
     UiMediaCondition media{};
+    [[nodiscard]] UiViewportBounds viewport() const {
+        return {max_width, min_width, max_height, min_height};
+    }
 };
 
 /** One event's listeners on a retained element, shared so a dispatch outlives storage growth. */

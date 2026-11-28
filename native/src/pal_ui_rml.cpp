@@ -7026,11 +7026,7 @@ struct UiRmlRuntime {
         return (rule.orientation == UiOrientation::Any ||
                 (viewport_width <= viewport_height) ==
                     (rule.orientation == UiOrientation::Portrait)) &&
-               (rule.max_width < 0.0 || width <= rule.max_width) &&
-               (rule.min_width < 0.0 || width >= rule.min_width) &&
-               (rule.max_height < 0.0 || height <= rule.max_height) &&
-               (rule.min_height < 0.0 || height >= rule.min_height) &&
-               rule.media.matches(media_device);
+               rule.viewport().matches(width, height) && rule.media.matches(media_device);
     }
 
     /**
@@ -7134,13 +7130,11 @@ struct UiRmlRuntime {
             if (public_style.empty() && rule.container_max_width < 0.0)
                 return;
             std::vector<std::string> conditions;
-            for (const auto& [feature, bound] :
-                 {std::pair{"max-width", rule.max_width}, std::pair{"min-width", rule.min_width},
-                  std::pair{"max-height", rule.max_height},
-                  std::pair{"min-height", rule.min_height}})
-                if (bound >= 0.0)
-                    conditions.push_back(std::string("(") + feature + ":" + std::to_string(bound) +
-                                         "px)");
+            const UiViewportBounds viewport = rule.viewport();
+            for (const auto& [feature, bound] : ui_viewport_features)
+                if (viewport.*bound >= 0.0)
+                    conditions.push_back("(" + std::string(feature) + ":" +
+                                         std::to_string(viewport.*bound) + "px)");
             if (!rule.media.empty())
                 conditions.push_back("(theme:" + theme->name + ")");
             if (rule.orientation != UiOrientation::Any)

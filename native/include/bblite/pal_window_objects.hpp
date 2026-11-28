@@ -49,8 +49,7 @@ private:
     /** `(resolution: Ndppx)`, which only a query of it alone names. */
     std::optional<double> resolution_;
     UiMediaCondition condition_;
-    /** The viewport bounds the query names, in CSS pixels and inclusive; negative for none. */
-    double min_width_ = -1, max_width_ = -1, min_height_ = -1, max_height_ = -1;
+    UiViewportBounds viewport_;
     double (*read_pixel_ratio_)();
     bool (*read_motion_preference_)();
     InputCapabilities (*read_input_capabilities_)();
