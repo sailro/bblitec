@@ -8,27 +8,68 @@ import {
 } from "./syntax.js";
 import { valueKindOf } from "./type-facts.js";
 
-/** Fixed authored fragments around runtime text. Null spans never carry markup. */
-export type UiMarkupShape = readonly (string | null)[];
+/**
+ * A run-time span of a markup value: the expressions whose texts it
+ * concatenates, in order (none when the value is followed no further).
+ * Spans never carry markup.
+ */
+export interface UiMarkupSpan {
+    readonly sources: readonly ts.Expression[];
+}
+
+/** Fixed authored fragments around run-time spans. */
+export type UiMarkupShape = readonly (string | UiMarkupSpan)[];
+
+/** The fixed text of fragments; a span spells nothing. */
+export function uiMarkupText(parts: UiMarkupShape): string {
+    return parts.map((part) => (typeof part === "string" ? part : "")).join("");
+}
+
+/** The index of a shape's first run-time span, or -1. */
+export function uiMarkupSpanIndex(shape: UiMarkupShape): number {
+    return shape.findIndex((part) => typeof part !== "string");
+}
 
 /** The most shapes one value is followed through; past it the value is runtime text. */
 const shapeLimit = 32;
 
-const runtimeText: readonly UiMarkupShape[] = [[null]];
+const unfollowedText: readonly UiMarkupShape[] = [[{ sources: [] }]];
+
+/** The value of `node` as one run-time span. */
+const runtimeText = (node: ts.Expression): readonly UiMarkupShape[] => [
+    [{ sources: [node] }],
+];
 
 function sameShape(left: UiMarkupShape, right: UiMarkupShape): boolean {
     return (
         left.length === right.length &&
-        left.every((part, index) => part === right[index])
+        left.every((part, index) => {
+            const other = right[index];
+            return typeof part === "string"
+                ? part === other
+                : typeof other !== "string";
+        })
     );
 }
 
-/** Each shape once, in first-seen order; too many read as runtime text. */
+/**
+ * Each shape once, in first-seen order, a span keeping the sources of every
+ * shape it stands for; too many read as runtime text.
+ */
 function distinct(shapes: readonly UiMarkupShape[]): readonly UiMarkupShape[] {
     const result: UiMarkupShape[] = [];
-    for (const shape of shapes)
-        if (!result.some((seen) => sameShape(seen, shape))) result.push(shape);
-    return result.length > shapeLimit ? runtimeText : result;
+    for (const shape of shapes) {
+        const index = result.findIndex((seen) => sameShape(seen, shape));
+        if (index < 0) result.push(shape);
+        else
+            result[index] = result[index]!.map((part, at) => {
+                const other = shape[at]!;
+                return typeof part === "string" || typeof other === "string"
+                    ? part
+                    : { sources: [...part.sources, ...other.sources] };
+            });
+    }
+    return result.length > shapeLimit ? unfollowedText : result;
 }
 
 interface ShapeContext {
@@ -37,12 +78,21 @@ interface ShapeContext {
     rebound(identifier: ts.Identifier): boolean;
 }
 
+/** Adjacent fragments, and adjacent spans, joined: run-time text beside run-time text is one span. */
 function join(parts: UiMarkupShape): UiMarkupShape {
-    const result: Array<string | null> = [];
+    const result: Array<string | UiMarkupSpan> = [];
     for (const part of parts) {
         const last = result.at(-1);
         if (typeof part === "string" && typeof last === "string")
             result[result.length - 1] = last + part;
+        else if (
+            typeof part !== "string" &&
+            last !== undefined &&
+            typeof last !== "string"
+        )
+            result[result.length - 1] = {
+                sources: [...last.sources, ...part.sources],
+            };
         else if (part !== "") result.push(part);
     }
     return result;
@@ -54,7 +104,7 @@ function concatenated(
 ): readonly UiMarkupShape[] {
     let shapes: readonly UiMarkupShape[] = [[]];
     for (const operand of operands) {
-        if (shapes.length * operand.length > shapeLimit) return runtimeText;
+        if (shapes.length * operand.length > shapeLimit) return unfollowedText;
         shapes = shapes.flatMap((prefix) =>
             operand.map((shape) => join([...prefix, ...shape])),
         );
@@ -65,7 +115,8 @@ function concatenated(
 /**
  * The shapes a value can take, one per authored way of building it: a choice
  * between fixed fragments keeps each branch. Inspect provenance only; the
- * consumer reads the already evaluated string.
+ * consumer reads the already evaluated string. A value that is run-time text
+ * as a whole is one span of the expression itself.
  */
 export function uiMarkupValueShapes(
     expression: ts.Expression,
@@ -73,7 +124,20 @@ export function uiMarkupValueShapes(
     active: ReadonlySet<ts.Node> = new Set(),
 ): readonly UiMarkupShape[] {
     const node = unwrapExpression(expression);
-    if (active.has(node) || active.size > 64) return runtimeText;
+    const shapes = followedShapes(node, context, active);
+    return shapes.length === 1 &&
+        shapes[0]!.length === 1 &&
+        typeof shapes[0]![0] !== "string"
+        ? runtimeText(node)
+        : shapes;
+}
+
+function followedShapes(
+    node: ts.Expression,
+    context: ShapeContext,
+    active: ReadonlySet<ts.Node>,
+): readonly UiMarkupShape[] {
+    if (active.has(node) || active.size > 64) return runtimeText(node);
     const nested = new Set([...active, node]);
     const shapes = (value: ts.Expression): readonly UiMarkupShape[] =>
         uiMarkupValueShapes(value, context, nested);
@@ -138,7 +202,7 @@ export function uiMarkupValueShapes(
                     returns.push(
                         ...(child.expression
                             ? shapes(child.expression)
-                            : runtimeText),
+                            : unfollowedText),
                     );
                 else ts.forEachChild(child, visit);
             };
@@ -148,5 +212,5 @@ export function uiMarkupValueShapes(
                 return distinct(returns);
         }
     }
-    return runtimeText;
+    return runtimeText(node);
 }

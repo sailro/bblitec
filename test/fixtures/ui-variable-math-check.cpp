@@ -68,6 +68,14 @@ int main() try {
         check(width("viewport", 256),
               "an inherited custom property that is itself math over var()");
         check(opacity("night", 0.7f), "a number");
+        const auto& pull = element("pull")->GetBox();
+        check(pull.GetEdge(Rml::BoxArea::Margin, Rml::BoxEdge::Left) == 12.f &&
+                  pull.GetEdge(Rml::BoxArea::Margin, Rml::BoxEdge::Right) == -6.f,
+              "horizontal margins of math over var()");
+        // A negative padding is clamped to zero, as CSS clamps it.
+        check(pull.GetEdge(Rml::BoxArea::Padding, Rml::BoxEdge::Right) == 16.f &&
+                  pull.GetEdge(Rml::BoxArea::Padding, Rml::BoxEdge::Left) == 0.f,
+              "padding of math over var()");
         const auto background = element("night")->GetComputedValues().color();
         check(background.red == 10 && background.green == 20 && background.blue == 30 &&
                   background.alpha == 77,
