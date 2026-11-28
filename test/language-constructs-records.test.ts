@@ -1146,3 +1146,41 @@ check(
     if (viaSpread(1) !== 4) throw new Error("spread copy " + viaSpread(1));
     `,
 );
+
+// A union narrowed to its record members is stored as the record type
+// that names them: each record arm converts, whichever one the value holds.
+check(
+    "a-union-narrowed-to-its-records-stores-each-record-arm",
+    `
+    type Refusal =
+      | { readonly reason: "unknown-host" | "busy" | "release-refused" }
+      | { readonly reason: "out-of-range"; readonly min: number; readonly max: number };
+    interface Agent { unmount(id: number): Refusal | null; adjust(id: number, value: number): Refusal | null }
+    function create(release: (id: number) => boolean): Agent {
+      let height = false;
+      const unlockChild = (id: number | null): "carried" | "freed" | Refusal => {
+        if (height) return { reason: "busy" };
+        if (id === null || id < 0) return { reason: "unknown-host" };
+        if (!release(id)) return { reason: "release-refused" };
+        if (id === 99) return { reason: "out-of-range", min: 1, max: 2 };
+        return id > 10 ? "carried" : "freed";
+      };
+      return {
+        unmount: (id) => {
+          const result = unlockChild(id);
+          return result === "carried" || result === "freed" ? null : result;
+        },
+        adjust: (id, value) => {
+          height = value > 100;
+          if (!(value >= 0 && value <= 10)) return { reason: "out-of-range", min: 0, max: 10 };
+          return id < 0 ? { reason: "unknown-host" } : null;
+        },
+      };
+    }
+    const agents: Array<Agent> = [create((id) => id !== 3)];
+    const a = agents[0]!;
+    const r1 = a.unmount(-1), r2 = a.unmount(3), r3 = a.unmount(20), r4 = a.adjust(1, 50), r5 = a.unmount(99);
+    if (r1?.reason !== "unknown-host" || r2?.reason !== "release-refused" || r3 !== null || r4?.reason !== "out-of-range" || (r4.reason === "out-of-range" && r4.max !== 10)) throw new Error("agent");
+    if (r5?.reason !== "out-of-range" || r5.min !== 1 || r5.max !== 2) throw new Error("record arm");
+`,
+);
