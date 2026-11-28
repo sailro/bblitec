@@ -972,7 +972,8 @@ function isDomEventTargetType(type: ts.Type): boolean {
     );
 }
 
-function isDomElementType(symbol: ts.Symbol): boolean {
+/** Whether a DOM interface is an element's: `Element` or an HTML or SVG element interface. */
+export function isDomElementType(symbol: ts.Symbol): boolean {
     return (
         declaredInDomLibrary(symbol) &&
         (libraryName(symbol) === "Element" ||
