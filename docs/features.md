@@ -88,6 +88,8 @@ Rules:
   function filling each of its signatures.
 - A record holding a class instance where a record type it is stored as holds a dynamic value shares that type's
   layout where a copy is observable: the field is a document holding the instance.
+- A record stored as a record type whose field is a `readonly` field typed `object` shares that type's layout where a
+  copy is observable: the field holds what the record stores there.
 - A record stored as a record type whose field is a union with the record's own field type among its arms
   (`boolean | { beyond }` beside `{ beyond }`) shares that type's layout where a copy is observable, the field one slot
   of the union; a write of the field through the wider type refuses.

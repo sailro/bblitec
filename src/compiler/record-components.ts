@@ -775,6 +775,30 @@ export function widensField(
     );
 }
 
+/**
+ * Whether `property`, of type `type`, is a `readonly` field typed `object`:
+ * no write goes through it, so in a layout shared with records storing an
+ * object there it reads the object they store.
+ */
+export function readsHeldObject(
+    checker: ts.TypeChecker,
+    property: ts.Symbol,
+    type: ts.Type,
+): boolean {
+    const declarations = property.declarations ?? [];
+    return (
+        (checker.getNonNullableType(type).flags & ts.TypeFlags.NonPrimitive) !==
+            0 &&
+        declarations.length > 0 &&
+        declarations.every(
+            (declaration) =>
+                (ts.getCombinedModifierFlags(declaration) &
+                    ts.ModifierFlags.Readonly) !==
+                0,
+        )
+    );
+}
+
 function layoutsHoldBoth(
     checker: ts.TypeChecker,
     left: ts.Type,
@@ -849,6 +873,24 @@ function layoutsHoldBoth(
             !!unwritten &&
             widensField(checker, wide, narrow) &&
             unwritten(owner, name);
+        const viewed = (
+            owner: ts.Type,
+            name: string,
+            other: ts.Type,
+        ): boolean =>
+            (checker.getNonNullableType(other).flags & ts.TypeFlags.Object) !==
+                0 &&
+            unionMembers(owner).every((arm) => {
+                const property = checker.getPropertyOfType(arm, name);
+                return (
+                    property === undefined ||
+                    readsHeldObject(
+                        checker,
+                        property,
+                        checker.getTypeOfSymbol(property),
+                    )
+                );
+            });
         return recordProperties(checker, b).every((property) =>
             fields(a, property.name).every((held) =>
                 fields(b, property.name).every(
@@ -861,7 +903,9 @@ function layoutsHoldBoth(
                             unwritten,
                         ) ||
                         widened(held, a, field, property.name) ||
-                        widened(field, b, held, property.name),
+                        widened(field, b, held, property.name) ||
+                        viewed(a, property.name, field) ||
+                        viewed(b, property.name, held),
                 ),
             ),
         );
