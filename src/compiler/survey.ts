@@ -145,8 +145,37 @@ export interface SurveyReport {
     demands: SurveyDemand[];
     /** The passes that ran to their end. */
     passes: number;
+    /** What each pass that ran to its end took, in order: why a next pass was needed. */
+    passHistory?: SurveyPassDemands[];
     /** The statements whose own lowering took longest in the last passes, slowest first. */
     slowest: SurveyTiming[];
+}
+
+/**
+ * The storage demands one pass took, and those it met again after taking
+ * them: what the next pass lowers with.
+ */
+interface SurveyPassDemands {
+    pass: number;
+    /**
+     * Each demand the pass took, with the statement that first met it and
+     * how the pass before treated that statement: `new` when no lowering
+     * of it began there (code first reached in this pass), `lowered` when
+     * it lowered there (a demand only the storage taken since raises), and
+     * `rolled back` when a refusal or a demand rolled it back there.
+     */
+    taken: {
+        demand: string;
+        site?: string;
+        statement?: string;
+        reached?: "new" | "lowered" | "rolled back";
+    }[];
+    /**
+     * Demands the pass took that statements met again and rolled back: the
+     * storage holds them, but what the pass built before them (a layout)
+     * stands until the next pass.
+     */
+    deferred: { demand: string; site?: string; statements: number }[];
 }
 
 /**
@@ -273,6 +302,8 @@ interface Attempt {
      * Each with the site it rose at, which a pass names it by.
      */
     taken: Map<string, string | undefined>;
+    /** The statement each of `taken` was first met at. */
+    takenAt: Map<string, ts.Statement>;
     /**
      * Those a probe began: journaled, so a probe that rolls back takes
      * its statements away and a committed one keeps them.
@@ -587,6 +618,7 @@ function roundAttempt(
         probed: new EmissionSet(previous.probed),
         rootProbes: new Set([...previous.rootProbes].filter(probedElsewhere)),
         taken: pass.taken,
+        takenAt: pass.takenAt,
         moduleRoots: { from: mark, to: mark },
         sources,
     });
@@ -610,6 +642,7 @@ function newAttempt(carries: Partial<Attempt> = {}): Attempt {
         probed: new EmissionSet(),
         rootProbes: new Set(),
         taken: new Map(),
+        takenAt: new Map(),
         fresh: new Set(),
         phases: [],
         probes: { kept: 0, dropped: 0 },
@@ -670,6 +703,11 @@ export class SurveyCollector {
     private passes = 0;
     /** @unjournaled The census of the last pass that ran to its end (`publishedSurvey`). */
     private furthest: SurveyReport | undefined;
+    /** @unjournaled What each pass that ran to its end took (`SurveyReport.passHistory`). */
+    private readonly history: SurveyPassDemands[] = [];
+    /** @unjournaled The statements the last ended pass began, and those it rolled back. */
+    private ended:
+        { begun: Set<ts.Statement>; rolledBack: Set<ts.Statement> } | undefined;
 
     private readonly progress: SurveyProgress | undefined;
     private readonly passLimit: number | undefined;
@@ -1227,6 +1265,9 @@ export class SurveyCollector {
                 const applied = refusal ? false : this.applied(attempt, met);
                 if (applied === true) {
                     taken = met as Error;
+                    const key = replayText(taken);
+                    if (!attempt.takenAt.has(key))
+                        attempt.takenAt.set(key, statement);
                     coverRollback(lowered, `demand|${replayText(taken)}`);
                     if (attempt.root) attempt.root.stale = true;
                     continue;
@@ -1446,6 +1487,7 @@ export class SurveyCollector {
      */
     public passEnded(added: number): boolean {
         this.passes++;
+        if (this.last) this.recordPass(this.last);
         const census = this.report();
         this.furthest = census;
         const phases = (this.last?.phases ?? [])
@@ -1484,6 +1526,44 @@ export class SurveyCollector {
         this.progress?.report(line);
         this.leaveCensus(line, census);
         return true;
+    }
+
+    /** Adds what `attempt`, the pass that just ended, took to the history. */
+    private recordPass(attempt: Attempt): void {
+        const before = this.ended;
+        const reached = (
+            statement: ts.Statement,
+        ): "new" | "lowered" | "rolled back" =>
+            before?.rolledBack.has(statement)
+                ? "rolled back"
+                : before?.begun.has(statement)
+                  ? "lowered"
+                  : "new";
+        const taken = [...attempt.taken].map(([demand, site]) => {
+            const at = attempt.takenAt.get(demand);
+            return {
+                demand,
+                ...(site ? { site } : {}),
+                ...(at
+                    ? { statement: nodeSite(at), reached: reached(at) }
+                    : {}),
+            };
+        });
+        const deferred = [...attempt.demands.values()]
+            .filter(({ demand }) => attempt.taken.has(demand))
+            .map(({ demand, site, rolledBack }) => ({
+                demand,
+                ...(site ? { site } : {}),
+                statements: rolledBack.size,
+            }));
+        this.history.push({ pass: this.passes, taken, deferred });
+        const rolledBack = new Set<ts.Statement>();
+        for (const { rolledBack: statements } of [
+            ...attempt.demands.values(),
+            ...attempt.refusals.values(),
+        ])
+            for (const statement of statements) rolledBack.add(statement);
+        this.ended = { begun: new Set(attempt.distinct), rolledBack };
     }
 
     /**
@@ -1736,6 +1816,7 @@ export class SurveyCollector {
                     a.demand.localeCompare(b.demand),
             ),
             passes: this.passes,
+            ...(this.history.length ? { passHistory: this.history } : {}),
             slowest: [...this.realms.values()]
                 .flatMap((attempt) => attempt.slowest)
                 .sort((a, b) => b.selfMs - a.selfMs)
