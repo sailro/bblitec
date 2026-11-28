@@ -450,13 +450,14 @@ function narrowedPresentDepths(
     projection: KeyPath,
     keys: readonly string[],
 ): readonly number[] {
+    if (!keys.length) return [];
     const name = ts.isIdentifier(node)
         ? node
         : ts.isPropertyAccessExpression(node)
           ? node.name
           : undefined;
     const symbol = name && resolvedSymbol(checker, name);
-    if (!symbol || !keys.length) return [];
+    if (!symbol) return [];
     // The present shapes the member holds in each of `shapes`; undefined
     // where one lacks it or holds it optional or nullable.
     const member = (
@@ -1809,18 +1810,25 @@ class StringDomain {
         }
     }
 
+    /** Whether reading `projection` from `node` reads a member of null/undefined. */
+    private readsNullishLiteral(
+        node: ts.Expression,
+        projection: KeyPath,
+    ): boolean {
+        return (
+            (this.nullish ||
+                (projection.length > 0 && !this.optionalProjection)) &&
+            nullishLiteral(this.context.checker, node) !== undefined
+        );
+    }
+
     private value(
         node: ts.Expression,
         projection: KeyPath,
         environment: Environment,
     ): Domain {
-        if (
-            (this.nullish ||
-                (projection.length > 0 && !this.optionalProjection)) &&
-            nullishLiteral(this.context.checker, node) !== undefined
-        )
-            // A member read from null/undefined throws before selecting a URL.
-            return nothing;
+        // A member read from null/undefined throws before selecting a URL.
+        if (this.readsNullishLiteral(node, projection)) return nothing;
         // An awaited promise is the value it settles with.
         if (ts.isAwaitExpression(node))
             return this.read(node.expression, projection, environment);
@@ -1841,18 +1849,36 @@ class StringDomain {
         );
         const keys = end < 0 ? projection : projection.slice(0, end);
         const proven = [
-            ...(narrowedPresent(checker, node) ? [projection.length] : []),
+            ...(!this.nullishDepths.includes(projection.length) &&
+            narrowedPresent(checker, node)
+                ? [projection.length]
+                : []),
             ...narrowedPresentDepths(checker, node, projection, keys),
         ].filter((depth) => !this.nullishDepths.includes(depth));
-        if (proven.length) {
-            const nullishDepths = this.nullishDepths;
-            this.nullishDepths = [...nullishDepths, ...proven];
-            try {
-                return this.value(node, projection, environment);
-            } finally {
-                this.nullishDepths = nullishDepths;
-            }
+        if (!proven.length)
+            return this.presentValue(node, projection, environment, keys);
+        const nullishDepths = this.nullishDepths;
+        this.nullishDepths = [...nullishDepths, ...proven];
+        try {
+            // Proven present, a read of a nullish literal is one that throws.
+            return this.readsNullishLiteral(node, projection)
+                ? nothing
+                : this.presentValue(node, projection, environment, keys);
+        } finally {
+            this.nullishDepths = nullishDepths;
         }
+    }
+
+    /**
+     * `value` past its proofs of presence: `keys` is the projection's
+     * leading run of member names.
+     */
+    private presentValue(
+        node: ts.Expression,
+        projection: KeyPath,
+        environment: Environment,
+        keys: KeyPath,
+    ): Domain {
         // Where the member read is present, a value whose type declares it
         // in no shape is not the one read there, whatever its source.
         if (
