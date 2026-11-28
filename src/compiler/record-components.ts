@@ -91,12 +91,14 @@ export function recordIdentity(
 
 /**
  * @unjournaled Pure functions of the checked program, kept across replays:
- * a number for each member identity a union identity names, and, per
- * checker, the first union seen of each set of member shapes.
+ * a number for each member identity a union identity names, per checker,
+ * the first union seen of each set of member shapes, and each union type's
+ * identity once found.
  */
 const memberNumbers = new WeakMap<ts.Symbol | ts.Type, number>();
 let nextMemberNumber = 0;
 const unionsByMembers = new WeakMap<ts.TypeChecker, Map<string, ts.Type>>();
+const unionIdentities = new WeakMap<ts.Type, ts.Type>();
 
 /**
  * An unnamed type's identity: the type itself, but for a union, one union
@@ -105,6 +107,8 @@ const unionsByMembers = new WeakMap<ts.TypeChecker, Map<string, ts.Type>>();
  * asked, so a union of literals is a new checker type at each ask.
  */
 function unionIdentity(checker: ts.TypeChecker, type: ts.Type): ts.Type {
+    const found = unionIdentities.get(type);
+    if (found) return found;
     const members = unionMembers(type);
     if (members.length < 2) return type;
     const key = members
@@ -128,6 +132,7 @@ function unionIdentity(checker: ts.TypeChecker, type: ts.Type): ts.Type {
         unionsByMembers.set(checker, (byMembers = new Map<string, ts.Type>()));
     let known = byMembers.get(key);
     if (!known) byMembers.set(key, (known = type));
+    unionIdentities.set(type, known);
     return known;
 }
 
