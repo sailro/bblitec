@@ -602,79 +602,6 @@ const UI_REFLECTED_ATTRIBUTES: ReadonlyMap<string, UiReflectedAttribute> =
         ],
     ]);
 
-/**
- * Element IDL attributes whose HTML getter or setter is more than plain
- * string reflection, and the elements declaring them when not every HTML
- * element does.
- */
-type UiIdlAttribute = { tags?: readonly string[] } & (
-    | { kind: "script-async" }
-    | { kind: "script-src" }
-    | { kind: "max-length" }
-    | { kind: "draggable" }
-    | { kind: "spellcheck" }
-    | { kind: "input-mode" }
-    | { kind: "scroll"; left: boolean }
-);
-
-const UI_IDL_ATTRIBUTES: ReadonlyMap<string, UiIdlAttribute> = new Map<
-    string,
-    UiIdlAttribute
->([
-    ["async", { kind: "script-async", tags: ["script"] }],
-    ["src", { kind: "script-src", tags: ["script"] }],
-    ["maxLength", { kind: "max-length", tags: ["input", "textarea"] }],
-    ["draggable", { kind: "draggable" }],
-    ["spellcheck", { kind: "spellcheck" }],
-    ["inputMode", { kind: "input-mode" }],
-    ["scrollLeft", { kind: "scroll", left: true }],
-    ["scrollTop", { kind: "scroll", left: false }],
-]);
-
-/**
- * The members of a video element without a decoder (docs/fidelity.md): its
- * URL, keyword, boolean and dimension attributes, its muted state (which
- * the `muted` attribute does not reflect), and the readbacks of a media
- * element whose sources never load.
- */
-type UiVideoMember =
-    | { kind: "url"; attribute: "src" | "poster" }
-    | { kind: "keyword" }
-    | { kind: "flag"; attribute: "loop" | "controls" | "autoplay" }
-    | { kind: "dimension"; attribute: "width" | "height" }
-    | { kind: "muted" }
-    | { kind: "paused" }
-    | { kind: "readback"; value: "ended" | "currentTime" | "duration" };
-
-const UI_VIDEO_MEMBERS: ReadonlyMap<string, UiVideoMember> = new Map<
-    string,
-    UiVideoMember
->([
-    ["src", { kind: "url", attribute: "src" }],
-    ["poster", { kind: "url", attribute: "poster" }],
-    ["preload", { kind: "keyword" }],
-    ...(["loop", "controls", "autoplay"] as const).map(
-        (attribute): [string, UiVideoMember] => [
-            attribute,
-            { kind: "flag", attribute },
-        ],
-    ),
-    ...(["width", "height"] as const).map(
-        (attribute): [string, UiVideoMember] => [
-            attribute,
-            { kind: "dimension", attribute },
-        ],
-    ),
-    ["muted", { kind: "muted" }],
-    ["paused", { kind: "paused" }],
-    ...(["ended", "currentTime", "duration"] as const).map(
-        (value): [string, UiVideoMember] => [
-            value,
-            { kind: "readback", value },
-        ],
-    ),
-]);
-
 /** The `inputmode` keywords (HTML), its missing and invalid states both reading "". */
 const UI_INPUT_MODES = [
     "none",
@@ -686,6 +613,135 @@ const UI_INPUT_MODES = [
     "decimal",
     "search",
 ];
+
+/**
+ * Element IDL attributes whose HTML getter or setter is more than plain
+ * string reflection, one entry per group of elements declaring them
+ * (`tags`, when not every HTML element does). On another element the
+ * member has a lowering of its own, or none, unless `refusedElsewhere`.
+ * A video has no decoder (docs/fidelity.md): its `muted` is its state,
+ * which the `muted` attribute does not reflect, and it reads back a media
+ * element whose sources never load.
+ */
+type UiIdlAttribute = {
+    tags?: readonly string[];
+    refusedElsewhere?: true;
+} & (
+    | { kind: "script-async" }
+    /**
+     * A URL attribute, read resolved against the document URL. A write
+     * fetches a script, an image generation packages, or nothing (a media
+     * source no decoder loads).
+     */
+    | {
+          kind: "url";
+          attribute: "src" | "poster";
+          fetches: "script" | "image" | "none";
+      }
+    | { kind: "max-length" }
+    | { kind: "draggable" }
+    | { kind: "spellcheck" }
+    /**
+     * An enumerated attribute: `missing` is the keyword of its missing and
+     * invalid value default, `empty` of its empty value default.
+     */
+    | {
+          kind: "enumerated";
+          attribute: string;
+          keywords: readonly string[];
+          missing?: string;
+          empty?: string;
+      }
+    | { kind: "scroll"; left: boolean }
+    /** An `unsigned long` dimension attribute; an img's getter reads its size. */
+    | { kind: "dimension" }
+    | { kind: "muted" }
+    | { kind: "paused" }
+    | { kind: "readback"; value: "ended" | "currentTime" | "duration" }
+);
+
+const UI_IDL_ATTRIBUTES: ReadonlyMap<string, readonly UiIdlAttribute[]> =
+    new Map<string, readonly UiIdlAttribute[]>([
+        ["async", [{ kind: "script-async", tags: ["script"] }]],
+        [
+            "src",
+            [
+                {
+                    kind: "url",
+                    attribute: "src",
+                    fetches: "script",
+                    tags: ["script"],
+                },
+                {
+                    kind: "url",
+                    attribute: "src",
+                    fetches: "none",
+                    tags: ["video"],
+                },
+            ],
+        ],
+        [
+            "poster",
+            [
+                {
+                    kind: "url",
+                    attribute: "poster",
+                    fetches: "image",
+                    tags: ["video"],
+                },
+            ],
+        ],
+        [
+            "maxLength",
+            [
+                {
+                    kind: "max-length",
+                    tags: ["input", "textarea"],
+                    refusedElsewhere: true,
+                },
+            ],
+        ],
+        ["draggable", [{ kind: "draggable" }]],
+        ["spellcheck", [{ kind: "spellcheck" }]],
+        [
+            "inputMode",
+            [
+                {
+                    kind: "enumerated",
+                    attribute: "inputmode",
+                    keywords: UI_INPUT_MODES,
+                },
+            ],
+        ],
+        [
+            "preload",
+            [
+                // Missing or invalid: Chromium's Metadata state; empty: Automatic.
+                {
+                    kind: "enumerated",
+                    attribute: "preload",
+                    keywords: ["none", "metadata", "auto"],
+                    missing: "metadata",
+                    empty: "auto",
+                    tags: ["video"],
+                },
+            ],
+        ],
+        ["scrollLeft", [{ kind: "scroll", left: true }]],
+        ["scrollTop", [{ kind: "scroll", left: false }]],
+        ...["width", "height"].map((property): [string, UiIdlAttribute[]] => [
+            property,
+            [{ kind: "dimension", tags: ["img", "video"] }],
+        ]),
+        ["muted", [{ kind: "muted", tags: ["video"] }]],
+        ["paused", [{ kind: "paused", tags: ["video"] }]],
+        ...(["ended", "currentTime", "duration"] as const).map(
+            (value): [string, UiIdlAttribute[]] => [
+                value,
+                [{ kind: "readback", value, tags: ["video"] }],
+            ],
+        ),
+    ]);
 
 /**
  * The `type` keywords of the elements whose `type` is an enumerated
@@ -1063,14 +1119,29 @@ export class UiProjection {
         };
     }
 
+    /**
+     * The boolean content attribute an IDL attribute reflects, refused on
+     * an element that does not declare it; `receiver` is the element's
+     * expression.
+     */
     public booleanAttribute(
         element: Value,
         property: string,
+        receiver: ts.Expression,
         site: ts.Node,
     ): string | undefined {
         if (property === "open") {
             if (element.uiTag && element.uiTag !== "details")
                 this.context.fail(site, "UI open requires a details element.");
+            return property;
+        }
+        // A video's media flags, which only reflect: it has no decoder.
+        if (["loop", "controls", "autoplay"].includes(property)) {
+            if (this.declaresUiTags(element, receiver, ["video"]) !== true)
+                this.context.fail(
+                    site,
+                    `UI ${property} requires a video element.`,
+                );
             return property;
         }
         if (property !== "hidden" && property !== "disabled") return undefined;
@@ -6435,8 +6506,7 @@ export class UiProjection {
 
     /**
      * An IDL attribute with an HTML getter or setter of its own, when the
-     * element declares it: script `src` is the script's, other elements'
-     * `src` writes have their own paths.
+     * element declares it (`UI_IDL_ATTRIBUTES`).
      */
     private uiIdlAttribute(
         element: Value,
@@ -6444,17 +6514,23 @@ export class UiProjection {
         receiver: ts.Expression,
         site: ts.Node,
     ): UiIdlAttribute | undefined {
-        const attribute = UI_IDL_ATTRIBUTES.get(property);
-        if (
-            !attribute?.tags ||
-            this.declaresUiTags(element, receiver, attribute.tags)
-        )
-            return attribute;
-        if (attribute.kind === "script-src") return undefined;
-        return this.context.fail(
-            site,
-            `UI ${property} requires a <${attribute.tags.join("> or <")}> element.`,
+        const attributes = UI_IDL_ATTRIBUTES.get(property);
+        if (!attributes) return undefined;
+        const declared = attributes.find(
+            (attribute) =>
+                !attribute.tags ||
+                this.declaresUiTags(element, receiver, attribute.tags),
         );
+        if (declared) return declared;
+        const refused = attributes.find(
+            (attribute) => attribute.refusedElsewhere,
+        );
+        return refused?.tags
+            ? this.context.fail(
+                  site,
+                  `UI ${property} requires a <${refused.tags.join("> or <")}> element.`,
+              )
+            : undefined;
     }
 
     /** The native write of an IDL attribute `uiIdlAttribute` names. */
@@ -6483,12 +6559,25 @@ export class UiProjection {
                 return emit(
                     `bbl::ui_set_script_async(${target}, ${this.uiBooleanCpp(assigned.site, "UI script async", assigned.value)})`,
                 );
-            case "script-src":
-                // Only an application realm's task queue dispatches its error.
-                if (!this.context.options.workers)
+            case "url":
+                if (attribute.fetches === "image") {
+                    this.emitUiImageSource(
+                        element,
+                        engine,
+                        attribute.attribute,
+                        assigned,
+                    );
+                    return true;
+                }
+                // Only an application realm's task queue dispatches a
+                // script's error.
+                if (
+                    attribute.fetches === "script" &&
+                    !this.context.options.workers
+                )
                     throw new ApplicationRealmRequired();
                 return emit(
-                    `bbl::ui_set_attribute(${target}, "src", ${this.uiStringCpp(assigned.site, "UI script src", assigned.value)})`,
+                    `bbl::ui_set_attribute(${target}, ${this.context.cppString(attribute.attribute)}, ${this.uiStringCpp(assigned.site, `UI ${property}`, assigned.value)})`,
                 );
             case "max-length":
                 return emit(
@@ -6510,13 +6599,27 @@ export class UiProjection {
                 return emit(
                     `bbl::ui_set_attribute(${target}, "spellcheck", std::string((${this.uiBooleanCpp(assigned.site, "UI spellcheck", assigned.value)}) ? "true" : "false"))`,
                 );
-            case "input-mode":
+            case "enumerated":
                 return emit(
-                    `bbl::ui_set_attribute(${target}, "inputmode", ${this.uiStringCpp(assigned.site, "UI inputMode", assigned.value)})`,
+                    `bbl::ui_set_attribute(${target}, ${this.context.cppString(attribute.attribute)}, ${this.uiStringCpp(assigned.site, `UI ${property}`, assigned.value)})`,
                 );
             case "scroll":
                 return emit(
                     `bbl::ui_set_scroll_offset(${target}, ${attribute.left}, ${this.assignedNumber(assigned)})`,
+                );
+            case "dimension":
+                return emit(
+                    `bbl::ui_set_dimension_attribute(${target}, ${this.context.cppString(property)}, ${this.assignedNumber(assigned)})`,
+                );
+            case "muted":
+                return emit(
+                    `bbl::ui_video_set_muted(${target}, ${this.uiBooleanCpp(assigned.site, "UI muted", assigned.value)})`,
+                );
+            case "paused":
+            case "readback":
+                return this.context.fail(
+                    site,
+                    `HTMLVideoElement.${property} writes are not lowered: a video element without a decoder never loads a source to seek.`,
                 );
         }
     }
@@ -6573,13 +6676,31 @@ export class UiProjection {
             impure: true,
             ...(kind === "string" ? { freshData: true } : {}),
         });
-        const keywords = (names: readonly string[]): string =>
-            `{${names.map((name) => this.context.cppString(name)).join(", ")}}`;
-        if (types)
+        const enumerated = (
+            target: string,
+            name: string,
+            keywords: readonly string[],
+            missing?: string,
+            empty?: string,
+        ): Value => {
+            const defaults =
+                empty !== undefined
+                    ? [missing ?? "", empty]
+                    : missing !== undefined
+                      ? [missing]
+                      : [];
+            const cpp = this.context.cppString.bind(this.context);
             return read(
-                `bbl::ui_get_enumerated_attribute(${engineTarget()}, "type", ${keywords(types)}, ${this.context.cppString(types[0]!)})`,
+                `bbl::ui_get_enumerated_attribute(${[
+                    target,
+                    cpp(name),
+                    `{${keywords.map(cpp).join(", ")}}`,
+                    ...defaults.map(cpp),
+                ].join(", ")})`,
                 "string",
             );
+        };
+        if (types) return enumerated(engineTarget(), "type", types, types[0]);
         const attribute = this.uiIdlAttribute(
             element,
             property,
@@ -6591,9 +6712,9 @@ export class UiProjection {
         switch (attribute.kind) {
             case "script-async":
                 return read(`bbl::ui_script_async(${target})`, "boolean");
-            case "script-src":
+            case "url":
                 return read(
-                    `bbl::ui_get_url_attribute(${target}, "src", ${this.context.cppString(deploymentUrl(this.context.options).href)})`,
+                    `bbl::ui_get_url_attribute(${target}, ${this.context.cppString(attribute.attribute)}, ${this.context.cppString(deploymentUrl(this.context.options).href)})`,
                     "string",
                 );
             case "max-length":
@@ -6602,16 +6723,39 @@ export class UiProjection {
                 return read(`bbl::ui_get_draggable(${target})`, "boolean");
             case "spellcheck":
                 return read(`bbl::ui_get_spellcheck(${target})`, "boolean");
-            case "input-mode":
-                return read(
-                    `bbl::ui_get_enumerated_attribute(${target}, "inputmode", ${keywords(UI_INPUT_MODES)})`,
-                    "string",
+            case "enumerated":
+                return enumerated(
+                    target,
+                    attribute.attribute,
+                    attribute.keywords,
+                    attribute.missing,
+                    attribute.empty,
                 );
             case "scroll":
                 return read(
                     `bbl::ui_scroll_offset(${target}, ${attribute.left})`,
                     "number",
                 );
+            case "dimension":
+                // An img's getters read its rendered or natural size.
+                return this.declaresUiTags(element, receiver, ["video"])
+                    ? read(
+                          `bbl::ui_dimension_attribute(${target}, ${this.context.cppString(property)})`,
+                          "number",
+                      )
+                    : undefined;
+            case "muted":
+                return read(`bbl::ui_video_muted(${target})`, "boolean");
+            case "paused":
+                return read(`bbl::ui_video_paused(${target})`, "boolean");
+            case "readback":
+                // No source ever loads: the playback position stays at 0,
+                // the media never ends and its duration is unknown.
+                return attribute.value === "ended"
+                    ? { kind: "boolean", cpp: "false" }
+                    : numberConstantValue(
+                          attribute.value === "currentTime" ? 0 : NaN,
+                      );
         }
     }
 
@@ -6979,29 +7123,6 @@ export class UiProjection {
         site: ts.Node,
     ): void {
         const engine = this.context.requireEngine(element, site);
-        if (
-            this.emitUiVideoStore(
-                element,
-                engine,
-                receiver,
-                property,
-                assigned,
-                site,
-            )
-        )
-            return;
-        // An img's width and height reflect their attributes as unsigned
-        // longs; its getters read its rendered or natural size.
-        if (
-            (property === "width" || property === "height") &&
-            this.declaredUiTag(element, receiver) === "img"
-        ) {
-            this.context.emit({
-                kind: "expression",
-                code: `bbl::ui_set_dimension_attribute(${engine}, ${element.cpp}, ${this.context.cppString(property)}, ${this.assignedNumber(assigned)});`,
-            });
-            return;
-        }
         if (property === "checked") {
             if (element.uiTag && element.uiTag !== "input")
                 this.context.fail(
@@ -7058,7 +7179,12 @@ export class UiProjection {
             });
             return;
         }
-        const booleanAttribute = this.booleanAttribute(element, property, site);
+        const booleanAttribute = this.booleanAttribute(
+            element,
+            property,
+            receiver,
+            site,
+        );
         if (booleanAttribute) {
             this.context.emit({
                 kind: "expression",
@@ -7373,130 +7499,6 @@ export class UiProjection {
                           )
                 });`,
         });
-    }
-
-    /**
-     * A store into a member of a video element without a decoder
-     * (`UI_VIDEO_MEMBERS`); false for any other element or member.
-     */
-    private emitUiVideoStore(
-        element: Value,
-        engine: string,
-        receiver: ts.Expression,
-        property: string,
-        assigned: UiAssigned,
-        site: ts.Node,
-    ): boolean {
-        if (this.declaredUiTag(element, receiver) !== "video") return false;
-        const member = UI_VIDEO_MEMBERS.get(property);
-        if (!member) return false;
-        const store = (code: string): true => {
-            this.context.emit({ kind: "expression", code: `${code};` });
-            return true;
-        };
-        switch (member.kind) {
-            case "url":
-                if (member.attribute === "poster") {
-                    this.emitUiImageSource(element, engine, "poster", assigned);
-                    return true;
-                }
-                // The media source is never fetched: nothing is packaged.
-                return store(
-                    `bbl::ui_set_attribute(${engine}, ${element.cpp}, "src", ${this.uiStringCpp(assigned.site, "UI video src", assigned.value)})`,
-                );
-            case "keyword":
-                return store(
-                    `bbl::ui_set_attribute(${engine}, ${element.cpp}, "preload", ${this.uiStringCpp(assigned.site, "UI video preload", assigned.value)})`,
-                );
-            case "flag":
-                return store(
-                    `bbl::ui_set_boolean_attribute(${engine}, ${element.cpp}, ${this.context.cppString(member.attribute)}, ${this.uiBooleanCpp(assigned.site, `UI video ${member.attribute}`, assigned.value)})`,
-                );
-            case "dimension":
-                return store(
-                    `bbl::ui_set_dimension_attribute(${engine}, ${element.cpp}, ${this.context.cppString(member.attribute)}, ${this.assignedNumber(assigned)})`,
-                );
-            case "muted":
-                return store(
-                    `bbl::ui_video_set_muted(${engine}, ${element.cpp}, ${this.uiBooleanCpp(assigned.site, "UI video muted", assigned.value)})`,
-                );
-            case "paused":
-            case "readback":
-                return this.context.fail(
-                    site,
-                    `HTMLVideoElement.${property} writes are not lowered: a video element without a decoder never loads a source to seek.`,
-                );
-        }
-    }
-
-    /**
-     * A read of a member of a video element without a decoder
-     * (`UI_VIDEO_MEMBERS`); undefined for any other element or member.
-     */
-    public uiVideoRead(
-        element: Value,
-        property: string,
-        receiver: ts.Expression,
-        site: ts.Node,
-    ): Value | undefined {
-        if (this.declaredUiTag(element, receiver) !== "video") return undefined;
-        const member = UI_VIDEO_MEMBERS.get(property);
-        if (!member) return undefined;
-        const engine = this.context.requireEngine(element, site);
-        switch (member.kind) {
-            case "url":
-                // A URL attribute reads resolved against the document URL.
-                return {
-                    kind: "string",
-                    cpp: `bbl::ui_get_url_attribute(${engine}, ${element.cpp}, ${this.context.cppString(member.attribute)}, ${this.context.cppString(deploymentUrl(this.context.options).href)})`,
-                    dataType: { kind: "string" },
-                    freshData: true,
-                    impure: true,
-                };
-            case "keyword":
-                // A missing or invalid value is Chromium's Metadata state,
-                // the empty value the Automatic state.
-                return {
-                    kind: "string",
-                    cpp: `bbl::ui_get_enumerated_attribute(${engine}, ${element.cpp}, "preload", {"none", "metadata", "auto"}, "metadata", "auto")`,
-                    dataType: { kind: "string" },
-                    freshData: true,
-                    impure: true,
-                };
-            case "flag":
-                return {
-                    kind: "boolean",
-                    cpp: `bbl::ui_has_attribute(${engine}, ${element.cpp}, ${this.context.cppString(member.attribute)})`,
-                    impure: true,
-                };
-            case "dimension":
-                return {
-                    kind: "number",
-                    cpp: `bbl::ui_dimension_attribute(${engine}, ${element.cpp}, ${this.context.cppString(member.attribute)})`,
-                    dataType: { kind: "number" },
-                    impure: true,
-                };
-            case "muted":
-                return {
-                    kind: "boolean",
-                    cpp: `bbl::ui_video_muted(${engine}, ${element.cpp})`,
-                    impure: true,
-                };
-            case "paused":
-                return {
-                    kind: "boolean",
-                    cpp: `bbl::ui_video_paused(${engine}, ${element.cpp})`,
-                    impure: true,
-                };
-            case "readback":
-                // No source ever loads: the playback position stays at 0,
-                // the media never ends and its duration is unknown.
-                return member.value === "ended"
-                    ? { kind: "boolean", cpp: "false" }
-                    : numberConstantValue(
-                          member.value === "currentTime" ? 0 : NaN,
-                      );
-        }
     }
 
     public emitUiStyleProperty(
