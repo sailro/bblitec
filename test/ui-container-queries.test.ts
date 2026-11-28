@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { runRmlUiFixture } from "./native-fixture.js";
+import { runRmlUiFixture, styleSheetSource } from "./native-fixture.js";
 
 const source = (
     css: string,
 ) => `import {createEngine} from '@babylonjs/lite';await createEngine({});
-    const sheet=document.createElement('style');sheet.textContent=${JSON.stringify(css)};document.head.appendChild(sheet);`;
+    ${styleSheetSource(css)}`;
 
 test("container rules preserve their conditions through emission", () => {
     const css = `.parent{container-type:inline-size}.reset{container-type:normal}

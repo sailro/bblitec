@@ -120,6 +120,10 @@ export function wave(
     return Buffer.concat([header, data]);
 }
 
+/** Application source that adds a style sheet of `css` to the document head. */
+export const styleSheetSource = (css: string): string =>
+    `const sheet=document.createElement('style');sheet.textContent=${JSON.stringify(css)};document.head.appendChild(sheet);`;
+
 /** Isolate contiguous emitted helpers, refusing a missing or reversed boundary. */
 export function cppSection(
     source: string,

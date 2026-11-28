@@ -6,7 +6,7 @@ import { withBrowserPage } from "../src/browser-harness.js";
 import { compileSource } from "../src/compiler.js";
 import { doubleLiteral, stringLiteral } from "../src/cpp-literals.js";
 import { htmlPageServer } from "./html-page-server.js";
-import { runRmlUiFixture } from "./native-fixture.js";
+import { runRmlUiFixture, styleSheetSource } from "./native-fixture.js";
 
 /** A table part, an element with its style, attributes and children, or text. */
 type TableNode =
@@ -218,10 +218,7 @@ function flatten(): {
 }
 
 test("table properties admit Chromium's table surface and refuse a caption", () => {
-    const sheet = (css: string) =>
-        compileSource(
-            `const sheet=document.createElement('style');sheet.textContent=${JSON.stringify(css)};document.head.appendChild(sheet);`,
-        );
+    const sheet = (css: string) => compileSource(styleSheetSource(css));
     for (const css of [
         "table{border-collapse:collapse}",
         "table{border-spacing:4px}",

@@ -6,7 +6,7 @@ import { withBrowserPage } from "../src/browser-harness.js";
 import { compileSource } from "../src/compiler.js";
 import { doubleLiteral, stringLiteral } from "../src/cpp-literals.js";
 import { htmlPageServer } from "./html-page-server.js";
-import { runRmlUiFixture } from "./native-fixture.js";
+import { runRmlUiFixture, styleSheetSource } from "./native-fixture.js";
 
 interface ContainCase {
     name: string;
@@ -35,10 +35,7 @@ const wideStyle = "width:200px;height:10px";
 const underStyle = "position:relative;z-index:-1;width:20px;height:20px";
 
 test("contain admits layout, paint and style containment and refuses size containment", () => {
-    const sheet = (css: string) =>
-        compileSource(
-            `const sheet=document.createElement('style');sheet.textContent=${JSON.stringify(css)};document.head.appendChild(sheet);`,
-        );
+    const sheet = (css: string) => compileSource(styleSheetSource(css));
     assert.match(
         sheet("div{contain:layout paint style}").cpp,
         /contain:layout paint style/,

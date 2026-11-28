@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { runRmlUiFixture } from "./native-fixture.js";
+import { runRmlUiFixture, styleSheetSource } from "./native-fixture.js";
 
 function compileSheet(css: string) {
     return compileSource(`import {createEngine} from '@babylonjs/lite';await createEngine({});
-        const sheet=document.createElement('style');sheet.textContent=${JSON.stringify(css)};document.head.appendChild(sheet);
+        ${styleSheetSource(css)}
         const range=document.createElement('input');range.type='range';range.className='level';document.body.appendChild(range);`);
 }
 

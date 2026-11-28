@@ -1,12 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
+import { styleSheetSource } from "./native-fixture.js";
 import { runApplicationRmlUiFixture } from "./rmlui-application-fixture.js";
 
-const compile = (css: string) =>
-    compileSource(
-        `const sheet=document.createElement('style');sheet.textContent=${JSON.stringify(css)};document.head.appendChild(sheet);`,
-    );
+const compile = (css: string) => compileSource(styleSheetSource(css));
 
 test("vertical-align admits keywords, lengths and percentages", () => {
     for (const value of [
