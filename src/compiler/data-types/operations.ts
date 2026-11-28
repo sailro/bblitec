@@ -115,6 +115,10 @@ export function functionArmIndex(
 }
 
 /** A storage past its optional wrapper. */
+export function presentDataType(type: DataType): DataType;
+export function presentDataType(
+    type: DataType | undefined,
+): DataType | undefined;
 export function presentDataType(
     type: DataType | undefined,
 ): DataType | undefined {
@@ -130,7 +134,7 @@ export function dropsResourceEngine(
     target: DataType,
 ): boolean {
     const resource = (type: DataType): DataType => {
-        const present = type.kind === "optional" ? type.inner : type;
+        const present = presentDataType(type);
         return present.kind === "vector" || present.kind === "span"
             ? present.element
             : present;

@@ -148,7 +148,6 @@ import {
     observedUnderOwnType,
     recordCopyObservation,
     recordFieldIsWritten,
-    type FieldWriteContext,
     type RecordObservationContext,
 } from "./record-observations.js";
 import {
@@ -160,7 +159,7 @@ import {
     readsHeldObject,
     recordIdentity,
     type UnwrittenField,
-    widensField,
+    widenedUnwritten,
     type InstantiatedRecord,
     type RecordComponent,
     type RecordComponentKey,
@@ -917,6 +916,11 @@ export function touchListDataType(): DataType {
     return { kind: "vector", element: { kind: "handle", handle: "touch" } };
 }
 
+/** Whether a DOM event interface extends MouseEvent: a pointer or a wheel event is a mouse event. */
+export function extendsMouseEvent(name: string | undefined): boolean {
+    return name === "PointerEvent" || name === "WheelEvent";
+}
+
 export function platformEventKind(
     symbol: ts.Symbol | undefined,
 ): DataType<"platform-event">["event"] | undefined {
@@ -973,7 +977,8 @@ function isDomEventTargetType(type: ts.Type): boolean {
     );
 }
 
-function isDomElementType(symbol: ts.Symbol): boolean {
+/** Whether a DOM interface is an element's: `Element` or an HTML or SVG element interface. */
+export function isDomElementType(symbol: ts.Symbol): boolean {
     return (
         declaredInDomLibrary(symbol) &&
         (libraryName(symbol) === "Element" ||
@@ -1914,55 +1919,90 @@ export class DataTypeRegistry {
         owner: ts.Expression,
     ): void {
         const from = this.nativeRecordSources.get(source);
+        if (!from) return;
         const record = this.checker.getNonNullableType(
             this.checker.getTypeAtLocation(owner),
         );
-        const to = this.recordDemand(record, owner);
-        if (!from) return;
-        const sourceInstantiation = this.recordInstantiation(
+        const join = this.recordJoin(
             from,
             from.type,
             source,
-        );
-        const targetInstantiation = this.recordInstantiation(
-            to,
+            this.recordDemand(record, owner),
             record,
             target,
+            "value",
         );
-        const component = (
-            demand: NativeRecordStorageDemand,
-            instantiation: InstantiatedRecord | undefined,
-        ) =>
-            this.recordComponents.get(
-                instantiation ?? recordIdentity(this.checker, demand.type),
-            );
-        const sourceComponent = component(from, sourceInstantiation);
         if (
-            (!sourceInstantiation && !this.joinableRecord(from, from.type)) ||
-            (!targetInstantiation && !this.joinableRecord(to, record)) ||
-            (sourceComponent &&
-                sourceComponent === component(to, targetInstantiation)) ||
-            !(sourceInstantiation || targetInstantiation
+            join &&
+            (join.sourceInstantiation || join.targetInstantiation
                 ? this.structLayoutsCompatible(
                       this.structFields(source, owner, "accessors"),
                       this.structFields(target, owner, "accessors"),
                   )
                 : layoutsCompatible(this.checker, from.type, record))
         )
-            return;
-        this.requireJoin({
-            ...from,
-            node: owner,
-            joins: [
-                {
-                    source: from.type,
-                    target: record,
-                    ...(sourceInstantiation ? { sourceInstantiation } : {}),
-                    ...(targetInstantiation ? { targetInstantiation } : {}),
-                    kind: "value",
-                },
-            ],
-        });
+            this.requireJoin({ ...from, node: owner, joins: [join] });
+    }
+
+    /**
+     * The join storing records of `source` (struct `sourceName`) as
+     * `target` (struct `targetName`) asks for, each generic endpoint under
+     * its own instantiation in force. Undefined where an endpoint cannot
+     * join a record component -- it is not one type under every
+     * instantiation (`joinableRecord`) and names no instantiation in force,
+     * or its struct holds a class's instances -- or where both already
+     * share one.
+     */
+    private recordJoin(
+        source: NativeRecordStorageDemand,
+        sourceRecord: ts.Type,
+        sourceName: string,
+        target: NativeRecordStorageDemand,
+        targetRecord: ts.Type,
+        targetName: string,
+        kind: RecordJoin["kind"],
+    ): RecordJoin | undefined {
+        const sourceInstantiation = this.recordInstantiation(
+            source,
+            sourceRecord,
+            sourceName,
+        );
+        const targetInstantiation = this.recordInstantiation(
+            target,
+            targetRecord,
+            targetName,
+        );
+        const joinable = (
+            demand: NativeRecordStorageDemand,
+            record: ts.Type,
+            name: string,
+            instantiation: InstantiatedRecord | undefined,
+        ): boolean =>
+            instantiation !== undefined ||
+            (this.joinableRecord(demand, record) && !this.isClassStruct(name));
+        const component = (
+            record: ts.Type,
+            instantiation: InstantiatedRecord | undefined,
+        ) =>
+            this.recordComponents.get(
+                instantiation ?? recordIdentity(this.checker, record),
+            );
+        const sourceComponent = component(sourceRecord, sourceInstantiation);
+        if (
+            !joinable(source, sourceRecord, sourceName, sourceInstantiation) ||
+            !joinable(target, targetRecord, targetName, targetInstantiation) ||
+            (sourceComponent !== undefined &&
+                sourceComponent ===
+                    component(targetRecord, targetInstantiation))
+        )
+            return undefined;
+        return {
+            source: sourceRecord,
+            target: targetRecord,
+            ...(sourceInstantiation ? { sourceInstantiation } : {}),
+            ...(targetInstantiation ? { targetInstantiation } : {}),
+            kind,
+        };
     }
 
     /** An observable extra property joins the concrete record layouts that carried it. */
@@ -2628,10 +2668,10 @@ export class DataTypeRegistry {
     private recordComponents: ReadonlyMap<RecordComponentKey, RecordComponent> =
         new Map();
     /**
-     * @unjournaled Set once before lowering: what the program does with
-     * its records (`record-observations.ts`).
+     * @unjournaled Set once before lowering: whether no write in the program
+     * replaces a record field (`recordFieldIsWritten`).
      */
-    private observation: FieldWriteContext | undefined;
+    private unwrittenField: UnwrittenField | undefined;
     /**
      * @unjournaled Set once before lowering: the joins earlier replays
      * demanded, by source type.
@@ -2659,7 +2699,9 @@ export class DataTypeRegistry {
         program: ts.Program,
     ): void {
         this.recordComponents = components;
-        this.observation = { program, checker: this.checker };
+        const writes = { program, checker: this.checker };
+        this.unwrittenField = (owner, property) =>
+            !recordFieldIsWritten(writes, owner, property);
         const joins = new Map<ts.Type, RecordJoin[]>();
         for (const demand of demands) {
             // A demand no native object can hold stands refused.
@@ -3922,31 +3964,30 @@ export class DataTypeRegistry {
 
     /**
      * Whether a shape of a union's component types `property` as a union
-     * wider than the union's arms do (`widensField`) and no write replaces
-     * it on the shape's records: the union's own layout cannot hold it, the
-     * component's layout of its shapes can, and the arms' reads find only
-     * their own storage there.
+     * wider than the union's arms do, where no write replaces it on the
+     * shape's records (`widenedUnwritten`): the union's own layout cannot
+     * hold it, the component's layout of its shapes can, and the arms'
+     * reads find only their own storage there.
      */
     private widensUnionField(
         union: ts.UnionType,
         shape: ts.Type,
         property: ts.Symbol,
     ): boolean {
-        if (
-            shape === union ||
-            !this.observation ||
-            recordFieldIsWritten(this.observation, shape, property.name)
-        )
-            return false;
+        const unwritten = this.unwrittenField;
+        if (shape === union || !unwritten) return false;
         const own = this.checker.getTypeOfSymbol(property);
         return union.types.some((arm) => {
             const declared = arm.getProperty(property.name);
             return (
                 declared !== undefined &&
-                widensField(
+                widenedUnwritten(
                     this.checker,
                     own,
+                    shape,
                     this.checker.getTypeOfSymbol(declared),
+                    property.name,
+                    unwritten,
                 )
             );
         });
@@ -5210,95 +5251,56 @@ export class DataTypeRegistry {
             return source ? [{ source: source.type, target: target.type }] : [];
         });
         if (this.joinCallableRecordTypes(callableFields)) return;
-        // A record type a generic call's instantiation does not reach is
-        // one type under every instantiation.
-        const joinable = (
-            demand: NativeRecordStorageDemand,
-            record: ts.Type,
-        ): boolean =>
-            this.joinableRecord(demand, record) &&
-            !this.isClassStruct(
-                demand === source ? sourceType.name : targetType.name,
-            );
-        // Each generic endpoint names its own instantiation in force.
-        const instantiation = (
-            demand: NativeRecordStorageDemand | undefined,
-            record: ts.Type | undefined,
-            name: string,
-        ): InstantiatedRecord | undefined =>
-            demand && record
-                ? this.recordInstantiation(demand, record, name)
-                : undefined;
-        const sourceInstantiation = instantiation(
-            source,
-            sourceRecord,
-            sourceType.name,
-        );
-        const targetInstantiation = instantiation(
-            target,
-            targetRecord,
-            targetType.name,
-        );
         const kind: RecordJoin["kind"] = sharedArray
             ? "element"
             : isTypeAssertion(node)
               ? "assertion"
               : "value";
+        const join =
+            source && target && sourceRecord && targetRecord
+                ? this.recordJoin(
+                      source,
+                      sourceRecord,
+                      sourceType.name,
+                      target,
+                      targetRecord,
+                      targetType.name,
+                      kind,
+                  )
+                : undefined;
         // A join an earlier replay demanded that left the two apart refuses.
-        const demanded =
-            sourceRecord &&
+        const demanded = (join: RecordJoin): boolean =>
             this.demandedJoins
-                .get(sourceRecord)
+                .get(join.source)
                 ?.some(
-                    (join) =>
-                        join.target === targetRecord &&
-                        join.sourceInstantiation === sourceInstantiation &&
-                        join.targetInstantiation === targetInstantiation &&
-                        join.kind === kind,
-                );
-        const sourceComponent =
-            sourceRecord &&
-            this.recordComponents.get(
-                sourceInstantiation ??
-                    recordIdentity(this.checker, sourceRecord),
-            );
-        const targetComponent =
-            targetRecord &&
-            this.recordComponents.get(
-                targetInstantiation ??
-                    recordIdentity(this.checker, targetRecord),
-            );
-        if (
-            source &&
-            target &&
-            sourceRecord &&
-            targetRecord &&
-            !demanded &&
-            (sourceInstantiation || joinable(source, sourceRecord)) &&
-            (targetInstantiation || joinable(target, targetRecord)) &&
-            (!sourceComponent || sourceComponent !== targetComponent)
-        ) {
+                    (earlier) =>
+                        earlier.target === join.target &&
+                        earlier.sourceInstantiation ===
+                            join.sourceInstantiation &&
+                        earlier.targetInstantiation ===
+                            join.targetInstantiation &&
+                        earlier.kind === join.kind,
+                ) === true;
+        if (source && sourceRecord && targetRecord && join && !demanded(join)) {
+            const { sourceInstantiation, targetInstantiation } = join;
             // A record stored as a union, or a union's record stored as
             // another record type, keeps its fields in the union's layout
             // (or in one the union shares with it); two unions, or two
             // records, take one layout of all their shapes.
             const sourceUnion = sourceRecord.isUnion();
-            // A field one record types wider than the other is one slot
-            // where no write replaces it through the wider records.
-            const unwritten: UnwrittenField = (owner, property) =>
-                !recordFieldIsWritten(observation, owner, property);
             if (union !== sourceUnion)
                 this.requireUnionHolds(
                     union ? targetType : sourceType,
                     union ? sourceRecord : targetRecord,
                     node,
                     true,
-                    unwritten,
                 );
             // Every property any arm declares takes one storage in the
             // joined layout, including those the union's own fields omit;
             // two instantiations of one generic record, the storage their
-            // structs give it.
+            // structs give it. A field one record types wider than the
+            // other is one slot where no write replaces it through the
+            // wider records.
             const generic = this.genericArguments(sourceRecord)[0];
             if (
                 sourceInstantiation ||
@@ -5311,25 +5313,13 @@ export class DataTypeRegistry {
                           this.checker,
                           sourceRecord,
                           targetRecord,
-                          unwritten,
+                          this.unwrittenField,
                       )
             ) {
                 this.requireJoin({
                     ...source,
                     type: sourceRecord,
-                    joins: [
-                        {
-                            source: sourceRecord,
-                            target: targetRecord,
-                            ...(sourceInstantiation
-                                ? { sourceInstantiation }
-                                : {}),
-                            ...(targetInstantiation
-                                ? { targetInstantiation }
-                                : {}),
-                            kind,
-                        },
-                    ],
+                    joins: [join],
                 });
                 return;
             }
@@ -5813,7 +5803,6 @@ export class DataTypeRegistry {
         member: ts.Type,
         node: ts.Node,
         beforeJoin = false,
-        unwritten?: UnwrittenField,
     ): void {
         const fields = this.structFields(union.name, node, "accessors");
         for (const memberProperty of this.structProperties(member)) {
@@ -5899,7 +5888,7 @@ export class DataTypeRegistry {
                 held &&
                 joined?.kind === "union" &&
                 !dataTypesEqual(joined, held) &&
-                unwritten?.(member, property.name) === true;
+                this.unwrittenField?.(member, property.name) === true;
             if (!held || !joined || (!widened && !dataTypesEqual(joined, held)))
                 this.fail(node, message());
         }
@@ -9179,7 +9168,7 @@ export class DataTypeRegistry {
                             (candidate) =>
                                 candidate &&
                                 dataTypesEqual(
-                                    presentDataType(candidate)!,
+                                    presentDataType(candidate),
                                     nullable.inner,
                                 ),
                         )

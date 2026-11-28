@@ -4312,25 +4312,6 @@ function emitIncludedOnlyMeshIdsAssignment(
     return false;
 }
 
-/**
- * An optional engine handle stored into a required engine slot, which only
- * an asserted view of the slot admits: the handle it is where present, and
- * the TypeError a read through an absent value throws where not
- * (`bbl::js::present`). Any other value as it is.
- */
-function assertedPresentHandle(
-    context: AssignmentContext,
-    value: Value,
-): Value {
-    const inner =
-        value.kind === "data" && value.dataType?.kind === "optional"
-            ? value.dataType.inner
-            : undefined;
-    return inner?.kind === "handle"
-        ? context.dataLowerer.leafValue(`bbl::js::present(${value.cpp})`, inner)
-        : value;
-}
-
 function emitMaterialAssignment(
     context: AssignmentContext,
     state: TargetPropertyAssignment,
@@ -4346,8 +4327,9 @@ function emitMaterialAssignment(
             "mesh material replacement after registration",
         );
         requireSimpleAssignment(context, expression, "mesh material");
-        const material = assertedPresentHandle(
-            context,
+        // An optional material reaches the required slot only through an
+        // asserted view of it.
+        const material = context.dataLowerer.presentHandle(
             context.compileValue(expression.right),
         );
         context.expectKind(material, "material", expression.right);

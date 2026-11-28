@@ -4,14 +4,15 @@ import type { Value } from "./types.js";
 import { presentDataType } from "./data-types/operations.js";
 import { unlessRefused } from "./compile-error.js";
 import { documentEngine } from "./window-events.js";
-import { declaredInDomLibrary } from "./symbols.js";
+import { declaredInDomLibrary, declaredSymbol } from "./symbols.js";
 import { inheritsFrom } from "./type-facts.js";
+import { isDomElementType } from "./data-types.js";
 
 /**
  * Whether a type is members picked from DOM element interfaces
  * (`Pick<HTMLCanvasElement, "getBoundingClientRect">`): every property is
- * declared by `Element` or an interface of its family, so a value of it is
- * an element whatever record type stores it.
+ * declared by an element interface (`isDomElementType`), so a value of it
+ * is an element whatever record type stores it.
  */
 export function picksElementMembers(
     checker: ts.TypeChecker,
@@ -21,12 +22,16 @@ export function picksElementMembers(
     return (
         properties.length > 0 &&
         properties.every((property) =>
-            (property.declarations ?? []).some(
-                (declaration) =>
-                    ts.isInterfaceDeclaration(declaration.parent) &&
-                    /(^|[a-z])Element$/.test(declaration.parent.name.text) &&
-                    declaredInDomLibrary(property),
-            ),
+            (property.declarations ?? []).some((declaration) => {
+                const owner = ts.isInterfaceDeclaration(declaration.parent)
+                    ? declaredSymbol(checker, declaration.parent.name)
+                    : undefined;
+                return (
+                    owner !== undefined &&
+                    isDomElementType(owner) &&
+                    declaredInDomLibrary(property)
+                );
+            }),
         )
     );
 }
