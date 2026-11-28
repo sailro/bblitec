@@ -148,7 +148,6 @@ import {
     observedUnderOwnType,
     recordCopyObservation,
     recordFieldIsWritten,
-    type FieldWriteContext,
     type RecordObservationContext,
 } from "./record-observations.js";
 import {
@@ -160,7 +159,7 @@ import {
     readsHeldObject,
     recordIdentity,
     type UnwrittenField,
-    widensField,
+    widenedUnwritten,
     type InstantiatedRecord,
     type RecordComponent,
     type RecordComponentKey,
@@ -2628,10 +2627,10 @@ export class DataTypeRegistry {
     private recordComponents: ReadonlyMap<RecordComponentKey, RecordComponent> =
         new Map();
     /**
-     * @unjournaled Set once before lowering: what the program does with
-     * its records (`record-observations.ts`).
+     * @unjournaled Set once before lowering: whether no write in the program
+     * replaces a record field (`recordFieldIsWritten`).
      */
-    private observation: FieldWriteContext | undefined;
+    private unwrittenField: UnwrittenField | undefined;
     /**
      * @unjournaled Set once before lowering: the joins earlier replays
      * demanded, by source type.
@@ -2659,7 +2658,9 @@ export class DataTypeRegistry {
         program: ts.Program,
     ): void {
         this.recordComponents = components;
-        this.observation = { program, checker: this.checker };
+        const writes = { program, checker: this.checker };
+        this.unwrittenField = (owner, property) =>
+            !recordFieldIsWritten(writes, owner, property);
         const joins = new Map<ts.Type, RecordJoin[]>();
         for (const demand of demands) {
             // A demand no native object can hold stands refused.
@@ -3922,31 +3923,30 @@ export class DataTypeRegistry {
 
     /**
      * Whether a shape of a union's component types `property` as a union
-     * wider than the union's arms do (`widensField`) and no write replaces
-     * it on the shape's records: the union's own layout cannot hold it, the
-     * component's layout of its shapes can, and the arms' reads find only
-     * their own storage there.
+     * wider than the union's arms do, where no write replaces it on the
+     * shape's records (`widenedUnwritten`): the union's own layout cannot
+     * hold it, the component's layout of its shapes can, and the arms'
+     * reads find only their own storage there.
      */
     private widensUnionField(
         union: ts.UnionType,
         shape: ts.Type,
         property: ts.Symbol,
     ): boolean {
-        if (
-            shape === union ||
-            !this.observation ||
-            recordFieldIsWritten(this.observation, shape, property.name)
-        )
-            return false;
+        const unwritten = this.unwrittenField;
+        if (shape === union || !unwritten) return false;
         const own = this.checker.getTypeOfSymbol(property);
         return union.types.some((arm) => {
             const declared = arm.getProperty(property.name);
             return (
                 declared !== undefined &&
-                widensField(
+                widenedUnwritten(
                     this.checker,
                     own,
+                    shape,
                     this.checker.getTypeOfSymbol(declared),
+                    property.name,
+                    unwritten,
                 )
             );
         });
@@ -5283,22 +5283,19 @@ export class DataTypeRegistry {
             // (or in one the union shares with it); two unions, or two
             // records, take one layout of all their shapes.
             const sourceUnion = sourceRecord.isUnion();
-            // A field one record types wider than the other is one slot
-            // where no write replaces it through the wider records.
-            const unwritten: UnwrittenField = (owner, property) =>
-                !recordFieldIsWritten(observation, owner, property);
             if (union !== sourceUnion)
                 this.requireUnionHolds(
                     union ? targetType : sourceType,
                     union ? sourceRecord : targetRecord,
                     node,
                     true,
-                    unwritten,
                 );
             // Every property any arm declares takes one storage in the
             // joined layout, including those the union's own fields omit;
             // two instantiations of one generic record, the storage their
-            // structs give it.
+            // structs give it. A field one record types wider than the
+            // other is one slot where no write replaces it through the
+            // wider records.
             const generic = this.genericArguments(sourceRecord)[0];
             if (
                 sourceInstantiation ||
@@ -5311,7 +5308,7 @@ export class DataTypeRegistry {
                           this.checker,
                           sourceRecord,
                           targetRecord,
-                          unwritten,
+                          this.unwrittenField,
                       )
             ) {
                 this.requireJoin({
@@ -5813,7 +5810,6 @@ export class DataTypeRegistry {
         member: ts.Type,
         node: ts.Node,
         beforeJoin = false,
-        unwritten?: UnwrittenField,
     ): void {
         const fields = this.structFields(union.name, node, "accessors");
         for (const memberProperty of this.structProperties(member)) {
@@ -5899,7 +5895,7 @@ export class DataTypeRegistry {
                 held &&
                 joined?.kind === "union" &&
                 !dataTypesEqual(joined, held) &&
-                unwritten?.(member, property.name) === true;
+                this.unwrittenField?.(member, property.name) === true;
             if (!held || !joined || (!widened && !dataTypesEqual(joined, held)))
                 this.fail(node, message());
         }

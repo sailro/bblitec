@@ -717,11 +717,16 @@ function compatibleSignatures(
 }
 
 /**
- * @unjournaled A pure function of the checked program's types, kept across
- * replays. Only whole answers are kept: a nested pair is assumed compatible
- * while its own comparison is in progress.
+ * @unjournaled Pure functions of the checked program's types, kept across
+ * replays: {@link layoutsCompatible}'s answers without and with its
+ * `unwritten` fields. Only whole answers are kept: a nested pair is assumed
+ * compatible while its own comparison is in progress.
  */
 const compatibleLayouts = new WeakMap<ts.Type, Map<ts.Type, boolean>>();
+const unwrittenCompatibleLayouts = new WeakMap<
+    ts.Type,
+    Map<ts.Type, boolean>
+>();
 
 /**
  * Whether one layout can store both record types' common fields: each held
@@ -741,27 +746,63 @@ export function layoutsCompatible(
     right: ts.Type,
     unwritten?: UnwrittenField,
 ): boolean {
-    if (unwritten)
-        return layoutsHoldBoth(checker, left, right, new Map(), unwritten);
-    let byRight = compatibleLayouts.get(left);
-    if (!byRight)
-        compatibleLayouts.set(left, (byRight = new Map<ts.Type, boolean>()));
+    // `unwritten` only adds ways to hold a field: a pair compatible
+    // without it is compatible with it.
+    if (compatibleLayouts.get(left)?.get(right) === true) return true;
+    return unwritten
+        ? rememberedLayouts(unwrittenCompatibleLayouts, left, right, () =>
+              layoutsHoldBoth(checker, left, right, new Map(), unwritten),
+          )
+        : rememberedLayouts(compatibleLayouts, left, right, () =>
+              layoutsHoldBoth(checker, left, right, new Map()),
+          );
+}
+
+/** A pair's answer kept in `cache`, computed by `compare` the first time. */
+function rememberedLayouts(
+    cache: WeakMap<ts.Type, Map<ts.Type, boolean>>,
+    left: ts.Type,
+    right: ts.Type,
+    compare: () => boolean,
+): boolean {
+    let byRight = cache.get(left);
+    if (!byRight) cache.set(left, (byRight = new Map<ts.Type, boolean>()));
     let compatible = byRight.get(right);
     if (compatible === undefined) {
-        compatible = layoutsHoldBoth(checker, left, right, new Map());
+        compatible = compare();
         byRight.set(right, compatible);
     }
     return compatible;
 }
 
-/** Whether no write replaces `property` on records of `owner`. */
+/**
+ * Whether no write replaces `property` on records of `owner`: a pure
+ * function of the checked program (`recordFieldIsWritten`).
+ */
 export type UnwrittenField = (owner: ts.Type, property: string) => boolean;
+
+/**
+ * Whether a field `wide` types as a union with an arm held alike as the
+ * other record's `narrow` field (`widensField`) and no write replaces it on
+ * records of `owner`: one union slot then holds both, the other's reads
+ * finding only its own arm.
+ */
+export function widenedUnwritten(
+    checker: ts.TypeChecker,
+    wide: ts.Type,
+    owner: ts.Type,
+    narrow: ts.Type,
+    name: string,
+    unwritten: UnwrittenField,
+): boolean {
+    return widensField(checker, wide, narrow) && unwritten(owner, name);
+}
 
 /**
  * Whether a field `wide` types as a union with an arm held alike as the
  * other record's `narrow` field: a union slot then holds both.
  */
-export function widensField(
+function widensField(
     checker: ts.TypeChecker,
     wide: ts.Type,
     narrow: ts.Type,
@@ -870,9 +911,8 @@ function layoutsHoldBoth(
             narrow: ts.Type,
             name: string,
         ): boolean =>
-            !!unwritten &&
-            widensField(checker, wide, narrow) &&
-            unwritten(owner, name);
+            unwritten !== undefined &&
+            widenedUnwritten(checker, wide, owner, narrow, name, unwritten);
         const viewed = (
             owner: ts.Type,
             name: string,
