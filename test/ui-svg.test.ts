@@ -156,6 +156,6 @@ test("image markup accepts void tags and refuses dynamic sources or unrepresente
         assert.throws(() => compile(JSON.stringify(markup)), message);
     assert.throws(
         () => compile('`<img src="${performance.now()}">`'),
-        /requires static attribute 'src'/,
+        /An img src write requires sources generation can package/,
     );
 });

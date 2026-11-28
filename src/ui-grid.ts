@@ -1,4 +1,5 @@
 import { splitUiCssList, uiCssValueTokens } from "./ui-css-syntax.js";
+import { uiCssLength, uiCssMagnitude, uiResolvedLength } from "./ui-layout.js";
 
 /** A grid line `<custom-ident>`, as the native placement parser reads it. */
 function uiGridLineName(token: string): boolean {
@@ -107,15 +108,16 @@ export function supportedUiGridTracks(
     implicit = false,
 ): boolean {
     if (value.trim().toLowerCase() === "none") return !implicit;
-    const number = "(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:e[+-]?\\d+)?";
-    const length = new RegExp(`^(?:${number}(?:px|em|rem|vw|vh)|0)$`);
-    const fraction = new RegExp(`^${number}fr$`);
+    const length = new RegExp(
+        `^${uiCssLength(["px", "em", "rem", "vw", "vh"])}$`,
+    );
+    const fraction = new RegExp(`^${uiCssMagnitude}fr$`);
     const finite = (token: string): boolean =>
         Number.isFinite(parseFloat(token)) &&
         parseFloat(token) <= 3.4028234663852886e38;
     // CSS math and custom properties resolve to px natively before the
     // track parser reads them (the PAL folds math after substitution).
-    const computed = /^(?:calc|min|max|clamp|var)\(.*\)$/;
+    const computed = new RegExp(`^${uiResolvedLength}$`);
     const fixed = (token: string): boolean =>
         (length.test(token) && finite(token)) || computed.test(token);
     const flexible = (token: string): boolean =>

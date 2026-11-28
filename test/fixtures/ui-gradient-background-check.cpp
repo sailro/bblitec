@@ -128,6 +128,31 @@ int main() try {
             }
             check(tiles == 15, "A repeating layer draws one tile per covered cell");
         }
+        // Along one axis, the columns tile (-30 to 130) and the one row stays at its placed y, its
+        // part past the paint box cut: 5 tiles; repeat-y draws 4 rows (-10 to 50) in the placed column.
+        for (const auto& [repeat, expected] :
+             {std::pair{"repeat-x", std::size_t{5}}, std::pair{"repeat-y", std::size_t{4}}}) {
+            ui_set_attribute(engine, owner, "style",
+                             std::string("position:absolute;left:20px;top:30px;width:160px;"
+                                         "height:60px;bbl-background-image:linear-gradient(red,"
+                                         "blue) padding-box ") +
+                                 repeat + " / 40px 20px / 10px 50px;");
+            update();
+            const auto& tiled = pal::record_ui_rml_frame(runtime, 640, 480);
+            std::size_t tiles = 0;
+            for (const auto& draw : tiled.draws)
+                if (draw.texture_id) {
+                    ++tiles;
+                    for (std::uint32_t i = 0; i < draw.index_count; ++i) {
+                        const auto& vertex =
+                            tiled.vertices.at(tiled.indices.at(draw.first_index + i));
+                        check(vertex.x > 19.9f && vertex.x < 180.1f && vertex.y > 29.9f &&
+                                  vertex.y < 90.1f,
+                              "One-axis tiles stay inside the paint box");
+                    }
+                }
+            check(tiles == expected, "A one-axis repeating layer tiles along its axis");
+        }
         // Placed in the padding box and clipped to the rounded border box (CSS background-origin
         // and background-clip): the layer reaches under the border and loses its corners.
         ui_set_attribute(

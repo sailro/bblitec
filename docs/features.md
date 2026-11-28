@@ -88,6 +88,11 @@ Rules:
   function filling each of its signatures.
 - A record holding a class instance where a record type it is stored as holds a dynamic value shares that type's
   layout where a copy is observable: the field is a document holding the instance.
+- A record stored as a record type whose field is a `readonly` field typed `object` shares that type's layout where a
+  copy is observable: the field holds what the record stores there.
+- A record stored as a record type whose field is a union with the record's own field type among its arms
+  (`boolean | { beyond }` beside `{ beyond }`) shares that type's layout where a copy is observable, the field one slot
+  of the union; a write of the field through the wider type refuses.
 - A record binding whose member is written by a run-time key or replaced takes native storage; its fields typed
   `Record<string, unknown>` are documents.
 - A record type a parsed document is stored as is a document, with every record type the program reads out of it
@@ -101,8 +106,16 @@ Rules:
 - A stored binding whose literal spells plain JSON that no layout holds (empty arrays, elements of mixed shapes: a
   JSON import of saved data) is a document.
 - Reached `Iterable<T>` parameters specialize to concrete collection storage, preserving iterator cursor identity.
+- A structural record type given both a retained element and a DOM event target (`target as unknown as EventTarget`)
+  stores the event target.
+- A union narrowed to its several record members (`r === "done" ? null : r`) stores as the record type that names
+  them, each record member converted where it is selected.
 - Callable records retain optional properties when selected beside plain functions. Mixed tuple arrays read absent
   properties on plain functions as `undefined`; reading properties after erasure into bare function storage refuses.
+- A module's function declaration stored as a callable record is one object: every alias and conversion shares its
+  identity and the properties written on it. A nested function declaration so stored refuses.
+- A new function (a function literal, or a call returning only new functions) handed to a callable-record parameter
+  is that record once, where the parameter is bound: every read of the parameter is one object.
 - A module `let` assigned only by unreachable functions keeps its initializer. Strict comparisons fold through `const`
   aliases, absent `??` lefts and generation-known booleans.
 - Literals handed to functions keep their facts unless a callee's write reaches a member they hold. Static descriptor
@@ -143,6 +156,9 @@ Rules:
   `JSON.stringify`, a run-time string key) keeps its module's bindings; one of an `any` value keeps every module's.
 - A module namespace in a record slot calls its exports after a presence check; `(await import(x)).f()` calls the
   settled namespace's.
+- A module namespace in a document slot (an `unknown` or `Record<string, unknown>` field) is the namespace object, one
+  per module: its export names in code-unit order, each read live, a function stored as its declared type; writing,
+  defining or deleting an export throws TypeError. A class or enum export there refuses.
 - `for...in` over a number-keyed dictionary yields names in property order; reading it by such a name finds the
   number the name spells. A parsed document's binding takes `++`/`--` as its number.
 - A write to a represented Error's property that no reached source reads back evaluates its value and stores nothing.
@@ -554,7 +570,9 @@ Media elements (application realm): `new Audio(url)` with an audio URL, `play`/`
 `loop`, `preload`, `currentTime` (seek), `duration`, `paused`, `ended`, and `timeupdate`/`ended`/`play`/`pause`/
 `canplaythrough`/`error` listeners without payloads.
 An unrouted element plays to the default output; `createMediaElementSource` routes it once (again:
-InvalidStateError), moving its playback into the graph. Other members and attributes refuse.
+InvalidStateError), moving its playback into the graph. Other members and attributes refuse. A `<video>` element is
+a retained element showing its poster ([UI](ui.md#dom-and-events)); nothing decodes video
+([fidelity](fidelity.md#semantic-contract)).
 
 ## Shadows and navigation
 

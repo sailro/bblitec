@@ -409,6 +409,42 @@ test("selects a material per outcome of a parsed document member's presence", ()
     );
 });
 
+test("an arm of a split call passes a spread tuple to a helper", () => {
+    // The arm asks whether a helper call specializes on its arguments: a
+    // spread argument is read as the array it spreads.
+    const compiled = compileSource(`
+        import { createEngine, createSceneContext, createShaderMaterial, wgsl } from "@babylonjs/lite";
+        const VERTEX = \`${POSITION_VERTEX_WGSL}\`;
+        function norm3(x: number, y: number, z: number): [number, number, number] {
+            const length = Math.hypot(x, y, z) || 1;
+            return [x / length, y / length, z / length];
+        }
+        function carrierAt(k: number): { across: readonly [number, number, number] } { return { across: [k, 1, 2] }; }
+        function material(opts: { lit?: boolean }, count: number) {
+            let sum = 0;
+            for (let i = 0; i < count; i++) sum += norm3(...carrierAt(i).across)[0];
+            const gain = opts.lit ? "2.0" : "3.0";
+            return { sum, material: createShaderMaterial({ name: "m", vertexSource: wgsl\`\${VERTEX}\`, fragmentSource: wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(\${gain}); }\`, attributes: ["position"], uniforms: ["worldViewProjection"] }) };
+        }
+        async function main(): Promise<void> {
+            const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+            createSceneContext(engine);
+            const lit = Date.now() > 0;
+            console.log(material({ ...(lit ? { lit: true } : {}) }, 3).sum);
+        }
+        void main();
+    `);
+    assert.deepEqual(
+        compiled.manifest.customShaderPrograms
+            .map(
+                (program) =>
+                    /vec4<f32>\(([23])\.0\)/.exec(program.fragmentSource)?.[1],
+            )
+            .sort(),
+        ["2", "3"],
+    );
+});
+
 test("names the run-time tests a call compiles too many outcomes of", () => {
     // More tests than are probed for the ones the call depends on.
     const flags = Array.from("abcdefghi");

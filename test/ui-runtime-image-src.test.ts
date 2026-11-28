@@ -271,6 +271,41 @@ test("runtime img src reads the member values Object.values lists", () => {
         assert.ok(outputs.includes(`assets/ui/${name}.png`), name);
 });
 
+test("runtime img src in a helper inlined at one call reads that call's argument", () => {
+    // `seal` is inlined at `open`'s call with a closed table's member; its
+    // other call passes a string no closed set holds. Each inlined call
+    // reads its own argument, so only that one refuses, and only where the
+    // program reaches it.
+    const program = (reachOther: boolean): string => `
+        type Topic = "red" | "green";
+        function make() {
+            const icon: Readonly<Record<Topic, string>> = { red: "/assets/ui/red.png", green: "/assets/ui/green.png" };
+            const seal = (src: string): HTMLElement => {
+                const img = document.createElement("img");
+                img.src = appUrl(src);
+                return img;
+            };
+            return {
+                open(topic: Topic) { document.body.append(seal(icon[topic])); },
+                other() { document.body.append(seal(localStorage.getItem("icon") ?? "/assets/ui/blue.png")); },
+            };
+        }
+        const dialog = make();
+        const topics: Topic[] = ["red", "green"];
+        dialog.open(topics[Math.floor(Math.random() * 2)]!);
+        ${reachOther ? "dialog.other();" : ""}
+    `;
+    const outputs = compileEntry(program(false)).manifest.assets.map(
+        (asset) => asset.output,
+    );
+    for (const name of ["red", "green"])
+        assert.ok(outputs.includes(`assets/ui/${name}.png`), name);
+    assert.throws(
+        () => compileEntry(program(true)),
+        /An img src write requires sources generation can package/,
+    );
+});
+
 test("runtime img src reads requests a class queue holds in private fields", () => {
     const result = compileEntry(`
         interface Card { name: string; picture?: string }
@@ -518,6 +553,39 @@ test("runtime img src reads members and parameters TypeScript narrows present", 
         plate("b");
     `);
     const outputs = result.manifest.assets.map((asset) => asset.output);
+    for (const name of ["red", "green"])
+        assert.ok(outputs.includes(`assets/ui/${name}.png`), name);
+    assert.ok(!outputs.includes("assets/ui/blue.png"));
+});
+
+test("runtime img src reads a member path a discriminant narrows present", () => {
+    // \`source\` holds every page; its \`case\` proves \`entry.icon\` present, so
+    // the pages whose entry lacks \`icon\` (a record, parsed data) add nothing.
+    const outputs = compileEntry(`
+        interface Perk { readonly id: string; readonly icon: string }
+        interface Building { readonly kind: string; readonly level: number }
+        type Source = { kind: "guide" } | { kind: "mana"; entry: { max: number } } | { kind: "building"; entry: Building } | { kind: "perk"; entry: Perk };
+        const raw = JSON.parse(localStorage.getItem("b") ?? "[]") as Building[];
+        const perks: readonly Perk[] = [{ id: "a", icon: "/assets/ui/red.png" }, { id: "b", icon: "/assets/ui/green.png" }];
+        const sources: Source[] = [
+            { kind: "guide" },
+            { kind: "mana", entry: { max: 3 } },
+            ...[...raw].sort((a, b) => a.level - b.level).map((entry) => ({ kind: "building" as const, entry })),
+            ...perks.map((entry) => ({ kind: "perk" as const, entry })),
+        ];
+        const card = (entry: Perk): HTMLImageElement => {
+            const img = document.createElement("img");
+            img.src = appUrl(entry.icon);
+            return img;
+        };
+        for (const source of sources) {
+            switch (source.kind) {
+                case "perk":
+                    document.body.append(card(source.entry));
+                    break;
+            }
+        }
+    `).manifest.assets.map((asset) => asset.output);
     for (const name of ["red", "green"])
         assert.ok(outputs.includes(`assets/ui/${name}.png`), name);
     assert.ok(!outputs.includes("assets/ui/blue.png"));

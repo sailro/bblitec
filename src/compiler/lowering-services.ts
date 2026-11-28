@@ -71,6 +71,16 @@ export type NativeReturnValueCompiler = (
     node: ts.Node,
 ) => string;
 
+/**
+ * Entry-lifetime storage (`LoweringServices.entryStorage`): its binding,
+ * C++ type and initializer, when it is not empty.
+ */
+export interface EntryStorage {
+    readonly binding: NativeCaptureBinding;
+    readonly type: string;
+    readonly initializer?: string;
+}
+
 /** A shader stage's text and the uniforms it reads its lifted numbers from. */
 export interface ShaderSourceText {
     source: string;
@@ -769,6 +779,13 @@ export interface LoweringServices {
     readonly unwrap: (expression: ts.Expression) => ts.Expression;
     /** As unwrap, but an await that suspends (a worker realm's) is kept. */
     readonly unwrapValue: (expression: ts.Expression) => ts.Expression;
+    /**
+     * The argument a parameter `identifier` reads in the inlined call being
+     * lowered (`UserFunctionLowerer.inlinedArgument`), if it reads one.
+     */
+    inlinedParameterArgument(
+        identifier: ts.Identifier,
+    ): ts.Expression | undefined;
     /** Whether an inlined call's parameter reads, through every inlined call, a call's result. */
     inlinedCallArgument(identifier: ts.Identifier): boolean;
     /** Whether a caught value bound to `binding` is only reported by `body`, so it needs no native representation. */
@@ -877,6 +894,7 @@ export interface LoweringServices {
     /** The entry's engine binding where no explicit engine parameter scopes the body. */
     entryEngineInScope(): string | undefined;
     requirePresentationHost(node: ts.Node): string;
+    entryStorage(owner: ts.Node, stem: string, cppType: string): EntryStorage;
     pbrLightmapEnabled(): boolean;
     reachFeature(feature: Feature, site?: ts.Node | string): void;
     /**

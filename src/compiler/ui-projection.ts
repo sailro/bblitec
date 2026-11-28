@@ -1,4 +1,9 @@
 import { isUiTreeRead } from "./properties.js";
+import { numberConstantValue } from "./number-intrinsics.js";
+import {
+    inVideoProducer,
+    programBakesVideos,
+} from "./executed-video-function.js";
 import {
     contextCanvas,
     isStringValue,
@@ -95,6 +100,7 @@ import {
 import {
     isUiLayoutProperty,
     supportedUiLayoutValue,
+    uiCssLength,
     uiLogicalSpacingProperties,
 } from "../ui-layout.js";
 import {
@@ -129,6 +135,7 @@ import {
 import {
     elementInterfaceTag,
     isCanvasSurfaceWrite,
+    picksElementMembers,
     eventTargetCpp,
     isDocumentReceiver,
     isDomReceiver,
@@ -157,12 +164,18 @@ import {
     libraryName,
 } from "./symbols.js";
 import { observesDatasetFields } from "./canvas-instrumentation.js";
-import { uiMarkupValueShapes, type UiMarkupShape } from "./ui-markup-values.js";
+import {
+    uiMarkupSplit,
+    uiMarkupText,
+    uiMarkupValueShapes,
+    type UiMarkupShape,
+} from "./ui-markup-values.js";
 import {
     createsFormControls,
     isUiMetadataAttribute,
     parseAuthoredMarkup,
     parseAuthoredSvgMarkup,
+    RETAINED_INPUT_TYPES,
     svgContentDocument,
     type UiAuthoredMarkupNode,
 } from "./ui-authored-markup.js";
@@ -278,14 +291,33 @@ function uiMarkupBranches(
 function uiMarkupShapesBySpecificity(
     shapes: readonly UiMarkupShape[],
 ): UiMarkupShape[] {
-    const fixed = (shape: UiMarkupShape): number =>
-        shape.reduce((length, part) => length + (part?.length ?? 0), 0);
+    const fixed = (shape: UiMarkupShape): number => uiMarkupText(shape).length;
     return [...shapes].sort((left, right) => fixed(right) - fixed(left));
 }
 
+/** The spelling that opens a runtime value's placeholder in a markup source. */
+const UI_MARKUP_HOLE_PREFIX = "__BBLITE_UI_MARKUP_";
+
+/** Any placeholder in a markup source. */
+const UI_MARKUP_HOLE_PATTERN = `${UI_MARKUP_HOLE_PREFIX}\\d+__`;
+
 /** The placeholder a runtime value takes in a markup source, by its order. */
 function uiMarkupHole(index: number): string {
-    return `__BBLITE_UI_MARKUP_${index}__`;
+    return `${UI_MARKUP_HOLE_PREFIX}${index}__`;
+}
+
+/** The order of the runtime value whose placeholder `text` is as a whole. */
+function uiMarkupHoleIndex(text: string): number | undefined {
+    const hole = new RegExp(`^${UI_MARKUP_HOLE_PREFIX}(\\d+)__$`).exec(text);
+    return hole ? Number(hole[1]) : undefined;
+}
+
+/** A markup text's fixed chunks and placeholder orders, in order. */
+function uiMarkupChunks(text: string): (string | number)[] {
+    return text
+        .split(new RegExp(`(${UI_MARKUP_HOLE_PATTERN})`))
+        .filter(Boolean)
+        .map((chunk) => uiMarkupHoleIndex(chunk) ?? chunk);
 }
 
 /**
@@ -307,13 +339,10 @@ function uiMarkupSources(
         else if (part.kind === "text") source += uiMarkupHole(next++);
         else if (part.kind === "stored" && part.shapes.length === 1) {
             const shape = part.shapes[0]!;
-            const hole = shape.indexOf(null);
-            source +=
-                hole < 0
-                    ? shape.join("")
-                    : shape.slice(0, hole).join("") +
-                      uiMarkupHole(next++) +
-                      shape.slice(hole + 1).join("");
+            const split = uiMarkupSplit(shape);
+            source += split
+                ? split.before + uiMarkupHole(next++) + split.after
+                : uiMarkupText(shape);
         } else {
             const rest = parts.slice(index + 1);
             const sources: string[] = [];
@@ -371,6 +400,7 @@ interface UiProjectionContext extends Pick<
     | "sourceFile"
     | "sourceFiles"
     | "inlinedCallArgument"
+    | "inlinedParameterArgument"
     | "runCallOverHeldData"
     | "checker"
     | "compileBoolean"
@@ -410,6 +440,7 @@ interface UiProjectionContext extends Pick<
     | "enterRuntimeControlFlow"
     | "leaveRuntimeControlFlow"
     | "options"
+    | "program"
     | "probeEmission"
     | "reachFeature"
     | "assetRegistry"
@@ -506,11 +537,16 @@ function uiImageSourceHole(
     node: UiAuthoredMarkupNode & { kind: "element" },
     attribute: { readonly name: string; readonly value: string },
 ): number | undefined {
-    const hole =
-        node.svg && node.tag === "image" && attribute.name === "href"
-            ? /^__BBLITE_UI_MARKUP_(\d+)__$/.exec(attribute.value)
-            : null;
-    return hole ? Number(hole[1]) : undefined;
+    return node.svg && node.tag === "image" && attribute.name === "href"
+        ? uiMarkupHoleIndex(attribute.value)
+        : undefined;
+}
+
+/** A runtime img source's packaged candidates (`packagedUiImageSource`). */
+interface UiPackagedImageSource {
+    readonly packaged: NonNullable<ReturnType<typeof packagedUrlAssets>>;
+    /** Whether a candidate is absolute on the deployment's origin. */
+    readonly absolute: boolean;
 }
 
 /** Elements whose `value` property is their form value. */
@@ -566,35 +602,6 @@ const UI_REFLECTED_ATTRIBUTES: ReadonlyMap<string, UiReflectedAttribute> =
         ],
     ]);
 
-/**
- * Element IDL attributes whose HTML getter or setter is more than plain
- * string reflection, and the elements declaring them when not every HTML
- * element does.
- */
-type UiIdlAttribute = { tags?: readonly string[] } & (
-    | { kind: "script-async" }
-    | { kind: "script-src" }
-    | { kind: "max-length" }
-    | { kind: "draggable" }
-    | { kind: "spellcheck" }
-    | { kind: "input-mode" }
-    | { kind: "scroll"; left: boolean }
-);
-
-const UI_IDL_ATTRIBUTES: ReadonlyMap<string, UiIdlAttribute> = new Map<
-    string,
-    UiIdlAttribute
->([
-    ["async", { kind: "script-async", tags: ["script"] }],
-    ["src", { kind: "script-src", tags: ["script"] }],
-    ["maxLength", { kind: "max-length", tags: ["input", "textarea"] }],
-    ["draggable", { kind: "draggable" }],
-    ["spellcheck", { kind: "spellcheck" }],
-    ["inputMode", { kind: "input-mode" }],
-    ["scrollLeft", { kind: "scroll", left: true }],
-    ["scrollTop", { kind: "scroll", left: false }],
-]);
-
 /** The `inputmode` keywords (HTML), its missing and invalid states both reading "". */
 const UI_INPUT_MODES = [
     "none",
@@ -606,6 +613,135 @@ const UI_INPUT_MODES = [
     "decimal",
     "search",
 ];
+
+/**
+ * Element IDL attributes whose HTML getter or setter is more than plain
+ * string reflection, one entry per group of elements declaring them
+ * (`tags`, when not every HTML element does). On another element the
+ * member has a lowering of its own, or none, unless `refusedElsewhere`.
+ * A video has no decoder (docs/fidelity.md): its `muted` is its state,
+ * which the `muted` attribute does not reflect, and it reads back a media
+ * element whose sources never load.
+ */
+type UiIdlAttribute = {
+    tags?: readonly string[];
+    refusedElsewhere?: true;
+} & (
+    | { kind: "script-async" }
+    /**
+     * A URL attribute, read resolved against the document URL. A write
+     * fetches a script, an image generation packages, or nothing (a media
+     * source no decoder loads).
+     */
+    | {
+          kind: "url";
+          attribute: "src" | "poster";
+          fetches: "script" | "image" | "none";
+      }
+    | { kind: "max-length" }
+    | { kind: "draggable" }
+    | { kind: "spellcheck" }
+    /**
+     * An enumerated attribute: `missing` is the keyword of its missing and
+     * invalid value default, `empty` of its empty value default.
+     */
+    | {
+          kind: "enumerated";
+          attribute: string;
+          keywords: readonly string[];
+          missing?: string;
+          empty?: string;
+      }
+    | { kind: "scroll"; left: boolean }
+    /** An `unsigned long` dimension attribute; an img's getter reads its size. */
+    | { kind: "dimension" }
+    | { kind: "muted" }
+    | { kind: "paused" }
+    | { kind: "readback"; value: "ended" | "currentTime" | "duration" }
+);
+
+const UI_IDL_ATTRIBUTES: ReadonlyMap<string, readonly UiIdlAttribute[]> =
+    new Map<string, readonly UiIdlAttribute[]>([
+        ["async", [{ kind: "script-async", tags: ["script"] }]],
+        [
+            "src",
+            [
+                {
+                    kind: "url",
+                    attribute: "src",
+                    fetches: "script",
+                    tags: ["script"],
+                },
+                {
+                    kind: "url",
+                    attribute: "src",
+                    fetches: "none",
+                    tags: ["video"],
+                },
+            ],
+        ],
+        [
+            "poster",
+            [
+                {
+                    kind: "url",
+                    attribute: "poster",
+                    fetches: "image",
+                    tags: ["video"],
+                },
+            ],
+        ],
+        [
+            "maxLength",
+            [
+                {
+                    kind: "max-length",
+                    tags: ["input", "textarea"],
+                    refusedElsewhere: true,
+                },
+            ],
+        ],
+        ["draggable", [{ kind: "draggable" }]],
+        ["spellcheck", [{ kind: "spellcheck" }]],
+        [
+            "inputMode",
+            [
+                {
+                    kind: "enumerated",
+                    attribute: "inputmode",
+                    keywords: UI_INPUT_MODES,
+                },
+            ],
+        ],
+        [
+            "preload",
+            [
+                // Missing or invalid: Chromium's Metadata state; empty: Automatic.
+                {
+                    kind: "enumerated",
+                    attribute: "preload",
+                    keywords: ["none", "metadata", "auto"],
+                    missing: "metadata",
+                    empty: "auto",
+                    tags: ["video"],
+                },
+            ],
+        ],
+        ["scrollLeft", [{ kind: "scroll", left: true }]],
+        ["scrollTop", [{ kind: "scroll", left: false }]],
+        ...["width", "height"].map((property): [string, UiIdlAttribute[]] => [
+            property,
+            [{ kind: "dimension", tags: ["img", "video"] }],
+        ]),
+        ["muted", [{ kind: "muted", tags: ["video"] }]],
+        ["paused", [{ kind: "paused", tags: ["video"] }]],
+        ...(["ended", "currentTime", "duration"] as const).map(
+            (value): [string, UiIdlAttribute[]] => [
+                value,
+                [{ kind: "readback", value, tags: ["video"] }],
+            ],
+        ),
+    ]);
 
 /**
  * The `type` keywords of the elements whose `type` is an enumerated
@@ -679,13 +815,7 @@ export class UiProjection {
             rule.mediaPointer !== undefined &&
                 `.pointer = bbl::PointerPrecision::${uiPointerPrecisionCpp(rule.mediaPointer)}`,
         ].filter((member) => member !== false);
-        const members = [
-            `.selector = bbl::UiStyleSelectorKind::${uiStyleSelectorCppKind(rule.kind)}`,
-            `.primary = ${cppString(rule.primary)}`,
-            Boolean(rule.secondary) &&
-                `.secondary = ${cppString(rule.secondary!)}`,
-            Boolean(rule.tag) && `.tag = ${cppString(rule.tag!)}`,
-            `.style = ${cppString(rule.style)}`,
+        const viewport = [
             rule.maxWidth !== undefined &&
                 `.max_width = ${doubleLiteral(rule.maxWidth)}`,
             rule.minWidth !== undefined &&
@@ -694,6 +824,15 @@ export class UiProjection {
                 `.max_height = ${doubleLiteral(rule.maxHeight)}`,
             rule.minHeight !== undefined &&
                 `.min_height = ${doubleLiteral(rule.minHeight)}`,
+        ].filter((member) => member !== false);
+        const members = [
+            `.selector = bbl::UiStyleSelectorKind::${uiStyleSelectorCppKind(rule.kind)}`,
+            `.primary = ${cppString(rule.primary)}`,
+            Boolean(rule.secondary) &&
+                `.secondary = ${cppString(rule.secondary!)}`,
+            Boolean(rule.tag) && `.tag = ${cppString(rule.tag!)}`,
+            `.style = ${cppString(rule.style)}`,
+            viewport.length > 0 && `.viewport = {${viewport.join(", ")}}`,
             rule.hover && ".hover = true",
             rule.focusVisible === true && ".focus_visible = true",
             rule.active === true && ".active = true",
@@ -764,6 +903,90 @@ export class UiProjection {
      * computes outside the candidates fails to load like a missing file.
      */
     private runtimeUiImageSource(expression: ts.Expression): string {
+        const found = this.packagedUiImageSource(
+            expression,
+            (path) => registerUiImageAsset(this.context, path, path).output,
+        );
+        if (!found) return this.refuseUiImageSource(expression);
+        return this.uiImageSourceUrl(found, () =>
+            this.context.dataLowerer.compileKnownValueForSink(
+                found.packaged.selected,
+                { kind: "string" },
+                expression,
+            ),
+        );
+    }
+
+    /**
+     * A runtime operand standing as a whole innerHTML img src: `value` holds
+     * the text of `sources`, which must be one expression whose packaged
+     * image candidates generation can find, as a runtime src write's. The
+     * operand was evaluated where the markup text was built: the inference
+     * here evaluates nothing, and only the candidates it finds are packaged.
+     */
+    private uiMarkupImageSourceCpp(
+        value: string,
+        sources: readonly ts.Expression[],
+        site: ts.Node,
+    ): string {
+        const source = sources.length === 1 ? sources[0] : undefined;
+        if (!source)
+            return this.context.fail(
+                site,
+                "Native UI innerHTML img src requires one runtime operand whose packaged image candidates generation can find.",
+            );
+        const paths: string[] = [];
+        const found = this.context.probeEmission(
+            () =>
+                this.packagedUiImageSource(source, (path) => {
+                    paths.push(path);
+                    return path;
+                }),
+            () => false,
+        );
+        if (!found) return this.refuseUiImageSource(source);
+        for (const path of paths)
+            registerUiImageAsset(this.context, path, path);
+        return this.uiImageSourceUrl(found, () => value);
+    }
+
+    private refuseUiImageSource(expression: ts.Expression): never {
+        return this.context.fail(
+            expression,
+            "An img src write requires sources generation can package: string literals, conditionals of them, host data attributes the program never writes, or a runtime string whose packaged image candidates generation can find.",
+        );
+    }
+
+    /**
+     * The URL the retained image loads for a packaged source: a
+     * generation-known one's document URL, else the `runtime` string, whose
+     * absolute candidates load their path.
+     */
+    private uiImageSourceUrl(
+        found: UiPackagedImageSource,
+        runtime: () => string,
+    ): string {
+        const known = found.packaged.selected.staticString;
+        if (known !== undefined)
+            return this.context.cppString(
+                deploymentDocumentUrl(known, this.context.options),
+            );
+        const value = runtime();
+        return found.absolute
+            ? `bbl::ui_document_url(${value}, ${this.context.cppString(deploymentUrl(this.context.options).href)})`
+            : value;
+    }
+
+    /**
+     * The packaged images the URL inference finds for a runtime img source
+     * (`packagedUrlAssets`, as fetch and audio sources), each candidate's
+     * document path passed to `register` for the output it loads from;
+     * undefined when there is none.
+     */
+    private packagedUiImageSource(
+        expression: ts.Expression,
+        register: (path: string) => string,
+    ): UiPackagedImageSource | undefined {
         const options = this.context.options;
         // An absolute candidate on the deployment's origin loads its path.
         let absolute = false;
@@ -778,29 +1001,35 @@ export class UiProjection {
                         expression,
                         `An img src candidate '${logicalSource}' must be a root-relative or relative URL, or one on the deployment's origin.`,
                     );
-                return registerUiImageAsset(this.context, path, path).output;
+                return register(path);
             },
             (source) => /\.(?:png|jpe?g|webp|gif|bmp)$/i.test(source),
             (url) => url === "",
         );
         // A generation-known source with no packaged file fails to load.
-        if (packaged?.selected.staticString !== undefined)
-            return this.context.cppString(
-                deploymentDocumentUrl(packaged.selected.staticString, options),
-            );
-        if (!packaged || packaged.assets.length === 0)
-            return this.context.fail(
-                expression,
-                "An img src write requires sources generation can package: string literals, conditionals of them, host data attributes the program never writes, or a runtime string whose packaged image candidates generation can find.",
-            );
-        const selected = this.context.dataLowerer.compileKnownValueForSink(
-            packaged.selected,
-            { kind: "string" },
-            expression,
-        );
-        return absolute
-            ? `bbl::ui_document_url(${selected}, ${this.context.cppString(deploymentUrl(options).href)})`
-            : selected;
+        return packaged &&
+            (packaged.selected.staticString !== undefined ||
+                packaged.assets.length > 0)
+            ? { packaged, absolute }
+            : undefined;
+    }
+
+    /**
+     * A retained video element, created at `site` or by the host page: one
+     * meaning of `HTMLVideoElement` storage per program, so a program whose
+     * storage holds generation-baked videos (`programBakesVideos`) refuses
+     * it, but for the producer's own video (`inVideoProducer`).
+     */
+    public requireRetainedVideo(site?: ts.Node): void {
+        if (
+            !programBakesVideos(this.context.checker, this.context.program) ||
+            (site && inVideoProducer(this.context.checker, site))
+        )
+            return;
+        const message =
+            "A retained <video> element cannot share a program with a video producer generation bakes: the program's HTMLVideoElement storage holds the baked videos.";
+        if (site) this.context.fail(site, message);
+        else this.context.failAtFile(message);
     }
 
     public documentEngine(node: ts.Node): string {
@@ -893,14 +1122,29 @@ export class UiProjection {
         };
     }
 
+    /**
+     * The boolean content attribute an IDL attribute reflects, refused on
+     * an element that does not declare it; `receiver` is the element's
+     * expression.
+     */
     public booleanAttribute(
         element: Value,
         property: string,
+        receiver: ts.Expression,
         site: ts.Node,
     ): string | undefined {
         if (property === "open") {
             if (element.uiTag && element.uiTag !== "details")
                 this.context.fail(site, "UI open requires a details element.");
+            return property;
+        }
+        // A video's media flags, which only reflect: it has no decoder.
+        if (["loop", "controls", "autoplay"].includes(property)) {
+            if (this.declaresUiTags(element, receiver, ["video"]) !== true)
+                this.context.fail(
+                    site,
+                    `UI ${property} requires a video element.`,
+                );
             return property;
         }
         if (property !== "hidden" && property !== "disabled") return undefined;
@@ -1051,10 +1295,17 @@ export class UiProjection {
             ts.isElementAccessExpression(owner)
         ) {
             // This is also an erasure probe, not permission to lower arbitrary
-            // members (such as Set.add or a captured GPU device's queue).
+            // members (such as Set.add or a captured GPU device's queue): an
+            // element's member, or one typed as members picked from one.
             const type = this.context.dataLowerer.dataTypeAt(expression);
             const inner = type?.kind === "optional" ? type.inner : type;
-            if (inner?.kind !== "handle" || inner.handle !== "ui-element") {
+            if (
+                (inner?.kind !== "handle" || inner.handle !== "ui-element") &&
+                !picksElementMembers(
+                    this.context.checker,
+                    this.context.checker.getTypeAtLocation(expression),
+                )
+            ) {
                 return undefined;
             }
         }
@@ -2342,11 +2593,14 @@ export class UiProjection {
             "border-image",
             ...UI_BORDER_IMAGE_LONGHANDS,
             "border-radius",
+            "border-collapse",
+            "border-spacing",
             "box-sizing",
             "box-shadow",
             "bottom",
             "color",
             "color-scheme",
+            "contain",
             "clip",
             "clip-path",
             "clear",
@@ -2423,6 +2677,7 @@ export class UiProjection {
             "scrollbar-gutter",
             "scrollbar-width",
             "scrollbar-color",
+            "table-layout",
             "text-align",
             "text-decoration",
             "text-shadow",
@@ -2456,6 +2711,8 @@ export class UiProjection {
         readonly string[]
     > = new Map([
         ["visibility", ["visible", "hidden"]],
+        ["border-collapse", ["separate", "collapse"]],
+        ["table-layout", ["auto", "fixed"]],
         [
             "vertical-align",
             [
@@ -2506,6 +2763,34 @@ export class UiProjection {
         ],
         ["scroll-snap-align", ["none", "start", "end", "center"]],
     ]);
+
+    /**
+     * Presentation properties whose value may instead be a length or a
+     * percentage, which RmlUi's parser reads as CSS does: `vertical-align`
+     * raises the box by it (a percentage of its line height).
+     */
+    private static readonly PRESENTATION_LENGTHS = new EmissionSet<string>([
+        "vertical-align",
+    ]);
+
+    /** The length units the checked style values below admit. */
+    private static readonly UI_STYLE_LENGTH_UNITS = [
+        "px",
+        "em",
+        "rem",
+        "vw",
+        "vh",
+    ];
+
+    /** A table's horizontal and vertical cell spacing: one or two nonnegative lengths. */
+    private static readonly UI_BORDER_SPACING = (() => {
+        const length = uiCssLength(UiProjection.UI_STYLE_LENGTH_UNITS);
+        return new RegExp(`^${length}(?:\\s+${length})?$`);
+    })();
+
+    private static readonly PRESENTATION_LENGTH = new RegExp(
+        `^${uiCssLength([...UiProjection.UI_STYLE_LENGTH_UNITS, "%"], "+-")}$`,
+    );
 
     private static readonly INERT_UI_STYLE_PROPERTIES = new EmissionSet<string>(
         [
@@ -2861,6 +3146,26 @@ export class UiProjection {
             this.refuseUnresolvableMath(property, literalValue, site);
             if (UiProjection.isCustomStyleProperty(property)) return;
             if (
+                property === "contain" &&
+                !UiProjection.admitsUiContain(literalValue)
+            ) {
+                this.uiStyleRefusal(
+                    site,
+                    property,
+                    "only none, content, or layout, paint and style are represented (no size containment)",
+                );
+            }
+            if (
+                property === "border-spacing" &&
+                !UiProjection.UI_BORDER_SPACING.test(literalValue)
+            ) {
+                this.uiStyleRefusal(
+                    site,
+                    property,
+                    "only one or two nonnegative px, em, rem, vw or vh lengths are represented",
+                );
+            }
+            if (
                 property === "place-items" &&
                 !/^(?:start|end|center|stretch)(?:\s+(?:start|end|center|stretch))?$/.test(
                     literalValue,
@@ -2873,11 +3178,19 @@ export class UiProjection {
                 );
             }
             const keywords = UiProjection.PRESENTATION_KEYWORDS.get(property);
-            if (keywords && !keywords.includes(literalValue)) {
+            const lengths = UiProjection.PRESENTATION_LENGTHS.has(property);
+            if (
+                keywords &&
+                !keywords.includes(literalValue) &&
+                !(
+                    lengths &&
+                    UiProjection.PRESENTATION_LENGTH.test(literalValue)
+                )
+            ) {
                 this.uiStyleRefusal(
                     site,
                     property,
-                    `only ${keywords.join(", ")} are represented`,
+                    `only ${keywords.join(", ")}${lengths ? ", a px, em, rem, vw or vh length or a percentage" : ""} are represented`,
                 );
             }
             const background = supportedUiImageBackground(
@@ -2956,7 +3269,7 @@ export class UiProjection {
                 this.uiStyleRefusal(
                     site,
                     property,
-                    "only a literal width, the none, hidden, solid and dashed styles and a literal color are represented",
+                    "only a literal width, the none, hidden, solid, dashed and double styles and a literal color are represented",
                 );
             }
             if (
@@ -2970,7 +3283,7 @@ export class UiProjection {
                     this.uiStyleRefusal(
                         site,
                         property,
-                        "only the none, hidden, solid and dashed border styles are represented",
+                        "only the none, hidden, solid, dashed and double border styles are represented",
                     );
             }
             if (
@@ -3510,6 +3823,22 @@ export class UiProjection {
         return effects.length > 0 ? effects.join(",") : undefined;
     }
 
+    /**
+     * Whether a CSS `contain` value is one RmlUi represents (patch 0075):
+     * none, content, or layout, paint and style containment; size
+     * containment is not.
+     */
+    private static admitsUiContain(value: string): boolean {
+        const tokens = value.trim().toLowerCase().split(/\s+/);
+        return tokens.length === 1 &&
+            (tokens[0] === "none" || tokens[0] === "content")
+            ? true
+            : new Set(tokens).size === tokens.length &&
+                  tokens.every((token) =>
+                      ["layout", "paint", "style"].includes(token),
+                  );
+    }
+
     /** Properties whose values RmlUi reads in its own grammar. */
     private static readonly UI_LOWERED_STYLE_VALUES = new EmissionSet([
         "border-image",
@@ -3765,7 +4094,7 @@ export class UiProjection {
                         return this.uiStyleRefusal(
                             site,
                             "background",
-                            "gradient layers require supported positions, nonnegative length/percentage sizes and repeat or no-repeat",
+                            "gradient layers require supported positions, nonnegative length/percentage sizes and repeat, repeat-x, repeat-y or no-repeat",
                         );
                     // The layers are the background image the PAL's
                     // background cascade paints, as a longhand's are.
@@ -4029,7 +4358,13 @@ export class UiProjection {
                 );
             if (
                 property.startsWith("--bbl-") &&
-                property !== "--bbl-authored-display"
+                property !== "--bbl-authored-display" &&
+                // A generated box is an element the retained pass sizes
+                // as it sizes an authored one.
+                !(
+                    property === "--bbl-absolute-inline" &&
+                    (part === "before" || part === "after")
+                )
             )
                 this.uiStyleRefusal(
                     site,
@@ -4949,10 +5284,15 @@ export class UiProjection {
         parseHtmlFragments(candidates);
     }
 
+    /**
+     * `imageSources`, when given, admits a runtime operand as a whole img
+     * `src` and collects its hole index; elsewhere attribute values are static.
+     */
     private lowerUiMarkupLiteral(
         value: string,
         site?: ts.Node,
         ownerId?: number,
+        imageSources?: Set<number>,
     ): string {
         this.prefetchUiMarkup();
         const fail = (message: string): never => {
@@ -5050,7 +5390,7 @@ export class UiProjection {
                 numeric: new EmissionSet(["x", "y", "width", "height"]),
             },
         };
-        const markupHole = /__BBLITE_UI_MARKUP_\d+__/i;
+        const markupHole = new RegExp(UI_MARKUP_HOLE_PATTERN, "i");
         // The browser's tree for the markup; a runtime operand stands in it as
         // a text placeholder, which may sit only where text does.
         const lowerNodes = (
@@ -5073,7 +5413,7 @@ export class UiProjection {
             if (node.tag === undefined) {
                 if (insideSvg && node.text.trim().length > 0)
                     fail("does not support text inside <svg>.");
-                if (/<\/?__BBLITE_UI_MARKUP_\d+__/.test(node.text))
+                if (new RegExp(`</?${UI_MARKUP_HOLE_PATTERN}`).test(node.text))
                     fail("requires a static tag name.");
                 return escapeText(node.text);
             }
@@ -5136,8 +5476,18 @@ export class UiProjection {
                 attributeNames.add(lowerName);
                 if (markupHole.test(name))
                     fail(`requires static attribute names on <${tag}>.`);
-                if (attribute.value.includes("__BBLITE_UI_MARKUP_")) {
-                    fail(`requires static attribute '${name}' on <${tag}>.`);
+                const imageHole =
+                    tag === "img" && lowerName === "src"
+                        ? uiMarkupHoleIndex(attribute.value)
+                        : undefined;
+                if (imageHole !== undefined && imageSources)
+                    imageSources.add(imageHole);
+                else if (attribute.value.includes(UI_MARKUP_HOLE_PREFIX)) {
+                    fail(
+                        tag === "img" && lowerName === "src"
+                            ? "requires an img src that is static or one runtime operand as a whole."
+                            : `requires static attribute '${name}' on <${tag}>.`,
+                    );
                 }
                 let attributeValue = attribute.value;
                 // A root viewport may be a percentage of its CSS box.
@@ -5176,7 +5526,8 @@ export class UiProjection {
                         );
                     }
                     if (tag === "img" && lowerName === "src") {
-                        this.registerImageSource(attributeValue);
+                        if (!imageHole)
+                            this.registerImageSource(attributeValue);
                     } else if (
                         tag === "img" &&
                         (lowerName === "width" || lowerName === "height") &&
@@ -5520,33 +5871,38 @@ export class UiProjection {
         if (form.kind === "structured")
             return this.compileUiStructuredMarkup(expression, domains, ownerId);
         const { source, substitutions } = form;
-        const lowered = this.lowerUiMarkupLiteral(source, expression, ownerId);
+        const imageSources = new Set<number>();
+        const lowered = this.lowerUiMarkupLiteral(
+            source,
+            expression,
+            ownerId,
+            imageSources,
+        );
         this.context.reachJsData();
-        return this.uiMarkupConcat(lowered, (index) =>
-            this.uiTemplateSubstitutionCpp(
+        return this.uiMarkupConcat(lowered, (index) => {
+            const text = this.uiTemplateSubstitutionCpp(
                 substitutions[index]!,
                 "Native UI innerHTML",
-            ),
-        );
+            );
+            return imageSources.has(index)
+                ? this.uiMarkupImageSourceCpp(
+                      text,
+                      [substitutions[index]!],
+                      expression,
+                  )
+                : text;
+        });
     }
 
     private uiMarkupConcat(
         lowered: string,
         substitution: (index: number) => string,
     ): string {
-        const chunks = lowered.split(/(__BBLITE_UI_MARKUP_\d+__)/g);
-        const parts: string[] = [];
-        for (const chunk of chunks) {
-            if (!chunk) continue;
-            const marker = chunk.match(/^__BBLITE_UI_MARKUP_(\d+)__$/);
-            if (!marker) {
-                parts.push(this.context.cppString(chunk));
-                continue;
-            }
-            parts.push(
-                `bbl::ui_escape_rml(${substitution(Number(marker[1]))})`,
-            );
-        }
+        const parts = uiMarkupChunks(lowered).map((chunk) =>
+            typeof chunk === "number"
+                ? `bbl::ui_escape_rml(${substitution(chunk)})`
+                : this.context.cppString(chunk),
+        );
         return `bbl::js::concat(${parts.join(", ")})`;
     }
 
@@ -5583,12 +5939,14 @@ export class UiProjection {
             : parseAuthoredMarkup(form.source, fail);
         const holed = (node: UiAuthoredMarkupNode): boolean =>
             node.kind === "element" &&
-            (node.tag.includes("__BBLITE_UI_MARKUP_") ||
+            (node.tag.includes(UI_MARKUP_HOLE_PREFIX) ||
                 node.attributes.some(
                     (attribute) =>
-                        /__BBLITE_UI_MARKUP_\d+__/i.test(attribute.name) ||
+                        new RegExp(UI_MARKUP_HOLE_PATTERN, "i").test(
+                            attribute.name,
+                        ) ||
                         (GENERATION_ATTRIBUTES.has(attribute.name) &&
-                            attribute.value.includes("__BBLITE_UI_MARKUP_") &&
+                            attribute.value.includes(UI_MARKUP_HOLE_PREFIX) &&
                             uiImageSourceHole(node, attribute) === undefined),
                 ) ||
                 node.children.some(holed));
@@ -5651,18 +6009,14 @@ export class UiProjection {
                   ),
         );
         const textCpp = (value: string): string => {
-            if (!value.includes("__BBLITE_UI_MARKUP_"))
+            if (!value.includes(UI_MARKUP_HOLE_PREFIX))
                 return this.context.cppString(value);
             this.context.reachJsData();
-            const parts = value
-                .split(/(__BBLITE_UI_MARKUP_\d+__)/g)
-                .filter(Boolean)
-                .map((chunk) => {
-                    const marker = /^__BBLITE_UI_MARKUP_(\d+)__$/.exec(chunk);
-                    return marker
-                        ? texts[Number(marker[1])]!
-                        : this.context.cppString(chunk);
-                });
+            const parts = uiMarkupChunks(value).map((chunk) =>
+                typeof chunk === "number"
+                    ? texts[chunk]!
+                    : this.context.cppString(chunk),
+            );
             return `bbl::js::concat(${parts.join(", ")})`;
         };
         let linkNavigation = false;
@@ -5727,7 +6081,7 @@ export class UiProjection {
                     node.svg &&
                     node.tag === "image" &&
                     attribute.name === "href" &&
-                    !value.includes("__BBLITE_UI_MARKUP_")
+                    !value.includes(UI_MARKUP_HOLE_PREFIX)
                 )
                     this.registerImageSource(value);
                 if (attribute.name === "class" || attribute.name === "id")
@@ -5774,18 +6128,17 @@ export class UiProjection {
         );
         return markup &&
             (shapes.length === 1 ||
-                shapes.some((shape) => shape.includes(null)))
+                shapes.some((shape) => uiMarkupSplit(shape) !== undefined))
             ? shapes
             : undefined;
     }
 
     /** Whether a stored string holds `shape`'s fixed fragments around its span. */
     private uiMarkupShapeTest(value: string, shape: UiMarkupShape): string {
-        const hole = shape.indexOf(null);
-        if (hole < 0)
-            return `${value} == ${this.context.cppString(shape.join(""))}`;
-        const before = shape.slice(0, hole).join("");
-        const after = shape.slice(hole + 1).join("");
+        const split = uiMarkupSplit(shape);
+        if (!split)
+            return `${value} == ${this.context.cppString(uiMarkupText(shape))}`;
+        const { before, after } = split;
         return [
             `bbl::js::string_length(${value}) >= ${before.length + after.length}`,
             ...(before
@@ -5865,7 +6218,9 @@ export class UiProjection {
         if (shapes) {
             if (
                 shapes.some(
-                    (shape) => shape.filter((part) => part === null).length > 1,
+                    (shape) =>
+                        shape.filter((part) => typeof part !== "string")
+                            .length > 1,
                 )
             )
                 this.context.fail(
@@ -5923,32 +6278,41 @@ export class UiProjection {
                 "Native UI innerHTML",
             );
         };
+        // Each hole's text and the expressions that built it.
+        interface Hole {
+            cpp: string;
+            sources: readonly ts.Expression[];
+        }
         const emit = (
             pending: readonly UiMarkupPart[],
             prefix: string,
-            substitutions: readonly string[],
+            substitutions: readonly Hole[],
         ): string => {
             let source = prefix;
             const values = [...substitutions];
-            const text = (cpp: string): void => {
+            const text = (
+                cpp: string,
+                sources: readonly ts.Expression[],
+            ): void => {
                 source += uiMarkupHole(values.length);
-                values.push(cpp);
+                values.push({ cpp, sources });
             };
             for (let index = 0; index < pending.length; index++) {
                 const part = pending[index]!;
                 if (typeof part === "string") source += part;
-                else if (part.kind === "text") text(snapshot(part.expression));
+                else if (part.kind === "text")
+                    text(snapshot(part.expression), [part.expression]);
                 else if (part.kind === "stored" && part.shapes.length === 1) {
                     const value = part.value ?? snapshot(part.expression);
                     const shape = part.shapes[0]!;
-                    const hole = shape.indexOf(null);
-                    if (hole < 0) source += shape.join("");
+                    const split = uiMarkupSplit(shape);
+                    if (!split) source += uiMarkupText(shape);
                     else {
-                        const before = shape.slice(0, hole).join("");
-                        const after = shape.slice(hole + 1).join("");
+                        const { before, span, after } = split;
                         source += before;
                         text(
                             `bbl::js::string_substring(${value}, ${before.length}, bbl::js::string_length(${value}) - ${after.length})`,
+                            span.sources,
                         );
                         source += after;
                     }
@@ -6044,10 +6408,25 @@ export class UiProjection {
                     expression,
                     "Native UI innerHTML exceeds 32 closed markup alternatives.",
                 );
+            const imageSources = new Set<number>();
             const lowered = this.context.probeEmission(() =>
-                this.lowerUiMarkupLiteral(source, expression, ownerId),
+                this.lowerUiMarkupLiteral(
+                    source,
+                    expression,
+                    ownerId,
+                    imageSources,
+                ),
             );
-            return this.uiMarkupConcat(lowered, (index) => values[index]!);
+            return this.uiMarkupConcat(lowered, (index) => {
+                const hole = values[index]!;
+                return imageSources.has(index)
+                    ? this.uiMarkupImageSourceCpp(
+                          hole.cpp,
+                          hole.sources,
+                          expression,
+                      )
+                    : hole.cpp;
+            });
         };
         this.context.reachJsData();
         return emit(sourceParts, "", []);
@@ -6130,8 +6509,7 @@ export class UiProjection {
 
     /**
      * An IDL attribute with an HTML getter or setter of its own, when the
-     * element declares it: script `src` is the script's, other elements'
-     * `src` writes have their own paths.
+     * element declares it (`UI_IDL_ATTRIBUTES`).
      */
     private uiIdlAttribute(
         element: Value,
@@ -6139,17 +6517,23 @@ export class UiProjection {
         receiver: ts.Expression,
         site: ts.Node,
     ): UiIdlAttribute | undefined {
-        const attribute = UI_IDL_ATTRIBUTES.get(property);
-        if (
-            !attribute?.tags ||
-            this.declaresUiTags(element, receiver, attribute.tags)
-        )
-            return attribute;
-        if (attribute.kind === "script-src") return undefined;
-        return this.context.fail(
-            site,
-            `UI ${property} requires a <${attribute.tags.join("> or <")}> element.`,
+        const attributes = UI_IDL_ATTRIBUTES.get(property);
+        if (!attributes) return undefined;
+        const declared = attributes.find(
+            (attribute) =>
+                !attribute.tags ||
+                this.declaresUiTags(element, receiver, attribute.tags),
         );
+        if (declared) return declared;
+        const refused = attributes.find(
+            (attribute) => attribute.refusedElsewhere,
+        );
+        return refused?.tags
+            ? this.context.fail(
+                  site,
+                  `UI ${property} requires a <${refused.tags.join("> or <")}> element.`,
+              )
+            : undefined;
     }
 
     /** The native write of an IDL attribute `uiIdlAttribute` names. */
@@ -6178,12 +6562,25 @@ export class UiProjection {
                 return emit(
                     `bbl::ui_set_script_async(${target}, ${this.uiBooleanCpp(assigned.site, "UI script async", assigned.value)})`,
                 );
-            case "script-src":
-                // Only an application realm's task queue dispatches its error.
-                if (!this.context.options.workers)
+            case "url":
+                if (attribute.fetches === "image") {
+                    this.emitUiImageSource(
+                        element,
+                        engine,
+                        attribute.attribute,
+                        assigned,
+                    );
+                    return true;
+                }
+                // Only an application realm's task queue dispatches a
+                // script's error.
+                if (
+                    attribute.fetches === "script" &&
+                    !this.context.options.workers
+                )
                     throw new ApplicationRealmRequired();
                 return emit(
-                    `bbl::ui_set_attribute(${target}, "src", ${this.uiStringCpp(assigned.site, "UI script src", assigned.value)})`,
+                    `bbl::ui_set_attribute(${target}, ${this.context.cppString(attribute.attribute)}, ${this.uiStringCpp(assigned.site, `UI ${property}`, assigned.value)})`,
                 );
             case "max-length":
                 return emit(
@@ -6205,13 +6602,27 @@ export class UiProjection {
                 return emit(
                     `bbl::ui_set_attribute(${target}, "spellcheck", std::string((${this.uiBooleanCpp(assigned.site, "UI spellcheck", assigned.value)}) ? "true" : "false"))`,
                 );
-            case "input-mode":
+            case "enumerated":
                 return emit(
-                    `bbl::ui_set_attribute(${target}, "inputmode", ${this.uiStringCpp(assigned.site, "UI inputMode", assigned.value)})`,
+                    `bbl::ui_set_attribute(${target}, ${this.context.cppString(attribute.attribute)}, ${this.uiStringCpp(assigned.site, `UI ${property}`, assigned.value)})`,
                 );
             case "scroll":
                 return emit(
                     `bbl::ui_set_scroll_offset(${target}, ${attribute.left}, ${this.assignedNumber(assigned)})`,
+                );
+            case "dimension":
+                return emit(
+                    `bbl::ui_set_dimension_attribute(${target}, ${this.context.cppString(property)}, ${this.assignedNumber(assigned)})`,
+                );
+            case "muted":
+                return emit(
+                    `bbl::ui_video_set_muted(${target}, ${this.uiBooleanCpp(assigned.site, "UI muted", assigned.value)})`,
+                );
+            case "paused":
+            case "readback":
+                return this.context.fail(
+                    site,
+                    `HTMLVideoElement.${property} writes are not lowered: a video element without a decoder never loads a source to seek.`,
                 );
         }
     }
@@ -6268,13 +6679,31 @@ export class UiProjection {
             impure: true,
             ...(kind === "string" ? { freshData: true } : {}),
         });
-        const keywords = (names: readonly string[]): string =>
-            `{${names.map((name) => this.context.cppString(name)).join(", ")}}`;
-        if (types)
+        const enumerated = (
+            target: string,
+            name: string,
+            keywords: readonly string[],
+            missing?: string,
+            empty?: string,
+        ): Value => {
+            const defaults =
+                empty !== undefined
+                    ? [missing ?? "", empty]
+                    : missing !== undefined
+                      ? [missing]
+                      : [];
+            const cpp = this.context.cppString.bind(this.context);
             return read(
-                `bbl::ui_get_enumerated_attribute(${engineTarget()}, "type", ${keywords(types)}, ${this.context.cppString(types[0]!)})`,
+                `bbl::ui_get_enumerated_attribute(${[
+                    target,
+                    cpp(name),
+                    `{${keywords.map(cpp).join(", ")}}`,
+                    ...defaults.map(cpp),
+                ].join(", ")})`,
                 "string",
             );
+        };
+        if (types) return enumerated(engineTarget(), "type", types, types[0]);
         const attribute = this.uiIdlAttribute(
             element,
             property,
@@ -6286,9 +6715,9 @@ export class UiProjection {
         switch (attribute.kind) {
             case "script-async":
                 return read(`bbl::ui_script_async(${target})`, "boolean");
-            case "script-src":
+            case "url":
                 return read(
-                    `bbl::ui_get_url_attribute(${target}, "src", ${this.context.cppString(deploymentUrl(this.context.options).href)})`,
+                    `bbl::ui_get_url_attribute(${target}, ${this.context.cppString(attribute.attribute)}, ${this.context.cppString(deploymentUrl(this.context.options).href)})`,
                     "string",
                 );
             case "max-length":
@@ -6297,16 +6726,39 @@ export class UiProjection {
                 return read(`bbl::ui_get_draggable(${target})`, "boolean");
             case "spellcheck":
                 return read(`bbl::ui_get_spellcheck(${target})`, "boolean");
-            case "input-mode":
-                return read(
-                    `bbl::ui_get_enumerated_attribute(${target}, "inputmode", ${keywords(UI_INPUT_MODES)})`,
-                    "string",
+            case "enumerated":
+                return enumerated(
+                    target,
+                    attribute.attribute,
+                    attribute.keywords,
+                    attribute.missing,
+                    attribute.empty,
                 );
             case "scroll":
                 return read(
                     `bbl::ui_scroll_offset(${target}, ${attribute.left})`,
                     "number",
                 );
+            case "dimension":
+                // An img's getters read its rendered or natural size.
+                return this.declaresUiTags(element, receiver, ["video"])
+                    ? read(
+                          `bbl::ui_dimension_attribute(${target}, ${this.context.cppString(property)})`,
+                          "number",
+                      )
+                    : undefined;
+            case "muted":
+                return read(`bbl::ui_video_muted(${target})`, "boolean");
+            case "paused":
+                return read(`bbl::ui_video_paused(${target})`, "boolean");
+            case "readback":
+                // No source ever loads: the playback position stays at 0,
+                // the media never ends and its duration is unknown.
+                return attribute.value === "ended"
+                    ? { kind: "boolean", cpp: "false" }
+                    : numberConstantValue(
+                          attribute.value === "currentTime" ? 0 : NaN,
+                      );
         }
     }
 
@@ -6366,20 +6818,14 @@ export class UiProjection {
                     this.assignedStaticString(assigned).toLowerCase();
                 if (inputType !== "file") {
                     if (
-                        [
-                            "text",
-                            "password",
-                            "range",
-                            "checkbox",
-                            "color",
-                        ].includes(inputType) &&
+                        RETAINED_INPUT_TYPES.has(inputType) &&
                         !element.uiFileInput
                     ) {
                         return `bbl::ui_set_attribute(${engine}, ${element.cpp}, "type", ${this.context.cppString(inputType)})`;
                     }
                     this.context.fail(
                         assigned.site,
-                        `Retained native <input> type '${inputType}' is not represented; static text, password, range, checkbox, color and file inputs are supported, without changing a file input into another control.`,
+                        `Retained native <input> type '${inputType}' is not represented; static text, search, password, range, checkbox, color and file inputs are supported, without changing a file input into another control.`,
                     );
                 }
                 writable(element).uiFileInput = true;
@@ -6736,7 +7182,12 @@ export class UiProjection {
             });
             return;
         }
-        const booleanAttribute = this.booleanAttribute(element, property, site);
+        const booleanAttribute = this.booleanAttribute(
+            element,
+            property,
+            receiver,
+            site,
+        );
         if (booleanAttribute) {
             this.context.emit({
                 kind: "expression",
@@ -7000,45 +7451,57 @@ export class UiProjection {
         }
         const tag = this.declaredUiTag(element, receiver);
         if (property === "src" && tag === "img") {
-            // Every source the write can select is packaged; the
-            // selection itself runs as written.
-            const right = this.assignedExpression(assigned, property);
-            const sources = this.uiImageSourceCandidates(right);
-            if (!sources) {
-                this.context.emit({
-                    kind: "expression",
-                    code: `bbl::ui_set_attribute(${engine}, ${element.cpp}, "src", ${this.runtimeUiImageSource(right)});`,
-                });
-                return;
-            }
-            for (const source of sources) this.registerImageSource(source);
-            const fixed = this.tryUiStaticString(right);
-            this.context.emit({
-                kind: "expression",
-                code:
-                    `bbl::ui_set_attribute(${engine}, ${element.cpp}, "src", ` +
-                    `${
-                        fixed !== undefined
-                            ? this.context.cppString(
-                                  this.lowerUiAttributeLiteral(
-                                      "src",
-                                      fixed,
-                                      right,
-                                  ),
-                              )
-                            : this.uiStringCpp(
-                                  assigned.site,
-                                  "UI img src",
-                                  assigned.value,
-                              )
-                    });`,
-            });
+            this.emitUiImageSource(element, engine, "src", assigned);
             return;
         }
         this.context.fail(
             site,
             `Retained element property '${property}' assignment is not lowered natively.`,
         );
+    }
+
+    /**
+     * An image source attribute write (an img's `src`, a video's
+     * `poster`): every source the write can select is packaged, and the
+     * selection itself runs as written.
+     */
+    private emitUiImageSource(
+        element: Value,
+        engine: string,
+        attribute: "src" | "poster",
+        assigned: UiAssigned,
+    ): void {
+        const right = this.assignedExpression(assigned, attribute);
+        const sources = this.uiImageSourceCandidates(right);
+        if (!sources) {
+            this.context.emit({
+                kind: "expression",
+                code: `bbl::ui_set_attribute(${engine}, ${element.cpp}, "${attribute}", ${this.runtimeUiImageSource(right)});`,
+            });
+            return;
+        }
+        for (const source of sources) this.registerImageSource(source);
+        const fixed = this.tryUiStaticString(right);
+        this.context.emit({
+            kind: "expression",
+            code:
+                `bbl::ui_set_attribute(${engine}, ${element.cpp}, "${attribute}", ` +
+                `${
+                    fixed !== undefined
+                        ? this.context.cppString(
+                              this.lowerUiAttributeLiteral(
+                                  attribute,
+                                  fixed,
+                                  right,
+                              ),
+                          )
+                        : this.uiStringCpp(
+                              assigned.site,
+                              `UI ${element.uiTag ?? "img"} ${attribute}`,
+                              assigned.value,
+                          )
+                });`,
+        });
     }
 
     public emitUiStyleProperty(
@@ -7582,6 +8045,7 @@ export class UiProjection {
                     `Native host UI element tag '${element.tag}' is reserved for the retained projection.`,
                 );
             }
+            if (normalizedTag === "video") this.requireRetainedVideo();
             const handle =
                 this.context.allocateTemporaryCppName("host_ui_element");
             if (element.startupScript && normalizedTag !== "script")

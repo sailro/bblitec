@@ -4,8 +4,37 @@ import type { Value } from "./types.js";
 import { presentDataType } from "./data-types/operations.js";
 import { unlessRefused } from "./compile-error.js";
 import { documentEngine } from "./window-events.js";
-import { declaredInDomLibrary } from "./symbols.js";
+import { declaredInDomLibrary, declaredSymbol } from "./symbols.js";
 import { inheritsFrom } from "./type-facts.js";
+import { isDomElementType } from "./data-types.js";
+
+/**
+ * Whether a type is members picked from DOM element interfaces
+ * (`Pick<HTMLCanvasElement, "getBoundingClientRect">`): every property is
+ * declared by an element interface (`isDomElementType`), so a value of it
+ * is an element whatever record type stores it.
+ */
+export function picksElementMembers(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): boolean {
+    const properties = checker.getNonNullableType(type).getProperties();
+    return (
+        properties.length > 0 &&
+        properties.every((property) =>
+            (property.declarations ?? []).some((declaration) => {
+                const owner = ts.isInterfaceDeclaration(declaration.parent)
+                    ? declaredSymbol(checker, declaration.parent.name)
+                    : undefined;
+                return (
+                    owner !== undefined &&
+                    isDomElementType(owner) &&
+                    declaredInDomLibrary(property)
+                );
+            }),
+        )
+    );
+}
 
 /** Identify a declared DOM receiver without evaluating it. */
 export function isDomReceiver(
@@ -181,6 +210,7 @@ const WINDOW_INTERFACES: ReadonlyMap<string, WindowInterface> = new Map<
             ["HTMLButtonElement", "button"],
             ["HTMLCanvasElement", "canvas"],
             ["HTMLImageElement", "img"],
+            ["HTMLVideoElement", "video"],
             ["HTMLLabelElement", "label"],
             ["HTMLFormElement", "form"],
             ["HTMLAnchorElement", "a"],

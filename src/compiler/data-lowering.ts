@@ -220,6 +220,7 @@ import {
     functionArmIndex,
     isUndefinedDataType,
     presentDataType,
+    dropsResourceEngine,
     doubleLiteral,
     isNumericSequenceType,
     isTypedArrayType,
@@ -298,6 +299,7 @@ import {
     literalFieldObject,
     mappedElement,
     readOnlyFreshConst,
+    returnedArgument,
     yieldsFreshObject,
     yieldsNewArray,
 } from "./fresh-records.js";
@@ -701,6 +703,7 @@ interface DataLoweringContext extends Pick<
     | "emissionMark"
     | "reachesEmissionMark"
     | "registerNativeBinding"
+    | "entryStorage"
     | "registerNativeConstBinding"
     | "registerNativeBindingType"
     | "registerNativeTemporary"
@@ -3029,6 +3032,33 @@ export class DataLowerer {
                 );
             if (mode === "write" && owner.staticElementsOwner)
                 this.invalidateStaticElements(owner);
+            // A property the owner's declared record type has and its
+            // record's layout lacks is added to that one object.
+            if (
+                mode === "write" &&
+                ownerType?.kind === "struct" &&
+                this.context.dataTypes.lacksRecordProperty(
+                    ownerType.name,
+                    unwrapped.name.text,
+                )
+            ) {
+                const declared = presentDataType(
+                    this.dataTypeAt(unwrapped.expression),
+                );
+                if (
+                    declared?.kind === "struct" &&
+                    declared.name !== ownerType.name &&
+                    !this.context.dataTypes.lacksRecordProperty(
+                        declared.name,
+                        unwrapped.name.text,
+                    )
+                )
+                    this.context.dataTypes.joinWrittenRecordProperty(
+                        ownerType.name,
+                        declared.name,
+                        unwrapped.expression,
+                    );
+            }
             // A call can yield an intrinsic record or engine handle rather
             // than native data. Its owner has already been evaluated, so
             // continue through the shared property reader before declining
@@ -4149,20 +4179,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     : candidate;
             // An array of resources owns each element's engine, as one
             // resource does: the declared field stores it with its owner.
-            const resource = (type: DataType): DataType => {
-                const present = type.kind === "optional" ? type.inner : type;
-                return present.kind === "vector" || present.kind === "span"
-                    ? present.element
-                    : present;
-            };
-            const sourceHandle = resource(retained);
-            const targetHandle = resource(field.type);
             if (
-                sourceHandle.kind === "handle" &&
-                sourceHandle.ownedEngine &&
-                targetHandle.kind === "handle" &&
-                !targetHandle.ownedEngine &&
-                sourceHandle.handle === targetHandle.handle &&
+                dropsResourceEngine(retained, field.type) &&
                 field.declarations?.length
             )
                 owned.push(field);
@@ -4870,6 +4888,59 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         dataTypesEqual(stored, member),
                     ),
             )
+        );
+    }
+
+    /**
+     * A union the checker narrows to its several record members
+     * (`result === "carried" ? null : result`) stored as one record type:
+     * each record arm converts as that type stores it, and an arm the
+     * narrowing excluded is not held there (selecting it throws, as
+     * `std::get` does). Undefined unless the narrowed type is exactly as
+     * many object types as the union has record members, two or more.
+     */
+    private recordArmsCpp(
+        value: Value,
+        union: DataType<"union">,
+        dataType: DataType<"struct">,
+        narrowing: ts.Expression,
+        node: ts.Node,
+    ): string | undefined {
+        const arms = union.members.flatMap((member, index) =>
+            member.kind === "struct" ? [{ member, index }] : [],
+        );
+        if (arms.length < 2) return undefined;
+        const admitted = unionMembers(
+            this.context.checker.getNonNullableType(
+                this.context.checker.getTypeAtLocation(narrowing),
+            ),
+        );
+        if (
+            admitted.length !== arms.length ||
+            admitted.some((type) => (type.flags & ts.TypeFlags.Object) === 0)
+        )
+            return undefined;
+        const source = this.context.allocateTemporaryCppName("record_arms");
+        const cases = arms.map(({ member, index }) => {
+            let converted = "";
+            const lines = this.context.captureEmittedLines(() => {
+                converted = this.compileKnownValueForSink(
+                    this.leafValue(`std::get<${index}>(${source})`, member),
+                    dataType,
+                    node,
+                );
+            });
+            return (
+                `    if (${source}.index() == ${index}) {\n` +
+                lines.map((line) => `        ${line}\n`).join("") +
+                `        return ${converted};\n    }\n`
+            );
+        });
+        return (
+            `([&]() -> ${this.context.dataTypes.cppType(dataType)} {\n` +
+            `    const auto& ${source} = ${value.cpp};\n` +
+            cases.join("") +
+            `    throw std::bad_variant_access{};\n}())`
         );
     }
 
@@ -6017,21 +6088,21 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             }
             // A fallback may widen a scalar's literal union, or introduce a
             // different scalar alternative, or a record beside an array
-            // (`frames ?? frame`). Convert both branches through the joined
+            // (`frames ?? frame`), or a scalar beside a typed array
+            // (`lanes ?? "-"`). Convert both branches through the joined
             // type's sinks rather than forcing the fallback into the left
             // operand's narrower storage.
             const emptyArrayJoin = this.elementOrEmptyArray(inner, expression);
+            const arrayJoin =
+                inner.kind === "vector" ||
+                inner.kind === "span" ||
+                isTypedArrayType(inner);
             const joined =
                 !emptyArrayJoin &&
-                [
-                    "enum",
-                    "string",
-                    "number",
-                    "boolean",
-                    "union",
-                    "vector",
-                    "span",
-                ].includes(inner.kind)
+                (arrayJoin ||
+                    ["enum", "string", "number", "boolean", "union"].includes(
+                        inner.kind,
+                    ))
                     ? this.dataTypeAt(expression)
                     : undefined;
             let resultType =
@@ -6041,8 +6112,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 inner.kind === "number" ||
                 inner.kind === "boolean" ||
                 inner.kind === "union" ||
-                ((inner.kind === "vector" || inner.kind === "span") &&
-                    joined?.kind === "union")
+                (arrayJoin && joined?.kind === "union")
                     ? (joined ?? inner)
                     : inner);
             // Flow narrowing may omit a stored tag changed by a called helper.
@@ -8964,6 +9034,22 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
+     * An optional engine handle where a required one is taken through an
+     * assertion (`xs[i]!`, an asserted view of an engine slot): the handle
+     * where present, and the TypeError a read through an absent value throws
+     * where not (`bbl::js::present`). Any other value as it is.
+     */
+    public presentHandle(value: Value): Value {
+        const inner =
+            value.kind === "data" && value.dataType?.kind === "optional"
+                ? value.dataType.inner
+                : undefined;
+        return inner?.kind === "handle"
+            ? this.leafValue(`bbl::js::present(${value.cpp})`, inner)
+            : value;
+    }
+
+    /**
      * Native identity token for a JavaScript plain-data object expression.
      *
      * Struct storage stays inline, but a binding that selects an existing
@@ -9611,14 +9697,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         let contextualNode: ts.Expression = call;
         while (
             ts.isCallExpression(contextualNode.parent) &&
-            contextualNode.parent.arguments[0] === contextualNode &&
-            ts.isPropertyAccessExpression(contextualNode.parent.expression) &&
-            this.context.libraryGlobal(
-                contextualNode.parent.expression.expression,
-            ) === "Object" &&
-            ["freeze", "seal", "preventExtensions"].includes(
-                contextualNode.parent.expression.name.text,
-            )
+            returnedArgument(this.context.checker, contextualNode.parent)
+                ?.argument === contextualNode
         )
             contextualNode = contextualNode.parent;
         const contextualTsType =
@@ -13113,15 +13193,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
-     * Stores the member `key` a spread at `spread` copies out of
-     * `source`'s value as `dataType`: no expression of its own names it,
-     * so a sink asking which native owner it holds reads its checked type
+     * Stores the member `key` read at `at` out of `source`'s value as
+     * `dataType` (a spread's member, a module namespace document's): no
+     * expression of its own names it, so a sink asking which native owner
+     * it holds or which function it is reads its checked type
      * (`convertedMember`).
      */
-    private compileSpreadMemberForSink(
+    public compileReadMemberForSink(
         member: Value,
         dataType: DataType,
-        spread: ts.Node,
+        at: ts.Node,
         source: ts.Expression,
         key: string,
     ): string {
@@ -13129,7 +13210,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return this.compileConvertedMember(
             member,
             dataType,
-            spread,
+            at,
             undefined,
             undefined,
             property && {
@@ -13340,6 +13421,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             }
         }
         if (value.dataType?.kind === "union" && dataType.kind !== "union") {
+            const records =
+                dataType.kind === "struct" && narrowing
+                    ? this.recordArmsCpp(
+                          value,
+                          value.dataType,
+                          dataType,
+                          narrowing,
+                          node,
+                      )
+                    : undefined;
+            if (records !== undefined) return records;
             const member = this.narrowedUnionMemberIndex(
                 value.dataType,
                 dataType,
@@ -14062,6 +14154,36 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 });
             return;
         }
+        // Parsed elements stored as plain lanes: a const local holding a
+        // new array holds them so, its initializer converting each element
+        // while nothing else holds the array.
+        if (element.kind === "json" && plainLane(target)) {
+            const local = this.newArrayLocal(node);
+            if (local)
+                throw new DynamicBindingStorageRequired(local, {
+                    elements: target,
+                });
+            return;
+        }
+        // Resources stored where any value is (`unknown[]`): a binding
+        // assigned the array holds them as the array does, which refines
+        // the declared or source array it held.
+        if (
+            target.kind === "json" &&
+            presentDataType(element)?.kind === "handle"
+        ) {
+            const declaration = this.assignedDeclaration(node);
+            const held =
+                declaration && this.context.dynamicBindings.get(declaration);
+            if (
+                declaration &&
+                (held === undefined || held === "array" || held === "source")
+            )
+                throw new DynamicBindingStorageRequired(declaration, {
+                    elements: element,
+                });
+            return;
+        }
         const handle = (type: DataType): DataType =>
             type.kind === "optional" ? type.inner : type;
         const from = handle(element);
@@ -14139,6 +14261,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
 
     /** The local a converted expression initializes or plainly assigns, while it has no demanded storage. */
     private assignedBinding(node: ts.Node): ts.VariableDeclaration | undefined {
+        const declaration = this.assignedDeclaration(node);
+        return declaration && !this.context.dynamicBindings.has(declaration)
+            ? declaration
+            : undefined;
+    }
+
+    /** The local a converted expression initializes or plainly assigns. */
+    private assignedDeclaration(
+        node: ts.Node,
+    ): ts.VariableDeclaration | undefined {
         const converted = this.convertedExpression(node);
         if (!converted) return undefined;
         const expression = outermostWrapper(converted, { branches: true });
@@ -14159,9 +14291,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                   ? resolvedSymbol(this.context.checker, parent.left)
                         ?.valueDeclaration
                   : undefined;
-        return declaration &&
-            ts.isVariableDeclaration(declaration) &&
-            !this.context.dynamicBindings.has(declaration)
+        return declaration && ts.isVariableDeclaration(declaration)
             ? declaration
             : undefined;
     }
@@ -14470,6 +14600,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 cpp: this.compileKnownValueForSink(value, dataType, source),
                 dataType,
                 freshData: true,
+            };
+        // A map of another value type is stored as the map sink stores it
+        // (`valueMap`), which joins its records with the target's.
+        if (
+            value.kind === "data" &&
+            value.dataType?.kind === "map" &&
+            dataType.kind === "map"
+        )
+            return {
+                kind: "data",
+                cpp: this.compileKnownValueForSink(value, dataType, source),
+                dataType,
             };
         this.requireNumericSlot(value, dataType, expression);
         const boxed = this.documentBoxedRecord(value, dataType);
@@ -15869,7 +16011,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 kind: "expression",
                 code: store(
                     field,
-                    this.compileSpreadMemberForSink(
+                    this.compileReadMemberForSink(
                         sourceValue,
                         field.type,
                         node,
@@ -15980,7 +16122,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                                 kind: "expression",
                                 code: store(
                                     field,
-                                    this.compileSpreadMemberForSink(
+                                    this.compileReadMemberForSink(
                                         entry.value,
                                         field.type,
                                         property,
@@ -23774,14 +23916,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
     }
 
+    /**
+     * Stores `expression` as an array of `dataType`; a `!` around an
+     * optional array asserts it present.
+     */
     public compileVectorSink(
-        unwrapped: ts.Expression,
+        expression: ts.Expression,
         dataType: DataType & {
             kind: "vector";
         },
         retainElements?: (elements: readonly Value[] | undefined) => void,
         copiedRecordSources?: Value[],
     ): string {
+        const unwrapped = this.context.unwrap(expression);
         if (ts.isArrayLiteralExpression(unwrapped)) {
             this.context.reachJsData();
             const spreads = unwrapped.elements.filter(ts.isSpreadElement);
@@ -24002,7 +24149,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 unwrapped,
             );
         }
-        const value = this.requireDataValue(unwrapped, dataType);
+        const value = this.requireDataValue(unwrapped, dataType, expression);
         this.markEscaped(value);
         return value.cpp;
     }

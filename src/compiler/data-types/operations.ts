@@ -115,10 +115,39 @@ export function functionArmIndex(
 }
 
 /** A storage past its optional wrapper. */
+export function presentDataType(type: DataType): DataType;
+export function presentDataType(
+    type: DataType | undefined,
+): DataType | undefined;
 export function presentDataType(
     type: DataType | undefined,
 ): DataType | undefined {
     return type?.kind === "optional" ? type.inner : type;
+}
+
+/**
+ * Whether storing `source` as `target` drops the engine its resources
+ * keep: one resource, or an array's elements, of the same handle kind.
+ */
+export function dropsResourceEngine(
+    source: DataType,
+    target: DataType,
+): boolean {
+    const resource = (type: DataType): DataType => {
+        const present = presentDataType(type);
+        return present.kind === "vector" || present.kind === "span"
+            ? present.element
+            : present;
+    };
+    const from = resource(source);
+    const to = resource(target);
+    return (
+        from.kind === "handle" &&
+        from.ownedEngine === true &&
+        to.kind === "handle" &&
+        !to.ownedEngine &&
+        from.handle === to.handle
+    );
 }
 
 /**

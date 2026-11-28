@@ -142,10 +142,6 @@ test("refuses flag combinations across the consolidated readings", () => {
             /--headed shows the browser of --observe/,
         ],
         [
-            ["neutrality", "baseline.txt", "--write"],
-            /--write saves a generated-tree baseline and rides --generated/,
-        ],
-        [
             ["probe", "scene1", "--shader", "x", "--backend", "dawn"],
             /Unknown probe argument '--backend'/,
         ],

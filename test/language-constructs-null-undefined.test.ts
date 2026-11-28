@@ -425,6 +425,25 @@ check(
 );
 
 check(
+    "non-null-asserted-optional-array-stored-as-an-array",
+    `
+    interface Rect { u: number; w: number }
+    interface Manifest { cells?: Rect[]; names?: string[] }
+    const authored = (manifest: Manifest): boolean => (manifest.cells?.length ?? 0) > 0;
+    function cellsOf(manifest: Manifest): Rect[] {
+        const cells: Rect[] = authored(manifest) ? manifest.cells! : [{ u: 0, w: 1 }];
+        return cells;
+    }
+    const names = (manifest: Manifest): string[] => manifest.names!;
+    const manifests: Manifest[] = [{ cells: [{ u: 0, w: 0.5 }, { u: 0.5, w: 0.5 }], names: ["a"] }, { names: [] }];
+    const first = cellsOf(manifests[0]!);
+    if (first.length !== 2 || first !== manifests[0]!.cells || cellsOf(manifests[1]!)[0]!.w !== 1) throw new Error("cells");
+    names(manifests[1]!).push("b");
+    if (names(manifests[0]!).length !== 1 || manifests[1]!.names!.join() !== "b") throw new Error("names");
+`,
+);
+
+check(
     "strict null and undefined equality follows the operand's type",
     `
     interface Options {
@@ -679,6 +698,65 @@ check(
     const g = new Float32Array([0, 1, -1, -2, 7, 9]);
     const same = (a: number, b: number): boolean => pick(g[a]!) === pick(g[b]!);
     if (same(0, 1) || !same(0, 0) || !same(2, 3) || !same(4, 5) || same(2, 4)) throw new Error("tagged results");
+`,
+);
+
+// So is the result of a body inlined with early returns, through a function
+// returning its call.
+check(
+    "tagged-results-of-inlined-early-return-bodies",
+    `
+    interface Spot { x: number; z: number; }
+    const spots: Spot[] = [{ x: 1, z: 2 }, { x: 4, z: 5 }];
+    const gate = new Float32Array([0, 1]);
+    const project = <T>(x: number, keep: (spot: Spot) => T | null): T | null | undefined => {
+        if (gate[1]! < 0.5) return undefined;
+        let best: T | null = null;
+        for (const spot of spots) { const kept = keep(spot); if (kept !== null && spot.x > x) best = kept; }
+        return best;
+    };
+    const scan = (x: number): Spot | null | undefined => project(x, (spot) => spot);
+    const committed = new Map<number, { spot: Spot | null }>();
+    function reach(id: number, x: number): Spot | null {
+        const entry = committed.get(id);
+        if (entry) {
+            const result = scan(x);
+            if (result === undefined) return entry.spot;
+            entry.spot = result;
+            return result;
+        }
+        const spot = scan(x) ?? null;
+        committed.set(id, { spot });
+        return spot;
+    }
+    if (reach(1, 0)?.x !== 4 || reach(1, 9) !== null || committed.get(1)!.spot !== null) throw new Error("inlined tagged results");
+    gate[1] = 0;
+    if (reach(1, 0) !== null) throw new Error("undefined keeps the committed spot");
+`,
+);
+
+// A member typed unknown read through an element of an absent array's empty
+// fallback is the dynamic value such a read would hold.
+check(
+    "unknown-members-of-empty-fallback-elements",
+    `
+    interface Arch { x: number; spec: unknown }
+    function sameValue(a: unknown, b: unknown): boolean { return Object.is(a, b); }
+    function sameArches(previous: readonly Arch[] | undefined, current: readonly Arch[] | undefined): boolean {
+        const a = previous ?? [];
+        const b = current ?? [];
+        if (a.length !== b.length) return false;
+        for (let i = 0; i < a.length; i++) {
+            const p = a[i]!;
+            const q = b[i]!;
+            if (p.x !== q.x || !sameValue(p.spec, q.spec)) return false;
+        }
+        return true;
+    }
+    const spec = { kind: "round" };
+    const arches: Arch[] = [{ x: 1, spec }];
+    if (!sameArches(undefined, undefined) || !sameArches(arches, [{ x: 1, spec }]) || sameArches(arches, [{ x: 1, spec: { kind: "round" } }]) || sameArches(arches, undefined))
+        throw new Error("unknown members");
 `,
 );
 

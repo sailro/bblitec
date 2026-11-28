@@ -55,16 +55,14 @@ int main() try {
             engine, sheet,
             {.primary = "panel",
              .style = "flex-wrap:wrap;margin-left:14px;text-align:right;background-color:red;",
-             .max_width = 480});
+             .viewport = {.max_width = 480}});
         const auto band = add("position:absolute;left:20px;top:200px;height:10px;");
         ui_set_attribute(engine, band, "class", "band");
         ui_add_class_style(engine, sheet, "band", "width:10px;");
         ui_add_style_rule(engine, sheet,
                           {.primary = "band",
                            .style = "width:30px;",
-                           .min_width = 500,
-                           .max_height = 500,
-                           .min_height = 300});
+                           .viewport = {.min_width = 500, .max_height = 500, .min_height = 300}});
         pal::UiRmlRuntime runtime(engine, window, 640, 480);
         const auto update = [&](int width = 640, int height = 480) {
             pal::fixture_time_ms += 100;

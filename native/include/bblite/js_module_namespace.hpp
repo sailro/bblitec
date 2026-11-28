@@ -5,6 +5,10 @@
 
 #include <algorithm>
 #include <exception>
+#include <functional>
+#include <mutex>
+#include <set>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -14,6 +18,16 @@ namespace bbl::js {
 struct ModuleNamespace {
     std::string_view key;
     bool operator==(const ModuleNamespace&) const = default;
+    /** The namespace object's identity: one per module, however many values name it. */
+    [[nodiscard]] const void* identity() const {
+        static std::mutex guard;
+        static std::set<std::string, std::less<>> modules;
+        const std::lock_guard lock(guard);
+        auto found = modules.find(key);
+        if (found == modules.end())
+            found = modules.emplace(key).first;
+        return &*found;
+    }
 };
 
 /** A realm's module evaluation retains its bindings and first failure. */

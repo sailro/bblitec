@@ -84,7 +84,56 @@ export function recordIdentity(
         (object.objectFlags &
             (ts.ObjectFlags.Anonymous | ts.ObjectFlags.Instantiated)) ===
             (ts.ObjectFlags.Anonymous | ts.ObjectFlags.Instantiated);
-    return instantiated ? type : (type.aliasSymbol ?? type.symbol ?? type);
+    return instantiated
+        ? type
+        : (type.aliasSymbol ?? type.symbol ?? unionIdentity(checker, type));
+}
+
+/**
+ * @unjournaled Pure functions of the checked program, kept across replays:
+ * a number for each member identity a union identity names, per checker,
+ * the first union seen of each set of member shapes, and each union type's
+ * identity once found.
+ */
+const memberNumbers = new WeakMap<ts.Symbol | ts.Type, number>();
+let nextMemberNumber = 0;
+const unionsByMembers = new WeakMap<ts.TypeChecker, Map<string, ts.Type>>();
+const unionIdentities = new WeakMap<ts.Type, ts.Type>();
+
+/**
+ * An unnamed type's identity: the type itself, but for a union, one union
+ * per set of its members' shapes (each member's identity and property
+ * names). The checker types an object literal afresh each time it is
+ * asked, so a union of literals is a new checker type at each ask.
+ */
+function unionIdentity(checker: ts.TypeChecker, type: ts.Type): ts.Type {
+    const found = unionIdentities.get(type);
+    if (found) return found;
+    const members = unionMembers(type);
+    if (members.length < 2) return type;
+    const key = members
+        .map((member) => {
+            const identity = recordIdentity(checker, member);
+            let number = memberNumbers.get(identity);
+            if (number === undefined) {
+                number = nextMemberNumber++;
+                memberNumbers.set(identity, number);
+            }
+            const names = checker
+                .getPropertiesOfType(member)
+                .map((property) => property.name)
+                .sort();
+            return `${number}:${names.join(".")}`;
+        })
+        .sort()
+        .join(",");
+    let byMembers = unionsByMembers.get(checker);
+    if (!byMembers)
+        unionsByMembers.set(checker, (byMembers = new Map<string, ts.Type>()));
+    let known = byMembers.get(key);
+    if (!known) byMembers.set(key, (known = type));
+    unionIdentities.set(type, known);
+    return known;
 }
 
 /**
@@ -673,11 +722,16 @@ function compatibleSignatures(
 }
 
 /**
- * @unjournaled A pure function of the checked program's types, kept across
- * replays. Only whole answers are kept: a nested pair is assumed compatible
- * while its own comparison is in progress.
+ * @unjournaled Pure functions of the checked program's types, kept across
+ * replays: {@link layoutsCompatible}'s answers without and with its
+ * `unwritten` fields. Only whole answers are kept: a nested pair is assumed
+ * compatible while its own comparison is in progress.
  */
 const compatibleLayouts = new WeakMap<ts.Type, Map<ts.Type, boolean>>();
+const unwrittenCompatibleLayouts = new WeakMap<
+    ts.Type,
+    Map<ts.Type, boolean>
+>();
 
 /**
  * Whether one layout can store both record types' common fields: each held
@@ -685,22 +739,110 @@ const compatibleLayouts = new WeakMap<ts.Type, Map<ts.Type, boolean>>();
  * strings, numeric tuples and number arrays aside; functions as their
  * parameters and results), records in records of
  * a component joined with them; a record union's field as every arm
- * declaring it holds it.
+ * declaring it holds it. With `unwritten`, a field one record types as a
+ * union with an arm the other's field is held alike as
+ * (`boolean | { beyond }` beside `{ beyond }`) is that union where
+ * `unwritten` says no write replaces it on the union's records: the
+ * other's reads then find only its own arm.
  */
 export function layoutsCompatible(
     checker: ts.TypeChecker,
     left: ts.Type,
     right: ts.Type,
+    unwritten?: UnwrittenField,
 ): boolean {
-    let byRight = compatibleLayouts.get(left);
-    if (!byRight)
-        compatibleLayouts.set(left, (byRight = new Map<ts.Type, boolean>()));
+    // `unwritten` only adds ways to hold a field: a pair compatible
+    // without it is compatible with it.
+    if (compatibleLayouts.get(left)?.get(right) === true) return true;
+    return unwritten
+        ? rememberedLayouts(unwrittenCompatibleLayouts, left, right, () =>
+              layoutsHoldBoth(checker, left, right, new Map(), unwritten),
+          )
+        : rememberedLayouts(compatibleLayouts, left, right, () =>
+              layoutsHoldBoth(checker, left, right, new Map()),
+          );
+}
+
+/** A pair's answer kept in `cache`, computed by `compare` the first time. */
+function rememberedLayouts(
+    cache: WeakMap<ts.Type, Map<ts.Type, boolean>>,
+    left: ts.Type,
+    right: ts.Type,
+    compare: () => boolean,
+): boolean {
+    let byRight = cache.get(left);
+    if (!byRight) cache.set(left, (byRight = new Map<ts.Type, boolean>()));
     let compatible = byRight.get(right);
     if (compatible === undefined) {
-        compatible = layoutsHoldBoth(checker, left, right, new Map());
+        compatible = compare();
         byRight.set(right, compatible);
     }
     return compatible;
+}
+
+/**
+ * Whether no write replaces `property` on records of `owner`: a pure
+ * function of the checked program (`recordFieldIsWritten`).
+ */
+export type UnwrittenField = (owner: ts.Type, property: string) => boolean;
+
+/**
+ * Whether a field `wide` types as a union with an arm held alike as the
+ * other record's `narrow` field (`widensField`) and no write replaces it on
+ * records of `owner`: one union slot then holds both, the other's reads
+ * finding only its own arm.
+ */
+export function widenedUnwritten(
+    checker: ts.TypeChecker,
+    wide: ts.Type,
+    owner: ts.Type,
+    narrow: ts.Type,
+    name: string,
+    unwritten: UnwrittenField,
+): boolean {
+    return widensField(checker, wide, narrow) && unwritten(owner, name);
+}
+
+/**
+ * Whether a field `wide` types as a union with an arm held alike as the
+ * other record's `narrow` field: a union slot then holds both.
+ */
+function widensField(
+    checker: ts.TypeChecker,
+    wide: ts.Type,
+    narrow: ts.Type,
+): boolean {
+    const arms = unionMembers(checker.getNonNullableType(wide));
+    const other = checker.getNonNullableType(narrow);
+    return (
+        arms.length > 1 &&
+        unionMembers(other).length === 1 &&
+        arms.some((arm) => layoutsHoldBoth(checker, arm, other, new Map()))
+    );
+}
+
+/**
+ * Whether `property`, of type `type`, is a `readonly` field typed `object`:
+ * no write goes through it, so in a layout shared with records storing an
+ * object there it reads the object they store.
+ */
+export function readsHeldObject(
+    checker: ts.TypeChecker,
+    property: ts.Symbol,
+    type: ts.Type,
+): boolean {
+    const declarations = property.declarations ?? [];
+    return (
+        (checker.getNonNullableType(type).flags & ts.TypeFlags.NonPrimitive) !==
+            0 &&
+        declarations.length > 0 &&
+        declarations.every(
+            (declaration) =>
+                (ts.getCombinedModifierFlags(declaration) &
+                    ts.ModifierFlags.Readonly) !==
+                0,
+        )
+    );
 }
 
 function layoutsHoldBoth(
@@ -708,6 +850,7 @@ function layoutsHoldBoth(
     left: ts.Type,
     right: ts.Type,
     seen: Map<ts.Type, Set<ts.Type>>,
+    unwritten?: UnwrittenField,
 ): boolean {
     const a = checker.getNonNullableType(left);
     const b = checker.getNonNullableType(right);
@@ -744,7 +887,7 @@ function layoutsHoldBoth(
     const elementA = element(a);
     const elementB = element(b);
     if (elementA && elementB)
-        return layoutsHoldBoth(checker, elementA, elementB, seen);
+        return layoutsHoldBoth(checker, elementA, elementB, seen, unwritten);
     const dictionary = (record: ts.Type, view: ts.Type): boolean => {
         if (!isPlainRecord(checker, record)) return false;
         const value = checker.getIndexTypeOfType(view, ts.IndexKind.String);
@@ -767,10 +910,47 @@ function layoutsHoldBoth(
             unionMembers(type).flatMap((arm) =>
                 propertyTypes(checker, arm, name),
             );
+        const widened = (
+            wide: ts.Type,
+            owner: ts.Type,
+            narrow: ts.Type,
+            name: string,
+        ): boolean =>
+            unwritten !== undefined &&
+            widenedUnwritten(checker, wide, owner, narrow, name, unwritten);
+        const viewed = (
+            owner: ts.Type,
+            name: string,
+            other: ts.Type,
+        ): boolean =>
+            (checker.getNonNullableType(other).flags & ts.TypeFlags.Object) !==
+                0 &&
+            unionMembers(owner).every((arm) => {
+                const property = checker.getPropertyOfType(arm, name);
+                return (
+                    property === undefined ||
+                    readsHeldObject(
+                        checker,
+                        property,
+                        checker.getTypeOfSymbol(property),
+                    )
+                );
+            });
         return recordProperties(checker, b).every((property) =>
             fields(a, property.name).every((held) =>
-                fields(b, property.name).every((field) =>
-                    layoutsHoldBoth(checker, held, field, seen),
+                fields(b, property.name).every(
+                    (field) =>
+                        layoutsHoldBoth(
+                            checker,
+                            held,
+                            field,
+                            seen,
+                            unwritten,
+                        ) ||
+                        widened(held, a, field, property.name) ||
+                        widened(field, b, held, property.name) ||
+                        viewed(a, property.name, field) ||
+                        viewed(b, property.name, held),
                 ),
             ),
         );

@@ -53,6 +53,17 @@ test("sheets and matchMedia share device feature grammar and refusal rules", () 
         parseMediaQuery("(resolution:1dppx) and (hover)", "window"),
         undefined,
     );
+    assert.deepEqual(parseMediaQuery("(max-width:760px)", "window"), {
+        maxWidth: 760,
+    });
+    assert.deepEqual(
+        parseMediaQuery("(min-width: 600px) and (max-height: 400px)", "window"),
+        { minWidth: 600, maxHeight: 400 },
+    );
+    assert.match(
+        compileSource(`window.matchMedia("(max-width:760px)").matches;`).cpp,
+        /create_media_query/,
+    );
 });
 
 test("Window media queries retain typed nullable values, live matches and change listeners", (t) => {

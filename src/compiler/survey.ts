@@ -36,7 +36,13 @@ import {
 } from "./replay-storage.js";
 import { StorageDemand } from "./storage-demand.js";
 import { EmissionSet, EmissionTransaction } from "./emission-transaction.js";
-import { coverLoweredAgain, keepingCoverage } from "./source-coverage.js";
+import {
+    coverageMark,
+    coverLoweredAgain,
+    coverRollback,
+    endCoverageMark,
+    keepingCoverage,
+} from "./source-coverage.js";
 import {
     bindingNameIdentifiers,
     hasDeclareModifier,
@@ -140,8 +146,37 @@ export interface SurveyReport {
     demands: SurveyDemand[];
     /** The passes that ran to their end. */
     passes: number;
+    /** What each pass that ran to its end took, in order: why a next pass was needed. */
+    passHistory?: SurveyPassDemands[];
     /** The statements whose own lowering took longest in the last passes, slowest first. */
     slowest: SurveyTiming[];
+}
+
+/**
+ * The storage demands one pass took, and those it met again after taking
+ * them: what the next pass lowers with.
+ */
+interface SurveyPassDemands {
+    pass: number;
+    /**
+     * Each demand the pass took, with the statement that first met it and
+     * how the pass before treated that statement: `new` when no lowering
+     * of it began there (code first reached in this pass), `lowered` when
+     * it lowered there (a demand only the storage taken since raises), and
+     * `rolled back` when a refusal or a demand rolled it back there.
+     */
+    taken: {
+        demand: string;
+        site?: string;
+        statement?: string;
+        reached?: "new" | "lowered" | "rolled back";
+    }[];
+    /**
+     * Demands the pass took that statements met again and rolled back: the
+     * storage holds them, but what the pass built before them (a layout)
+     * stands until the next pass.
+     */
+    deferred: { demand: string; site?: string; statements: number }[];
 }
 
 /**
@@ -265,9 +300,10 @@ interface Attempt {
      * what they ask for: what it lowered before one can stand on storage
      * the demand changed (a layout already built), so a next pass lowers
      * everything with them, and the census is exact once a pass takes none.
-     * Each with the site it rose at, which a pass names it by.
+     * Each with the site it rose at, which a pass names it by, and the
+     * statement it was first met at.
      */
-    taken: Map<string, string | undefined>;
+    taken: Map<string, { site: string | undefined; statement: ts.Statement }>;
     /**
      * Those a probe began: journaled, so a probe that rolls back takes
      * its statements away and a committed one keeps them.
@@ -665,6 +701,11 @@ export class SurveyCollector {
     private passes = 0;
     /** @unjournaled The census of the last pass that ran to its end (`publishedSurvey`). */
     private furthest: SurveyReport | undefined;
+    /** @unjournaled What each pass that ran to its end took (`SurveyReport.passHistory`). */
+    private readonly history: SurveyPassDemands[] = [];
+    /** @unjournaled The statements the last ended pass began, and those it rolled back. */
+    private ended:
+        { begun: Set<ts.Statement>; rolledBack: Set<ts.Statement> } | undefined;
 
     private readonly progress: SurveyProgress | undefined;
     private readonly passLimit: number | undefined;
@@ -1186,6 +1227,9 @@ export class SurveyCollector {
         this.timing = timing;
         // The last demand this statement made the pass take.
         let taken: Error | undefined;
+        // Each try of the statement starts where the rollback of the one
+        // before left the coverage log: at this mark.
+        const lowered = coverageMark();
         try {
             for (;;) {
                 let met: unknown;
@@ -1205,8 +1249,10 @@ export class SurveyCollector {
                     context.callbacks.retryForwardMiss(met, () =>
                         this.withdrawBodies(begun),
                     )
-                )
+                ) {
+                    coverRollback(lowered, () => "replay|forward binding");
                     continue;
+                }
                 // A demand its replay refused is the statement's refusal; a
                 // storage demand applies at once and the statement lowers
                 // again with it; any other replay rolls its statement back
@@ -1216,19 +1262,33 @@ export class SurveyCollector {
                         ? met
                         : context.refusedDemand(met);
                 if (!refusal && !this.replayable?.(met)) throw met;
-                const applied = refusal ? false : this.applied(attempt, met);
+                const applied = refusal
+                    ? false
+                    : this.applied(attempt, statement, met);
                 if (applied === true) {
                     taken = met as Error;
+                    const demand = taken;
+                    coverRollback(
+                        lowered,
+                        () => `demand|${replayText(demand)}`,
+                    );
                     if (attempt.root) attempt.root.stale = true;
                     continue;
                 }
                 const refused =
                     applied instanceof CompileError ? applied : refusal;
+                const recorded =
+                    refused && (!taken || applied instanceof CompileError);
+                coverRollback(lowered, () =>
+                    recorded
+                        ? `refusal|${refused.fileName}:${refused.line}|${refusalClass(refused.detail)}`
+                        : `demand|${replayText(refused ? taken! : (met as Error))}`,
+                );
                 // A refusal once this pass took a demand for the statement
                 // can come of storage lowered before the demand (a layout
                 // already built): the next pass lowers it afresh. A demand
                 // its application refused is refused all the same.
-                if (refused && (!taken || applied instanceof CompileError))
+                if (recorded)
                     this.record(attempt, context.checker, statement, refused);
                 else {
                     this.demanded(
@@ -1256,6 +1316,7 @@ export class SurveyCollector {
                 break;
             }
         } finally {
+            endCoverageMark();
             this.timing = enclosing;
             const elapsed = performance.now() - timing.started;
             if (enclosing) enclosing.nested += elapsed;
@@ -1305,13 +1366,14 @@ export class SurveyCollector {
     }
 
     /**
-     * What applying `met` did: true when the storage took a new demand,
-     * "held" when it already held one this attempt never took, the refusal
-     * applying it raised, and false when this attempt already took it or
-     * `met` is not a storage demand.
+     * What applying `met`, which `statement` met, did: true when the
+     * storage took a new demand, "held" when it already held one this
+     * attempt never took, the refusal applying it raised, and false when
+     * this attempt already took it or `met` is not a storage demand.
      */
     private applied(
         attempt: Attempt,
+        statement: ts.Statement,
         met: unknown,
     ): boolean | "held" | CompileError {
         if (!(met instanceof StorageDemand) || !this.apply) return false;
@@ -1323,7 +1385,10 @@ export class SurveyCollector {
             if (error instanceof CompileError) return error;
             throw error;
         }
-        attempt.taken.set(key, replaySite(met));
+        attempt.taken.set(key, {
+            site: replaySite(met),
+            statement: attempt.taken.get(key)?.statement ?? statement,
+        });
         attempt.fresh.add(key);
         this.storageChanged();
         return true;
@@ -1429,6 +1494,7 @@ export class SurveyCollector {
      */
     public passEnded(added: number): boolean {
         this.passes++;
+        if (this.last) this.recordPass(this.last);
         const census = this.report();
         this.furthest = census;
         const phases = (this.last?.phases ?? [])
@@ -1451,7 +1517,7 @@ export class SurveyCollector {
         const taken = [...(this.last?.taken ?? [])];
         const named = taken
             .slice(0, 8)
-            .map(([key, site]) => stopLine(key, site));
+            .map(([key, { site }]) => stopLine(key, site));
         const which =
             named.length > 0
                 ? `: ${named.join("; ")}${taken.length > named.length ? `; ${taken.length - named.length} more` : ""}`
@@ -1467,6 +1533,42 @@ export class SurveyCollector {
         this.progress?.report(line);
         this.leaveCensus(line, census);
         return true;
+    }
+
+    /** Adds what `attempt`, the pass that just ended, took to the history. */
+    private recordPass(attempt: Attempt): void {
+        const before = this.ended;
+        const reached = (
+            statement: ts.Statement,
+        ): "new" | "lowered" | "rolled back" =>
+            before?.rolledBack.has(statement)
+                ? "rolled back"
+                : before?.begun.has(statement)
+                  ? "lowered"
+                  : "new";
+        const taken = [...attempt.taken].map(
+            ([demand, { site, statement }]) => ({
+                demand,
+                ...(site ? { site } : {}),
+                statement: nodeSite(statement),
+                reached: reached(statement),
+            }),
+        );
+        const deferred = [...attempt.demands.values()]
+            .filter(({ demand }) => attempt.taken.has(demand))
+            .map(({ demand, site, rolledBack }) => ({
+                demand,
+                ...(site ? { site } : {}),
+                statements: rolledBack.size,
+            }));
+        this.history.push({ pass: this.passes, taken, deferred });
+        const rolledBack = new Set<ts.Statement>();
+        for (const { rolledBack: statements } of [
+            ...attempt.demands.values(),
+            ...attempt.refusals.values(),
+        ])
+            for (const statement of statements) rolledBack.add(statement);
+        this.ended = { begun: new Set(attempt.distinct), rolledBack };
     }
 
     /**
@@ -1719,6 +1821,7 @@ export class SurveyCollector {
                     a.demand.localeCompare(b.demand),
             ),
             passes: this.passes,
+            ...(this.history.length ? { passHistory: this.history } : {}),
             slowest: [...this.realms.values()]
                 .flatMap((attempt) => attempt.slowest)
                 .sort((a, b) => b.selfMs - a.selfMs)

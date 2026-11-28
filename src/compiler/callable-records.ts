@@ -14,7 +14,7 @@ import type { DataSinkHost } from "./data-sinks/contracts.js";
 import { calledFunction, resolvedSymbol } from "./symbols.js";
 
 /** A function expression, or a call whose source returns only new functions. */
-function freshCallable(
+export function freshCallable(
     checker: ts.TypeChecker,
     expression: ts.Expression,
     active = new Set<ts.Node>(),
@@ -77,6 +77,57 @@ function freshArgument(
     );
 }
 
+/**
+ * A module's function declaration is one function object for the whole
+ * run: its callable record is one carrier in entry storage, made at its
+ * first conversion, which every alias and conversion shares with the
+ * properties written on it.
+ */
+function functionObjectRecord(
+    lowerer: DataSinkHost,
+    value: Value,
+    type: DataType<"struct">,
+    call: DataType<"function">,
+    declaration: ts.FunctionDeclaration,
+    node: ts.Node,
+): Value {
+    const { context } = lowerer;
+    if (
+        !ts.isSourceFile(declaration.parent) &&
+        !ts.isModuleBlock(declaration.parent)
+    )
+        context.fail(
+            node,
+            "A nested function declaration viewed as a callable record is a new object each time its scope runs, which one native carrier cannot follow.",
+        );
+    const cppType = context.dataTypes.cppType(type);
+    const storage = context.entryStorage(
+        declaration,
+        "function_object",
+        cppType,
+    );
+    if (storage.type !== cppType)
+        context.fail(
+            node,
+            "A function declaration viewed as two callable record types has no one native object.",
+        );
+    const carrier = storage.binding.name;
+    let callback = "";
+    const lines = context.captureEmittedLines(() => {
+        callback = lowerer.compileKnownValueForSink(value, call, node);
+    });
+    context.emit({
+        kind: "expression",
+        code:
+            `if (!${carrier}) { ${carrier} = bbl::js::make_ref<bblscene::${type.name}Data>(); ` +
+            `${lines.join("\n")} ${carrier}->${callMember} = ${callback}; }`,
+    });
+    return {
+        ...lowerer.leafValue(carrier, type),
+        nativeCaptures: [storage.binding],
+    };
+}
+
 /** A function's properties live on one carrier shared by every lexical alias. */
 export function callableRecordValue(
     lowerer: DataSinkHost,
@@ -130,6 +181,10 @@ export function callableRecordValue(
             node,
             "A bare callback does not supply the required properties of this callable record.",
         );
+    const owner =
+        value.kind === "callback" ? value.callbackDeclaration : undefined;
+    if (owner && ts.isFunctionDeclaration(owner))
+        return functionObjectRecord(lowerer, value, type, call, owner, node);
     const declaration =
         expression &&
         (value.kind === "callback"

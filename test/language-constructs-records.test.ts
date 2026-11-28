@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { runGeneratedProgram } from "./native-fixture.js";
-import { check, native } from "./language-constructs.js";
+import { check, checkInRealm, native } from "./language-constructs.js";
 
 check(
     "a-rebound-object-binding-reads-its-current-object",
@@ -675,6 +675,105 @@ check(
 );
 
 check(
+    "a-record-in-a-discriminated-literal-field-is-the-selected-arm",
+    `
+    interface ConeHost { x: number; baseY: number }
+    interface GableHost { cx: number; eaveY: number }
+    interface Envelope { id: number; x: number; baseY: number; radius: number }
+    interface Cone { readonly kind: "cone"; readonly host: ConeHost }
+    interface Gable { readonly kind: "gable"; readonly host: GableHost }
+    interface Disc { readonly kind: "disc"; readonly radius: number }
+    type Carrier = Cone | Gable | Disc;
+    interface Tower { roof: { kind: "cone"; envelope: Envelope } | { kind: "disc"; radius: number } }
+    function append(out: Carrier[], tower: Tower): void {
+        if (tower.roof.kind === "cone") out.push({ kind: "cone", host: tower.roof.envelope });
+        else out.push({ kind: "disc", radius: tower.roof.radius });
+    }
+    const envelope: Envelope = { id: 1, x: 2, baseY: 3, radius: 1 };
+    const out: Carrier[] = [{ kind: "gable", host: { cx: 5, eaveY: 1 } }];
+    for (const tower of [{ roof: { kind: "cone", envelope } }, { roof: { kind: "disc", radius: 4 } }] as Tower[]) append(out, tower);
+    envelope.x = 7;
+    const cone = out[1]!;
+    if (cone.kind !== "cone" || cone.host.x !== 7 || (cone.host as Envelope) !== envelope) throw new Error("one object");
+    cone.host.baseY = 9;
+    if (envelope.baseY !== 9 || JSON.stringify(cone.host) !== '{"id":1,"x":7,"baseY":9,"radius":1}') throw new Error("written through the arm");
+    const gable = out[0]!;
+    if (gable.kind !== "gable" || gable.host.cx !== 5 || out[2]!.kind !== "disc") throw new Error("other arms");
+`,
+);
+
+check(
+    "a-map-of-records-stored-as-a-map-of-another-record-type-stays-one-map",
+    `
+    interface Brick { variant: number; uh: number; vh: number; wh: number; seed: number }
+    interface Meta { variant: number; rep: { uh: number; vh: number; wh: number } }
+    interface Prepared { bucketMeta: Map<string, Meta>; count: number }
+    let kept: Map<string, { variant: number; rep: Brick }> | null = null;
+    function prepare(bricks: readonly Brick[]): Prepared {
+        const entries = bricks.map((brick): [string, { variant: number; rep: Brick }] => [\`\${brick.variant}\`, { variant: brick.variant, rep: brick }]);
+        const bucketMeta = new Map(entries.map(([key, bucket]) => [key, { variant: bucket.variant, rep: bucket.rep }]));
+        kept = bucketMeta;
+        return { bucketMeta, count: entries.length };
+    }
+    const brick = (variant: number): Brick => ({ variant, uh: 1, vh: 2, wh: 3, seed: 0.5 });
+    const bricks = [brick(0), brick(1)];
+    const prepared = prepare(bricks);
+    prepared.bucketMeta.get("1")!.rep.vh = 5;
+    if (bricks[1]!.vh !== 5 || prepared.bucketMeta.get("0")!.rep !== bricks[0]) throw new Error("one record");
+    prepared.bucketMeta.delete("0");
+    if (kept!.size !== 1 || kept!.get("1")!.rep.seed !== 0.5) throw new Error("one map");
+`,
+);
+
+check(
+    "a-property-a-parameter-type-declares-joins-the-narrower-record-written-through-it",
+    `
+    interface Placement { handle: number; y: number }
+    interface Body { id: number; baseY: number }
+    type NativeEnvelope<T> = T & { hostLocal?: Placement };
+    const place = <T extends { id: number }>(envelope: NativeEnvelope<T>, y: number): NativeEnvelope<T> => {
+        const handle = envelope.id * 10;
+        const placement = envelope.hostLocal ?? (envelope.hostLocal = { handle, y });
+        placement.handle = handle;
+        placement.y = y;
+        return envelope;
+    };
+    const bodies: Body[] = [{ id: 1, baseY: 2 }, { id: 2, baseY: 3 }];
+    for (const body of bodies) place(body, body.baseY);
+    const first: NativeEnvelope<Body> = bodies[0]!;
+    const kept = first.hostLocal;
+    place(first, 7);
+    if (first.hostLocal !== kept || kept?.y !== 7 || kept.handle !== 10) throw new Error("one placement");
+    if ((bodies[1] as NativeEnvelope<Body>).hostLocal?.y !== 3) throw new Error("second body");
+`,
+);
+
+checkInRealm(
+    "a-generic-function-literal-record-stored-as-its-local-alias-is-one-object",
+    `
+    function createSampler<Key, Sample>(resolve: (x: number, key: Key) => Promise<Sample>) {
+        type Entry = { readonly x: number; readonly key: Key; readonly promise: Promise<Sample> };
+        let active: Entry | null = null;
+        const start = (x: number, key: Key): Entry => {
+            if (active && active.x === x && active.key === key) return active;
+            const entry = { x, key, promise: resolve(x, key) };
+            active = entry;
+            void entry.promise.then(() => { if (active === entry) active = null; });
+            return entry;
+        };
+        return { sample: (x: number, key: Key) => start(x, key).promise, pending: () => active !== null };
+    }
+    const sampler = createSampler<string, number>((x, key) => Promise.resolve(x + key.length));
+    const a = sampler.sample(1, "ab");
+    if (a !== sampler.sample(1, "ab") || a === sampler.sample(2, "ab") || !sampler.pending()) throw new Error("shared");
+    void a.then((value) => {
+        if (value !== 3 || sampler.pending()) throw new Error("settled");
+        globalThis.close();
+    });
+`,
+);
+
+check(
     "records-of-two-unions-take-one-layout",
     `
     interface A { tag: "a"; v: number }
@@ -771,6 +870,52 @@ test("records of one object refuse a property no one layout stores both ways", (
     );
 });
 
+check(
+    "records-of-one-array-share-a-field-one-type-widens-to-a-union",
+    `
+    interface Zone { count: number; feather?: { start: number }; lodMesh?: boolean | { beyond: number } }
+    const huge = Date.now() > 0;
+    const zones = huge ? [{ count: 1, feather: { start: 1 } }, { count: 3, lodMesh: { beyond: 4 } }] : [{ count: 2 }, { count: 3, lodMesh: { beyond: 5 } }];
+    const kept: Zone[][] = [];
+    kept.push(zones);
+    let total = 0;
+    for (const zone of kept[0]!) total += zone.count + (zone.lodMesh === true ? 100 : zone.lodMesh ? zone.lodMesh.beyond : 0) + (zone.feather?.start ?? 0);
+    if (total !== 9 || zones[1]!.lodMesh.beyond !== 4 || kept[0] !== zones) throw new Error("widened field");
+`,
+);
+
+test("records of one array refuse a widened field written through the wider type", () => {
+    assert.throws(
+        () =>
+            compileSource(`interface Near { count: number; lodMesh?: { beyond: number } }
+            interface Zone { count: number; lodMesh?: boolean | { beyond: number } }
+            const near: Near[] = [{ count: 1 }, { count: 3, lodMesh: { beyond: 4 } }];
+            const kept: Zone[][] = [];
+            kept.push(near);
+            kept[0]![1]!.lodMesh = true;
+            const unused = near[1]!.lodMesh?.beyond;`),
+        /'Near' record stored as 'Zone' would be a copy of the one object JavaScript keeps, and [^;]*; no shared layout holds both record types/,
+    );
+});
+
+test(
+    "a union of literals whose records a replay stores every arm's fields of is one union across replays",
+    { timeout: 120000 },
+    () => {
+        // Each replay types the literals afresh: the union their arms'
+        // fields are demanded for is the same union in the next one.
+        assert.throws(
+            () =>
+                compileSource(`interface Zone { count: number; lodMesh?: boolean | { beyond: number } }
+            const zones = Date.now() > 0 ? [{ count: 1 }, { count: 3, lodMesh: { beyond: 4 } }] : [{ count: 2 }];
+            const kept: Zone[][] = [];
+            kept.push(zones);
+            kept[0]![1]!.lodMesh = true;
+            const unused = zones[1]!.count;`),
+            /'Zone' records stored as '\w+' would lose 'lodMesh'/,
+        );
+    },
+);
 check(
     "fresh-nested-members-are-copied",
     `
@@ -952,6 +1097,46 @@ test("an object field holds a record whose fields hold meshes as that record", (
 });
 
 check(
+    "a record kept by a generic record is read through a readonly object field of a view of its array",
+    `
+    interface Person { id: number; place: { x: number }; tag: () => number }
+    interface Hold<V extends { id: number }> { owner: V; key: string; flagged: boolean }
+    interface Holds<V extends { id: number }> { holds(): readonly Hold<V>[]; flip(): void }
+    function createRegistry<V extends { id: number }>(owners: () => readonly V[]): Holds<V> {
+        const holds = new Map<number, Hold<V>>();
+        return {
+            holds: () => {
+                for (const owner of owners()) if (!holds.has(owner.id)) holds.set(owner.id, { owner, key: "h" + owner.id, flagged: false });
+                return [...holds.values()];
+            },
+            flip: () => { for (const hold of holds.values()) hold.flagged = !hold.flagged; },
+        };
+    }
+    interface View { holds(): readonly { readonly key: string; readonly owner: object }[] }
+    function createReader(deps: { source: () => View; ready: () => boolean; placeOf: (owner: object) => number }) {
+        return () => {
+            let n = 0;
+            for (const hold of deps.ready() ? deps.source().holds() : []) n += deps.placeOf(hold.owner) + hold.key.length;
+            return n;
+        };
+    }
+    const people: Person[] = [];
+    const places = new Map<object, number>();
+    const registry = createRegistry<Person>(() => people);
+    const read = createReader({ source: () => registry, ready: () => people.length > 0, placeOf: (owner) => places.get(owner) ?? -100 });
+    for (let id = 0; id < 2; id++) {
+        const person: Person = { id, place: { x: id * 10 }, tag: () => id };
+        people.push(person);
+        places.set(person, person.place.x);
+    }
+    if (read() !== 14) throw new Error("owners " + read());
+    registry.flip();
+    if (!registry.holds().every((hold) => hold.flagged)) throw new Error("flagged " + registry.holds().map((hold) => hold.flagged).join());
+    if (registry.holds()[1]!.owner.tag() !== 1) throw new Error("tag");
+    `,
+);
+
+check(
     "a record's member kept by a constructed instance or a literal is the same object",
     `
     class H { constructor(public o: { n: number }) {} bump(): void { this.o.n++; } }
@@ -1000,4 +1185,42 @@ check(
     }
     if (viaSpread(1) !== 4) throw new Error("spread copy " + viaSpread(1));
     `,
+);
+
+// A union narrowed to its record members is stored as the record type
+// that names them: each record arm converts, whichever one the value holds.
+check(
+    "a-union-narrowed-to-its-records-stores-each-record-arm",
+    `
+    type Refusal =
+      | { readonly reason: "unknown-host" | "busy" | "release-refused" }
+      | { readonly reason: "out-of-range"; readonly min: number; readonly max: number };
+    interface Agent { unmount(id: number): Refusal | null; adjust(id: number, value: number): Refusal | null }
+    function create(release: (id: number) => boolean): Agent {
+      let height = false;
+      const unlockChild = (id: number | null): "carried" | "freed" | Refusal => {
+        if (height) return { reason: "busy" };
+        if (id === null || id < 0) return { reason: "unknown-host" };
+        if (!release(id)) return { reason: "release-refused" };
+        if (id === 99) return { reason: "out-of-range", min: 1, max: 2 };
+        return id > 10 ? "carried" : "freed";
+      };
+      return {
+        unmount: (id) => {
+          const result = unlockChild(id);
+          return result === "carried" || result === "freed" ? null : result;
+        },
+        adjust: (id, value) => {
+          height = value > 100;
+          if (!(value >= 0 && value <= 10)) return { reason: "out-of-range", min: 0, max: 10 };
+          return id < 0 ? { reason: "unknown-host" } : null;
+        },
+      };
+    }
+    const agents: Array<Agent> = [create((id) => id !== 3)];
+    const a = agents[0]!;
+    const r1 = a.unmount(-1), r2 = a.unmount(3), r3 = a.unmount(20), r4 = a.adjust(1, 50), r5 = a.unmount(99);
+    if (r1?.reason !== "unknown-host" || r2?.reason !== "release-refused" || r3 !== null || r4?.reason !== "out-of-range" || (r4.reason === "out-of-range" && r4.max !== 10)) throw new Error("agent");
+    if (r5?.reason !== "out-of-range" || r5.min !== 1 || r5.max !== 2) throw new Error("record arm");
+`,
 );

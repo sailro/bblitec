@@ -34,6 +34,7 @@ import {
     arrayLentForCall,
 } from "../record-observations.js";
 import { unwrapExpression } from "../syntax.js";
+import { argumentKeepsLength } from "../parameter-effects.js";
 import {
     absenceKind,
     admitsUndefined,
@@ -52,7 +53,7 @@ import {
 import { NativeRecordStorageRequired } from "../native-record-storage.js";
 import { isJsonValue } from "../json-bridge.js";
 import { readsErasedVoid } from "../undefined-values.js";
-import { absenceOf } from "../values/model.js";
+import { absenceOf, tupleNumberArrayCpp } from "../values/model.js";
 
 function expressionOptional(
     dataType: DataType<"optional">,
@@ -66,10 +67,9 @@ function expressionOptional(
 function expressionVector(
     dataType: DataType<"vector">,
     lowerer: DataSinkHost,
-    _expression: ts.Expression,
-    unwrapped: ts.Expression,
+    expression: ts.Expression,
 ): string {
-    return lowerer.compileVectorSink(unwrapped, dataType);
+    return lowerer.compileVectorSink(expression, dataType);
 }
 
 /**
@@ -338,7 +338,7 @@ function valueVector(
         requireGrowableTuple(lowerer, value, node);
         lowerer.context.reachJsData();
         lowerer.markEscaped(value);
-        return `bbl::js::Array<double>{(${value.cpp}).retained_storage()}`;
+        return tupleNumberArrayCpp(value.cpp);
     }
     const collection = handleCollectionElements(
         lowerer,
@@ -620,8 +620,9 @@ function convertedElementsCopy(
  * A number array holding a tuple is the tuple itself, and can grow. The
  * tuple's fixed native storage cannot follow that growth, so it is adopted
  * only when nothing else holds the tuple, the callee it is handed to only
- * reads it or the slot is typed as a readonly array; a tuple binding
- * instead takes growable array storage, and any other tuple refuses.
+ * reads it or keeps its length (writing elements the tuple has), or the
+ * slot is typed as a readonly array; a tuple binding instead takes growable
+ * array storage, and any other tuple refuses.
  */
 function requireGrowableTuple(
     lowerer: DataSinkHost,
@@ -631,11 +632,17 @@ function requireGrowableTuple(
     const converted = lowerer.convertedExpression(node);
     const expression = converted && unwrapExpression(converted);
     if (unaliasedValue(lowerer, value, node)) return;
-    // A callee that only reads the array cannot grow or retain it, nor can
-    // a slot typed as a readonly array.
+    // A callee that only reads the array, or keeps its length, cannot grow
+    // or retain it, nor can a slot typed as a readonly array.
     if (
         expression &&
         (argumentOnlyRead(lowerer.context.checker, expression) ||
+            (value.dataType?.kind === "tuple" &&
+                argumentKeepsLength(
+                    lowerer.context.checker,
+                    expression,
+                    value.dataType.arity,
+                )) ||
             storedAsReadonlyArray(lowerer.context.checker, converted))
     )
         return;
@@ -724,6 +731,23 @@ function valueMap(
     if (value.dataType && dataTypesEqual(value.dataType, dataType)) {
         return value.cpp;
     }
+    // A map's records stored as another record type: JavaScript keeps one
+    // map, so its values join the target's records (`storeRecordAs`) as an
+    // array's elements do, after which the two maps are one type.
+    if (
+        value.kind === "data" &&
+        value.dataType?.kind === "map" &&
+        value.dataType.value.kind === "struct" &&
+        dataType.value.kind === "struct" &&
+        dataTypesEqual(value.dataType.key, dataType.key)
+    )
+        lowerer.context.dataTypes.storeRecordAs(
+            value.dataType.value,
+            dataType.value,
+            node,
+            lowerer.context,
+            { sharedArray: true },
+        );
     return undefined;
 }
 

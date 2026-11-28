@@ -3596,8 +3596,9 @@ export class DeclarationLowerer {
 
     /**
      * The object literal a record binding's initializer is, when the
-     * literal creates the object the binding holds (`withLiteralSelfBinding`):
-     * no spread copies another object into it, and nothing rebinds the name.
+     * literal creates the object the binding holds (`withLiteralSelfBinding`)
+     * and nothing rebinds the name; a spread only copies another object's
+     * members into that object.
      */
     private selfNamingLiteral(
         name: ts.Identifier,
@@ -3606,7 +3607,6 @@ export class DeclarationLowerer {
     ): ts.ObjectLiteralExpression | undefined {
         return type.kind === "struct" &&
             ts.isObjectLiteralExpression(initializer) &&
-            !initializer.properties.some(ts.isSpreadAssignment) &&
             !this.context.sharedClosures.identifierIsRebound(name)
             ? initializer
             : undefined;
@@ -3756,8 +3756,11 @@ export class DeclarationLowerer {
                     );
                 const source = declaration.initializer;
                 const declared = this.context.symbols.valueSymbol(name);
+                // The literal's own record snapshot is the object it
+                // creates: its methods lower in the sink, after the self
+                // binding exists.
                 const selfLiteral =
-                    !snapshot &&
+                    (!snapshot || snapshot === plainRecordSnapshot) &&
                     !sharedClosureStorage &&
                     declared !== undefined &&
                     initializerNamesBinding(
@@ -4273,6 +4276,8 @@ export class DeclarationLowerer {
             (annotated.kind === "handle" &&
                 !ts.isObjectLiteralExpression(initializerLiteral)) ||
             annotated.kind === "span" ||
+            (annotated.kind === "optional" &&
+                annotated.inner.kind === "span") ||
             annotated.kind === "table" ||
             (annotated.kind === "optional" &&
                 annotated.inner.kind === "handle" &&
@@ -4282,8 +4287,9 @@ export class DeclarationLowerer {
                 !ts.isArrayLiteralExpression(initializerLiteral) &&
                 !ts.isConditionalExpression(initializerLiteral))
         ) {
-            // Readonly views keep the legacy static-tuple declaration
-            // semantics; only owning composites (and mutable tuple
+            // Readonly views, optional ones too, keep the legacy static-tuple
+            // declaration semantics (the value's own storage, an array's
+            // owner among them); only owning composites (and mutable tuple
             // locals initialized from array literals or their conditional) take the data
             // path. An optional HANDLE local (`Mesh | undefined` from a
             // search) keeps the value path too: a handle a search
@@ -4375,13 +4381,19 @@ export class DeclarationLowerer {
         // A record whose own methods name its binding (`batch.keyAt(i)` in a
         // method of `const batch: Batch = {...}`) is one shared object. An
         // object literal binds the name to the object it creates before its
-        // methods capture it; through any other initializer the methods read
-        // a shared cell when they run, after it is filled.
+        // methods capture it; through any other initializer, or a spread the
+        // record declaration copies (`emitSpreadStructDeclaration`), the
+        // methods read a shared cell when they run, after it is filled.
         if (initializerReferencesBinding && annotated.kind === "struct")
             this.context.dataTypes.markStoredObjectReferences(annotated);
-        const selfLiteral = initializerReferencesBinding
-            ? this.selfNamingLiteral(name, annotated, initializer)
-            : undefined;
+        const selfLiteral =
+            initializerReferencesBinding &&
+            !(
+                ts.isObjectLiteralExpression(initializer) &&
+                initializer.properties.some(ts.isSpreadAssignment)
+            )
+                ? this.selfNamingLiteral(name, annotated, initializer)
+                : undefined;
         const selfReferentialBinding =
             initializerReferencesBinding &&
             !selfLiteral &&

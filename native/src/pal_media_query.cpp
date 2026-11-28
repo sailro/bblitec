@@ -1,6 +1,8 @@
 #include <bblite/pal_window_objects.hpp>
 #include <bblite/pal_event_loop.hpp>
+#include <algorithm>
 #include <cctype>
+#include <iterator>
 #include <set>
 #include <stdexcept>
 #include <bblite/js_data.hpp>
@@ -34,13 +36,25 @@ bool name_media_feature(UiMediaCondition& condition, std::string_view name,
 
 MediaQueryList::MediaQueryList(std::string query, double (*read_pixel_ratio)(),
                                bool (*read_motion_preference)(),
-                               InputCapabilities (*read_input_capabilities)())
+                               InputCapabilities (*read_input_capabilities)(),
+                               UiClientRect (*read_viewport)())
     : read_pixel_ratio_(read_pixel_ratio), read_motion_preference_(read_motion_preference),
-      read_input_capabilities_(read_input_capabilities) {
+      read_input_capabilities_(read_input_capabilities), read_viewport_(read_viewport) {
     const auto refuse = [] {
         throw std::invalid_argument(
-            "Only resolution, reduced-motion, pointer and hover media queries are admitted by "
-            "the Window realm.");
+            "Only resolution, viewport width and height bounds, reduced-motion, pointer and hover "
+            "media queries are admitted by the Window realm.");
+    };
+    // A nonnegative CSS decimal followed by `unit`, as `(resolution: 1.5dppx)` spells it.
+    const auto measure = [&](std::optional<std::string_view> value, std::string_view unit) {
+        if (!value || !value->ends_with(unit))
+            refuse();
+        const auto number = value->substr(0, value->size() - unit.size());
+        std::size_t parsed = 0;
+        const auto measured = detail::css_decimal(number, parsed);
+        if (!measured || parsed != number.size() || *measured < 0)
+            refuse();
+        return *measured;
     };
     // An `and` conjunction of features, each named once; resolution stands alone.
     const std::string lowered = js::string_lower(query);
@@ -64,13 +78,16 @@ MediaQueryList::MediaQueryList(std::string query, double (*read_pixel_ratio)(),
             refuse();
         if (!media_.empty())
             media_ += " and ";
-        if (name == "resolution" && value && value->ends_with("dppx")) {
-            const auto number = value->substr(0, value->size() - 4);
-            std::size_t parsed = 0;
-            resolution_ = detail::css_decimal(number, parsed);
-            if (!resolution_ || parsed != number.size())
-                refuse();
+        const auto bound =
+            std::find_if(std::begin(ui_viewport_features), std::end(ui_viewport_features),
+                         [name](const auto& feature) { return feature.first == name; });
+        if (name == "resolution") {
+            resolution_ = measure(value, "dppx");
             media_ += "(resolution: " + js::number_to_string(*resolution_) + "dppx)";
+        } else if (bound != std::end(ui_viewport_features)) {
+            const double pixels = measure(value, "px");
+            viewport_.*(bound->second) = pixels;
+            media_ += "(" + std::string(name) + ": " + js::number_to_string(pixels) + "px)";
         } else if (name_media_feature(condition_, name, value)) {
             media_ += "(" + std::string(name) + (value ? ": " + std::string(*value) : "") + ")";
         } else {
@@ -89,6 +106,8 @@ MediaQueryList::MediaQueryList(std::string query, double (*read_pixel_ratio)(),
         refuse();
     if (condition_.names_input() && !read_input_capabilities_)
         throw std::invalid_argument("Input media queries require native device capabilities.");
+    if (!viewport_.empty() && !read_viewport_)
+        throw std::invalid_argument("Viewport media queries require the window's viewport.");
     matches_ = matches();
 }
 
@@ -101,6 +120,11 @@ bool MediaQueryList::matches() const {
         device.reduced_motion = read_motion_preference_();
     if (condition_.names_input())
         device.input = read_input_capabilities_();
+    if (!viewport_.empty()) {
+        const UiClientRect viewport = read_viewport_();
+        if (!viewport_.matches(viewport.width, viewport.height))
+            return false;
+    }
     return condition_.matches(device);
 }
 

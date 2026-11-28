@@ -94,6 +94,7 @@ export interface DemandedStorageContext {
         | "nullableType"
         | "withDynamicJsonTypes"
         | "dynamicJsonType"
+        | "withDemandedNumericSlot"
     >;
 }
 
@@ -164,9 +165,34 @@ export function initializerListStorage(
 /**
  * The native type a declaration is stored as under a demand; undefined
  * when its type has no native storage representation. `initializer` is the
- * declaration's unwrapped initializer.
+ * declaration's unwrapped initializer. Its `ArrayLike<number>` position
+ * stores the numeric arrays a demand found there
+ * (`NumericSlotStorageRequired`).
  */
 export function demandedStorageType(
+    context: DemandedStorageContext,
+    declaration: ts.VariableDeclaration,
+    storage: DynamicBindingStorage,
+    initializer: ts.Expression | undefined,
+): DataType | undefined {
+    const type = demandedBindingType(
+        context,
+        declaration,
+        storage,
+        initializer,
+    );
+    return (
+        type &&
+        context.dataTypes.withDemandedNumericSlot(
+            declaration,
+            context.checker.getTypeAtLocation(declaration.name),
+            type,
+        )
+    );
+}
+
+/** {@link demandedStorageType} before its numeric slot storage. */
+function demandedBindingType(
     context: DemandedStorageContext,
     declaration: ts.VariableDeclaration,
     storage: DynamicBindingStorage,

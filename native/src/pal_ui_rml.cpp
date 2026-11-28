@@ -74,6 +74,9 @@
 #endif
 #include "pal_system_preferences.hpp"
 #include "pal_input_capabilities.hpp"
+#if BBLITE_WORKERS
+#include "pal_media_play.hpp"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -159,6 +162,16 @@ std::optional<std::int32_t> html_integer(std::string_view text) {
 std::optional<std::int32_t> ui_tab_order(const UiElementRecord& record) {
     const auto found = record.attributes.find("tabindex");
     return found == record.attributes.end() ? std::nullopt : html_integer(found->second);
+}
+
+/** HTML's rules for parsing non-negative integers, on the element's `name` attribute when valid. */
+std::optional<std::int32_t> html_non_negative_attribute(const UiElementRecord& record,
+                                                        std::string_view name) {
+    const auto found = record.attributes.find(std::string(name));
+    if (found == record.attributes.end())
+        return std::nullopt;
+    const auto value = html_integer(found->second);
+    return value && *value >= 0 ? value : std::nullopt;
 }
 
 /** RmlUi's sequential navigation is tree order only: a positive order cannot be honoured. */
@@ -1683,6 +1696,19 @@ std::string ui_escape_rml(std::string_view text) {
     return escaped;
 }
 
+namespace {
+/** Fires a trusted, non-bubbling, non-cancelable `type` Event at an element that still exists. */
+void fire_element_event(Engine& engine, UiElementHandle element, const char* type) {
+    if (!engine.dom_input || element.value >= engine.ui_elements.size())
+        return;
+    PlatformMouseEvent payload;
+    payload.payload_kind = DomInputEventKind::Event;
+    const auto event = dom_event(payload, type, dom_ui_path(engine, element), false, false);
+    event.dom->trusted = true;
+    dispatch_dom_pointer(engine, event);
+}
+} // namespace
+
 #if BBLITE_WORKERS
 namespace {
 /**
@@ -1692,14 +1718,8 @@ namespace {
 void queue_image_event(Engine& engine, UiElementHandle element,
                        std::shared_ptr<UiImageRequest> request) {
     pal::EventLoop::current().post([&engine, element, request = std::move(request)] {
-        if (request->invalidated || !engine.dom_input || element.value >= engine.ui_elements.size())
-            return;
-        PlatformMouseEvent payload;
-        payload.payload_kind = DomInputEventKind::Event;
-        const auto event = dom_event(payload, request->decoded ? "load" : "error",
-                                     dom_ui_path(engine, element), false, false);
-        event.dom->trusted = true;
-        dispatch_dom_pointer(engine, event);
+        if (!request->invalidated)
+            fire_element_event(engine, element, request->decoded ? "load" : "error");
     });
 }
 
@@ -1778,10 +1798,8 @@ double image_extent(Engine& engine, UiElementHandle element, const char* axis) {
     if (ui_is_connected(engine, element))
         throw std::runtime_error(
             "The rendered size of a connected img element is not represented.");
-    const auto& attributes = ui_element(engine, element).attributes;
-    if (const auto found = attributes.find(axis); found != attributes.end())
-        if (const auto value = html_integer(found->second); value && *value >= 0)
-            return *value;
+    if (const auto value = html_non_negative_attribute(ui_element(engine, element), axis))
+        return *value;
     const auto request = image_request(engine, element);
     return std::string_view(axis) == "width" ? request->width : request->height;
 }
@@ -1806,6 +1824,130 @@ js::Promise<js::PromiseVoid> ui_decode_image(Engine& engine, UiElementHandle ele
 }
 #endif
 
+/**
+ * A video element's media state. No platform layer decodes video, so the element shows its
+ * poster and every source its resource selection algorithm selects fails as one no decoder
+ * supports, as a browser without the source's codec fails it (docs/fidelity.md).
+ */
+struct UiMediaState {
+    bool muted = false;
+    bool paused = true;
+    /** The selected source failed: `error` is MEDIA_ERR_SRC_NOT_SUPPORTED. */
+    bool failed = false;
+    /** A resource selection waits for its task; a new load algorithm run cancels it. */
+    bool selecting = false;
+    /** Each run of the media element load algorithm. */
+    std::uint64_t load = 0;
+#if BBLITE_WORKERS
+    std::vector<js::Promise<js::PromiseVoid>> pending_plays;
+#endif
+};
+
+namespace {
+UiMediaState& media_state(Engine& engine, UiElementHandle element) {
+    auto& record = ui_element(engine, element);
+    if (record.tag != "video" || record.svg_namespace)
+        throw std::runtime_error("Media playback state requires a video element.");
+    if (!record.media)
+        record.media = std::make_shared<UiMediaState>();
+    return *record.media;
+}
+
+#if BBLITE_WORKERS
+/**
+ * HTML's resource selection algorithm with no decoder. Without a src attribute the network
+ * state stays empty and nothing fires; `preload="none"` (without autoplay) suspends it until
+ * play() asks for the source. Otherwise a task runs the dedicated media source failure steps:
+ * `error` becomes MEDIA_ERR_SRC_NOT_SUPPORTED, a non-bubbling `error` event fires at the
+ * element, and pending play() promises reject with NotSupportedError. The poster stays.
+ */
+void select_media_resource(Engine& engine, UiElementHandle element, bool playing) {
+    auto& state = media_state(engine, element);
+    const auto& record = ui_element(engine, element);
+    if (state.selecting || state.failed || !record.attributes.contains("src"))
+        return;
+    if (!playing &&
+        ui_get_enumerated_attribute(engine, element, "preload", {"none", "metadata", "auto"},
+                                    "metadata", "auto") == "none" &&
+        !record.attributes.contains("autoplay"))
+        return;
+    state.selecting = true;
+    pal::EventLoop::current().post([&engine, element, load = state.load] {
+        if (element.value >= engine.ui_elements.size())
+            return;
+        const auto media = ui_element(engine, element).media;
+        if (!media || media->load != load)
+            return;
+        media->selecting = false;
+        media->failed = true;
+        fire_element_event(engine, element, "error");
+        pal::reject_media_plays(std::exchange(media->pending_plays, {}),
+                                pal::media_no_supported_sources);
+    });
+}
+#endif
+} // namespace
+
+bool ui_video_muted(Engine& engine, UiElementHandle element) {
+    return media_state(engine, element).muted;
+}
+void ui_video_set_muted(Engine& engine, UiElementHandle element, bool muted) {
+    media_state(engine, element).muted = muted;
+}
+bool ui_video_paused(Engine& engine, UiElementHandle element) {
+    return media_state(engine, element).paused;
+}
+
+void ui_video_pause(Engine& engine, UiElementHandle element) {
+    auto& state = media_state(engine, element);
+#if BBLITE_WORKERS
+    select_media_resource(engine, element, false);
+#endif
+    if (state.paused)
+        return;
+    state.paused = true;
+#if BBLITE_WORKERS
+    pal::reject_media_plays(std::exchange(state.pending_plays, {}), pal::media_play_paused);
+#endif
+}
+
+#if BBLITE_WORKERS
+js::Promise<js::PromiseVoid> ui_video_play(Engine& engine, UiElementHandle element) {
+    auto& state = media_state(engine, element);
+    if (state.failed)
+        return js::Promise<js::PromiseVoid>::rejected(pal::media_no_supported_sources.error());
+    js::Promise<js::PromiseVoid> promise;
+    state.pending_plays.push_back(promise);
+    state.paused = false;
+    select_media_resource(engine, element, true);
+    return promise;
+}
+
+void ui_video_load(Engine& engine, UiElementHandle element) {
+    auto& state = media_state(engine, element);
+    ++state.load;
+    state.selecting = false;
+    state.failed = false;
+    if (!state.paused) {
+        state.paused = true;
+        pal::reject_media_plays(std::exchange(state.pending_plays, {}), pal::media_play_reloaded);
+    }
+    select_media_resource(engine, element, false);
+}
+#endif
+
+double ui_dimension_attribute(Engine& engine, UiElementHandle element, std::string_view name) {
+    return html_non_negative_attribute(ui_element(engine, element), name).value_or(0);
+}
+
+void ui_set_dimension_attribute(Engine& engine, UiElementHandle element, std::string name,
+                                double value) {
+    // WebIDL unsigned long, then HTML's reflection: a value past 2^31 - 1 stores the default 0.
+    const std::uint32_t converted = js::to_uint32(value);
+    const auto stored = converted <= 2147483647u ? converted : 0u;
+    ui_set_attribute(engine, element, std::move(name), std::to_string(stored));
+}
+
 namespace {
 /**
  * HTML's details notification steps: a change of a details element's `open` attribute queues a
@@ -1818,15 +1960,7 @@ void queue_details_toggle(Engine& engine, UiElementHandle element) {
         engine.ui_details_toggled(element);
         return;
     }
-    const auto fire = [&engine, element] {
-        if (!engine.dom_input || element.value >= engine.ui_elements.size())
-            return;
-        PlatformMouseEvent payload;
-        payload.payload_kind = DomInputEventKind::Event;
-        const auto event = dom_event(payload, "toggle", dom_ui_path(engine, element), false, false);
-        event.dom->trusted = true;
-        dispatch_dom_pointer(engine, event);
-    };
+    const auto fire = [&engine, element] { fire_element_event(engine, element, "toggle"); };
 #if BBLITE_WORKERS
     pal::EventLoop::current().post(fire);
 #else
@@ -1889,15 +2023,8 @@ void prepare_script(Engine& engine, UiElementHandle element) {
             "Inline script text does not run natively: there is no JavaScript engine.",
             "NotSupportedError");
 #if BBLITE_WORKERS
-    pal::EventLoop::current().post([&engine, element] {
-        if (!engine.dom_input || element.value >= engine.ui_elements.size())
-            return;
-        PlatformMouseEvent payload;
-        payload.payload_kind = DomInputEventKind::Event;
-        const auto event = dom_event(payload, "error", dom_ui_path(engine, element), false, false);
-        event.dom->trusted = true;
-        dispatch_dom_pointer(engine, event);
-    });
+    pal::EventLoop::current().post(
+        [&engine, element] { fire_element_event(engine, element, "error"); });
 #else
     throw std::logic_error("External scripts load in an application realm.");
 #endif
@@ -1950,9 +2077,12 @@ std::string ui_get_url_attribute(Engine& engine, UiElementHandle element, std::s
 std::string ui_get_enumerated_attribute(Engine& engine, UiElementHandle element,
                                         std::string_view name,
                                         std::initializer_list<std::string_view> keywords,
-                                        std::string_view missing) {
+                                        std::string_view missing,
+                                        std::optional<std::string_view> empty) {
     const UiElementRecord& record = ui_element(engine, element);
     const auto found = record.attributes.find(std::string(name));
+    if (found != record.attributes.end() && empty && found->second.empty())
+        return std::string(*empty);
     if (found != record.attributes.end())
         for (const std::string_view keyword : keywords)
             if (ascii_iequals(found->second, keyword))
@@ -1994,11 +2124,7 @@ bool ui_get_spellcheck(Engine& engine, UiElementHandle element) {
 }
 
 double ui_get_max_length(Engine& engine, UiElementHandle element) {
-    const UiElementRecord& record = ui_element(engine, element);
-    const auto found = record.attributes.find("maxlength");
-    const auto parsed =
-        found == record.attributes.end() ? std::nullopt : html_integer(found->second);
-    return parsed && *parsed >= 0 ? *parsed : -1;
+    return html_non_negative_attribute(ui_element(engine, element), "maxlength").value_or(-1);
 }
 
 void ui_set_max_length(Engine& engine, UiElementHandle element, double value) {
@@ -2077,6 +2203,8 @@ void ui_set_attribute(Engine& engine, UiElementHandle element, std::string name,
     if (script && name == "async")
         record.script_force_async = false;
     const bool prepares_script = script && name == "src" && existing == record.attributes.end();
+    // Setting a media element's src runs its load algorithm.
+    const bool loads_media = record.tag == "video" && !record.svg_namespace && name == "src";
     const auto updated = record.attributes.insert_or_assign(std::move(name), std::move(value));
     note_attribute_order(record, updated.first->first);
     if (engine.ui_attribute_changed)
@@ -2086,6 +2214,10 @@ void ui_set_attribute(Engine& engine, UiElementHandle element, std::string name,
 #if BBLITE_WORKERS
     if (updates_image)
         static_cast<void>(image_request(engine, element, true));
+    if (loads_media)
+        ui_video_load(engine, element);
+#else
+    static_cast<void>(loads_media);
 #endif
     mark_ui_changed(engine);
     if (prepares_script)
@@ -3694,17 +3826,38 @@ public:
                 if ((event_type == "color-input" && std::string_view(name) != "input") ||
                     (event_type == "color-change" && std::string_view(name) != "change"))
                     continue;
-                if (engine.dom_input) {
-                    PlatformMouseEvent payload;
-                    payload.payload_kind = DomInputEventKind::Event;
-                    const auto input =
-                        dom_event(payload, name, dom_ui_path(engine, element), true, false);
-                    input.dom->composed = std::string_view(name) == "input";
-                    dispatch_dom_pointer(engine, input);
-                }
-                dispatch_ui_listeners(ui_element(engine, element), name, PlatformMouseEvent{});
+                dispatch_form_event(engine, element, name);
             }
             event.StopPropagation();
+            return;
+        }
+        if (event_type == "form-search") {
+            if (projecting)
+                return;
+            auto* control = rmlui_dynamic_cast<Rml::ElementFormControl*>(event.GetCurrentElement());
+            if (!control)
+                throw std::runtime_error("Native search event requires a form control.");
+            event.StopPropagation();
+            if (!event.GetParameter("cleared", false)) {
+                // Enter: Chromium's implicit submission posts a task firing search. A program
+                // without a realm loop fires it at once; a Window display posts its events to
+                // the realm.
+                const auto fire = [&engine = engine, element = element] {
+                    if (element.value < engine.ui_elements.size())
+                        dispatch_form_event(engine, element, "search");
+                };
+                if (auto* loop = pal::EventLoop::current_if_any())
+                    loop->post(fire);
+                else
+                    fire();
+                return;
+            }
+            // The cancel action emptied the field (Chromium's SetValueForUser, then OnSearch):
+            // an input event while the field is focused, else a change event, then search.
+            ui_set_form_value(engine, element, control->GetValue());
+            dispatch_form_event(engine, element,
+                                control->IsPseudoClassSet("focus") ? "input" : "change");
+            dispatch_form_event(engine, element, "search");
             return;
         }
         if (::bbl::pal::runtime_trace_enabled()) {
@@ -3759,6 +3912,18 @@ public:
     }
 
 private:
+    /** A bubbling, non-cancelable event a native edit fires at the control. */
+    static void dispatch_form_event(Engine& engine, UiElementHandle element, const char* name) {
+        if (engine.dom_input) {
+            PlatformMouseEvent payload;
+            payload.payload_kind = DomInputEventKind::Event;
+            const auto input = dom_event(payload, name, dom_ui_path(engine, element), true, false);
+            input.dom->composed = std::string_view(name) == "input";
+            dispatch_dom_pointer(engine, input);
+        }
+        dispatch_ui_listeners(ui_element(engine, element), name, PlatformMouseEvent{});
+    }
+
     Engine& engine;
     UiElementHandle element;
     std::string event_type;
@@ -3920,6 +4085,11 @@ public:
 
     double GetElapsedTime() override {
         return (time_ms ? *time_ms : ::bbl::pal::performance_milliseconds()) / 1000.0;
+    }
+
+    /** A layout RmlUi does not represent (a table's collapsed borders) refuses at run time. */
+    void LayoutNotRepresented(Rml::Element*, const Rml::String& reason) override {
+        throw std::runtime_error(reason + " is not represented by the native UI layout.");
     }
 
     void SetMouseCursor(const Rml::String& name) override {
@@ -6240,6 +6410,10 @@ struct UiRmlRuntime {
             Rml::Factory::RegisterElementInstancer("svg", &svg_instancer);
 #endif
             Rml::Factory::RegisterElementInstancer("input", &input_instancer);
+            // A video without a decoder is a replaced element showing its poster, as an img
+            // shows its src (`projected_attribute_name`).
+            Rml::Factory::RegisterElementInstancer("video",
+                                                   Rml::Factory::GetElementInstancer("img"));
             scrollbar_properties = register_ui_scrollbar_properties();
             control_scheme_properties = register_ui_control_scheme_properties();
             Rml::Factory::RegisterDecoratorInstancer("bbl-native-range", &range_decorator);
@@ -6249,6 +6423,8 @@ struct UiRmlRuntime {
                                                      &control_arrow_decorator);
             Rml::Factory::RegisterDecoratorInstancer("bbl-native-scroll-arrow",
                                                      &control_arrow_decorator);
+            Rml::Factory::RegisterDecoratorInstancer("bbl-native-search-cancel",
+                                                     &search_cancel_decorator);
 #if defined(_WIN32)
             platform_fonts = std::make_unique<Win32UiFontEngine>(*Rml::GetFontEngineInterface());
 #elif defined(__ANDROID__) || defined(SDL_PLATFORM_IOS)
@@ -6762,6 +6938,21 @@ struct UiRmlRuntime {
         throw std::runtime_error("Root font size and CSS length math did not converge.");
     }
 
+    /**
+     * The RmlUi attribute a retained attribute projects to; none for one RmlUi does not see. A
+     * video renders its poster as an img renders its src; its media source is not rendered.
+     */
+    static std::optional<std::string> projected_attribute_name(const UiElementRecord& record,
+                                                               const std::string& name) {
+        if (record.tag != "video" || record.svg_namespace)
+            return name;
+        if (name == "src")
+            return std::nullopt;
+        if (name == "poster")
+            return "src";
+        return name;
+    }
+
     std::string projected_attribute_value(std::string_view name,
                                           const std::string& source_value) const {
         std::string value = source_value;
@@ -6803,11 +6994,7 @@ struct UiRmlRuntime {
         return (rule.orientation == UiOrientation::Any ||
                 (viewport_width <= viewport_height) ==
                     (rule.orientation == UiOrientation::Portrait)) &&
-               (rule.max_width < 0.0 || width <= rule.max_width) &&
-               (rule.min_width < 0.0 || width >= rule.min_width) &&
-               (rule.max_height < 0.0 || height <= rule.max_height) &&
-               (rule.min_height < 0.0 || height >= rule.min_height) &&
-               rule.media.matches(media_device);
+               rule.viewport.matches(width, height) && rule.media.matches(media_device);
     }
 
     /**
@@ -6911,13 +7098,10 @@ struct UiRmlRuntime {
             if (public_style.empty() && rule.container_max_width < 0.0)
                 return;
             std::vector<std::string> conditions;
-            for (const auto& [feature, bound] :
-                 {std::pair{"max-width", rule.max_width}, std::pair{"min-width", rule.min_width},
-                  std::pair{"max-height", rule.max_height},
-                  std::pair{"min-height", rule.min_height}})
-                if (bound >= 0.0)
-                    conditions.push_back(std::string("(") + feature + ":" + std::to_string(bound) +
-                                         "px)");
+            for (const auto& [feature, bound] : ui_viewport_features)
+                if (rule.viewport.*bound >= 0.0)
+                    conditions.push_back("(" + std::string(feature) + ":" +
+                                         std::to_string(rule.viewport.*bound) + "px)");
             if (!rule.media.empty())
                 conditions.push_back("(theme:" + theme->name + ")");
             if (rule.orientation != UiOrientation::Any)
@@ -7151,11 +7335,19 @@ struct UiRmlRuntime {
         if (!observes_generated_content && !has_generated_content)
             return false;
         std::vector<std::pair<const UiStyleRule*, std::size_t>> rules;
+        // A generated box is no projected element, so the private declaration its rules carry
+        // reaches it here: an absolute box with one inset shrinks to its content
+        // (`UiBackgroundStyles`).
+        std::vector<std::pair<const UiStyleRule*, std::size_t>> absolute_inline_rules;
         std::size_t rule_index = 0;
         for_each_active_style_rule([&](const UiStyleRule& rule) {
-            if (rule.generated != UiGeneratedPart::None && rule.content &&
-                style_rule_media_matches(rule))
-                rules.emplace_back(&rule, rule_index);
+            if (rule.generated != UiGeneratedPart::None && style_rule_media_matches(rule)) {
+                if (rule.content)
+                    rules.emplace_back(&rule, rule_index);
+                std::string declarations = filter_private_ui_declarations(rule.style, true);
+                if (!take_css_declaration(declarations, "--bbl-absolute-inline").empty())
+                    absolute_inline_rules.emplace_back(&rule, rule_index);
+            }
             ++rule_index;
         });
         bool changed = false;
@@ -7234,6 +7426,18 @@ struct UiRmlRuntime {
                     box->SetAttribute("bbl-wrapped", wrapped);
                     changed = true;
                 }
+                bool absolute_inline = false;
+                for (const auto& [rule, index] : absolute_inline_rules)
+                    absolute_inline = absolute_inline || (rule->generated == part &&
+                                                          style_selectors.matches(origin, index));
+                if (absolute_inline !=
+                    (box->GetLocalProperty("--bbl-absolute-inline") != nullptr)) {
+                    if (absolute_inline)
+                        box->SetProperty("--bbl-absolute-inline", "1");
+                    else
+                        box->RemoveProperty("--bbl-absolute-inline");
+                    changed = true;
+                }
                 const int expected =
                     part == UiGeneratedPart::Before ? 0 : origin->GetNumChildren() - 1;
                 if (origin->GetChild(expected) != box) {
@@ -7285,6 +7489,12 @@ struct UiRmlRuntime {
             add_listener("form-change", "change");
             projected.event_listeners_attached["form-change"] = true;
         }
+        const bool search = record.tag == "input" && input_type != record.attributes.end() &&
+                            input_type->second == "search";
+        if (search && !projected.event_listeners_attached["form-search"]) {
+            add_listener("form-search", "search");
+            projected.event_listeners_attached["form-search"] = true;
+        }
         if (!projected.event_listeners_attached["focus"]) {
             add_listener("focus", "focus");
             projected.event_listeners_attached["focus"] = true;
@@ -7295,7 +7505,8 @@ struct UiRmlRuntime {
         }
         for (const auto& [event, callbacks] : record.event_callbacks) {
             if (event == "toggle" || projected.event_listeners_attached[event] ||
-                (editable && (event == "input" || event == "change"))) {
+                (editable && (event == "input" || event == "change")) ||
+                (search && event == "search")) {
                 continue;
             }
             add_listener(event, event == "input" ? "change" : event);
@@ -7427,9 +7638,10 @@ struct UiRmlRuntime {
         projected = {};
         projected.element = raw;
         for (const auto& [name, source_value] : record.attributes) {
-            if (name == "style")
+            const auto projected_name = projected_attribute_name(record, name);
+            if (name == "style" || !projected_name)
                 continue;
-            raw->SetAttribute(name,
+            raw->SetAttribute(*projected_name,
                               projected_attribute_value(
                                   name, record.svg_namespace && (name == "fill" || name == "stroke")
                                             ? ui_svg_paint(source_value)
@@ -7636,20 +7848,23 @@ struct UiRmlRuntime {
 
         for (const auto& [name, old_value] : projected.attributes) {
             static_cast<void>(old_value);
-            if (name != "style" && !record.attributes.contains(name)) {
-                raw.RemoveAttribute(name);
+            const auto projected_name = projected_attribute_name(record, name);
+            if (name != "style" && projected_name && !record.attributes.contains(name)) {
+                raw.RemoveAttribute(*projected_name);
             }
         }
         for (const auto& [name, value] : record.attributes) {
-            if (name == "style")
+            const auto projected_name = projected_attribute_name(record, name);
+            if (name == "style" || !projected_name)
                 continue;
             const auto existing = projected.attributes.find(name);
             if (existing == projected.attributes.end() || existing->second != value) {
                 raw.SetAttribute(
-                    name, projected_attribute_value(
-                              name, record.svg_namespace && (name == "fill" || name == "stroke")
-                                        ? ui_svg_paint(value)
-                                        : value));
+                    *projected_name,
+                    projected_attribute_value(name, record.svg_namespace &&
+                                                            (name == "fill" || name == "stroke")
+                                                        ? ui_svg_paint(value)
+                                                        : value));
             }
         }
         if (record.tag == "input" &&
@@ -9125,9 +9340,12 @@ struct UiRmlRuntime {
     UiFilterAmountParser filter_amount_parser;
     std::vector<std::unique_ptr<UiFilterInstancer>> filter_instancers;
     UiControlSchemeProperties control_scheme_properties{};
-    UiRangeDecoratorInstancer range_decorator{control_scheme_properties};
-    UiControlMarkDecoratorInstancer control_mark_decorator{control_scheme_properties};
+    UiSchemeDecoratorInstancer<UiRangeDecorator> range_decorator{control_scheme_properties};
+    UiSchemeDecoratorInstancer<UiControlMarkDecorator> control_mark_decorator{
+        control_scheme_properties};
     UiControlArrowDecoratorInstancer control_arrow_decorator;
+    UiSchemeDecoratorInstancer<UiSearchCancelDecorator> search_cancel_decorator{
+        control_scheme_properties};
     Rml::ElementInstancerGeneric<UiButtonElement> button_instancer;
     Rml::ElementInstancerGeneric<UiCanvasElement> canvas_instancer;
     Rml::ElementInstancerGeneric<UiSelectElement> select_instancer;

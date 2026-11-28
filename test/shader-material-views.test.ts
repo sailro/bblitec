@@ -45,6 +45,35 @@ const program = (
     return found;
 };
 
+test("a run-time material's uniform takes parsed numbers as the number sink reads them", () => {
+    // A material a collection holds selects its uniform by name at run
+    // time; a value the source types as a number (a parsed document's
+    // member), alone or as a literal's lane, is read as a number.
+    const compiled = compileSource(`${prelude}
+    import { setShaderUniform } from "@babylonjs/lite";
+    async function main(): Promise<void> {
+        const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+        const material = createShaderMaterial(${groundOptions});
+        draw(engine, material);
+        const materials = new Map<string, ShaderMaterial>([["ground", material]]);
+        const spans = (JSON.parse('{"spans":[{"waterY":1.5,"tint":[1,0.5,0.25]}]}') as { spans: { waterY: number; tint: number[] }[] }).spans;
+        for (const target of materials.values()) {
+            setShaderUniform(target, "uTint", [spans[0]!.waterY, spans[0]!.tint[1]!, 0]);
+            setShaderUniform(target, "uTint", spans[0]!.tint);
+        }
+    }
+    void main();
+    `);
+    assert.match(
+        compiled.cpp,
+        /bbl::set_shader_uniform\(\w+, \w+, "uTint", std::array<double, 3>\{\w+\.to_number\(\), \w+\.to_number\(\), 0\.0\}\);/,
+    );
+    assert.match(
+        compiled.cpp,
+        /bbl::set_shader_uniform\(\w+, \w+, "uTint", bbl::js::json_number_array\(\w+\)\);/,
+    );
+});
+
 test("a ShaderMaterial of a known variant reads the declarations and sources the pin builds from its options", () => {
     const compiled = compileSource(`${prelude}
     async function main(): Promise<void> {

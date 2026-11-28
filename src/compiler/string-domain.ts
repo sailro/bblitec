@@ -84,6 +84,7 @@ export type StringDomainContext = Pick<
     | "unwrap"
     | "options"
     | "runCallOverHeldData"
+    | "inlinedParameterArgument"
 >;
 
 /** What a consumer adds to the closed string domain. */
@@ -432,6 +433,63 @@ function narrowedPresent(checker: ts.TypeChecker, node: ts.Node): boolean {
         ) &&
         presentMembers(checker.getTypeAtLocation(receiver)).every(declares)
     );
+}
+
+/**
+ * The depths below a binding or member read, as `nullishDepths` counts
+ * them, whose member path TypeScript proves present where it is read
+ * (`case "perk": card(source.entry)` reading `entry.icon` through
+ * `source`): some shape of the reference's declared type lacks the path or
+ * holds it optional or nullable, while each shape of its narrowed type
+ * declares every member along it, neither optional nor nullable. `keys` is
+ * the projection's leading run of member names; a cast proves nothing.
+ */
+function narrowedPresentDepths(
+    checker: ts.TypeChecker,
+    node: ts.Node,
+    projection: KeyPath,
+    keys: readonly string[],
+): readonly number[] {
+    if (!keys.length) return [];
+    const name = ts.isIdentifier(node)
+        ? node
+        : ts.isPropertyAccessExpression(node)
+          ? node.name
+          : undefined;
+    const symbol = name && resolvedSymbol(checker, name);
+    if (!symbol) return [];
+    // The present shapes the member holds in each of `shapes`; undefined
+    // where one lacks it or holds it optional or nullable.
+    const member = (
+        shapes: readonly ts.Type[] | undefined,
+        key: string,
+    ): readonly ts.Type[] | undefined => {
+        const next: ts.Type[] = [];
+        for (const shape of shapes ?? []) {
+            const property = shape.getProperty(key);
+            if (!property || (property.flags & ts.SymbolFlags.Optional) !== 0)
+                return undefined;
+            const type = checker.getTypeOfSymbol(property);
+            const absent = nullability(type);
+            if (absent.undefined || absent.null) return undefined;
+            next.push(...presentMembers(type));
+        }
+        return shapes && next;
+    };
+    let declared: readonly ts.Type[] | undefined = presentMembers(
+        checker.getTypeOfSymbol(symbol),
+    );
+    let narrowed: readonly ts.Type[] | undefined = presentMembers(
+        checker.getTypeAtLocation(node),
+    );
+    const depths: number[] = [];
+    for (const [index, key] of keys.entries()) {
+        declared = member(declared, key);
+        narrowed = member(narrowed, key);
+        if (!narrowed) break;
+        if (!declared) depths.push(projection.length - index - 1);
+    }
+    return depths;
 }
 
 /** The step an access takes. */
@@ -1342,7 +1400,27 @@ export function stringDomain(
 ): Domain {
     let read: Domain;
     try {
-        read = new StringDomain(context, use).read(expression, [], new Map());
+        // The parameters of the bodies the lowering inlines read their
+        // calls' arguments; where that leaves no closed set, every call's
+        // arguments, which hold those calls' too. A query that read no
+        // inlined argument reads the same without them.
+        const inlining = new StringDomain(context, use, true);
+        try {
+            read = inlining.read(expression, [], new Map());
+        } catch (error) {
+            if (
+                !(error instanceof UnboundedDomain) ||
+                !inlining.readInlinedArgument
+            )
+                throw error;
+            read = undefined;
+        }
+        if (!read?.length && inlining.readInlinedArgument)
+            read = new StringDomain(context, use).read(
+                expression,
+                [],
+                new Map(),
+            );
     } catch (error) {
         if (error instanceof UnboundedDomain)
             return context.fail(expression, error.message);
@@ -1489,9 +1567,14 @@ class StringDomain {
      */
     private scalar: "number" | "boolean" | undefined;
 
+    /** @unjournaled Whether a parameter read its inlined call's argument (`inlining`). */
+    public readInlinedArgument = false;
+
     constructor(
         private readonly context: StringDomainContext,
         private readonly use: StringDomainUse,
+        /** Whether parameters of inlined bodies read their calls' arguments. */
+        private readonly inlining = false,
     ) {
         this.graph = sourceGraph(context.checker, context.sourceFiles());
         this.scalar = use.scalar;
@@ -1639,13 +1722,14 @@ class StringDomain {
 
     /**
      * Whether `key` is a member no shape of `node`'s type, as narrowed
-     * there, declares: each shape is an object type without an index
-     * signature, and none an array.
+     * there and awaited (a read sees through a promise), declares: each
+     * shape is an object type without an index signature, and none an array.
      */
     private lacksMember(node: ts.Expression, key: string): boolean {
         const checker = this.context.checker;
+        const read = checker.getTypeAtLocation(node);
         const type = checker.getNonNullableType(
-            checker.getTypeAtLocation(node),
+            checker.getAwaitedType(read) ?? read,
         );
         return unionMembers(type).every(
             (shape) =>
@@ -1726,18 +1810,25 @@ class StringDomain {
         }
     }
 
+    /** Whether reading `projection` from `node` reads a member of null/undefined. */
+    private readsNullishLiteral(
+        node: ts.Expression,
+        projection: KeyPath,
+    ): boolean {
+        return (
+            (this.nullish ||
+                (projection.length > 0 && !this.optionalProjection)) &&
+            nullishLiteral(this.context.checker, node) !== undefined
+        );
+    }
+
     private value(
         node: ts.Expression,
         projection: KeyPath,
         environment: Environment,
     ): Domain {
-        if (
-            (this.nullish ||
-                (projection.length > 0 && !this.optionalProjection)) &&
-            nullishLiteral(this.context.checker, node) !== undefined
-        )
-            // A member read from null/undefined throws before selecting a URL.
-            return nothing;
+        // A member read from null/undefined throws before selecting a URL.
+        if (this.readsNullishLiteral(node, projection)) return nothing;
         // An awaited promise is the value it settles with.
         if (ts.isAwaitExpression(node))
             return this.read(node.expression, projection, environment);
@@ -1748,21 +1839,54 @@ class StringDomain {
         }
         // A binding or member TypeScript narrows to present where it is read
         // (`if (icon) img.src = icon`, `opts.url ? load(opts.url) : none`,
-        // `if (p.kind === "a") use(p.icon)`) is not undefined there: an
-        // omitted argument, a nullish literal or a record lacking it never
-        // reaches the read, as under `??`.
-        if (
-            !this.nullishDepths.includes(projection.length) &&
-            narrowedPresent(this.context.checker, node)
-        ) {
-            const nullishDepths = this.nullishDepths;
-            this.nullishDepths = [...nullishDepths, projection.length];
-            try {
-                return this.value(node, projection, environment);
-            } finally {
-                this.nullishDepths = nullishDepths;
-            }
+        // `if (p.kind === "a") use(p.icon)`), or whose members it read
+        // narrows to present, is not undefined there: an omitted argument, a
+        // nullish literal or a record lacking it never reaches the read, as
+        // under `??`.
+        const checker = this.context.checker;
+        const end = projection.findIndex(
+            (step) => step === ANY_KEY || this.callSteps.has(step),
+        );
+        const keys = end < 0 ? projection : projection.slice(0, end);
+        const proven = [
+            ...(!this.nullishDepths.includes(projection.length) &&
+            narrowedPresent(checker, node)
+                ? [projection.length]
+                : []),
+            ...narrowedPresentDepths(checker, node, projection, keys),
+        ].filter((depth) => !this.nullishDepths.includes(depth));
+        if (!proven.length)
+            return this.presentValue(node, projection, environment, keys);
+        const nullishDepths = this.nullishDepths;
+        this.nullishDepths = [...nullishDepths, ...proven];
+        try {
+            // Proven present, a read of a nullish literal is one that throws.
+            return this.readsNullishLiteral(node, projection)
+                ? nothing
+                : this.presentValue(node, projection, environment, keys);
+        } finally {
+            this.nullishDepths = nullishDepths;
         }
+    }
+
+    /**
+     * `value` past its proofs of presence: `keys` is the projection's
+     * leading run of member names.
+     */
+    private presentValue(
+        node: ts.Expression,
+        projection: KeyPath,
+        environment: Environment,
+        keys: KeyPath,
+    ): Domain {
+        // Where the member read is present, a value whose type declares it
+        // in no shape is not the one read there, whatever its source.
+        if (
+            keys.length &&
+            this.nullishDepths.includes(projection.length - 1) &&
+            this.lacksMember(node, keys[0]!)
+        )
+            return nothing;
         if (ts.isIdentifier(node)) {
             const symbol = resolvedSymbol(this.context.checker, node);
             if (!symbol) return undefined;
@@ -2230,6 +2354,16 @@ class StringDomain {
                         [ANY_KEY, ...projection],
                         environment,
                     );
+            }
+            // A body the lowering inlines at one call reads that call's
+            // argument, whatever its other calls pass (`stringDomain`).
+            const inlined =
+                this.inlining && ts.isIdentifier(node)
+                    ? this.context.inlinedParameterArgument(node)
+                    : undefined;
+            if (inlined) {
+                this.readInlinedArgument = true;
+                return this.read(inlined, projection, environment);
             }
             // A method may be reached through any receiver.
             if (neverRuns(this.graph, owner)) return nothing;

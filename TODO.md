@@ -8,6 +8,7 @@ Compiler, source-ownership and build remediation: [audit](audit.md#remediation).
 - [ ] Rebuild stale Windows shipping dependencies (trimmed SDL, static RmlUi and LabSound) through their maintained builders before measuring package size. The desktop development artifacts have current identity records.
 - [ ] Move mixed mesh/billboard ordering into a generated draw plan after retaining source deferred-build completion order and prior stable binding order; keep equal-order/depth and camera-less refusals until those inputs and ordering-neutrality coverage exist.
 - [ ] Give remaining sliced PAL code standalone concern headers that harness fixtures include.
+- [ ] Decide `HTMLVideoElement` storage (baked or retained) per value instead of per program (`bakedVideos`), once record storage demands are decided before emission; a program mixing both kinds refuses until then.
 - [ ] Qualify `playroom` ragdoll fidelity and physics performance; current measured limits are in [status](docs/status.md#upstream-application-gates).
 - [ ] Android: resolve same-device emulator visual gaps and qualify the full registry on a physical device.
 - [ ] iOS: qualify device bundles on hardware.

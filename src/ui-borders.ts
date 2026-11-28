@@ -1,7 +1,7 @@
 import { uiCssValueTokens } from "./ui-css-syntax.js";
 
 /** The border line styles the retained layer draws. */
-export const UI_BORDER_STYLES = ["none", "hidden", "solid", "dashed"];
+export const UI_BORDER_STYLES = ["none", "hidden", "solid", "dashed", "double"];
 
 /** The shorthands whose value is one border line (`uiBorderLine`). */
 export const UI_BORDER_LINE_PROPERTIES = [
@@ -16,7 +16,6 @@ export const UI_BORDER_LINE_PROPERTIES = [
 const lineStyles = new Set([
     ...UI_BORDER_STYLES,
     "dotted",
-    "double",
     "groove",
     "ridge",
     "inset",

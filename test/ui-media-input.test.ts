@@ -29,7 +29,7 @@ test("hover and pointer media features lower to run-time device conditions", () 
     );
     assert.match(
         cpp,
-        /ui_add_style_rule\([^\n]+"height: ?4px;?", \.max_width = 600\.0, \.orientation = bbl::UiOrientation::Portrait\}\);/,
+        /ui_add_style_rule\([^\n]+"height: ?4px;?", \.viewport = \{\.max_width = 600\.0\}, \.orientation = bbl::UiOrientation::Portrait\}\);/,
     );
 });
 

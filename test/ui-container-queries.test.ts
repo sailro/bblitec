@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { runRmlUiFixture } from "./native-fixture.js";
+import { runRmlUiFixture, styleSheetSource } from "./native-fixture.js";
 
 const source = (
     css: string,
 ) => `import {createEngine} from '@babylonjs/lite';await createEngine({});
-    const sheet=document.createElement('style');sheet.textContent=${JSON.stringify(css)};document.head.appendChild(sheet);`;
+    ${styleSheetSource(css)}`;
 
 test("container rules preserve their conditions through emission", () => {
     const css = `.parent{container-type:inline-size}.reset{container-type:normal}
@@ -17,7 +17,7 @@ test("container rules preserve their conditions through emission", () => {
     assert.match(result.cpp, /container-type:inline-size/);
     assert.match(
         result.cpp,
-        /"display:grid;grid-template-columns:1fr;--bbl-authored-display:1;", \.max_width = 800\.0, \.container_max_width = 320\.0\}\);/,
+        /"display:grid;grid-template-columns:1fr;--bbl-authored-display:1;", \.viewport = \{\.max_width = 800\.0\}, \.container_max_width = 320\.0\}\);/,
     );
     assert.match(
         result.cpp,

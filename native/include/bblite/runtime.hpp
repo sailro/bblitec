@@ -48,6 +48,7 @@ void dispose_thin_instance_gpu(const std::shared_ptr<ThinInstancePoolData>& pool
 struct DomInput;
 struct PlatformCustomEvent;
 struct UiImageRequest;
+struct UiMediaState;
 struct ComputeStorageTextureRegistry;
 struct UniformBufferRegistry;
 struct ComputeTask;
@@ -4602,6 +4603,29 @@ struct UiMediaCondition {
     }
 };
 
+/** A media query's viewport bounds, in CSS pixels and inclusive; negative for none. */
+struct UiViewportBounds {
+    double max_width = -1.0;
+    double min_width = -1.0;
+    double max_height = -1.0;
+    double min_height = -1.0;
+    [[nodiscard]] bool empty() const {
+        return max_width < 0.0 && min_width < 0.0 && max_height < 0.0 && min_height < 0.0;
+    }
+    [[nodiscard]] bool matches(double width, double height) const {
+        return (max_width < 0.0 || width <= max_width) && (min_width < 0.0 || width >= min_width) &&
+               (max_height < 0.0 || height <= max_height) &&
+               (min_height < 0.0 || height >= min_height);
+    }
+};
+/** The media feature that names each viewport bound. */
+inline constexpr std::pair<std::string_view, double UiViewportBounds::*> ui_viewport_features[] = {
+    {"max-width", &UiViewportBounds::max_width},
+    {"min-width", &UiViewportBounds::min_width},
+    {"max-height", &UiViewportBounds::max_height},
+    {"min-height", &UiViewportBounds::min_height},
+};
+
 enum class UiSelectorTestKind : std::uint8_t {
     Tag,
     Id,
@@ -4668,11 +4692,8 @@ struct UiStyleRule {
     std::string secondary{};
     std::string tag{};
     std::string style{};
-    /** The viewport bounds of the rule's media query, in CSS pixels; negative for none. */
-    double max_width = -1.0;
-    double min_width = -1.0;
-    double max_height = -1.0;
-    double min_height = -1.0;
+    /** The viewport bounds of the rule's media query. */
+    UiViewportBounds viewport{};
     bool hover = false;
     bool focus_visible = false;
     bool active = false;
@@ -4701,6 +4722,8 @@ using UiEventListeners = PlatformEventListeners<void(const PlatformMouseEvent&)>
 struct UiElementRecord {
     /** Readiness belongs to the application realm, not the rendered snapshot. */
     std::shared_ptr<UiImageRequest> image_request;
+    /** A video element's media state (`ui_video_*`), created by its first media operation. */
+    std::shared_ptr<UiMediaState> media;
     struct CanvasPoint {
         double x = 0.0;
         double y = 0.0;

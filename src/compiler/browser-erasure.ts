@@ -50,7 +50,11 @@ import {
 import { promiseExecutor } from "./promise-executor.js";
 import { isNativeBrowserFileExpression } from "./browser-file.js";
 import { customEventDispatchTarget } from "./custom-events.js";
-import { isDomInstanceOf, windowInterfaceTypeof } from "./dom-targets.js";
+import {
+    isDomInstanceOf,
+    picksElementMembers,
+    windowInterfaceTypeof,
+} from "./dom-targets.js";
 import {
     hasOnlyReportingEffects,
     writesUnobservedCanvasMetadata,
@@ -1213,8 +1217,10 @@ export class BrowserErasure {
         ) {
             return false;
         }
-        const directlyDom = members.some((member) =>
-            declaredInDomLibrary(member.symbol),
+        const directlyDom = members.some(
+            (member) =>
+                declaredInDomLibrary(member.symbol) ||
+                picksElementMembers(this.context.checker, member),
         );
         if (directlyDom) return true;
         const unwrapped = this.context.unwrap(expression);

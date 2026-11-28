@@ -203,6 +203,22 @@ export interface CallbackInvocationOptions {
     resultType?: DataType;
 }
 
+/**
+ * The argument counts a call of `parameters` takes, from the `minimum` its
+ * signature requires: up to the parameters it declares, or any more past
+ * a rest parameter.
+ */
+function argumentCountRange(
+    minimum: number,
+    parameters: readonly ts.ParameterDeclaration[],
+): string {
+    if (parameters.some((parameter) => parameter.dotDotDotToken))
+        return `at least ${minimum}`;
+    return minimum >= parameters.length
+        ? `${minimum}`
+        : `${minimum}-${parameters.length}`;
+}
+
 function generationKnownPrimitive(value: Value): boolean {
     return (
         value.kind === "json-null" ||
@@ -4503,14 +4519,14 @@ export class UserFunctionLowerer {
                     "Recursive function has no callable signature.",
                 );
             }
+            // An expression body returns its value.
             const asyncWithoutValueReturn =
                 isAsyncFunction(declaration) &&
                 (!declaration.body ||
-                    !this.containsValueReturn(
-                        ts.isBlock(declaration.body)
-                            ? declaration.body.statements
-                            : [],
-                    ));
+                    (ts.isBlock(declaration.body) &&
+                        !this.containsValueReturn(
+                            declaration.body.statements,
+                        )));
             const returnTsType = asyncWithoutValueReturn
                 ? undefined
                 : nativeReturnTsType(
@@ -6660,9 +6676,12 @@ export class UserFunctionLowerer {
         // reads the binding the function had before.
         if (selfIdentifier && selfBinding)
             context.bindings.bindCompileTimeValue(selfIdentifier, selfBinding);
+        // A function stored as a void signature discards what it returns,
+        // as TypeScript's contextual void lets it.
         context.beginNativeFunctionBody(
             bodyResult,
-            asynchronous && !promiseType,
+            (asynchronous && !promiseType) ||
+                (!asynchronous && !generator && !dataType.result),
             {
                 coroutine: asynchronous && !generator,
                 ...(generator ? { generator, runtimeDataLoops: true } : {}),
@@ -8733,7 +8752,12 @@ export class UserFunctionLowerer {
                         : "."),
             );
         }
-        return context.dataTypes.ownReturnedArray(type);
+        // A caller telling the returned `null` from `undefined` tags it, as a
+        // shared body's return does (`sharedReturnType`).
+        return context.dataTypes.absenceTaggedStorage(
+            ir.declaration,
+            context.dataTypes.ownReturnedArray(type),
+        );
     }
 
     /**
@@ -8792,7 +8816,7 @@ export class UserFunctionLowerer {
             if (call.arguments.length < minimum)
                 fail(
                     call,
-                    `Function '${refusalName(ir)}' expects ${minimum}-${ir.parameters.length} arguments, received ${call.arguments.length}.`,
+                    `Function '${refusalName(ir)}' expects ${argumentCountRange(minimum, parameters)} arguments, received ${call.arguments.length}.`,
                 );
         }
         // A returned callback can mention its factory's type parameters

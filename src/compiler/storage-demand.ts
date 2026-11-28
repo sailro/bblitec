@@ -7,7 +7,7 @@ import type { StorageRequest } from "./replay-storage.js";
  */
 export abstract class StorageDemand extends Error {
     /** @unjournaled A thrown demand's own list, never compiler state. */
-    private readonly joined: StorageDemand[] = [];
+    private joined: readonly StorageDemand[] = [];
 
     abstract get request(): StorageRequest;
 
@@ -18,9 +18,19 @@ export abstract class StorageDemand extends Error {
         ];
     }
 
-    /** This demand with `others` of its kind, planned by one replay. */
+    /**
+     * This demand with `others` of its kind, planned by one replay: a new
+     * demand of this one's class, which leaves this one and `others` as
+     * they were, so a demand joined with one that holds it is no cycle.
+     */
     joinedWith(others: readonly this[]): this {
-        this.joined.push(...others);
-        return this;
+        // The same class and own fields; a subclass's constructor would ask
+        // again for what this demand already carries.
+        const joined = Object.create(
+            Object.getPrototypeOf(this) as object,
+            Object.getOwnPropertyDescriptors(this),
+        ) as this;
+        joined.joined = [...this.joined, ...others];
+        return joined;
     }
 }

@@ -2,7 +2,6 @@
 
 #include "pal_ui_control_scheme.hpp"
 #include "pal_ui_coverage.hpp"
-#include <RmlUi/Core/CallbackTexture.h>
 #include <RmlUi/Core/ComputedValues.h>
 #include <RmlUi/Core/Context.h>
 #include <RmlUi/Core/Core.h>
@@ -11,7 +10,6 @@
 #include <RmlUi/Core/FontEngineInterface.h>
 #include <RmlUi/Core/FontMetrics.h>
 #include <RmlUi/Core/Geometry.h>
-#include <RmlUi/Core/MeshUtilities.h>
 #include <RmlUi/Core/RenderManager.h>
 #include <cmath>
 
@@ -22,8 +20,10 @@ namespace bbl::pal {
 class UiControlMarkDecorator final : public Rml::Decorator {
     const UiControlSchemeProperties& properties;
     struct Data {
+        /** The check's polygon. */
         Rml::Geometry geometry;
-        Rml::CallbackTexture texture;
+        /** The disclosure marker's pixels. */
+        UiPixelQuad disclosure;
         Rml::Vector2f size{};
         Rml::ColourbPremultiplied color{};
         float font_size = 0;
@@ -48,7 +48,6 @@ class UiControlMarkDecorator final : public Rml::Decorator {
         const float top = std::floor(baseline - side);
         const int width = static_cast<int>(std::ceil(side)) + 1,
                   rows = static_cast<int>(std::ceil(baseline - top)) + 1;
-        auto& manager = element.GetContext()->GetRenderManager();
         if (!data.initialized || data.color != color || data.font_size != font_size ||
             data.open != open || data.baseline != baseline) {
             const float square = baseline - side - top;
@@ -62,16 +61,8 @@ class UiControlMarkDecorator final : public Rml::Decorator {
                 return x >= 0.f && x <= height &&
                        std::abs(y - side * .5f) <= (height - x) / std::sqrt(3.f);
             };
-            data.texture = manager.MakeCallbackTexture(
-                [bytes = ui_coverage_pixels(width, rows, 1.f, color, inside), width,
-                 rows](const Rml::CallbackTextureInterface& out) {
-                    return out.GenerateTexture(bytes, {width, rows});
-                });
-            Rml::Mesh mesh;
-            Rml::MeshUtilities::GenerateQuad(
-                mesh, {0, 0}, {static_cast<float>(width), static_cast<float>(rows)},
-                Rml::ColourbPremultiplied{255, 255, 255, 255}, {0, 0}, {1, 1});
-            data.geometry = manager.MakeGeometry(std::move(mesh));
+            data.disclosure.build(element.GetContext()->GetRenderManager(),
+                                  ui_coverage_pixels(width, rows, 1.f, color, inside), width, rows);
             data.color = color;
             data.font_size = font_size;
             data.open = open;
@@ -79,7 +70,7 @@ class UiControlMarkDecorator final : public Rml::Decorator {
             data.initialized = true;
         }
         const auto origin = element.GetAbsoluteOffset(Rml::BoxArea::Padding);
-        data.geometry.Render({std::round(origin.x), std::round(origin.y + top)}, data.texture);
+        data.disclosure.render({std::round(origin.x), std::round(origin.y + top)});
     }
 
 public:
@@ -144,20 +135,6 @@ public:
         }
         data.geometry.Render(element->GetAbsoluteOffset(area));
     }
-};
-
-class UiControlMarkDecoratorInstancer final : public Rml::DecoratorInstancer {
-public:
-    explicit UiControlMarkDecoratorInstancer(const UiControlSchemeProperties& properties)
-        : properties(properties) {}
-    Rml::SharedPtr<Rml::Decorator>
-    InstanceDecorator(const Rml::String&, const Rml::PropertyDictionary&,
-                      const Rml::DecoratorInstancerInterface&) override {
-        return Rml::MakeShared<UiControlMarkDecorator>(properties);
-    }
-
-private:
-    const UiControlSchemeProperties& properties;
 };
 
 } // namespace bbl::pal

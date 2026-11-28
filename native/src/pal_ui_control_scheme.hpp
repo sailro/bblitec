@@ -4,6 +4,7 @@
 // ui/color/color_provider_utils.cc) and measured in that capture browser for
 // every state below. BSD-3-Clause notice: native/notices/Chromium.txt.
 #include <RmlUi/Core/Colour.h>
+#include <RmlUi/Core/Decorator.h>
 #include <RmlUi/Core/Element.h>
 #include <RmlUi/Core/ElementText.h>
 #include <RmlUi/Core/Property.h>
@@ -21,6 +22,22 @@ namespace bbl::pal {
 
 struct UiControlSchemeProperties {
     Rml::PropertyId scheme, accent;
+};
+
+/** Instances `Decorator`, a control decorator painted by the element's color scheme. */
+template <typename Decorator>
+class UiSchemeDecoratorInstancer final : public Rml::DecoratorInstancer {
+public:
+    explicit UiSchemeDecoratorInstancer(const UiControlSchemeProperties& properties)
+        : properties(properties) {}
+    Rml::SharedPtr<Rml::Decorator>
+    InstanceDecorator(const Rml::String&, const Rml::PropertyDictionary&,
+                      const Rml::DecoratorInstancerInterface&) override {
+        return Rml::MakeShared<Decorator>(properties);
+    }
+
+private:
+    const UiControlSchemeProperties& properties;
 };
 
 inline UiControlSchemeProperties register_ui_control_scheme_properties() {

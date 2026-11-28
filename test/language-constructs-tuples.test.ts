@@ -681,6 +681,43 @@ test("numeric tuple parameters refuse array parameters that may grow them", () =
         );
 });
 
+// A shared class's method keeps its array parameter's length when it only
+// writes lanes the tuple has: the tuple it is handed is that array, and
+// keeps its fixed storage for the spread that reads it after the call.
+check(
+    "tuple-handed-to-a-method-keeping-its-array-length",
+    `
+    type Lanes = [number, number, number, number];
+    class Pose {
+        x = 0;
+        y = 0;
+        set(x: number, y: number): void { this.x = x; this.y = y; }
+        readInto(out: number[]): void {
+            out[0] = this.x; out[1] = this.y;
+            out[2] = this.x + this.y; out[3] = this.x - this.y;
+        }
+    }
+    const poses = new Map<number, Pose>();
+    for (let i = 0; i < 2; i++) poses.set(i, new Pose());
+    function tracker(sink: { take(a: number, b: number, c: number, d: number): void }): (x: number) => void {
+        const lanes: Lanes = [0, 0, 0, 0];
+        return (x: number): void => {
+            const pose = poses.get(0)!;
+            pose.set(x, 1);
+            pose.readInto(lanes);
+            sink.take(...lanes);
+        };
+    }
+    const seen: number[] = [];
+    const follow = tracker({ take(a, b, c, d) { seen.push(a, b, c, d); } });
+    const list: number[] = [0, 0, 0, 0];
+    follow(Date.now() > 0 ? 3 : 4);
+    poses.get(1)!.set(5, 2);
+    poses.get(1)!.readInto(list);
+    if (seen.join() !== "3,1,4,2" || list.join() !== "5,2,7,3") throw new Error("lanes " + seen.join() + " " + list.join());
+`,
+);
+
 check(
     "tuple-stored-through-a-readonly-array-field",
     `
@@ -827,6 +864,29 @@ check(
 `,
 );
 
+// A tuple's splice that inserts as many lanes as it removes keeps its
+// length: it writes the tuple's own lanes and returns the removed ones.
+check(
+    "numeric-tuple-splice-keeping-its-length",
+    `
+    interface Entry { readonly key: string; readonly shift: [number, number, number, number] }
+    const prepare = (key: string): Entry => ({ key, shift: [0, 0, 0, 0] });
+    const entries = new Map<string, Entry>();
+    const old = prepare("a");
+    old.shift[1] = 2; old.shift[3] = 5;
+    entries.set("a", old);
+    const next = prepare("a");
+    const view: number[] = next.shift;
+    const previous = entries.get("a");
+    if (previous) next.shift.splice(0, 4, ...previous.shift);
+    if (next.shift.join() !== "0,2,0,5" || view[3] !== 5 || next.shift === previous!.shift) throw new Error("copied lanes " + next.shift.join());
+    const removed = next.shift.splice(-2, 2, 7, 8);
+    if (removed.join() !== "0,5" || next.shift.join() !== "0,2,7,8" || next.shift.length !== 4) throw new Error("removed lanes " + removed.join());
+    next.shift.splice(1, 2, next.shift[2]!, next.shift[3]!);
+    if (next.shift.join() !== "0,7,8,8") throw new Error("own lanes " + next.shift.join());
+`,
+);
+
 test("spread lanes and tuple storage refuse what no storage represents", () => {
     for (const [name, source, message] of [
         [
@@ -838,6 +898,11 @@ test("spread lanes and tuple storage refuse what no storage represents", () => {
             "stored fixed tuple parameter cannot grow through an array alias",
             "function grow(t: [number, number]): number { const a: number[] = t; a.push(1); return a.length; } const roots: Array<typeof grow> = [grow]; if (roots[0]!([1, 2]) !== 3) throw new Error('grow');",
             /A fixed-length tuple stored as a number array could grow through that array/,
+        ],
+        [
+            "tuple splice changing its length",
+            "interface Entry { readonly shift: [number, number] } const entry: Entry = { shift: [1, 2] }; const removed = entry.shift.splice(0, 1); if (removed.length !== 1) throw new Error('splice');",
+            /Array\.splice on a 2-element tuple must insert as many elements as it removes/,
         ],
     ] as const)
         assert.throws(() => compileSource(source), message, name);

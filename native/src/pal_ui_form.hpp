@@ -1,7 +1,9 @@
 #pragma once
 #include <bblite/pal_system_fonts.hpp>
 #include "pal_file_io.hpp"
+#include "pal_ui_control_scheme.hpp"
 #include "pal_ui_coverage.hpp"
+#include "pal_ui_search_cancel.hpp"
 #include <RmlUi/Core/Elements/ElementFormControl.h>
 #include <RmlUi/Core/Elements/ElementFormControlSelect.h>
 #include <RmlUi/Core/ElementText.h>
@@ -10,13 +12,13 @@
 #include <RmlUi/Core/Core.h>
 #include <RmlUi/Core/FontEngineInterface.h>
 #include <RmlUi/Core/FontMetrics.h>
-#include <RmlUi/Core/CallbackTexture.h>
 #include <RmlUi/Core/Decorator.h>
 #include <RmlUi/Core/Geometry.h>
-#include <RmlUi/Core/MeshUtilities.h>
 #include <RmlUi/Core/RenderManager.h>
 #include <ft2build.h>
 #include FT_FREETYPE_H
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <map>
 #include <optional>
@@ -237,8 +239,10 @@ private:
 class UiControlArrowDecorator final : public Rml::Decorator {
     bool solid;
     struct Data {
+        /** The solid arrow's triangle. */
         Rml::Geometry geometry;
-        Rml::CallbackTexture texture;
+        /** The chevron's pixels. */
+        UiPixelQuad chevron;
         Rml::Vector2f size{};
         Rml::ColourbPremultiplied color{};
         float density = 0;
@@ -280,25 +284,16 @@ public:
             // The texture snaps to the pixel grid around the box's center.
             const int width = static_cast<int>(std::ceil(chevron_width * density)),
                       height = static_cast<int>(std::ceil(chevron_height * density));
-            auto& manager = element->GetContext()->GetRenderManager();
-            if (data.color != color || data.density != density || !data.texture) {
-                data.texture = manager.MakeCallbackTexture(
-                    [bytes = ui_coverage_pixels(width, height, density, color, in_chevron), width,
-                     height](const Rml::CallbackTextureInterface& out) {
-                        return out.GenerateTexture(bytes, {width, height});
-                    });
-                Rml::Mesh mesh;
-                Rml::MeshUtilities::GenerateQuad(
-                    mesh, {0, 0}, {static_cast<float>(width), static_cast<float>(height)},
-                    Rml::ColourbPremultiplied{255, 255, 255, 255}, {0, 0}, {1, 1});
-                data.geometry = manager.MakeGeometry(std::move(mesh));
+            if (data.color != color || data.density != density || !data.chevron) {
+                data.chevron.build(element->GetContext()->GetRenderManager(),
+                                   ui_coverage_pixels(width, height, density, color, in_chevron),
+                                   width, height);
                 data.color = color;
                 data.density = density;
             }
             const auto center = element->GetAbsoluteOffset(Rml::BoxArea::Content) + size * .5f;
-            data.geometry.Render(
-                {std::round(center.x - width * .5f), std::round(center.y - height * .5f)},
-                data.texture);
+            data.chevron.render(
+                {std::round(center.x - width * .5f), std::round(center.y - height * .5f)});
             return;
         }
         if (data.size != size || data.color != color || data.density != density) {
@@ -327,6 +322,118 @@ public:
     InstanceDecorator(const Rml::String& name, const Rml::PropertyDictionary&,
                       const Rml::DecoratorInstancerInterface&) override {
         return Rml::MakeShared<UiControlArrowDecorator>(name == "bbl-native-scroll-arrow");
+    }
+};
+
+/**
+ * Chromium 152's search field cancel button (ThemePainterDefault::PaintSearchFieldCancelButton):
+ * its light or dark image, the pressed one while the button is active, drawn over the button's
+ * square content box at the pixel grid. Chromium's GPU raster samples it trilinearly with a -0.5
+ * level-of-detail bias (Skia's sharpened mipmaps; measured): each mip level halves its parent with a
+ * box filter on an even side and a 1-2-1 filter on an odd one, in 8-bit channels.
+ */
+class UiSearchCancelDecorator final : public Rml::Decorator {
+    const UiControlSchemeProperties& properties;
+    struct Data {
+        UiPixelQuad quad;
+        int side = 0;
+        const UiSearchCancelImage* image = nullptr;
+    };
+
+    struct Level {
+        int side;
+        std::vector<float> pixels;
+        float at(int x, int y, int channel) const {
+            x = std::clamp(x, 0, side - 1);
+            y = std::clamp(y, 0, side - 1);
+            return pixels[(static_cast<std::size_t>(y) * side + x) * 4 + channel];
+        }
+    };
+
+    static Level half(const Level& level) {
+        const int side = std::max(1, level.side / 2);
+        // Taps and weights along one axis: a box on an even side, 1-2-1 on an odd one.
+        const bool odd = level.side % 2 != 0;
+        const std::array<float, 3> weights =
+            odd ? std::array<float, 3>{.25f, .5f, .25f} : std::array<float, 3>{.5f, .5f, 0.f};
+        Level result{side, std::vector<float>(static_cast<std::size_t>(side) * side * 4)};
+        for (int y = 0; y < side; ++y)
+            for (int x = 0; x < side; ++x)
+                for (int channel = 0; channel < 4; ++channel) {
+                    float sum = 0;
+                    for (int dy = 0; dy < 3; ++dy)
+                        for (int dx = 0; dx < 3; ++dx)
+                            sum += level.at(2 * x + dx, 2 * y + dy, channel) * weights[dx] *
+                                   weights[dy];
+                    // Skia keeps each level in 8-bit channels.
+                    result.pixels[(static_cast<std::size_t>(y) * side + x) * 4 + channel] =
+                        std::round(sum);
+                }
+        return result;
+    }
+
+    /** Bilinear sample of `level` at pixel (x, y) of a `side`-pixel square drawn over it. */
+    static float bilinear(const Level& level, int side, int x, int y, int channel) {
+        const float scale = static_cast<float>(level.side) / static_cast<float>(side);
+        const float u = (x + .5f) * scale - .5f, v = (y + .5f) * scale - .5f;
+        const int x0 = static_cast<int>(std::floor(u)), y0 = static_cast<int>(std::floor(v));
+        const float fx = u - x0, fy = v - y0;
+        const float top = level.at(x0, y0, channel) * (1 - fx) + level.at(x0 + 1, y0, channel) * fx;
+        const float bottom =
+            level.at(x0, y0 + 1, channel) * (1 - fx) + level.at(x0 + 1, y0 + 1, channel) * fx;
+        return top * (1 - fy) + bottom * fy;
+    }
+
+    static std::vector<Rml::byte> resample(const UiSearchCancelImage& image, int side) {
+        const float lod = std::max(
+            0.f,
+            std::log2(static_cast<float>(ui_search_cancel_side) / static_cast<float>(side)) - .5f);
+        Level finer{ui_search_cancel_side, std::vector<float>(image.begin(), image.end())};
+        for (int level = 0; level < static_cast<int>(lod) && finer.side > 1; ++level)
+            finer = half(finer);
+        const float blend = finer.side > 1 ? lod - std::floor(lod) : 0.f;
+        const Level coarser = blend > 0.f ? half(finer) : Level{};
+        std::vector<Rml::byte> bytes(static_cast<std::size_t>(side) * side * 4);
+        for (int y = 0; y < side; ++y)
+            for (int x = 0; x < side; ++x)
+                for (int channel = 0; channel < 4; ++channel) {
+                    float value = bilinear(finer, side, x, y, channel);
+                    if (blend > 0.f)
+                        value += (bilinear(coarser, side, x, y, channel) - value) * blend;
+                    bytes[(static_cast<std::size_t>(y) * side + x) * 4 + channel] =
+                        static_cast<Rml::byte>(std::round(value));
+                }
+        return bytes;
+    }
+
+public:
+    explicit UiSearchCancelDecorator(const UiControlSchemeProperties& properties)
+        : properties(properties) {}
+    Rml::DecoratorDataHandle GenerateElementData(Rml::Element*, Rml::BoxArea) const override {
+        return reinterpret_cast<Rml::DecoratorDataHandle>(new Data{});
+    }
+    void ReleaseElementData(Rml::DecoratorDataHandle handle) const override {
+        delete reinterpret_cast<Data*>(handle);
+    }
+    void RenderElement(Rml::Element* element, Rml::DecoratorDataHandle handle) const override {
+        auto& data = *reinterpret_cast<Data*>(handle);
+        const auto size = element->GetBox().GetSize(Rml::BoxArea::Content);
+        const int side = static_cast<int>(std::round(std::min(size.x, size.y)));
+        if (side <= 0)
+            return;
+        const bool dark = ui_dark_color_scheme(*element, properties),
+                   pressed = element->IsPseudoClassSet("active");
+        const auto& image = dark ? pressed ? ui_search_cancel_dark_pressed : ui_search_cancel_dark
+                            : pressed ? ui_search_cancel_light_pressed
+                                      : ui_search_cancel_light;
+        if (data.side != side || data.image != &image) {
+            data.quad.build(element->GetContext()->GetRenderManager(), resample(image, side), side,
+                            side);
+            data.side = side;
+            data.image = &image;
+        }
+        const auto origin = element->GetAbsoluteOffset(Rml::BoxArea::Content);
+        data.quad.render({std::round(origin.x), std::round(origin.y)});
     }
 };
 

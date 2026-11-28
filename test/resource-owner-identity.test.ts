@@ -382,3 +382,57 @@ test("an array of elements stored in a record field stays the caller's one array
         { expectedOutput: "" },
     );
 });
+
+test("a returned record's array of owned resources assigned to a binding is its declared field's one array", () => {
+    // The declared field takes the elements' engine owners, as a declared
+    // initializer's does (`retainedResultType`): an engine-less copy would
+    // be a second array.
+    const { cpp } = compileSource(`
+        import {addToScene, createBox, createEngine, createSceneContext, type EngineContext, type Mesh, type SceneContext} from '@babylonjs/lite';
+        interface Group { readonly meshes: readonly Mesh[]; count(): number; grow(by: number): void }
+        interface Part { mesh: Mesh; count: number }
+        function build(engine: EngineContext, scene: SceneContext, sizes: readonly number[]): Group {
+            const parts: Part[] = sizes.map((size) => { const mesh = createBox(engine, { size }); addToScene(scene, mesh); return { mesh, count: 0 }; });
+            return { meshes: parts.map((part) => part.mesh), count: () => parts.reduce((sum, part) => sum + part.count, 0), grow(by) { for (const part of parts) part.count += by; } };
+        }
+        const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+        const scene = createSceneContext(engine);
+        const all: Mesh[] = [];
+        let group: Group | null = null;
+        const groupOf = (): Group => {
+            if (!group) { group = build(engine, scene, [1, 2]); all.push(...group.meshes); }
+            return group;
+        };
+        groupOf().grow(2);
+        for (const mesh of groupOf().meshes) mesh.position.y = groupOf().count() + all.length;
+    `);
+    assert.match(
+        cpp,
+        /struct GroupData \{\s*bbl::js::Array<std::pair<bbl::StoredEngine, bbl::MeshHandle>> meshes;/,
+    );
+});
+
+test("a binding of unknown elements assigned arrays of resources holds them as those arrays do", () => {
+    // Converting the array into dynamic elements would be a second array
+    // beside the one the caller and the binding share.
+    const { cpp } = compileSource(`
+        import {addToScene, createBox, createEngine, createSceneContext, type Mesh} from '@babylonjs/lite';
+        interface Publication<T> { publish(items: readonly T[]): void; size(): number }
+        function publication<T>(sink: (items: readonly T[]) => void): Publication<T> {
+            let held: readonly T[] = [];
+            return { publish(items) { held = items; sink(items); }, size: () => held.length };
+        }
+        const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+        const scene = createSceneContext(engine);
+        const meshes = [1, 2].map((size) => { const mesh = createBox(engine, { size }); addToScene(scene, mesh); return { mesh }; }).map((part) => part.mesh);
+        let seen = 0;
+        const casters = publication((set) => { seen += (set as Mesh[]).length; });
+        casters.publish([]);
+        casters.publish([...meshes]);
+        if (casters.size() !== seen) throw new Error("published");
+    `);
+    assert.match(
+        cpp,
+        /\(\*v_\w+_held\) = bbl::js::Array<bbl::MeshHandle>\{\};/,
+    );
+});

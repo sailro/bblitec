@@ -137,8 +137,10 @@ Commands follow `npm run scene --`. Targets are registry IDs, local TypeScript o
 ### Sizing a capability before implementing it
 
 `npm run scene -- survey <entry.ts>` writes `artifacts/survey/<directory>-<stem>/`: `census.json` (every refusal with site,
-message class, function and cascades, the storage demands the last pass met, the program's statements attempted, and the
-statements slowest to lower; no tree) and `api/report.html` (referenced pinned declarations). A survey lowers every
+message class, function and cascades, the storage demands the last pass met, each pass's taken demands with the
+statement that met each and whether the pass before had not reached, lowered or rolled back that statement, the
+program's statements attempted, and the statements slowest to lower; no tree) and `api/report.html` (referenced pinned
+declarations). A survey lowers every
 function of the program's own sources ([survey invariants](architecture.md#lowering-invariants));
 `bblitec <entry> --survey <census.json>` rewrites the census as it goes (`complete: false`), and `--survey-passes <n>` caps
 the passes: one attempts every statement. `--survey-entry-only` lowers no roots: the census lists the refusals the
@@ -150,7 +152,8 @@ the seconds so far). `--converge-storage <passes>` first runs up to that many su
 entry restarts once per pass instead of once per demand. Group by shared
 capability and probe source shapes before implementing. The
 compiler's `--coverage <coverage.json>` (with `--out` or `--survey`) records statement-level retained, refused and
-rolled-back lowering; it does not prove native support. A survey, and an ordinary compile between its attempts, rewrite it every ten minutes
+rolled-back lowering, and for a survey what rolled each rolled-back statement back (`rolledBackBy`: the refusal's site
+and class, or the storage demand); it does not prove native support. A survey, and an ordinary compile between its attempts, rewrite it every ten minutes
 (`complete: false` until it ends).
 
 ### Required files
@@ -225,10 +228,11 @@ node dist/src/scene-command.js neutrality <saved-baseline-directory>
   Repeatability exceptions live in the neutrality allowlist; scenes with partitioned live text are unchecked.
 - Documentation-only changes: link and metadata checks. Rendering checks when executable inputs or measurement contracts change.
 
-## Proving a change moved nothing
+## Neutrality
 
-- `neutrality <file> --generated --write` saves a generated-byte baseline; `neutrality <file> --generated` compares after
-  full regeneration. Native/shader changes compare saved differential reports.
+- Neutrality is unchanged rendering: after `npm run sweep`, `neutrality <saved-baseline-directory>` compares each
+  scene's differential report cell by cell against the saved one. It is the only neutrality a change must prove.
+- Generated C++ changes with every new construction; identical generated output is never required.
 - Ocean needs saved native PNGs at 1280×720; live text regions (GPU timing, frame counter) are reported separately.
 
 ## Native builds

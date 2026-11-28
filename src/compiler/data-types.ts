@@ -89,6 +89,7 @@ export {
 } from "./data-types/typed-arrays.js";
 export {
     dataTypesEqual,
+    dropsResourceEngine,
     functionArmIndex,
     unrecordedFact,
     passesByReferenceKind,
@@ -115,6 +116,7 @@ import {
     classViewSite,
     dictionaryStorage,
     documentStorageSite,
+    joinedNativeStorage,
     nativeViewSite,
     NativeRecordStorageRequired,
     refusingRecordDemand,
@@ -145,6 +147,7 @@ import {
     holdsRecord,
     observedUnderOwnType,
     recordCopyObservation,
+    recordFieldIsWritten,
     type RecordObservationContext,
 } from "./record-observations.js";
 import {
@@ -153,7 +156,10 @@ import {
     isComponentRecord,
     isRecordLike,
     layoutsCompatible,
+    readsHeldObject,
     recordIdentity,
+    type UnwrittenField,
+    widenedUnwritten,
     type InstantiatedRecord,
     type RecordComponent,
     type RecordComponentKey,
@@ -883,7 +889,6 @@ export function platformHandleKind(
     | "gpu-sampler"
     | "custom-event"
     | "dom-event"
-    | "video"
     | undefined {
     if (declaredIn(type.symbol, "dom", "webgpu")) {
         if (libraryName(type) === "GPUDevice") return "gpu-device";
@@ -896,8 +901,6 @@ export function platformHandleKind(
     if (libraryName(type) === "GamepadButton") return "gamepad-button";
     if (libraryName(type) === "Touch") return "touch";
     if (libraryName(type) === "CustomEvent") return "custom-event";
-    // Only a generation-executed producer makes one (executed-video-function.ts).
-    if (libraryName(type) === "HTMLVideoElement") return "video";
     if (["PointerEvent", "WheelEvent", "InputEvent"].includes(type.symbol.name))
         return "dom-event";
     return undefined;
@@ -911,6 +914,11 @@ export function isTouchListType(type: ts.Type): boolean {
 /** A TouchList's storage: a snapshot vector (`bbl::dom_touch_list`). */
 export function touchListDataType(): DataType {
     return { kind: "vector", element: { kind: "handle", handle: "touch" } };
+}
+
+/** Whether a DOM event interface extends MouseEvent: a pointer or a wheel event is a mouse event. */
+export function extendsMouseEvent(name: string | undefined): boolean {
+    return name === "PointerEvent" || name === "WheelEvent";
 }
 
 export function platformEventKind(
@@ -969,7 +977,8 @@ function isDomEventTargetType(type: ts.Type): boolean {
     );
 }
 
-function isDomElementType(symbol: ts.Symbol): boolean {
+/** Whether a DOM interface is an element's: `Element` or an HTML or SVG element interface. */
+export function isDomElementType(symbol: ts.Symbol): boolean {
     return (
         declaredInDomLibrary(symbol) &&
         (libraryName(symbol) === "Element" ||
@@ -1566,10 +1575,26 @@ type ObjectView = { readonly site: RecordStorageSite } & (
     | { readonly instance: ts.ClassLikeDeclaration }
 );
 
-function sameObjectView(left: ObjectView, right: ObjectView): boolean {
-    return "storage" in left
-        ? "storage" in right && dataTypesEqual(left.storage, right.storage)
-        : "instance" in right && left.instance === right.instance;
+/**
+ * The one view holding the objects of views `held` and `next`: one class's
+ * instances, or native owners one storage holds (`joinedNativeStorage`).
+ */
+function joinedObjectView(
+    held: ObjectView,
+    next: ObjectView,
+): ObjectView | undefined {
+    if ("instance" in held)
+        return "instance" in next && held.instance === next.instance
+            ? held
+            : undefined;
+    if (!("storage" in next)) return undefined;
+    const storage = joinedNativeStorage(held.storage, next.storage);
+    return (
+        storage && {
+            storage,
+            site: dataTypesEqual(storage, held.storage) ? held.site : next.site,
+        }
+    );
 }
 
 /**
@@ -1881,6 +1906,105 @@ export class DataTypeRegistry {
         if (order) throw order.joinedWith(otherOrders);
     }
 
+    /**
+     * A write of a property struct `target`'s record type declares, through
+     * a record of struct `source`, whose layout lacks it (a parameter of the
+     * wider type bound to a narrower record): JavaScript adds the property
+     * to that one object, so the two record types, the `owner` expression's
+     * under the instantiation in force, join one layout.
+     */
+    public joinWrittenRecordProperty(
+        source: string,
+        target: string,
+        owner: ts.Expression,
+    ): void {
+        const from = this.nativeRecordSources.get(source);
+        if (!from) return;
+        const record = this.checker.getNonNullableType(
+            this.checker.getTypeAtLocation(owner),
+        );
+        const join = this.recordJoin(
+            from,
+            from.type,
+            source,
+            this.recordDemand(record, owner),
+            record,
+            target,
+            "value",
+        );
+        if (
+            join &&
+            (join.sourceInstantiation || join.targetInstantiation
+                ? this.structLayoutsCompatible(
+                      this.structFields(source, owner, "accessors"),
+                      this.structFields(target, owner, "accessors"),
+                  )
+                : layoutsCompatible(this.checker, from.type, record))
+        )
+            this.requireJoin({ ...from, node: owner, joins: [join] });
+    }
+
+    /**
+     * The join storing records of `source` (struct `sourceName`) as
+     * `target` (struct `targetName`) asks for, each generic endpoint under
+     * its own instantiation in force. Undefined where an endpoint cannot
+     * join a record component -- it is not one type under every
+     * instantiation (`joinableRecord`) and names no instantiation in force,
+     * or its struct holds a class's instances -- or where both already
+     * share one.
+     */
+    private recordJoin(
+        source: NativeRecordStorageDemand,
+        sourceRecord: ts.Type,
+        sourceName: string,
+        target: NativeRecordStorageDemand,
+        targetRecord: ts.Type,
+        targetName: string,
+        kind: RecordJoin["kind"],
+    ): RecordJoin | undefined {
+        const sourceInstantiation = this.recordInstantiation(
+            source,
+            sourceRecord,
+            sourceName,
+        );
+        const targetInstantiation = this.recordInstantiation(
+            target,
+            targetRecord,
+            targetName,
+        );
+        const joinable = (
+            demand: NativeRecordStorageDemand,
+            record: ts.Type,
+            name: string,
+            instantiation: InstantiatedRecord | undefined,
+        ): boolean =>
+            instantiation !== undefined ||
+            (this.joinableRecord(demand, record) && !this.isClassStruct(name));
+        const component = (
+            record: ts.Type,
+            instantiation: InstantiatedRecord | undefined,
+        ) =>
+            this.recordComponents.get(
+                instantiation ?? recordIdentity(this.checker, record),
+            );
+        const sourceComponent = component(sourceRecord, sourceInstantiation);
+        if (
+            !joinable(source, sourceRecord, sourceName, sourceInstantiation) ||
+            !joinable(target, targetRecord, targetName, targetInstantiation) ||
+            (sourceComponent !== undefined &&
+                sourceComponent ===
+                    component(targetRecord, targetInstantiation))
+        )
+            return undefined;
+        return {
+            source: sourceRecord,
+            target: targetRecord,
+            ...(sourceInstantiation ? { sourceInstantiation } : {}),
+            ...(targetInstantiation ? { targetInstantiation } : {}),
+            kind,
+        };
+    }
+
     /** An observable extra property joins the concrete record layouts that carried it. */
     private retainConvertedRecordProperty(
         name: string,
@@ -1937,6 +2061,8 @@ export class DataTypeRegistry {
         private readonly asynchronous = false,
         /** The storage demands this compile replays with; read, never added to. */
         private readonly storage = new ReplayStorage(checker),
+        /** Whether `HTMLVideoElement` storage holds generation-baked videos (`programBakesVideos`). */
+        private readonly bakedVideos = false,
     ) {}
 
     /** Demands a record join; a planning attempt goes on with a copy. */
@@ -2542,6 +2668,11 @@ export class DataTypeRegistry {
     private recordComponents: ReadonlyMap<RecordComponentKey, RecordComponent> =
         new Map();
     /**
+     * @unjournaled Set once before lowering: whether no write in the program
+     * replaces a record field (`recordFieldIsWritten`).
+     */
+    private unwrittenField: UnwrittenField | undefined;
+    /**
      * @unjournaled Set once before lowering: the joins earlier replays
      * demanded, by source type.
      */
@@ -2568,6 +2699,9 @@ export class DataTypeRegistry {
         program: ts.Program,
     ): void {
         this.recordComponents = components;
+        const writes = { program, checker: this.checker };
+        this.unwrittenField = (owner, property) =>
+            !recordFieldIsWritten(writes, owner, property);
         const joins = new Map<ts.Type, RecordJoin[]>();
         for (const demand of demands) {
             // A demand no native object can hold stands refused.
@@ -2677,10 +2811,9 @@ export class DataTypeRegistry {
                 this.withRecordDemand(demand, () => {
                     const identity = this.structIdentity(demand.type);
                     const previous = this.objectViews.get(identity);
+                    const joined = previous && joinedObjectView(previous, view);
                     const held =
-                        previous && !sameObjectView(previous, view)
-                            ? previous.site
-                            : undefined;
+                        previous && !joined ? previous.site : undefined;
                     const asked = documentStorageSite(demand);
                     if (
                         ("storage" in view &&
@@ -2700,7 +2833,7 @@ export class DataTypeRegistry {
                                 ),
                             ),
                         );
-                    this.objectViews.set(identity, view);
+                    this.objectViews.set(identity, joined ?? view);
                 });
             for (const join of demand.joins ?? []) {
                 const known = joins.get(join.source);
@@ -3290,6 +3423,21 @@ export class DataTypeRegistry {
         return { ...source, documentFields: [field] };
     }
 
+    /** Whether struct `name`'s property `field` reads the object others store (`readsHeldObject`). */
+    private readsHeldObjectField(name: string, field: string): boolean {
+        const source = this.nativeRecordSources.get(name);
+        const property =
+            source && this.checker.getPropertyOfType(source.type, field);
+        return (
+            property !== undefined &&
+            readsHeldObject(
+                this.checker,
+                property,
+                this.checker.getTypeOfSymbol(property),
+            )
+        );
+    }
+
     /**
      * One layout storing property `name` that one record type stores as a
      * document and another typed (`typedSideOfDocument`) holds one value:
@@ -3634,16 +3782,28 @@ export class DataTypeRegistry {
      * A generic record type naming type parameters the instantiations in
      * force substitute, as that one instantiation: its generic interface,
      * class or alias with each argument resolved (a generic argument as its
-     * own instantiation), or an intersection with each part resolved
-     * (`H & { id: number }`). Undefined for a type no instantiation
-     * reaches, and for one an argument of which does not resolve.
+     * own instantiation), an intersection with each part resolved
+     * (`H & { id: number }`), or an object literal type a generic function
+     * declares (`{ key: Key }`, or a local alias of one) with every argument
+     * in force. Undefined for a type no instantiation reaches, and for one
+     * an argument of which does not resolve.
      */
     private instantiatedRecordOf(
         type: ts.Type,
     ): InstantiatedRecord | undefined {
         if (!this.mentionsSubstitution(type)) return undefined;
-        const [generic, arguments_] = this.genericArguments(type);
+        const [declared, declaredArguments] = this.genericArguments(type);
+        const literal =
+            !declared &&
+            ((type as ts.ObjectType).objectFlags & ts.ObjectFlags.Anonymous) !==
+                0
+                ? (type.aliasSymbol ?? type.symbol)
+                : undefined;
+        const generic = declared ?? literal;
         if (!generic) return undefined;
+        const arguments_ = literal
+            ? this.substitutedParameters(type)
+            : declaredArguments;
         const resolved = arguments_.map((argument) => {
             const concrete = this.resolveTypeParameter(argument);
             return this.mentionsSubstitution(concrete)
@@ -3653,6 +3813,19 @@ export class DataTypeRegistry {
         return resolved.every((argument) => argument !== undefined)
             ? instantiatedRecord(generic, resolved)
             : undefined;
+    }
+
+    /** The type parameters in force a type mentions, in declaration order. */
+    private substitutedParameters(type: ts.Type): ts.Type[] {
+        const found = new Set<ts.Type>();
+        this.mentionsSubstitution(type, new EmissionSet(), found);
+        const site = (parameter: ts.Type) => parameter.symbol.declarations?.[0];
+        return [...found].sort(
+            (a, b) =>
+                (site(a)?.getSourceFile().fileName ?? "").localeCompare(
+                    site(b)?.getSourceFile().fileName ?? "",
+                ) || (site(a)?.pos ?? 0) - (site(b)?.pos ?? 0),
+        );
     }
 
     /**
@@ -3776,13 +3949,48 @@ export class DataTypeRegistry {
             layout = component.shapes.every((shape) =>
                 this.checker
                     .getPropertiesOfType(shape)
-                    .every(({ name }) => held.has(name)),
+                    .every(
+                        (property) =>
+                            held.has(property.name) &&
+                            !this.widensUnionField(union, shape, property),
+                    ),
             )
                 ? union
                 : null;
             this.unionLayouts.set(component.key, layout);
         }
         return layout ?? undefined;
+    }
+
+    /**
+     * Whether a shape of a union's component types `property` as a union
+     * wider than the union's arms do, where no write replaces it on the
+     * shape's records (`widenedUnwritten`): the union's own layout cannot
+     * hold it, the component's layout of its shapes can, and the arms'
+     * reads find only their own storage there.
+     */
+    private widensUnionField(
+        union: ts.UnionType,
+        shape: ts.Type,
+        property: ts.Symbol,
+    ): boolean {
+        const unwritten = this.unwrittenField;
+        if (shape === union || !unwritten) return false;
+        const own = this.checker.getTypeOfSymbol(property);
+        return union.types.some((arm) => {
+            const declared = arm.getProperty(property.name);
+            return (
+                declared !== undefined &&
+                widenedUnwritten(
+                    this.checker,
+                    own,
+                    shape,
+                    this.checker.getTypeOfSymbol(declared),
+                    property.name,
+                    unwritten,
+                )
+            );
+        });
     }
 
     /**
@@ -5043,74 +5251,38 @@ export class DataTypeRegistry {
             return source ? [{ source: source.type, target: target.type }] : [];
         });
         if (this.joinCallableRecordTypes(callableFields)) return;
-        // A record type a generic call's instantiation does not reach is
-        // one type under every instantiation.
-        const joinable = (
-            demand: NativeRecordStorageDemand,
-            record: ts.Type,
-        ): boolean =>
-            this.joinableRecord(demand, record) &&
-            !this.isClassStruct(
-                demand === source ? sourceType.name : targetType.name,
-            );
-        // Each generic endpoint names its own instantiation in force.
-        const instantiation = (
-            demand: NativeRecordStorageDemand | undefined,
-            record: ts.Type | undefined,
-            name: string,
-        ): InstantiatedRecord | undefined =>
-            demand && record
-                ? this.recordInstantiation(demand, record, name)
-                : undefined;
-        const sourceInstantiation = instantiation(
-            source,
-            sourceRecord,
-            sourceType.name,
-        );
-        const targetInstantiation = instantiation(
-            target,
-            targetRecord,
-            targetType.name,
-        );
         const kind: RecordJoin["kind"] = sharedArray
             ? "element"
             : isTypeAssertion(node)
               ? "assertion"
               : "value";
+        const join =
+            source && target && sourceRecord && targetRecord
+                ? this.recordJoin(
+                      source,
+                      sourceRecord,
+                      sourceType.name,
+                      target,
+                      targetRecord,
+                      targetType.name,
+                      kind,
+                  )
+                : undefined;
         // A join an earlier replay demanded that left the two apart refuses.
-        const demanded =
-            sourceRecord &&
+        const demanded = (join: RecordJoin): boolean =>
             this.demandedJoins
-                .get(sourceRecord)
+                .get(join.source)
                 ?.some(
-                    (join) =>
-                        join.target === targetRecord &&
-                        join.sourceInstantiation === sourceInstantiation &&
-                        join.targetInstantiation === targetInstantiation &&
-                        join.kind === kind,
-                );
-        const sourceComponent =
-            sourceRecord &&
-            this.recordComponents.get(
-                sourceInstantiation ??
-                    recordIdentity(this.checker, sourceRecord),
-            );
-        const targetComponent =
-            targetRecord &&
-            this.recordComponents.get(
-                targetInstantiation ??
-                    recordIdentity(this.checker, targetRecord),
-            );
-        if (
-            source &&
-            target &&
-            sourceRecord &&
-            targetRecord &&
-            !demanded &&
-            (sourceInstantiation || joinable(source, sourceRecord)) &&
-            (targetInstantiation || joinable(target, targetRecord)) &&
-            (!sourceComponent || sourceComponent !== targetComponent)
-        ) {
+                    (earlier) =>
+                        earlier.target === join.target &&
+                        earlier.sourceInstantiation ===
+                            join.sourceInstantiation &&
+                        earlier.targetInstantiation ===
+                            join.targetInstantiation &&
+                        earlier.kind === join.kind,
+                ) === true;
+        if (source && sourceRecord && targetRecord && join && !demanded(join)) {
+            const { sourceInstantiation, targetInstantiation } = join;
             // A record stored as a union, or a union's record stored as
             // another record type, keeps its fields in the union's layout
             // (or in one the union shares with it); two unions, or two
@@ -5126,7 +5298,9 @@ export class DataTypeRegistry {
             // Every property any arm declares takes one storage in the
             // joined layout, including those the union's own fields omit;
             // two instantiations of one generic record, the storage their
-            // structs give it.
+            // structs give it. A field one record types wider than the
+            // other is one slot where no write replaces it through the
+            // wider records.
             const generic = this.genericArguments(sourceRecord)[0];
             if (
                 sourceInstantiation ||
@@ -5139,24 +5313,13 @@ export class DataTypeRegistry {
                           this.checker,
                           sourceRecord,
                           targetRecord,
+                          this.unwrittenField,
                       )
             ) {
                 this.requireJoin({
                     ...source,
                     type: sourceRecord,
-                    joins: [
-                        {
-                            source: sourceRecord,
-                            target: targetRecord,
-                            ...(sourceInstantiation
-                                ? { sourceInstantiation }
-                                : {}),
-                            ...(targetInstantiation
-                                ? { targetInstantiation }
-                                : {}),
-                            kind,
-                        },
-                    ],
+                    joins: [join],
                 });
                 return;
             }
@@ -5309,6 +5472,16 @@ export class DataTypeRegistry {
                         : side === "held"
                           ? leftRecord
                           : undefined;
+                // A `readonly` field typed `object` reads the object the
+                // typed record stores (`readsHeldObject`): their join keeps
+                // it, no document.
+                const viewing =
+                    typed === rightRecord ? leftRecord : rightRecord;
+                if (
+                    typed &&
+                    this.readsHeldObjectField(viewing, field.sourceName)
+                )
+                    continue;
                 // A document holds no method or accessor: a record type
                 // declaring one keeps its native layout, the field the
                 // document holds stored as a document; so does a field
@@ -5537,6 +5710,17 @@ export class DataTypeRegistry {
         right: DataType,
     ): DataType | undefined {
         if (dataTypesEqual(left, right)) return left;
+        // A union holding the other storage among its members holds both
+        // (`boolean | { beyond }` beside `{ beyond }`): only a join no
+        // write through the union's records reaches admits it
+        // (`layoutsCompatible`).
+        const holds = (union: DataType, member: DataType): boolean =>
+            union.kind === "union" &&
+            union.members.some((candidate) =>
+                dataTypesEqual(candidate, member),
+            );
+        if (holds(left, right)) return left;
+        if (holds(right, left)) return right;
         // One declared signature stored generically in one layout is that
         // table in both: it holds every concrete signature its calls reach.
         if (
@@ -5695,7 +5879,17 @@ export class DataTypeRegistry {
                     node,
                     message(),
                 );
-            if (!held || !joined || !dataTypesEqual(joined, held))
+            // Before the join, a member storing a union holding the
+            // layout's storage of the field (`boolean | { beyond }` beside
+            // `{ beyond }`) gives the joined layout that union where no
+            // write replaces the field on its records.
+            const widened =
+                beforeJoin &&
+                held &&
+                joined?.kind === "union" &&
+                !dataTypesEqual(joined, held) &&
+                this.unwrittenField?.(member, property.name) === true;
+            if (!held || !joined || (!widened && !dataTypesEqual(joined, held)))
                 this.fail(node, message());
         }
     }
@@ -6547,6 +6741,14 @@ export class DataTypeRegistry {
         )
             return { kind: "event-target" };
         if (platformHandle) return { kind: "handle", handle: platformHandle };
+        // A program declaring a bounded video producer stores the videos
+        // generation bakes; any other stores retained video elements.
+        if (
+            this.bakedVideos &&
+            libraryName(type) === "HTMLVideoElement" &&
+            declaredInDomLibrary(type.symbol)
+        )
+            return { kind: "handle", handle: "video" };
         const platformEvent = platformEventKind(type.symbol);
         if (platformEvent) {
             return {
@@ -8966,7 +9168,7 @@ export class DataTypeRegistry {
                             (candidate) =>
                                 candidate &&
                                 dataTypesEqual(
-                                    presentDataType(candidate)!,
+                                    presentDataType(candidate),
                                     nullable.inner,
                                 ),
                         )
@@ -9622,17 +9824,22 @@ export class DataTypeRegistry {
      * instantiations and would otherwise read back the first one's struct.
      * `seen` closes the recursion on self-referential shapes, and every
      * branch is a disjunction over a set, so no answer depends on order.
+     * Given `found`, the walk collects every such parameter instead of
+     * stopping at the first.
      */
     private mentionsSubstitution(
         type: ts.Type,
         seen: Set<ts.Type> = new EmissionSet(),
+        found?: Set<ts.Type>,
     ): boolean {
         if (this.typeArgumentFrames().length === 0 || seen.has(type)) {
             return false;
         }
         seen.add(type);
         if (this.substituteTypeParameter(type)) {
-            return true;
+            if (!found) return true;
+            found.add(type);
+            return false;
         }
         const constituents =
             (type.flags & (ts.TypeFlags.Union | ts.TypeFlags.Intersection)) !==
@@ -9641,7 +9848,7 @@ export class DataTypeRegistry {
                 : [];
         if (
             constituents.some((member) =>
-                this.mentionsSubstitution(member, seen),
+                this.mentionsSubstitution(member, seen, found),
             )
         ) {
             return true;
@@ -9654,7 +9861,9 @@ export class DataTypeRegistry {
             (objectType.objectFlags & ts.ObjectFlags.Reference) !== 0 &&
             this.checker
                 .getTypeArguments(type as ts.TypeReference)
-                .some((argument) => this.mentionsSubstitution(argument, seen))
+                .some((argument) =>
+                    this.mentionsSubstitution(argument, seen, found),
+                )
         ) {
             return true;
         }
@@ -9663,7 +9872,7 @@ export class DataTypeRegistry {
         if (
             (objectType.objectFlags & ts.ObjectFlags.Mapped) !== 0 &&
             type.aliasTypeArguments?.some((argument) =>
-                this.mentionsSubstitution(argument, seen),
+                this.mentionsSubstitution(argument, seen, found),
             )
         ) {
             return true;
@@ -9677,9 +9886,14 @@ export class DataTypeRegistry {
                             this.mentionsSubstitution(
                                 this.checker.getTypeOfSymbol(parameter),
                                 seen,
+                                found,
                             ),
                         ) ||
-                    this.mentionsSubstitution(signature.getReturnType(), seen),
+                    this.mentionsSubstitution(
+                        signature.getReturnType(),
+                        seen,
+                        found,
+                    ),
             )
         ) {
             return true;
@@ -9701,6 +9915,7 @@ export class DataTypeRegistry {
                 this.mentionsSubstitution(
                     this.checker.getTypeOfSymbol(property),
                     seen,
+                    found,
                 ),
             );
     }
@@ -10139,6 +10354,7 @@ export class DataTypeRegistry {
             type: ts.Type;
             mapped: DataType | undefined;
             callable: boolean;
+            readsObject: boolean;
         } => {
             // An instantiation's own property maps under its instantiation.
             if (owned.substitution) {
@@ -10193,6 +10409,11 @@ export class DataTypeRegistry {
             return {
                 type: propertyType,
                 callable,
+                readsObject: readsHeldObject(
+                    this.checker,
+                    property,
+                    propertyType,
+                ),
                 mapped:
                     mapped &&
                     this.withDemandedNumericSlot(
@@ -10225,11 +10446,15 @@ export class DataTypeRegistry {
                     isUndefinedDataType(mapped) ||
                     mapped.kind === "null") &&
                 presentMembers(type).length === 0;
+            // A `readonly` field typed `object` reads the object the
+            // others store (`readsHeldObject`).
+            const held = (value: (typeof values)[number]): boolean =>
+                nullish(value) || value.readsObject;
             const valued = values.filter(
-                (value) => storing(value) && !nullish(value),
+                (value) => storing(value) && !held(value),
             );
             const empty = (value: (typeof values)[number]): boolean =>
-                valued.length > 0 && nullish(value);
+                valued.length > 0 && held(value);
             // A shape typing it only as a dynamic value (`unknown`) holds it
             // as one where another shape stores it typed, as the shapes
             // after it do; alone, it leaves the layout unstored.

@@ -4327,7 +4327,11 @@ function emitMaterialAssignment(
             "mesh material replacement after registration",
         );
         requireSimpleAssignment(context, expression, "mesh material");
-        const material = context.compileValue(expression.right);
+        // An optional material reaches the required slot only through an
+        // asserted view of it.
+        const material = context.dataLowerer.presentHandle(
+            context.compileValue(expression.right),
+        );
         context.expectKind(material, "material", expression.right);
         context.expectSameEngine(target, material, expression);
         // Node materials inspect attributes through uniform lanes. Loaded PBR

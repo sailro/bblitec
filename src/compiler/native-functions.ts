@@ -9,7 +9,11 @@ import ts from "typescript";
 import { bindingIsOnlyCalledDirectly } from "./binding-rebinds.js";
 import { schedulerOf } from "./schedulers.js";
 import { CompileError } from "./compile-error.js";
-import { bindsPresent, isAbsentValue } from "./values/model.js";
+import {
+    bindsPresent,
+    isAbsentValue,
+    tupleNumberArrayCpp,
+} from "./values/model.js";
 import {
     expressionMayRunCode,
     soleReturnedExpression,
@@ -469,8 +473,13 @@ export class NativeFunctionLowerer {
                 call,
                 this.context.probeEmission(
                     () =>
+                        // A spread argument's value is the array it spreads.
                         call.arguments.map((argument) =>
-                            this.context.compileValue(argument),
+                            this.context.compileValue(
+                                ts.isSpreadElement(argument)
+                                    ? argument.expression
+                                    : argument,
+                            ),
                         ),
                     () => false,
                 ),
@@ -1438,10 +1447,7 @@ export class NativeFunctionLowerer {
             );
         this.context.dataLowerer.invalidateEscapingCollection(value);
         this.context.reachJsData();
-        return name(
-            `bbl::js::Array<double>{(${value.cpp}).retained_storage()}`,
-            dataType,
-        );
+        return name(tupleNumberArrayCpp(value.cpp), dataType);
     }
 
     /**

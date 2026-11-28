@@ -78,6 +78,7 @@ import {
 import { renderClosure } from "./closure-captures.js";
 import { readWorkerEventProperty } from "./workers.js";
 import {
+    extendsMouseEvent,
     platformEventKind,
     handleCppType,
     isPinnedEngineObjectKind,
@@ -1755,16 +1756,27 @@ export const propertyRules: readonly PropertyRule[] = [
     },
     ...(
         [
-            ["_cpuPositions", "positions", "f32array"],
-            ["_cpuNormals", "normals", "f32array"],
-            ["_cpuUvs", "uvs", "f32array"],
-            ["_cpuIndices", "indices", "u32array"],
+            ["_cpuPositions", "positions", "f32array", true],
+            ["_cpuNormals", "normals", "f32array", true],
+            ["_cpuUvs", "uvs", "f32array", true],
+            ["_cpuIndices", "indices", "u32array", true],
+            // The pin stores these absent as `undefined` from a factory call
+            // that omits them and as `null` once retained geometry lacks
+            // them: one absent state, which a read telling the two apart
+            // refuses.
+            ["_cpuUv2s", "uvs2", "f32array", false],
+            ["_cpuTangents", "tangents", "f32array", false],
+            ["_cpuColors", "colors", "f32array", false],
         ] as const
-    ).map(([property, member, kind]): PropertyRead => ({
+    ).map(([property, member, kind, undefinedOnly]): PropertyRead => ({
         owner: "mesh",
         property,
         value: "data",
-        dataType: { kind: "optional", inner: { kind }, undefinedOnly: true },
+        dataType: {
+            kind: "optional",
+            inner: { kind },
+            ...(undefinedOnly ? { undefinedOnly: true } : {}),
+        },
         helper: "bbl::mesh_cpu_stream_owner",
         helperArgument: `&bbl::MeshCpuStreams::${member}`,
         helperTakesEngine: true,
@@ -2759,13 +2771,17 @@ export class PropertyAccessLowerer {
             absentReceiverMessage(absence, member),
         );
         this.context.reachJsData();
-        const type = this.context.dataLowerer.dataTypeAt(node);
+        const result = this.context.checker.getTypeAtLocation(node);
+        // A read typed `unknown` is the dynamic value it would have held.
+        const type = this.context.dataTypes.orDynamicJsonTypes(() =>
+            this.context.dataLowerer.dataTypeAt(node),
+        );
+        if (type?.kind === "json") this.context.reachFeature("data:json", node);
         if (type)
             return this.context.dataLowerer.leafValue(
                 `bbl::js::absent_receiver_read<${this.context.dataTypes.cppType(type)}>(${message})`,
                 type,
             );
-        const result = this.context.checker.getTypeAtLocation(node);
         if (isVoid(result) || (result.flags & ts.TypeFlags.Never) !== 0)
             return {
                 kind: "void",
@@ -3141,6 +3157,7 @@ export class PropertyAccessLowerer {
             const attribute = this.context.ui.booleanAttribute(
                 owner,
                 property,
+                ownerExpression,
                 expression,
             );
             if (attribute)
@@ -3169,26 +3186,31 @@ export class PropertyAccessLowerer {
     }
 
     /**
-     * A base Event view asserted to a keyboard or mouse interface: a
-     * checked view of the payload, which throws when the dispatch carried
-     * another one.
+     * A base Event view asserted to a keyboard or mouse interface (one
+     * extending it included, `extendsMouseEvent`): a checked view of the
+     * payload, which throws when the dispatch carried another one.
      */
     private assertedPlatformEvent(
         owner: Value,
         ownerExpression: ts.Expression,
     ): Value | undefined {
-        if (this.declaredEventInterface(ownerExpression) === "InputEvent")
+        const declared = this.declaredEventInterface(ownerExpression);
+        if (declared === "InputEvent")
             return valueForKind("platform-mouse-event", {
                 cpp: `${owner.cpp}.payload<bbl::PlatformMouseEvent>()`,
                 ...(owner.engineCpp ? { engineCpp: owner.engineCpp } : {}),
             });
-        const event = platformEventKind(
-            this.context.checker
-                .getNonNullableType(
-                    this.context.checker.getTypeAtLocation(ownerExpression),
-                )
-                .getSymbol(),
-        );
+        const event = extendsMouseEvent(declared)
+            ? "mouse"
+            : platformEventKind(
+                  this.context.checker
+                      .getNonNullableType(
+                          this.context.checker.getTypeAtLocation(
+                              ownerExpression,
+                          ),
+                      )
+                      .getSymbol(),
+              );
         if (event !== "keyboard" && event !== "mouse") return undefined;
         return valueForKind(
             event === "keyboard"

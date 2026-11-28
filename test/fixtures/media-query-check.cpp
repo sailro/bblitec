@@ -10,6 +10,8 @@ bool read_motion() { return reduced; }
 double read_ratio() { return ratio; }
 bbl::InputCapabilities device_capabilities{bbl::PointerPrecision::Fine, true};
 bbl::InputCapabilities read_input() { return device_capabilities; }
+bbl::UiClientRect viewport{0, 0, 800, 600};
+bbl::UiClientRect read_viewport() { return viewport; }
 std::vector<std::shared_ptr<bbl::pal::MediaQueryList>> queries;
 } // namespace
 
@@ -19,8 +21,8 @@ Engine& window_document_engine() {
     return document;
 }
 std::shared_ptr<MediaQueryList> create_media_query(std::string query) {
-    auto media =
-        js::make_gc_shared<MediaQueryList>(std::move(query), read_ratio, read_motion, read_input);
+    auto media = js::make_gc_shared<MediaQueryList>(std::move(query), read_ratio, read_motion,
+                                                    read_input, read_viewport);
     queries.push_back(media);
     return media;
 }
@@ -82,7 +84,28 @@ int main() {
     assert(!combined.matches());
     device_capabilities = {bbl::PointerPrecision::Fine, true};
     assert(combined.matches() == reduced);
+    // Viewport bounds are inclusive CSS pixels of the window's viewport.
+    MediaQueryList narrow("(MAX-WIDTH:760PX)", read_ratio, read_motion, read_input, read_viewport);
+    MediaQueryList box("(min-width: 600px) and (max-height: 600px) and (min-height: .5px)",
+                       read_ratio, read_motion, read_input, read_viewport);
+    assert(narrow.media() == "(max-width: 760px)");
+    assert(box.media() == "(min-width: 600px) and (max-height: 600px) and (min-height: 0.5px)");
+    assert(!narrow.matches() && box.matches());
+    viewport = {0, 0, 760, 601};
+    assert(narrow.matches() && !box.matches());
+    viewport = {0, 0, 800, 600};
+    bool needs_viewport = false;
+    try {
+        const MediaQueryList unread("(max-width: 760px)", read_ratio, read_motion, read_input);
+    } catch (const std::invalid_argument&) {
+        needs_viewport = true;
+    }
+    assert(needs_viewport);
     for (const auto* query : {"(width: 600px)",
+                              "(max-width: 760)",
+                              "(max-width: 1em)",
+                              "(max-width: -1px)",
+                              "(max-width: 1px) and (max-width: 2px)",
                               "(prefers-reduced-motion: sometimes)",
                               "(resolution: 2dpi)",
                               "screen and (resolution: 2dppx)",
@@ -105,7 +128,8 @@ int main() {
                               "(resolution:1 dppx)"}) {
         bool refused = false;
         try {
-            const MediaQueryList unsupported(query, read_ratio, read_motion, read_input);
+            const MediaQueryList unsupported(query, read_ratio, read_motion, read_input,
+                                             read_viewport);
         } catch (const std::invalid_argument&) {
             refused = true;
         }

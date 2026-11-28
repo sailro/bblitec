@@ -33,6 +33,28 @@ check(
 `,
 );
 
+check(
+    "a-stored-closure-awaits-an-expression-bodied-async-callback",
+    `
+    function createSampler(resolve: (x: number) => Promise<number>) {
+        let active: { readonly x: number; readonly promise: Promise<number> } | null = null;
+        const start = (x: number) => {
+            const entry = { x, promise: resolve(x) };
+            active = entry;
+            return entry;
+        };
+        return { sample: (x: number) => start(x).promise, pending: () => active !== null };
+    }
+    const sampler = createSampler(async (x) => x + 1);
+    async function main(): Promise<void> {
+        const value = await sampler.sample(1);
+        if (value !== 2) throw new Error("sample " + value);
+    }
+    void main();
+    if (!sampler.pending()) throw new Error("pending");
+`,
+);
+
 checkInRealm(
     "promise-reaction-closure-calling-its-enclosing-function",
     `

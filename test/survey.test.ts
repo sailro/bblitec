@@ -331,6 +331,38 @@ test("one survey pass meets every independent demand", () => {
     );
     assert.equal(report.statements.demanded, 0);
     assert.equal(report.passes, 2);
+    // The history names what each pass took, where it was first met and
+    // how the pass before treated that statement, and what it deferred.
+    assert.deepEqual(
+        report.passHistory?.map(({ pass, taken, deferred }) => ({
+            pass,
+            taken: taken.map(({ demand, statement, reached }) => [
+                demand,
+                Number(statement?.split(":").at(-1)),
+                reached,
+            ]),
+            deferred: deferred.map(({ demand, statements }) => [
+                demand,
+                statements,
+            ]),
+        })),
+        [
+            {
+                pass: 1,
+                taken: [
+                    ["record (A: document)", 9, "new"],
+                    ["record (B: document)", 11, "new"],
+                    ["record (C: document)", 13, "new"],
+                ],
+                deferred: [
+                    ["record (A: document)", 1],
+                    ["record (B: document)", 1],
+                    ["record (C: document)", 1],
+                ],
+            },
+            { pass: 2, taken: [], deferred: [] },
+        ],
+    );
     // A pass limit of one ends there, the three demands left in the census.
     const capped = surveySource(
         source,

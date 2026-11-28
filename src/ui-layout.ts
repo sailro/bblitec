@@ -1,12 +1,32 @@
-const magnitude = String.raw`(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?`;
-const number = String.raw`\+?${magnitude}`;
-const lengthUnit = "(?:px|em|rem|vw|vh|[sld]?vmin|[sld]?vmax|in|cm|mm|pt|pc|%)";
-const length = String.raw`(?:${number}${lengthUnit}|[+]?0)`;
-const signedLength = String.raw`(?:[+-]?${magnitude}${lengthUnit}|[+-]?0)`;
+/** A CSS number's magnitude, as the native parsers read it. */
+export const uiCssMagnitude = String.raw`(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?`;
+
+/**
+ * A CSS length pattern: a magnitude in one of `units` (patterns), or a
+ * unitless 0, after an optional sign among `signs` ("" admits none).
+ */
+export function uiCssLength(units: readonly string[], signs = ""): string {
+    const sign = signs ? `[${signs}]?` : "";
+    return `(?:${sign}${uiCssMagnitude}(?:${units.join("|")})|${sign}0)`;
+}
+
+/**
+ * CSS math or a custom property reference, which the native math resolves
+ * to a length (`uiCssMathRefusal` reviews its shape).
+ */
+export const uiResolvedLength = String.raw`(?:calc|min|max|clamp|var)\(.*\)`;
+
+const number = String.raw`\+?${uiCssMagnitude}`;
+const lengthUnits = [
+    ...["px", "em", "rem", "vw", "vh", "[sld]?vmin", "[sld]?vmax"],
+    ...["in", "cm", "mm", "pt", "pc", "%"],
+];
+const length = uiCssLength(lengthUnits, "+");
+const signedLength = uiCssLength(lengthUnits, "+-");
 const basis = `(?:auto|${length})`;
 const direction = "(?:row|row-reverse|column|column-reverse)";
 const wrap = "(?:nowrap|wrap|wrap-reverse)";
-const ratio = String.raw`${magnitude}(?:\s*/\s*${magnitude})?`;
+const ratio = String.raw`${uiCssMagnitude}(?:\s*/\s*${uiCssMagnitude})?`;
 const logicalSpacingValues = new Map<string, RegExp>();
 for (const [family, value] of [
     ["padding", length],
@@ -72,20 +92,20 @@ const layoutValues: ReadonlyMap<string, RegExp> = new Map([
             `^(?:${direction}(?:\\s+${wrap})?|${wrap}(?:\\s+${direction})?)$`,
         ),
     ],
-    ...[
-        "row-gap",
-        "column-gap",
-        "padding-top",
-        "padding-right",
-        "padding-bottom",
-        "padding-left",
-    ].map((property): [string, RegExp] => [
+    ...["row-gap", "column-gap"].map((property): [string, RegExp] => [
         property,
         new RegExp(`^${length}$`),
     ]),
+    // A negative padding from math is clamped to zero, as CSS clamps it.
+    ...["padding-top", "padding-right", "padding-bottom", "padding-left"].map(
+        (property): [string, RegExp] => [
+            property,
+            new RegExp(`^(?:${length}|${uiResolvedLength})$`),
+        ],
+    ),
     ...["margin-left", "margin-right"].map((property): [string, RegExp] => [
         property,
-        new RegExp(`^(?:auto|${signedLength})$`),
+        new RegExp(`^(?:auto|${signedLength}|${uiResolvedLength})$`),
     ]),
 ]);
 

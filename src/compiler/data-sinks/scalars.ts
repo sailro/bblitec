@@ -34,6 +34,7 @@ import {
 import { NativeRecordStorageRequired } from "../native-record-storage.js";
 import { requireAbsenceTag } from "../absence-tag-storage.js";
 import {
+    compileJsonNamespaceView,
     compileJsonRecordView,
     compileJsonTupleView,
     isPlainJsonRecord,
@@ -227,6 +228,8 @@ function valueJson(
         lowerer.markEscaped(value);
         return value.cpp;
     }
+    const namespace = compileJsonNamespaceView(lowerer, value, node);
+    if (namespace !== undefined) return namespace;
     const expression =
         value.kind === "record" || value.dataType?.kind === "struct"
             ? lowerer.convertedExpression(node)
@@ -358,7 +361,8 @@ function valueJson(
     // A function a document holds is the callback its declared type stores,
     // boxed: a member call reads it back with that signature (`json_call`).
     // A slot declared `unknown` stores it as its own type, whose `unknown`
-    // positions are documents as the slot is.
+    // positions are documents as the slot is; a member no expression names
+    // has its checked type (`convertedMember`).
     if (value.kind === "callback") {
         const expression = lowerer.convertedExpression(node);
         const checker = lowerer.context.checker;
@@ -368,7 +372,7 @@ function valueJson(
                   declaredContextualType(checker, expression),
                   checker.getTypeAtLocation(expression),
               ]
-            : []) {
+            : [lowerer.convertedMember(node)?.type]) {
             const stored =
                 declared &&
                 types.withDynamicJsonTypes(true, () =>

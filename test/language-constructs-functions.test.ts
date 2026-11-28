@@ -597,6 +597,37 @@ check(
 `,
 );
 
+test("a call short of its declared signature names that signature's argument counts", () => {
+    // The implementation declares fewer parameters than the interface it
+    // is stored as requires: the count is the called signature's.
+    for (const [signature, call, counts] of [
+        [
+            "add(x: number, y: number, radius: number): number",
+            "batch.add(1, 2)",
+            "3",
+        ],
+        [
+            "add(x: number, y: number, radius: number, scale?: number): number",
+            "batch.add(1, 2)",
+            "3-4",
+        ],
+        [
+            "add(x: number, y: number, radius: number, ...rest: number[]): number",
+            "batch.add(1, 2)",
+            "at least 3",
+        ],
+    ] as const)
+        assert.throws(
+            () =>
+                compileSource(
+                    `interface Batch { ${signature} } function make(): Batch { return { add(x: number, y: number) { return x + y; } }; } const batch = make(); // @ts-expect-error the signature requires the radius\nconsole.log(${call});`,
+                ),
+            new RegExp(
+                `Function 'add' expects ${counts} arguments, received 2\\.`,
+            ),
+        );
+});
+
 test("a missing primitive method refuses effectful arguments", () => {
     assert.throws(
         () =>
@@ -1124,6 +1155,31 @@ check(
     live = 4;
     const total = bricks[0]!.count + solids[0]!.count();
     if (uploads !== 11 || total !== 9 || typeof solid.count !== "function") throw new Error("uploads " + uploads + " total " + total);
+`,
+);
+
+check(
+    "a-function-stored-as-a-void-method-discards-what-it-returns",
+    `
+    interface Options { cancel(): boolean }
+    function install(options: Options): { cancel(): void } {
+        let armed = 0;
+        const cancel = (): boolean => {
+            if (armed > 3) return false;
+            armed = 0;
+            return options.cancel();
+        };
+        const keyDown = (key: string): void => { if (key === "Escape" && cancel()) armed++; };
+        keyDown("Escape");
+        if (armed !== 0) throw new Error("first cancel");
+        keyDown("Escape");
+        if (armed !== 1) throw new Error("second cancel " + armed);
+        return { cancel };
+    }
+    let count = 0;
+    const installed = install({ cancel: () => ++count > 1 });
+    installed.cancel();
+    if (count !== 3) throw new Error("count " + count);
 `,
 );
 

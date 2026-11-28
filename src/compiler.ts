@@ -50,6 +50,7 @@ import {
 import type {
     LoweringServices,
     EmissionMark,
+    EntryStorage,
     LoweringStatement,
     NativeFunctionBodyOptions,
     ShaderSourceText,
@@ -201,7 +202,10 @@ import {
 import { browserGeneratedString } from "./compiler/browser-generated-string.js";
 import { compileBrowserTextureFunctionCall } from "./compiler/browser-texture-function.js";
 import { compileExecutedUrlFunctionCall } from "./compiler/executed-url-function.js";
-import { compileExecutedVideoFunctionCall } from "./compiler/executed-video-function.js";
+import {
+    compileExecutedVideoFunctionCall,
+    programBakesVideos,
+} from "./compiler/executed-video-function.js";
 import { compileExecutedGltfFunctionCall } from "./compiler/executed-gltf-function.js";
 import {
     compileEnginePixelRatioCap,
@@ -1415,6 +1419,11 @@ class Compiler implements LoweringServices {
     @journaled public accessor defaultEngineCpp: string | undefined;
     /** Platform owner for an entry that has no source-created Babylon engine. */
     @journaled public accessor presentationHostCpp: string | undefined;
+    /** Storage the entry body declares first, by its owner (`entryStorage`). */
+    private readonly entryStorageOwners = new EmissionMap<
+        ts.Node,
+        EntryStorage
+    >();
     /** First statement after the one engine is created. */
     @journaled private accessor engineCreationInsertion: number | undefined;
     /** Explicit static surface sample count; absence means the pinned default. */
@@ -1460,6 +1469,7 @@ class Compiler implements LoweringServices {
             new ClassHierarchy(checker, program),
             options.workers !== undefined,
             storage,
+            programBakesVideos(checker, program),
         );
         this.dataLowerer = new DataLowerer(this);
         this.classLowerer = new ClassLowerer(this);
@@ -6587,11 +6597,16 @@ class Compiler implements LoweringServices {
      * inlined call that passes it on, a call's result: a generation run
      * computes that text, and refuses a binding the program writes through.
      */
-    public inlinedCallArgument(identifier: ts.Identifier): boolean {
-        const argument = this.userFunctions.inlinedArgument(
-            identifier,
-            (name) => this.bindings.scopeOf(name),
+    public inlinedParameterArgument(
+        identifier: ts.Identifier,
+    ): ts.Expression | undefined {
+        return this.userFunctions.inlinedArgument(identifier, (name) =>
+            this.bindings.scopeOf(name),
         );
+    }
+
+    public inlinedCallArgument(identifier: ts.Identifier): boolean {
+        const argument = this.inlinedParameterArgument(identifier);
         if (!argument) return false;
         const source = this.unwrap(argument);
         return ts.isCallExpression(source)
@@ -8058,6 +8073,40 @@ class Compiler implements LoweringServices {
 
     public hasPresentationHost(): boolean {
         return this.presentationHostCpp !== undefined;
+    }
+
+    /**
+     * The storage `owner` holds for as long as the entry runs, declared
+     * ahead of the entry body, so every statement and closure reaches its
+     * one object, even a closure being compiled when it is first reached:
+     * made of `cppType` (from `initializer`, else empty) the first time,
+     * as it was afterwards.
+     */
+    public entryStorage(
+        owner: ts.Node,
+        stem: string,
+        cppType: string,
+        initializer?: string,
+    ): EntryStorage {
+        const known = this.entryStorageOwners.get(owner);
+        if (known) return known;
+        const name = this.allocateTemporaryCppName(stem);
+        this.registerNativeBindingType(name, cppType);
+        const binding: NativeCaptureBinding = {
+            name,
+            sequence: 0,
+            borrowed: true,
+            allowReference: false,
+            entryLifetime: true,
+        };
+        this.nativeBindings.set(name, binding);
+        const storage = {
+            binding,
+            type: cppType,
+            ...(initializer !== undefined ? { initializer } : {}),
+        };
+        this.entryStorageOwners.set(owner, storage);
+        return storage;
     }
 
     public hasFeature(feature: Feature): boolean {
@@ -11329,11 +11378,17 @@ class Compiler implements LoweringServices {
             }
         }
         const unwrapped = this.unwrap(argument);
+        // An optional collection parameter holds its argument's own
+        // collection as a collection parameter does, present or not.
+        const optional = dataType.kind === "optional";
+        const present = (type: DataType): DataType =>
+            optional && type.kind === "optional" ? type.inner : type;
+        const held = present(dataType);
         const collection =
-            dataType.kind === "vector" ||
-            dataType.kind === "span" ||
-            dataType.kind === "map" ||
-            dataType.kind === "set";
+            held.kind === "vector" ||
+            held.kind === "span" ||
+            held.kind === "map" ||
+            held.kind === "set";
         const structural =
             dataType.kind === "struct" ||
             (dataType.kind === "vector" && dataType.element.kind === "struct");
@@ -11350,7 +11405,7 @@ class Compiler implements LoweringServices {
                 collection &&
                 actual.kind === "data" &&
                 actual.dataType &&
-                this.dataLowerer.spanCompatible(actual.dataType, dataType)
+                this.dataLowerer.spanCompatible(present(actual.dataType), held)
             ) {
                 return actual;
             }
@@ -12514,18 +12569,15 @@ class Compiler implements LoweringServices {
                     "Standalone Canvas2D presentation is not lowered in worker realms.",
                 );
             }
-            const name = this.allocateTemporaryCppName("presentation_host");
+            // The entry owns its one host.
+            const { name } = this.entryStorage(
+                this.sourceFile,
+                "presentation_host",
+                "bbl::Engine",
+                `bbl::create_engine(bbl::EngineOptions{${this.cppString(this.options.title)}, ${this.options.width}, ${this.options.height}})`,
+            ).binding;
             this.presentationHostCpp = name;
             this.defaultEngineCpp = name;
-            // Preamble storage precedes every closure, even one currently
-            // being compiled. Its capture boundary therefore is entry scope.
-            this.nativeBindings.set(name, {
-                name,
-                sequence: 0,
-                borrowed: true,
-                allowReference: false,
-                entryLifetime: true,
-            });
         }
         return this.requireDefaultEngine(node);
     }
@@ -12987,10 +13039,16 @@ class Compiler implements LoweringServices {
                       },
                   ]
                 : []),
-            ...(this.presentationHostCpp
-                ? [{ name: this.presentationHostCpp, type: "bbl::Engine" }]
-                : []),
+            ...[...this.entryStorageOwners.values()].map(
+                ({ binding, type }) => ({ name: binding.name, type }),
+            ),
         ]).map(renderNativeEmission);
+        const entryStorage = [...this.entryStorageOwners.values()].map(
+            ({ binding, type, initializer }) =>
+                initializer === undefined
+                    ? `        ${type} ${binding.name}{};`
+                    : `        auto ${binding.name} = ${initializer};`,
+        );
         // The worker runtime declares the messaging objects storage holds.
         if (!this.options.workers && this.dataTypes.usesWorkerStorage())
             throw new ApplicationRealmRequired();
@@ -13044,13 +13102,15 @@ class Compiler implements LoweringServices {
             ...(physicsDebugConstructionBody
                 ? { physicsDebugConstructionBody }
                 : {}),
-            body: this.presentationHostCpp
-                ? [
-                      `        auto ${this.presentationHostCpp} = bbl::create_engine(bbl::EngineOptions{${this.cppString(this.options.title)}, ${this.options.width}, ${this.options.height}});`,
-                      ...body,
-                      `        bbl::start_engine(${this.presentationHostCpp});`,
-                  ]
-                : body,
+            body: [
+                ...entryStorage,
+                ...body,
+                ...(this.presentationHostCpp
+                    ? [
+                          `        bbl::start_engine(${this.presentationHostCpp});`,
+                      ]
+                    : []),
+            ],
         });
     }
 

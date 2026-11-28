@@ -312,8 +312,13 @@ export class ModuleNamespaces {
             dataType: type,
             moduleNamespace: true,
             truthinessCpp: "true",
-            recordOwnKeys: [...this.exports(type).keys()],
+            recordOwnKeys: this.exportNames(type),
         };
+    }
+
+    /** The module's export names, in the order its namespace object lists them. */
+    public exportNames(type: DataType<"module-namespace">): string[] {
+        return [...this.exports(type).keys()];
     }
 
     private exports(
@@ -437,7 +442,7 @@ export class ModuleNamespaces {
             owner,
             "module_namespace",
         );
-        return [...this.exports(type).keys()].map((name) => [
+        return this.exportNames(type).map((name) => [
             name,
             this.member(owner, name, node)!,
         ]);

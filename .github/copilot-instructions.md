@@ -31,5 +31,6 @@ Persistent user requirement:
 
 - Report exact scene IDs and measured state.
 - Validate per [development](../docs/development.md#validation); diagnose with [debugging](../docs/debugging.md).
+- Neutrality is unchanged rendering, per [development](../docs/development.md#neutrality).
 - Check exit codes; never hide failures in pipelines. There is no hosted CI.
 - Stay within the user's task and validation instructions; do not substitute a repository audit.

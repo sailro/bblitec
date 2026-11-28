@@ -17,6 +17,16 @@ interface RealmCoverage {
     retained: EmissionMap<ts.Statement, "lowered" | "partial">;
     /** Those of work whose state rolled back but whose lowerings count (`keepingCoverage`). */
     kept: Map<ts.Statement, "lowered" | "partial">;
+    /**
+     * The statements whose lowering ended, in order, while a survey mark is
+     * open (`coverageMark`), since a survey last attributed a rollback
+     * (`coverRollback`): a rollback undoes `retained` but not this log.
+     */
+    lowered: ts.Statement[];
+    /** The survey marks open: the log is kept only while one is. */
+    marks: number;
+    /** What rolled each statement back: the innermost survey rollback that undid its lowering. */
+    rolledBackBy: Map<ts.Statement, Set<string>>;
     failures: number;
     complete: boolean;
     terminal?: string;
@@ -46,6 +56,8 @@ export interface SourceCoverageReport {
             state: "lowered" | "partial" | "refused" | "rolled-back";
             attempts: number;
             refusals: string[];
+            /** For a rolled-back site in a survey: the refusals or storage demands that rolled it back. */
+            rolledBackBy?: string[];
         })[];
     }[];
 }
@@ -113,6 +125,9 @@ export class SourceCoverage {
             observed: new Map(),
             retained: new EmissionMap(),
             kept: new Map(),
+            lowered: [],
+            marks: 0,
+            rolledBackBy: new Map(),
             failures: 0,
             complete: false,
         };
@@ -173,6 +188,10 @@ export class SourceCoverage {
                             node.parent,
                             ts.isFunctionLike,
                         );
+                        const rolledBackBy =
+                            state === "rolled-back"
+                                ? realm.rolledBackBy.get(node)
+                                : undefined;
                         return {
                             ...sources.site(node),
                             ...(owner
@@ -188,6 +207,9 @@ export class SourceCoverage {
                             state,
                             attempts: observation?.attempts ?? 0,
                             refusals: [...(observation?.refusals ?? [])].sort(),
+                            ...(rolledBackBy
+                                ? { rolledBackBy: [...rolledBackBy].sort() }
+                                : {}),
                         };
                     })
                     .sort(
@@ -213,6 +235,39 @@ export class SourceCoverage {
 
 export function sourceCoverageActive(): boolean {
     return current !== undefined;
+}
+
+/**
+ * Opens a mark for `coverRollback`, which `endCoverageMark` closes: the
+ * statements whose lowering ended so far.
+ */
+export function coverageMark(): number {
+    if (!current) return 0;
+    current.marks++;
+    return current.lowered.length;
+}
+
+/** Closes the last mark `coverageMark` opened; with the outermost, the log ends. */
+export function endCoverageMark(): void {
+    if (current && --current.marks === 0) current.lowered.length = 0;
+}
+
+/**
+ * Records `cause` as what rolled back the statements whose lowering ended
+ * since `mark`: a survey's statement attempt that a refusal or a storage
+ * demand undid. An enclosing rollback attributes only what this one did not.
+ */
+export function coverRollback(mark: number, cause: () => string): void {
+    const realm = current;
+    if (!realm) return;
+    const rolledBack = realm.lowered.splice(mark);
+    if (!rolledBack.length) return;
+    const text = cause();
+    for (const statement of rolledBack) {
+        let causes = realm.rolledBackBy.get(statement);
+        if (!causes) realm.rolledBackBy.set(statement, (causes = new Set()));
+        causes.add(text);
+    }
 }
 
 /** Keep normal compilation independent of the optional collector. */
@@ -275,6 +330,7 @@ export function coverSourceStatement(
             realm.failures !== failures ||
             realm.retained.get(node) === "partial";
         realm.retained.set(node, partial ? "partial" : "lowered");
+        if (realm.marks > 0) realm.lowered.push(node);
     } catch (error) {
         if (!speculating && error instanceof CompileError) {
             observation?.refusals.add(error.message);

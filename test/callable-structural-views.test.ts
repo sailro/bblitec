@@ -199,6 +199,52 @@ check(
 `,
 );
 
+// A module's function declaration is one function object: each conversion
+// to a callable record is its one carrier, with the properties written on it.
+check(
+    "a-function-declaration-is-one-callable-record",
+    `
+    type Builder=((ent:{seed:number})=>number)&{halo?:(ent:{seed:number})=>number};
+    function grow(ent:{seed:number}):number{return ent.seed+1;}
+    function register(into:Map<string,Builder>,kind:string,builder:Builder):void{into.set(kind,builder);}
+    const first=new Map<string,Builder>();
+    const second=new Map<string,Builder>();
+    register(first,'a',grow);
+    register(second,'b',grow);
+    const a=first.get('a')!, b=second.get('b')!;
+    if(a!==b||a.halo!==undefined||a({seed:2})!==3) throw new Error('one object');
+    a.halo=(ent)=>ent.seed*2;
+    if(b.halo?.({seed:3})!==6||second.get('b')!({seed:4})!==5) throw new Error('a property written through another alias');
+`,
+);
+
+// A new function handed to a callable record parameter is that record once,
+// where the parameter is bound: each read, a loop's included, is one object.
+check(
+    "a-new-function-argument-is-one-callable-record",
+    `
+    type Builder=((ent:{seed:number})=>number)&{halo?:(ent:{seed:number})=>number};
+    function grower(step:number):(ent:{seed:number})=>number{return (ent)=>ent.seed+step;}
+    function createRegistry(){
+        const builders=new Map<string,Builder>();
+        return {
+            register(kinds:string|readonly string[],builder:Builder):void{
+                for(const kind of (Array.isArray(kinds)?kinds:[kinds]) as readonly string[]) builders.set(kind,builder);
+            },
+            get:(kind:string):Builder|undefined=>builders.get(kind),
+        };
+    }
+    const registry=createRegistry();
+    registry.register(['a','b'],grower(1));
+    registry.register(['c','d'],(ent)=>ent.seed*3);
+    registry.register('e',grower(2));
+    const a=registry.get('a')!, b=registry.get('b')!;
+    if(a!==b||registry.get('c')!==registry.get('d')||a===registry.get('e')||a.halo!==undefined) throw new Error('one object per argument');
+    a.halo=(ent)=>ent.seed*10;
+    if(b.halo?.({seed:2})!==20||registry.get('c')!({seed:2})!==6||registry.get('e')!({seed:2})!==4) throw new Error('shared properties');
+`,
+);
+
 test("callable views refuse invented properties and unowned stored callbacks", () => {
     assert.throws(
         () =>
@@ -240,6 +286,18 @@ test("callable views refuse invented properties and unowned stored callbacks", (
         value.increment();
     `),
         /methods without.*this|receiver/,
+    );
+    // Each run of its scope makes a nested declaration's function anew.
+    assert.throws(
+        () =>
+            compileSource(`
+        type Builder=(()=>number)&{halo?:()=>number};
+        const kept:Builder[]=[];
+        function make(n:number):void{function inner():number{return n;} kept.push(inner);}
+        make(1); make(2);
+        if(kept[0]===kept[1]) throw new Error('one object');
+    `),
+        /nested function declaration viewed as a callable record/,
     );
 });
 

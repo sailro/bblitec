@@ -17,6 +17,8 @@ inline constexpr std::string_view ui_user_agent_css =
     "div{display:block;}\n"
     // Authored canvases are inline replaced elements unless a page makes them blocks.
     "canvas{display:inline;}\n"
+    // Chromium's video: its poster (docs/fidelity.md) fits its box, keeping its aspect ratio.
+    "video{object-fit:contain;}\n"
     "details,summary{display:block;}\n"
     "summary{tab-index:auto;pointer-events:auto;cursor:pointer;}\n"
     // Chromium's inside disclosure marker: a 0.66em symbol and 0.4em before the text.
@@ -27,6 +29,17 @@ inline constexpr std::string_view ui_user_agent_css =
     "ul,ol{display:block;margin:1em 0;padding-left:40px;}\n"
     "li{display:block;}\n"
     "[hidden],script{display:none;}\n"
+    // Chromium's table defaults. Header and footer groups are row groups laid out in document order;
+    // RmlUi's table layout refuses a first header group after other rows or a first footer group
+    // before them, which Chromium would move.
+    "table{display:table;box-sizing:border-box;border-spacing:2px;border-collapse:separate;}\n"
+    "thead,tbody,tfoot{display:table-row-group;vertical-align:middle;}\n"
+    "table > tr{vertical-align:middle;}\n"
+    "colgroup{display:table-column-group;}\n"
+    "col{display:table-column;}\n"
+    "tr{display:table-row;vertical-align:inherit;}\n"
+    "td,th{display:table-cell;vertical-align:inherit;padding:1px;}\n"
+    "th{font-weight:bold;text-align:center;}\n"
     // Chromium's sectioning and grouping elements, and its heading levels.
     "address,article,aside,blockquote,figcaption,figure,footer,form,header,hgroup,main,nav,"
     "section{display:block;}\n"
@@ -69,6 +82,13 @@ inline constexpr std::string_view ui_user_agent_css =
     "tab-index:auto;pointer-events:auto;cursor:pointer;}\n"
     "input[type=color]:where(:bbl-dark-scheme){border-color:#6b6b6b;background-color:#6b6b6b;}\n"
     "input[type=color]:disabled{opacity:0.45;}\n"
+    // Chromium's search field: border-box sizing, and its cancel button after the text, shown
+    // while an enabled field is focused or hovered and has text (RmlUi hides it while empty).
+    "input:where([type=search]){box-sizing:border-box;}\n"
+    "input[type=search] searchcancel{display:block;margin:0 3px 0 1px;cursor:default;opacity:0;"
+    "pointer-events:none;decorator:bbl-native-search-cancel();}\n"
+    "input[type=search]:not(:disabled):focus searchcancel,"
+    "input[type=search]:not(:disabled):hover searchcancel{opacity:1;pointer-events:auto;}\n"
     "select{display:inline-block;box-sizing:border-box;min-width:48px;height:auto;"
     "padding:0;border-width:1px;border-style:solid;border-color:#767676;border-radius:2px;"
     "background-color:#ffffff;color:#000000;font-family:sans-serif;font-size:13.333333px;"
