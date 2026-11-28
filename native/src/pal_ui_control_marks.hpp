@@ -137,18 +137,4 @@ public:
     }
 };
 
-class UiControlMarkDecoratorInstancer final : public Rml::DecoratorInstancer {
-public:
-    explicit UiControlMarkDecoratorInstancer(const UiControlSchemeProperties& properties)
-        : properties(properties) {}
-    Rml::SharedPtr<Rml::Decorator>
-    InstanceDecorator(const Rml::String&, const Rml::PropertyDictionary&,
-                      const Rml::DecoratorInstancerInterface&) override {
-        return Rml::MakeShared<UiControlMarkDecorator>(properties);
-    }
-
-private:
-    const UiControlSchemeProperties& properties;
-};
-
 } // namespace bbl::pal

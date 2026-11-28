@@ -437,20 +437,6 @@ public:
     }
 };
 
-class UiSearchCancelDecoratorInstancer final : public Rml::DecoratorInstancer {
-public:
-    explicit UiSearchCancelDecoratorInstancer(const UiControlSchemeProperties& properties)
-        : properties(properties) {}
-    Rml::SharedPtr<Rml::Decorator>
-    InstanceDecorator(const Rml::String&, const Rml::PropertyDictionary&,
-                      const Rml::DecoratorInstancerInterface&) override {
-        return Rml::MakeShared<UiSearchCancelDecorator>(properties);
-    }
-
-private:
-    const UiControlSchemeProperties& properties;
-};
-
 // Browser text controls retain fractional advances even when their glyph masks
 // are grid fitted. RmlUi's default font engine stores integer glyph advances.
 // For a fixed-pitch face the difference is one uniform spacing adjustment.

@@ -214,17 +214,4 @@ public:
         data.quad.render(origin);
     }
 };
-class UiRangeDecoratorInstancer final : public Rml::DecoratorInstancer {
-public:
-    explicit UiRangeDecoratorInstancer(const UiControlSchemeProperties& properties)
-        : properties(properties) {}
-    Rml::SharedPtr<Rml::Decorator>
-    InstanceDecorator(const Rml::String&, const Rml::PropertyDictionary&,
-                      const Rml::DecoratorInstancerInterface&) override {
-        return Rml::MakeShared<UiRangeDecorator>(properties);
-    }
-
-private:
-    const UiControlSchemeProperties& properties;
-};
 } // namespace bbl::pal

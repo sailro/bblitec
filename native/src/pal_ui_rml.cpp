@@ -9350,10 +9350,12 @@ struct UiRmlRuntime {
     UiFilterAmountParser filter_amount_parser;
     std::vector<std::unique_ptr<UiFilterInstancer>> filter_instancers;
     UiControlSchemeProperties control_scheme_properties{};
-    UiRangeDecoratorInstancer range_decorator{control_scheme_properties};
-    UiControlMarkDecoratorInstancer control_mark_decorator{control_scheme_properties};
+    UiSchemeDecoratorInstancer<UiRangeDecorator> range_decorator{control_scheme_properties};
+    UiSchemeDecoratorInstancer<UiControlMarkDecorator> control_mark_decorator{
+        control_scheme_properties};
     UiControlArrowDecoratorInstancer control_arrow_decorator;
-    UiSearchCancelDecoratorInstancer search_cancel_decorator{control_scheme_properties};
+    UiSchemeDecoratorInstancer<UiSearchCancelDecorator> search_cancel_decorator{
+        control_scheme_properties};
     Rml::ElementInstancerGeneric<UiButtonElement> button_instancer;
     Rml::ElementInstancerGeneric<UiCanvasElement> canvas_instancer;
     Rml::ElementInstancerGeneric<UiSelectElement> select_instancer;
