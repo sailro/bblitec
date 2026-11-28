@@ -477,7 +477,7 @@ test("deferred recursive callbacks and async record methods retain independent a
         if(await a!==3||await b!==13||await c!==7||left.read()!==7||right.read()!==13)throw new Error("independent activations");
         if(await left.add(-1).catch(()=>-1)!==-1||left.read()!==7)throw new Error("rejected activation");
         if(await visitA(3)!==6||await visitB(2)!==3)throw new Error("recursive activation");
-        await new Promise<void>(resolve=>setTimeout(resolve,20));
+        for(let turn=0;turn<1000&&completed<2;turn++)await new Promise<void>(resolve=>setTimeout(resolve,1));
         if(completed!==2||seen!==573||cancelled!==0)throw new Error("deferred cycles and cancellation");
         first.dispose();second.dispose();globalThis.close();
     })();
