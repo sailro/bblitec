@@ -74,6 +74,9 @@
 #endif
 #include "pal_system_preferences.hpp"
 #include "pal_input_capabilities.hpp"
+#if BBLITE_WORKERS
+#include "pal_media_play.hpp"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -1836,12 +1839,6 @@ UiMediaState& media_state(Engine& engine, UiElementHandle element) {
 }
 
 #if BBLITE_WORKERS
-void reject_plays(std::vector<js::Promise<js::PromiseVoid>> plays, std::string message,
-                  std::string name) {
-    for (const auto& play : plays)
-        play.reject(js::dom_exception_error(message, name));
-}
-
 /**
  * HTML's resource selection algorithm with no decoder. Without a src attribute the network
  * state stays empty and nothing fires; `preload="none"` (without autoplay) suspends it until
@@ -1874,8 +1871,8 @@ void select_media_resource(Engine& engine, UiElementHandle element, bool playing
             event.dom->trusted = true;
             dispatch_dom_pointer(engine, event);
         }
-        reject_plays(std::exchange(media->pending_plays, {}),
-                     "The element has no supported sources.", "NotSupportedError");
+        pal::reject_media_plays(std::exchange(media->pending_plays, {}),
+                                pal::media_no_supported_sources);
     });
 }
 #endif
@@ -1914,8 +1911,7 @@ void ui_video_pause(Engine& engine, UiElementHandle element) {
         return;
     state.paused = true;
 #if BBLITE_WORKERS
-    reject_plays(std::exchange(state.pending_plays, {}),
-                 "The play() request was interrupted by a call to pause().", "AbortError");
+    pal::reject_media_plays(std::exchange(state.pending_plays, {}), pal::media_play_paused);
 #endif
 }
 
@@ -1923,8 +1919,7 @@ void ui_video_pause(Engine& engine, UiElementHandle element) {
 js::Promise<js::PromiseVoid> ui_video_play(Engine& engine, UiElementHandle element) {
     auto& state = media_state(engine, element);
     if (state.failed)
-        return js::Promise<js::PromiseVoid>::rejected(
-            js::dom_exception_error("The element has no supported sources.", "NotSupportedError"));
+        return js::Promise<js::PromiseVoid>::rejected(pal::media_no_supported_sources.error());
     js::Promise<js::PromiseVoid> promise;
     state.pending_plays.push_back(promise);
     state.paused = false;
@@ -1939,8 +1934,7 @@ void ui_video_load(Engine& engine, UiElementHandle element) {
     state.failed = false;
     if (!state.paused) {
         state.paused = true;
-        reject_plays(std::exchange(state.pending_plays, {}),
-                     "The play() request was interrupted by a new load request.", "AbortError");
+        pal::reject_media_plays(std::exchange(state.pending_plays, {}), pal::media_play_reloaded);
     }
     select_media_resource(engine, element, false);
 }
