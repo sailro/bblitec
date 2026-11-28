@@ -12,10 +12,8 @@
 #include <RmlUi/Core/Core.h>
 #include <RmlUi/Core/FontEngineInterface.h>
 #include <RmlUi/Core/FontMetrics.h>
-#include <RmlUi/Core/CallbackTexture.h>
 #include <RmlUi/Core/Decorator.h>
 #include <RmlUi/Core/Geometry.h>
-#include <RmlUi/Core/MeshUtilities.h>
 #include <RmlUi/Core/RenderManager.h>
 #include <ft2build.h>
 #include FT_FREETYPE_H
@@ -241,8 +239,10 @@ private:
 class UiControlArrowDecorator final : public Rml::Decorator {
     bool solid;
     struct Data {
+        /** The solid arrow's triangle. */
         Rml::Geometry geometry;
-        Rml::CallbackTexture texture;
+        /** The chevron's pixels. */
+        UiPixelQuad chevron;
         Rml::Vector2f size{};
         Rml::ColourbPremultiplied color{};
         float density = 0;
@@ -284,25 +284,16 @@ public:
             // The texture snaps to the pixel grid around the box's center.
             const int width = static_cast<int>(std::ceil(chevron_width * density)),
                       height = static_cast<int>(std::ceil(chevron_height * density));
-            auto& manager = element->GetContext()->GetRenderManager();
-            if (data.color != color || data.density != density || !data.texture) {
-                data.texture = manager.MakeCallbackTexture(
-                    [bytes = ui_coverage_pixels(width, height, density, color, in_chevron), width,
-                     height](const Rml::CallbackTextureInterface& out) {
-                        return out.GenerateTexture(bytes, {width, height});
-                    });
-                Rml::Mesh mesh;
-                Rml::MeshUtilities::GenerateQuad(
-                    mesh, {0, 0}, {static_cast<float>(width), static_cast<float>(height)},
-                    Rml::ColourbPremultiplied{255, 255, 255, 255}, {0, 0}, {1, 1});
-                data.geometry = manager.MakeGeometry(std::move(mesh));
+            if (data.color != color || data.density != density || !data.chevron) {
+                data.chevron.build(element->GetContext()->GetRenderManager(),
+                                   ui_coverage_pixels(width, height, density, color, in_chevron),
+                                   width, height);
                 data.color = color;
                 data.density = density;
             }
             const auto center = element->GetAbsoluteOffset(Rml::BoxArea::Content) + size * .5f;
-            data.geometry.Render(
-                {std::round(center.x - width * .5f), std::round(center.y - height * .5f)},
-                data.texture);
+            data.chevron.render(
+                {std::round(center.x - width * .5f), std::round(center.y - height * .5f)});
             return;
         }
         if (data.size != size || data.color != color || data.density != density) {
@@ -344,8 +335,7 @@ public:
 class UiSearchCancelDecorator final : public Rml::Decorator {
     const UiControlSchemeProperties& properties;
     struct Data {
-        Rml::Geometry geometry;
-        Rml::CallbackTexture texture;
+        UiPixelQuad quad;
         int side = 0;
         const UiSearchCancelImage* image = nullptr;
     };
@@ -437,20 +427,13 @@ public:
                             : pressed ? ui_search_cancel_light_pressed
                                       : ui_search_cancel_light;
         if (data.side != side || data.image != &image) {
-            data.texture = element->GetContext()->GetRenderManager().MakeCallbackTexture(
-                [bytes = resample(image, side), side](const Rml::CallbackTextureInterface& out) {
-                    return out.GenerateTexture(bytes, {side, side});
-                });
-            Rml::Mesh mesh;
-            Rml::MeshUtilities::GenerateQuad(
-                mesh, {0, 0}, {static_cast<float>(side), static_cast<float>(side)},
-                Rml::ColourbPremultiplied{255, 255, 255, 255}, {0, 0}, {1, 1});
-            data.geometry = element->GetContext()->GetRenderManager().MakeGeometry(std::move(mesh));
+            data.quad.build(element->GetContext()->GetRenderManager(), resample(image, side), side,
+                            side);
             data.side = side;
             data.image = &image;
         }
         const auto origin = element->GetAbsoluteOffset(Rml::BoxArea::Content);
-        data.geometry.Render({std::round(origin.x), std::round(origin.y)}, data.texture);
+        data.quad.render({std::round(origin.x), std::round(origin.y)});
     }
 };
 

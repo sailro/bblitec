@@ -3,7 +3,7 @@
 // (ui/native_theme/native_theme_base.cc, ui/color/color_provider_utils.cc).
 // BSD-3-Clause notice: native/notices/Chromium.txt.
 #include "pal_ui_control_scheme.hpp"
-#include <RmlUi/Core/CallbackTexture.h>
+#include "pal_ui_coverage.hpp"
 #include <RmlUi/Core/ComputedValues.h>
 #include <RmlUi/Core/Context.h>
 #include <RmlUi/Core/Decorator.h>
@@ -12,7 +12,6 @@
 #include <RmlUi/Core/Event.h>
 #include <RmlUi/Core/Geometry.h>
 #include <RmlUi/Core/Input.h>
-#include <RmlUi/Core/MeshUtilities.h>
 #include <RmlUi/Core/RenderManager.h>
 #include <algorithm>
 #include <array>
@@ -77,8 +76,7 @@ class UiRangeDecorator final : public Rml::Decorator {
         std::size_t references = 0;
         std::tuple<int, int, float, bool, bool> key{};
         Paint paint{};
-        Rml::CallbackTexture texture;
-        Rml::Geometry geometry;
+        UiPixelQuad quad;
         bool initialized = false;
     };
     const UiControlSchemeProperties& properties;
@@ -201,31 +199,19 @@ public:
         const Paint paint{colors.palette->fill[index], colors.palette->border[index],
                           colors.accent_color(track), colors.accent_color(state(*bar))};
         const auto key = std::tuple{width, height, thumb, themed_track, themed_thumb};
-        const bool geometry_changed =
-            !data.initialized || width != std::get<0>(data.key) || height != std::get<1>(data.key);
-        auto& manager = element->GetContext()->GetRenderManager();
         if (!data.initialized || key != data.key || !(paint == data.paint)) {
-            data.texture = manager.MakeCallbackTexture(
-                [bytes = pixels(width, height, thumb, paint, themed_track, themed_thumb), width,
-                 height](const Rml::CallbackTextureInterface& out) {
-                    const char* profile = std::getenv("BBLITE_CPU_PROFILE");
-                    if (profile && std::string_view(profile) == "1")
-                        std::fprintf(stderr, "[cpu][range-raster] width=%d height=%d bytes=%zu\n",
-                                     width, height, bytes.size());
-                    return out.GenerateTexture(bytes, {width, height});
-                });
-        }
-        if (geometry_changed) {
-            Rml::Mesh mesh;
-            Rml::MeshUtilities::GenerateQuad(
-                mesh, {0, 0}, {static_cast<float>(width), static_cast<float>(height)},
-                Rml::Colourb{255, 255, 255}.ToPremultiplied(), {0, 0}, {1, 1});
-            data.geometry = manager.MakeGeometry(std::move(mesh));
+            auto bytes = pixels(width, height, thumb, paint, themed_track, themed_thumb);
+            const char* profile = std::getenv("BBLITE_CPU_PROFILE");
+            if (profile && std::string_view(profile) == "1")
+                std::fprintf(stderr, "[cpu][range-raster] width=%d height=%d bytes=%zu\n", width,
+                             height, bytes.size());
+            data.quad.build(element->GetContext()->GetRenderManager(), std::move(bytes), width,
+                            height);
         }
         data.key = key;
         data.paint = paint;
         data.initialized = true;
-        data.geometry.Render(origin, data.texture);
+        data.quad.render(origin);
     }
 };
 class UiRangeDecoratorInstancer final : public Rml::DecoratorInstancer {
