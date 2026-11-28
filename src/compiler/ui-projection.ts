@@ -164,7 +164,7 @@ import {
 } from "./symbols.js";
 import { observesDatasetFields } from "./canvas-instrumentation.js";
 import {
-    uiMarkupSpanIndex,
+    uiMarkupSplit,
     uiMarkupText,
     uiMarkupValueShapes,
     type UiMarkupShape,
@@ -290,18 +290,33 @@ function uiMarkupBranches(
 function uiMarkupShapesBySpecificity(
     shapes: readonly UiMarkupShape[],
 ): UiMarkupShape[] {
-    const fixed = (shape: UiMarkupShape): number =>
-        shape.reduce(
-            (length, part) =>
-                length + (typeof part === "string" ? part.length : 0),
-            0,
-        );
+    const fixed = (shape: UiMarkupShape): number => uiMarkupText(shape).length;
     return [...shapes].sort((left, right) => fixed(right) - fixed(left));
 }
 
+/** The spelling that opens a runtime value's placeholder in a markup source. */
+const UI_MARKUP_HOLE_PREFIX = "__BBLITE_UI_MARKUP_";
+
+/** Any placeholder in a markup source. */
+const UI_MARKUP_HOLE_PATTERN = `${UI_MARKUP_HOLE_PREFIX}\\d+__`;
+
 /** The placeholder a runtime value takes in a markup source, by its order. */
 function uiMarkupHole(index: number): string {
-    return `__BBLITE_UI_MARKUP_${index}__`;
+    return `${UI_MARKUP_HOLE_PREFIX}${index}__`;
+}
+
+/** The order of the runtime value whose placeholder `text` is as a whole. */
+function uiMarkupHoleIndex(text: string): number | undefined {
+    const hole = new RegExp(`^${UI_MARKUP_HOLE_PREFIX}(\\d+)__$`).exec(text);
+    return hole ? Number(hole[1]) : undefined;
+}
+
+/** A markup text's fixed chunks and placeholder orders, in order. */
+function uiMarkupChunks(text: string): (string | number)[] {
+    return text
+        .split(new RegExp(`(${UI_MARKUP_HOLE_PATTERN})`))
+        .filter(Boolean)
+        .map((chunk) => uiMarkupHoleIndex(chunk) ?? chunk);
 }
 
 /**
@@ -323,13 +338,10 @@ function uiMarkupSources(
         else if (part.kind === "text") source += uiMarkupHole(next++);
         else if (part.kind === "stored" && part.shapes.length === 1) {
             const shape = part.shapes[0]!;
-            const hole = uiMarkupSpanIndex(shape);
-            source +=
-                hole < 0
-                    ? uiMarkupText(shape)
-                    : uiMarkupText(shape.slice(0, hole)) +
-                      uiMarkupHole(next++) +
-                      uiMarkupText(shape.slice(hole + 1));
+            const split = uiMarkupSplit(shape);
+            source += split
+                ? split.before + uiMarkupHole(next++) + split.after
+                : uiMarkupText(shape);
         } else {
             const rest = parts.slice(index + 1);
             const sources: string[] = [];
@@ -524,11 +536,9 @@ function uiImageSourceHole(
     node: UiAuthoredMarkupNode & { kind: "element" },
     attribute: { readonly name: string; readonly value: string },
 ): number | undefined {
-    const hole =
-        node.svg && node.tag === "image" && attribute.name === "href"
-            ? /^__BBLITE_UI_MARKUP_(\d+)__$/.exec(attribute.value)
-            : null;
-    return hole ? Number(hole[1]) : undefined;
+    return node.svg && node.tag === "image" && attribute.name === "href"
+        ? uiMarkupHoleIndex(attribute.value)
+        : undefined;
 }
 
 /** A runtime img source's packaged candidates (`packagedUiImageSource`). */
@@ -5293,7 +5303,7 @@ export class UiProjection {
                 numeric: new EmissionSet(["x", "y", "width", "height"]),
             },
         };
-        const markupHole = /__BBLITE_UI_MARKUP_\d+__/i;
+        const markupHole = new RegExp(UI_MARKUP_HOLE_PATTERN, "i");
         // The browser's tree for the markup; a runtime operand stands in it as
         // a text placeholder, which may sit only where text does.
         const lowerNodes = (
@@ -5316,7 +5326,7 @@ export class UiProjection {
             if (node.tag === undefined) {
                 if (insideSvg && node.text.trim().length > 0)
                     fail("does not support text inside <svg>.");
-                if (/<\/?__BBLITE_UI_MARKUP_\d+__/.test(node.text))
+                if (new RegExp(`</?${UI_MARKUP_HOLE_PATTERN}`).test(node.text))
                     fail("requires a static tag name.");
                 return escapeText(node.text);
             }
@@ -5381,11 +5391,11 @@ export class UiProjection {
                     fail(`requires static attribute names on <${tag}>.`);
                 const imageHole =
                     tag === "img" && lowerName === "src"
-                        ? /^__BBLITE_UI_MARKUP_(\d+)__$/.exec(attribute.value)
-                        : null;
-                if (imageHole && imageSources)
-                    imageSources.add(Number(imageHole[1]));
-                else if (attribute.value.includes("__BBLITE_UI_MARKUP_")) {
+                        ? uiMarkupHoleIndex(attribute.value)
+                        : undefined;
+                if (imageHole !== undefined && imageSources)
+                    imageSources.add(imageHole);
+                else if (attribute.value.includes(UI_MARKUP_HOLE_PREFIX)) {
                     fail(
                         tag === "img" && lowerName === "src"
                             ? "requires an img src that is static or one runtime operand as a whole."
@@ -5801,19 +5811,11 @@ export class UiProjection {
         lowered: string,
         substitution: (index: number) => string,
     ): string {
-        const chunks = lowered.split(/(__BBLITE_UI_MARKUP_\d+__)/g);
-        const parts: string[] = [];
-        for (const chunk of chunks) {
-            if (!chunk) continue;
-            const marker = chunk.match(/^__BBLITE_UI_MARKUP_(\d+)__$/);
-            if (!marker) {
-                parts.push(this.context.cppString(chunk));
-                continue;
-            }
-            parts.push(
-                `bbl::ui_escape_rml(${substitution(Number(marker[1]))})`,
-            );
-        }
+        const parts = uiMarkupChunks(lowered).map((chunk) =>
+            typeof chunk === "number"
+                ? `bbl::ui_escape_rml(${substitution(chunk)})`
+                : this.context.cppString(chunk),
+        );
         return `bbl::js::concat(${parts.join(", ")})`;
     }
 
@@ -5850,12 +5852,14 @@ export class UiProjection {
             : parseAuthoredMarkup(form.source, fail);
         const holed = (node: UiAuthoredMarkupNode): boolean =>
             node.kind === "element" &&
-            (node.tag.includes("__BBLITE_UI_MARKUP_") ||
+            (node.tag.includes(UI_MARKUP_HOLE_PREFIX) ||
                 node.attributes.some(
                     (attribute) =>
-                        /__BBLITE_UI_MARKUP_\d+__/i.test(attribute.name) ||
+                        new RegExp(UI_MARKUP_HOLE_PATTERN, "i").test(
+                            attribute.name,
+                        ) ||
                         (GENERATION_ATTRIBUTES.has(attribute.name) &&
-                            attribute.value.includes("__BBLITE_UI_MARKUP_") &&
+                            attribute.value.includes(UI_MARKUP_HOLE_PREFIX) &&
                             uiImageSourceHole(node, attribute) === undefined),
                 ) ||
                 node.children.some(holed));
@@ -5918,18 +5922,14 @@ export class UiProjection {
                   ),
         );
         const textCpp = (value: string): string => {
-            if (!value.includes("__BBLITE_UI_MARKUP_"))
+            if (!value.includes(UI_MARKUP_HOLE_PREFIX))
                 return this.context.cppString(value);
             this.context.reachJsData();
-            const parts = value
-                .split(/(__BBLITE_UI_MARKUP_\d+__)/g)
-                .filter(Boolean)
-                .map((chunk) => {
-                    const marker = /^__BBLITE_UI_MARKUP_(\d+)__$/.exec(chunk);
-                    return marker
-                        ? texts[Number(marker[1])]!
-                        : this.context.cppString(chunk);
-                });
+            const parts = uiMarkupChunks(value).map((chunk) =>
+                typeof chunk === "number"
+                    ? texts[chunk]!
+                    : this.context.cppString(chunk),
+            );
             return `bbl::js::concat(${parts.join(", ")})`;
         };
         let linkNavigation = false;
@@ -5994,7 +5994,7 @@ export class UiProjection {
                     node.svg &&
                     node.tag === "image" &&
                     attribute.name === "href" &&
-                    !value.includes("__BBLITE_UI_MARKUP_")
+                    !value.includes(UI_MARKUP_HOLE_PREFIX)
                 )
                     this.registerImageSource(value);
                 if (attribute.name === "class" || attribute.name === "id")
@@ -6041,18 +6041,17 @@ export class UiProjection {
         );
         return markup &&
             (shapes.length === 1 ||
-                shapes.some((shape) => uiMarkupSpanIndex(shape) >= 0))
+                shapes.some((shape) => uiMarkupSplit(shape) !== undefined))
             ? shapes
             : undefined;
     }
 
     /** Whether a stored string holds `shape`'s fixed fragments around its span. */
     private uiMarkupShapeTest(value: string, shape: UiMarkupShape): string {
-        const hole = uiMarkupSpanIndex(shape);
-        if (hole < 0)
+        const split = uiMarkupSplit(shape);
+        if (!split)
             return `${value} == ${this.context.cppString(uiMarkupText(shape))}`;
-        const before = uiMarkupText(shape.slice(0, hole));
-        const after = uiMarkupText(shape.slice(hole + 1));
+        const { before, after } = split;
         return [
             `bbl::js::string_length(${value}) >= ${before.length + after.length}`,
             ...(before
@@ -6219,13 +6218,10 @@ export class UiProjection {
                 else if (part.kind === "stored" && part.shapes.length === 1) {
                     const value = part.value ?? snapshot(part.expression);
                     const shape = part.shapes[0]!;
-                    const hole = uiMarkupSpanIndex(shape);
-                    const span = shape[hole];
-                    if (span === undefined || typeof span === "string")
-                        source += uiMarkupText(shape);
+                    const split = uiMarkupSplit(shape);
+                    if (!split) source += uiMarkupText(shape);
                     else {
-                        const before = uiMarkupText(shape.slice(0, hole));
-                        const after = uiMarkupText(shape.slice(hole + 1));
+                        const { before, span, after } = split;
                         source += before;
                         text(
                             `bbl::js::string_substring(${value}, ${before.length}, bbl::js::string_length(${value}) - ${after.length})`,
