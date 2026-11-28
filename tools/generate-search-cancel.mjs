@@ -22,19 +22,29 @@ const decoded = images.map(([name, file]) => {
             ),
         ),
     );
+    /** @param {number} index */
+    const byte = (index) => {
+        const value = png.data[index];
+        if (value === undefined) throw new Error(`${file}.png ends early.`);
+        return value;
+    };
+    /** @type {number[]} */
     const bytes = [];
     for (let offset = 0; offset < png.data.length; offset += 4) {
-        const alpha = png.data[offset + 3];
+        const alpha = byte(offset + 3);
         for (let channel = 0; channel < 3; channel++)
-            bytes.push(Math.round((png.data[offset + channel] * alpha) / 255));
+            bytes.push(Math.round((byte(offset + channel) * alpha) / 255));
         bytes.push(alpha);
     }
     return { name, file, width: png.width, height: png.height, bytes };
 });
-const side = decoded[0].width;
+const first = decoded[0];
+if (!first) throw new Error("No search cancel images to generate.");
+const side = first.width;
 for (const image of decoded)
     if (image.width !== side || image.height !== side)
         throw new Error(`${image.file}.png is not ${side}x${side}.`);
+/** @param {number[]} bytes */
 const rows = (bytes) => {
     const lines = [];
     for (let offset = 0; offset < bytes.length; offset += side * 4)
