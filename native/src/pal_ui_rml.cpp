@@ -1696,6 +1696,19 @@ std::string ui_escape_rml(std::string_view text) {
     return escaped;
 }
 
+namespace {
+/** Fires a trusted, non-bubbling, non-cancelable `type` Event at an element that still exists. */
+void fire_element_event(Engine& engine, UiElementHandle element, const char* type) {
+    if (!engine.dom_input || element.value >= engine.ui_elements.size())
+        return;
+    PlatformMouseEvent payload;
+    payload.payload_kind = DomInputEventKind::Event;
+    const auto event = dom_event(payload, type, dom_ui_path(engine, element), false, false);
+    event.dom->trusted = true;
+    dispatch_dom_pointer(engine, event);
+}
+} // namespace
+
 #if BBLITE_WORKERS
 namespace {
 /**
@@ -1705,14 +1718,8 @@ namespace {
 void queue_image_event(Engine& engine, UiElementHandle element,
                        std::shared_ptr<UiImageRequest> request) {
     pal::EventLoop::current().post([&engine, element, request = std::move(request)] {
-        if (request->invalidated || !engine.dom_input || element.value >= engine.ui_elements.size())
-            return;
-        PlatformMouseEvent payload;
-        payload.payload_kind = DomInputEventKind::Event;
-        const auto event = dom_event(payload, request->decoded ? "load" : "error",
-                                     dom_ui_path(engine, element), false, false);
-        event.dom->trusted = true;
-        dispatch_dom_pointer(engine, event);
+        if (!request->invalidated)
+            fire_element_event(engine, element, request->decoded ? "load" : "error");
     });
 }
 
@@ -1871,14 +1878,7 @@ void select_media_resource(Engine& engine, UiElementHandle element, bool playing
             return;
         media->selecting = false;
         media->failed = true;
-        if (engine.dom_input) {
-            PlatformMouseEvent payload;
-            payload.payload_kind = DomInputEventKind::Event;
-            const auto event =
-                dom_event(payload, "error", dom_ui_path(engine, element), false, false);
-            event.dom->trusted = true;
-            dispatch_dom_pointer(engine, event);
-        }
+        fire_element_event(engine, element, "error");
         pal::reject_media_plays(std::exchange(media->pending_plays, {}),
                                 pal::media_no_supported_sources);
     });
@@ -1972,15 +1972,7 @@ void queue_details_toggle(Engine& engine, UiElementHandle element) {
         engine.ui_details_toggled(element);
         return;
     }
-    const auto fire = [&engine, element] {
-        if (!engine.dom_input || element.value >= engine.ui_elements.size())
-            return;
-        PlatformMouseEvent payload;
-        payload.payload_kind = DomInputEventKind::Event;
-        const auto event = dom_event(payload, "toggle", dom_ui_path(engine, element), false, false);
-        event.dom->trusted = true;
-        dispatch_dom_pointer(engine, event);
-    };
+    const auto fire = [&engine, element] { fire_element_event(engine, element, "toggle"); };
 #if BBLITE_WORKERS
     pal::EventLoop::current().post(fire);
 #else
@@ -2043,15 +2035,8 @@ void prepare_script(Engine& engine, UiElementHandle element) {
             "Inline script text does not run natively: there is no JavaScript engine.",
             "NotSupportedError");
 #if BBLITE_WORKERS
-    pal::EventLoop::current().post([&engine, element] {
-        if (!engine.dom_input || element.value >= engine.ui_elements.size())
-            return;
-        PlatformMouseEvent payload;
-        payload.payload_kind = DomInputEventKind::Event;
-        const auto event = dom_event(payload, "error", dom_ui_path(engine, element), false, false);
-        event.dom->trusted = true;
-        dispatch_dom_pointer(engine, event);
-    });
+    pal::EventLoop::current().post(
+        [&engine, element] { fire_element_event(engine, element, "error"); });
 #else
     throw std::logic_error("External scripts load in an application realm.");
 #endif
