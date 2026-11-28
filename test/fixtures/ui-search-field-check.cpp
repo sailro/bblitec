@@ -90,12 +90,14 @@ int main() try {
         const auto drawn = [&](int side, float left, float top) -> const UiRenderTexture* {
             const auto& frame = runtime.render_interface.frame;
             for (const auto& draw : frame.draws) {
-                const auto found = std::find_if(
-                    frame.textures.begin(), frame.textures.end(), [&](const UiRenderTexture& entry) {
-                        return entry.id == draw.texture_id &&
-                               entry.width == static_cast<std::uint32_t>(side) &&
-                               entry.height == static_cast<std::uint32_t>(side) && entry.rgba;
-                    });
+                const auto found =
+                    std::find_if(frame.textures.begin(), frame.textures.end(),
+                                 [&](const UiRenderTexture& entry) {
+                                     return entry.id == draw.texture_id &&
+                                            entry.width == static_cast<std::uint32_t>(side) &&
+                                            entry.height == static_cast<std::uint32_t>(side) &&
+                                            entry.rgba;
+                                 });
                 if (found == frame.textures.end() || draw.index_count == 0)
                     continue;
                 float x = 1e9f, y = 1e9f;
