@@ -100,6 +100,7 @@ import {
 import {
     isUiLayoutProperty,
     supportedUiLayoutValue,
+    uiCssLength,
     uiLogicalSpacingProperties,
 } from "../ui-layout.js";
 import {
@@ -2698,12 +2699,24 @@ export class UiProjection {
         "vertical-align",
     ]);
 
-    /** A table's horizontal and vertical cell spacing: one or two nonnegative lengths. */
-    private static readonly UI_BORDER_SPACING =
-        /^(?:(?:\d+(?:\.\d*)?|\.\d+)(?:px|em|rem|vw|vh)|0)(?:\s+(?:(?:\d+(?:\.\d*)?|\.\d+)(?:px|em|rem|vw|vh)|0))?$/;
+    /** The length units the checked style values below admit. */
+    private static readonly UI_STYLE_LENGTH_UNITS = [
+        "px",
+        "em",
+        "rem",
+        "vw",
+        "vh",
+    ];
 
-    private static readonly PRESENTATION_LENGTH =
-        /^[+-]?(?:(?:\d+(?:\.\d*)?|\.\d+)(?:px|em|rem|vw|vh|%)|0)$/;
+    /** A table's horizontal and vertical cell spacing: one or two nonnegative lengths. */
+    private static readonly UI_BORDER_SPACING = (() => {
+        const length = uiCssLength(UiProjection.UI_STYLE_LENGTH_UNITS);
+        return new RegExp(`^${length}(?:\\s+${length})?$`);
+    })();
+
+    private static readonly PRESENTATION_LENGTH = new RegExp(
+        `^${uiCssLength([...UiProjection.UI_STYLE_LENGTH_UNITS, "%"], "+-")}$`,
+    );
 
     private static readonly INERT_UI_STYLE_PROPERTIES = new EmissionSet<string>(
         [
