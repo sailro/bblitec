@@ -18,11 +18,13 @@ interface RealmCoverage {
     /** Those of work whose state rolled back but whose lowerings count (`keepingCoverage`). */
     kept: Map<ts.Statement, "lowered" | "partial">;
     /**
-     * The statements whose lowering ended, in order, since a survey last
-     * attributed a rollback (`coverRollback`): a rollback undoes `retained`
-     * but not this log.
+     * The statements whose lowering ended, in order, while a survey mark is
+     * open (`coverageMark`), since a survey last attributed a rollback
+     * (`coverRollback`): a rollback undoes `retained` but not this log.
      */
     lowered: ts.Statement[];
+    /** The survey marks open: the log is kept only while one is. */
+    marks: number;
     /** What rolled each statement back: the innermost survey rollback that undid its lowering. */
     rolledBackBy: Map<ts.Statement, Set<string>>;
     failures: number;
@@ -124,6 +126,7 @@ export class SourceCoverage {
             retained: new EmissionMap(),
             kept: new Map(),
             lowered: [],
+            marks: 0,
             rolledBackBy: new Map(),
             failures: 0,
             complete: false,
@@ -234,9 +237,19 @@ export function sourceCoverageActive(): boolean {
     return current !== undefined;
 }
 
-/** A mark for `coverRollback`: the statements whose lowering ended so far. */
+/**
+ * Opens a mark for `coverRollback`, which `endCoverageMark` closes: the
+ * statements whose lowering ended so far.
+ */
 export function coverageMark(): number {
-    return current?.lowered.length ?? 0;
+    if (!current) return 0;
+    current.marks++;
+    return current.lowered.length;
+}
+
+/** Closes the last mark `coverageMark` opened; with the outermost, the log ends. */
+export function endCoverageMark(): void {
+    if (current && --current.marks === 0) current.lowered.length = 0;
 }
 
 /**
@@ -244,13 +257,16 @@ export function coverageMark(): number {
  * since `mark`: a survey's statement attempt that a refusal or a storage
  * demand undid. An enclosing rollback attributes only what this one did not.
  */
-export function coverRollback(mark: number, cause: string): void {
+export function coverRollback(mark: number, cause: () => string): void {
     const realm = current;
     if (!realm) return;
-    for (const statement of realm.lowered.splice(mark)) {
+    const rolledBack = realm.lowered.splice(mark);
+    if (!rolledBack.length) return;
+    const text = cause();
+    for (const statement of rolledBack) {
         let causes = realm.rolledBackBy.get(statement);
         if (!causes) realm.rolledBackBy.set(statement, (causes = new Set()));
-        causes.add(cause);
+        causes.add(text);
     }
 }
 
@@ -314,7 +330,7 @@ export function coverSourceStatement(
             realm.failures !== failures ||
             realm.retained.get(node) === "partial";
         realm.retained.set(node, partial ? "partial" : "lowered");
-        realm.lowered.push(node);
+        if (realm.marks > 0) realm.lowered.push(node);
     } catch (error) {
         if (!speculating && error instanceof CompileError) {
             observation?.refusals.add(error.message);
