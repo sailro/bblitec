@@ -3,6 +3,9 @@ const number = String.raw`\+?${magnitude}`;
 const lengthUnit = "(?:px|em|rem|vw|vh|[sld]?vmin|[sld]?vmax|in|cm|mm|pt|pc|%)";
 const length = String.raw`(?:${number}${lengthUnit}|[+]?0)`;
 const signedLength = String.raw`(?:[+-]?${magnitude}${lengthUnit}|[+-]?0)`;
+// CSS math or a custom property reference, which the native math resolves
+// to a length (`uiCssMathRefusal` reviews its shape).
+const resolvedLength = String.raw`(?:calc|min|max|clamp|var)\(.*\)`;
 const basis = `(?:auto|${length})`;
 const direction = "(?:row|row-reverse|column|column-reverse)";
 const wrap = "(?:nowrap|wrap|wrap-reverse)";
@@ -72,20 +75,20 @@ const layoutValues: ReadonlyMap<string, RegExp> = new Map([
             `^(?:${direction}(?:\\s+${wrap})?|${wrap}(?:\\s+${direction})?)$`,
         ),
     ],
-    ...[
-        "row-gap",
-        "column-gap",
-        "padding-top",
-        "padding-right",
-        "padding-bottom",
-        "padding-left",
-    ].map((property): [string, RegExp] => [
+    ...["row-gap", "column-gap"].map((property): [string, RegExp] => [
         property,
         new RegExp(`^${length}$`),
     ]),
+    // A negative padding from math is clamped to zero, as CSS clamps it.
+    ...["padding-top", "padding-right", "padding-bottom", "padding-left"].map(
+        (property): [string, RegExp] => [
+            property,
+            new RegExp(`^(?:${length}|${resolvedLength})$`),
+        ],
+    ),
     ...["margin-left", "margin-right"].map((property): [string, RegExp] => [
         property,
-        new RegExp(`^(?:auto|${signedLength})$`),
+        new RegExp(`^(?:auto|${signedLength}|${resolvedLength})$`),
     ]),
 ]);
 

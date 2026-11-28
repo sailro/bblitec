@@ -14,6 +14,7 @@ const program = `
         .night { width: 4px; height: 4px; opacity: calc(1 - var(--night) * 0.5); color: rgba(10, 20, 30, calc(var(--night) * 0.5)); }
         .key { width: 4px; height: 4px; opacity: 0; transition: opacity 100ms linear; transition-delay: calc(var(--i, 0) * 18ms); }
         .key.on { opacity: 1; }
+        .pull { --pad: 6px; height: 4px; margin-left: calc(var(--pad) * 2); margin-right: calc(0px - var(--pad)); padding-right: calc(10px + var(--pad)); padding-left: calc(2px - var(--pad)); }
     \`;
     document.head.appendChild(sheet);
     const make = (id: string): HTMLDivElement => {
@@ -30,6 +31,7 @@ const program = `
     night.style.setProperty("--night", "0.6");
     const key = make("key");
     key.style.setProperty("--i", String(2));
+    make("pull");
     globalThis.close();
 `;
 
