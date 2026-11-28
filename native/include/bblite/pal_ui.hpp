@@ -48,12 +48,11 @@ js::Promise<js::PromiseVoid> ui_decode_image(Engine&, UiElementHandle);
  * A video element without a decoder (docs/fidelity.md): it renders its poster, and its media
  * element load algorithm fails every source as one no decoder supports
  * (MEDIA_ERR_SRC_NOT_SUPPORTED). `muted` is the element's muted state, which the `muted`
- * attribute does not reflect; `preload` reads its keyword.
+ * attribute does not reflect.
  */
 bool ui_video_muted(Engine&, UiElementHandle);
 void ui_video_set_muted(Engine&, UiElementHandle, bool muted);
 bool ui_video_paused(Engine&, UiElementHandle);
-std::string ui_video_preload(Engine&, UiElementHandle);
 void ui_video_pause(Engine&, UiElementHandle);
 #if BBLITE_WORKERS
 /** play(): rejects with NotSupportedError once the source fails, after an `error` event. */
@@ -168,13 +167,15 @@ std::string ui_get_attribute(Engine& engine, UiElementHandle element, std::strin
 std::string ui_get_url_attribute(Engine& engine, UiElementHandle element, std::string_view name,
                                  std::string_view base);
 /**
- * An enumerated attribute limited to known keywords: the matching keyword, else
+ * An enumerated attribute limited to known keywords: the matching keyword, the
+ * `empty` value default's keyword for the empty value when it has one, else
  * the keyword of its missing and invalid value default (none: "").
  */
 std::string ui_get_enumerated_attribute(Engine& engine, UiElementHandle element,
                                         std::string_view name,
                                         std::initializer_list<std::string_view> keywords,
-                                        std::string_view missing = {});
+                                        std::string_view missing = {},
+                                        std::optional<std::string_view> empty = {});
 /** `draggable`: the true/false state, else whether the element drags by default. */
 bool ui_get_draggable(Engine& engine, UiElementHandle element);
 /** `spellcheck`: the nearest true/false state of the element and its ancestors, else true. */

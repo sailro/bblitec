@@ -7454,9 +7454,11 @@ export class UiProjection {
                     impure: true,
                 };
             case "keyword":
+                // A missing or invalid value is Chromium's Metadata state,
+                // the empty value the Automatic state.
                 return {
                     kind: "string",
-                    cpp: `bbl::ui_video_preload(${engine}, ${element.cpp})`,
+                    cpp: `bbl::ui_get_enumerated_attribute(${engine}, ${element.cpp}, "preload", {"none", "metadata", "auto"}, "metadata", "auto")`,
                     dataType: { kind: "string" },
                     freshData: true,
                     impure: true,
