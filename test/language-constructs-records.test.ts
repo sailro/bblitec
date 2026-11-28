@@ -1097,6 +1097,46 @@ test("an object field holds a record whose fields hold meshes as that record", (
 });
 
 check(
+    "a record kept by a generic record is read through a readonly object field of a view of its array",
+    `
+    interface Person { id: number; place: { x: number }; tag: () => number }
+    interface Hold<V extends { id: number }> { owner: V; key: string; flagged: boolean }
+    interface Holds<V extends { id: number }> { holds(): readonly Hold<V>[]; flip(): void }
+    function createRegistry<V extends { id: number }>(owners: () => readonly V[]): Holds<V> {
+        const holds = new Map<number, Hold<V>>();
+        return {
+            holds: () => {
+                for (const owner of owners()) if (!holds.has(owner.id)) holds.set(owner.id, { owner, key: "h" + owner.id, flagged: false });
+                return [...holds.values()];
+            },
+            flip: () => { for (const hold of holds.values()) hold.flagged = !hold.flagged; },
+        };
+    }
+    interface View { holds(): readonly { readonly key: string; readonly owner: object }[] }
+    function createReader(deps: { source: () => View; ready: () => boolean; placeOf: (owner: object) => number }) {
+        return () => {
+            let n = 0;
+            for (const hold of deps.ready() ? deps.source().holds() : []) n += deps.placeOf(hold.owner) + hold.key.length;
+            return n;
+        };
+    }
+    const people: Person[] = [];
+    const places = new Map<object, number>();
+    const registry = createRegistry<Person>(() => people);
+    const read = createReader({ source: () => registry, ready: () => people.length > 0, placeOf: (owner) => places.get(owner) ?? -100 });
+    for (let id = 0; id < 2; id++) {
+        const person: Person = { id, place: { x: id * 10 }, tag: () => id };
+        people.push(person);
+        places.set(person, person.place.x);
+    }
+    if (read() !== 14) throw new Error("owners " + read());
+    registry.flip();
+    if (!registry.holds().every((hold) => hold.flagged)) throw new Error("flagged " + registry.holds().map((hold) => hold.flagged).join());
+    if (registry.holds()[1]!.owner.tag() !== 1) throw new Error("tag");
+    `,
+);
+
+check(
     "a record's member kept by a constructed instance or a literal is the same object",
     `
     class H { constructor(public o: { n: number }) {} bump(): void { this.o.n++; } }

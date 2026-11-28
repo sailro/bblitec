@@ -157,6 +157,7 @@ import {
     isComponentRecord,
     isRecordLike,
     layoutsCompatible,
+    readsHeldObject,
     recordIdentity,
     type UnwrittenField,
     widensField,
@@ -3380,6 +3381,21 @@ export class DataTypeRegistry {
         return { ...source, documentFields: [field] };
     }
 
+    /** Whether struct `name`'s property `field` reads the object others store (`readsHeldObject`). */
+    private readsHeldObjectField(name: string, field: string): boolean {
+        const source = this.nativeRecordSources.get(name);
+        const property =
+            source && this.checker.getPropertyOfType(source.type, field);
+        return (
+            property !== undefined &&
+            readsHeldObject(
+                this.checker,
+                property,
+                this.checker.getTypeOfSymbol(property),
+            )
+        );
+    }
+
     /**
      * One layout storing property `name` that one record type stores as a
      * document and another typed (`typedSideOfDocument`) holds one value:
@@ -5466,6 +5482,16 @@ export class DataTypeRegistry {
                         : side === "held"
                           ? leftRecord
                           : undefined;
+                // A `readonly` field typed `object` reads the object the
+                // typed record stores (`readsHeldObject`): their join keeps
+                // it, no document.
+                const viewing =
+                    typed === rightRecord ? leftRecord : rightRecord;
+                if (
+                    typed &&
+                    this.readsHeldObjectField(viewing, field.sourceName)
+                )
+                    continue;
                 // A document holds no method or accessor: a record type
                 // declaring one keeps its native layout, the field the
                 // document holds stored as a document; so does a field
@@ -10339,6 +10365,7 @@ export class DataTypeRegistry {
             type: ts.Type;
             mapped: DataType | undefined;
             callable: boolean;
+            readsObject: boolean;
         } => {
             // An instantiation's own property maps under its instantiation.
             if (owned.substitution) {
@@ -10393,6 +10420,11 @@ export class DataTypeRegistry {
             return {
                 type: propertyType,
                 callable,
+                readsObject: readsHeldObject(
+                    this.checker,
+                    property,
+                    propertyType,
+                ),
                 mapped:
                     mapped &&
                     this.withDemandedNumericSlot(
@@ -10425,11 +10457,15 @@ export class DataTypeRegistry {
                     isUndefinedDataType(mapped) ||
                     mapped.kind === "null") &&
                 presentMembers(type).length === 0;
+            // A `readonly` field typed `object` reads the object the
+            // others store (`readsHeldObject`).
+            const held = (value: (typeof values)[number]): boolean =>
+                nullish(value) || value.readsObject;
             const valued = values.filter(
-                (value) => storing(value) && !nullish(value),
+                (value) => storing(value) && !held(value),
             );
             const empty = (value: (typeof values)[number]): boolean =>
-                valued.length > 0 && nullish(value);
+                valued.length > 0 && held(value);
             // A shape typing it only as a dynamic value (`unknown`) holds it
             // as one where another shape stores it typed, as the shapes
             // after it do; alone, it leaves the layout unstored.
