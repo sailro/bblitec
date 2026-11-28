@@ -163,7 +163,12 @@ import {
     libraryName,
 } from "./symbols.js";
 import { observesDatasetFields } from "./canvas-instrumentation.js";
-import { uiMarkupValueShapes, type UiMarkupShape } from "./ui-markup-values.js";
+import {
+    uiMarkupSpanIndex,
+    uiMarkupText,
+    uiMarkupValueShapes,
+    type UiMarkupShape,
+} from "./ui-markup-values.js";
 import {
     createsFormControls,
     isUiMetadataAttribute,
@@ -286,7 +291,11 @@ function uiMarkupShapesBySpecificity(
     shapes: readonly UiMarkupShape[],
 ): UiMarkupShape[] {
     const fixed = (shape: UiMarkupShape): number =>
-        shape.reduce((length, part) => length + (part?.length ?? 0), 0);
+        shape.reduce(
+            (length, part) =>
+                length + (typeof part === "string" ? part.length : 0),
+            0,
+        );
     return [...shapes].sort((left, right) => fixed(right) - fixed(left));
 }
 
@@ -314,13 +323,13 @@ function uiMarkupSources(
         else if (part.kind === "text") source += uiMarkupHole(next++);
         else if (part.kind === "stored" && part.shapes.length === 1) {
             const shape = part.shapes[0]!;
-            const hole = shape.indexOf(null);
+            const hole = uiMarkupSpanIndex(shape);
             source +=
                 hole < 0
-                    ? shape.join("")
-                    : shape.slice(0, hole).join("") +
+                    ? uiMarkupText(shape)
+                    : uiMarkupText(shape.slice(0, hole)) +
                       uiMarkupHole(next++) +
-                      shape.slice(hole + 1).join("");
+                      uiMarkupText(shape.slice(hole + 1));
         } else {
             const rest = parts.slice(index + 1);
             const sources: string[] = [];
@@ -817,6 +826,94 @@ export class UiProjection {
      * computes outside the candidates fails to load like a missing file.
      */
     private runtimeUiImageSource(expression: ts.Expression): string {
+        const found = this.packagedUiImageSource(
+            expression,
+            (path) => registerUiImageAsset(this.context, path, path).output,
+        );
+        if (!found) return this.refuseUiImageSource(expression);
+        const { packaged, absolute } = found;
+        if (packaged.selected.staticString !== undefined)
+            return this.context.cppString(
+                deploymentDocumentUrl(
+                    packaged.selected.staticString,
+                    this.context.options,
+                ),
+            );
+        const selected = this.context.dataLowerer.compileKnownValueForSink(
+            packaged.selected,
+            { kind: "string" },
+            expression,
+        );
+        return this.uiDocumentImageUrl(selected, absolute);
+    }
+
+    /**
+     * A runtime operand standing as a whole innerHTML img src: `value` holds
+     * the text of `sources`, which must be one expression whose packaged
+     * image candidates generation can find, as a runtime src write's. The
+     * operand was evaluated where the markup text was built: the inference
+     * here evaluates nothing, and only the candidates it finds are packaged.
+     */
+    private uiMarkupImageSourceCpp(
+        value: string,
+        sources: readonly ts.Expression[],
+        site: ts.Node,
+    ): string {
+        const source = sources.length === 1 ? sources[0] : undefined;
+        if (!source)
+            return this.context.fail(
+                site,
+                "Native UI innerHTML img src requires one runtime operand whose packaged image candidates generation can find.",
+            );
+        const paths: string[] = [];
+        const found = this.context.probeEmission(
+            () =>
+                this.packagedUiImageSource(source, (path) => {
+                    paths.push(path);
+                    return path;
+                }),
+            () => false,
+        );
+        if (!found) return this.refuseUiImageSource(source);
+        for (const path of paths)
+            registerUiImageAsset(this.context, path, path);
+        const known = found.packaged.selected.staticString;
+        return known !== undefined
+            ? this.context.cppString(
+                  deploymentDocumentUrl(known, this.context.options),
+              )
+            : this.uiDocumentImageUrl(value, found.absolute);
+    }
+
+    private refuseUiImageSource(expression: ts.Expression): never {
+        return this.context.fail(
+            expression,
+            "An img src write requires sources generation can package: string literals, conditionals of them, host data attributes the program never writes, or a runtime string whose packaged image candidates generation can find.",
+        );
+    }
+
+    /** A runtime source URL as the retained image loads it: an absolute candidate loads its path. */
+    private uiDocumentImageUrl(value: string, absolute: boolean): string {
+        return absolute
+            ? `bbl::ui_document_url(${value}, ${this.context.cppString(deploymentUrl(this.context.options).href)})`
+            : value;
+    }
+
+    /**
+     * The packaged images the URL inference finds for a runtime img source
+     * (`packagedUrlAssets`, as fetch and audio sources), each candidate's
+     * document path passed to `register` for the output it loads from;
+     * undefined when there is none.
+     */
+    private packagedUiImageSource(
+        expression: ts.Expression,
+        register: (path: string) => string,
+    ):
+        | {
+              packaged: NonNullable<ReturnType<typeof packagedUrlAssets>>;
+              absolute: boolean;
+          }
+        | undefined {
         const options = this.context.options;
         // An absolute candidate on the deployment's origin loads its path.
         let absolute = false;
@@ -831,29 +928,17 @@ export class UiProjection {
                         expression,
                         `An img src candidate '${logicalSource}' must be a root-relative or relative URL, or one on the deployment's origin.`,
                     );
-                return registerUiImageAsset(this.context, path, path).output;
+                return register(path);
             },
             (source) => /\.(?:png|jpe?g|webp|gif|bmp)$/i.test(source),
             (url) => url === "",
         );
         // A generation-known source with no packaged file fails to load.
-        if (packaged?.selected.staticString !== undefined)
-            return this.context.cppString(
-                deploymentDocumentUrl(packaged.selected.staticString, options),
-            );
-        if (!packaged || packaged.assets.length === 0)
-            return this.context.fail(
-                expression,
-                "An img src write requires sources generation can package: string literals, conditionals of them, host data attributes the program never writes, or a runtime string whose packaged image candidates generation can find.",
-            );
-        const selected = this.context.dataLowerer.compileKnownValueForSink(
-            packaged.selected,
-            { kind: "string" },
-            expression,
-        );
-        return absolute
-            ? `bbl::ui_document_url(${selected}, ${this.context.cppString(deploymentUrl(options).href)})`
-            : selected;
+        return packaged &&
+            (packaged.selected.staticString !== undefined ||
+                packaged.assets.length > 0)
+            ? { packaged, absolute }
+            : undefined;
     }
 
     /**
@@ -5099,10 +5184,15 @@ export class UiProjection {
         parseHtmlFragments(candidates);
     }
 
+    /**
+     * `imageSources`, when given, admits a runtime operand as a whole img
+     * `src` and collects its hole index; elsewhere attribute values are static.
+     */
     private lowerUiMarkupLiteral(
         value: string,
         site?: ts.Node,
         ownerId?: number,
+        imageSources?: Set<number>,
     ): string {
         this.prefetchUiMarkup();
         const fail = (message: string): never => {
@@ -5286,8 +5376,18 @@ export class UiProjection {
                 attributeNames.add(lowerName);
                 if (markupHole.test(name))
                     fail(`requires static attribute names on <${tag}>.`);
-                if (attribute.value.includes("__BBLITE_UI_MARKUP_")) {
-                    fail(`requires static attribute '${name}' on <${tag}>.`);
+                const imageHole =
+                    tag === "img" && lowerName === "src"
+                        ? /^__BBLITE_UI_MARKUP_(\d+)__$/.exec(attribute.value)
+                        : null;
+                if (imageHole && imageSources)
+                    imageSources.add(Number(imageHole[1]));
+                else if (attribute.value.includes("__BBLITE_UI_MARKUP_")) {
+                    fail(
+                        tag === "img" && lowerName === "src"
+                            ? "requires an img src that is static or one runtime operand as a whole."
+                            : `requires static attribute '${name}' on <${tag}>.`,
+                    );
                 }
                 let attributeValue = attribute.value;
                 // A root viewport may be a percentage of its CSS box.
@@ -5326,7 +5426,8 @@ export class UiProjection {
                         );
                     }
                     if (tag === "img" && lowerName === "src") {
-                        this.registerImageSource(attributeValue);
+                        if (!imageHole)
+                            this.registerImageSource(attributeValue);
                     } else if (
                         tag === "img" &&
                         (lowerName === "width" || lowerName === "height") &&
@@ -5670,14 +5771,27 @@ export class UiProjection {
         if (form.kind === "structured")
             return this.compileUiStructuredMarkup(expression, domains, ownerId);
         const { source, substitutions } = form;
-        const lowered = this.lowerUiMarkupLiteral(source, expression, ownerId);
+        const imageSources = new Set<number>();
+        const lowered = this.lowerUiMarkupLiteral(
+            source,
+            expression,
+            ownerId,
+            imageSources,
+        );
         this.context.reachJsData();
-        return this.uiMarkupConcat(lowered, (index) =>
-            this.uiTemplateSubstitutionCpp(
+        return this.uiMarkupConcat(lowered, (index) => {
+            const text = this.uiTemplateSubstitutionCpp(
                 substitutions[index]!,
                 "Native UI innerHTML",
-            ),
-        );
+            );
+            return imageSources.has(index)
+                ? this.uiMarkupImageSourceCpp(
+                      text,
+                      [substitutions[index]!],
+                      expression,
+                  )
+                : text;
+        });
     }
 
     private uiMarkupConcat(
@@ -5924,18 +6038,18 @@ export class UiProjection {
         );
         return markup &&
             (shapes.length === 1 ||
-                shapes.some((shape) => shape.includes(null)))
+                shapes.some((shape) => uiMarkupSpanIndex(shape) >= 0))
             ? shapes
             : undefined;
     }
 
     /** Whether a stored string holds `shape`'s fixed fragments around its span. */
     private uiMarkupShapeTest(value: string, shape: UiMarkupShape): string {
-        const hole = shape.indexOf(null);
+        const hole = uiMarkupSpanIndex(shape);
         if (hole < 0)
-            return `${value} == ${this.context.cppString(shape.join(""))}`;
-        const before = shape.slice(0, hole).join("");
-        const after = shape.slice(hole + 1).join("");
+            return `${value} == ${this.context.cppString(uiMarkupText(shape))}`;
+        const before = uiMarkupText(shape.slice(0, hole));
+        const after = uiMarkupText(shape.slice(hole + 1));
         return [
             `bbl::js::string_length(${value}) >= ${before.length + after.length}`,
             ...(before
@@ -6015,7 +6129,9 @@ export class UiProjection {
         if (shapes) {
             if (
                 shapes.some(
-                    (shape) => shape.filter((part) => part === null).length > 1,
+                    (shape) =>
+                        shape.filter((part) => typeof part !== "string")
+                            .length > 1,
                 )
             )
                 this.context.fail(
@@ -6073,32 +6189,44 @@ export class UiProjection {
                 "Native UI innerHTML",
             );
         };
+        // Each hole's text and the expressions that built it.
+        interface Hole {
+            cpp: string;
+            sources: readonly ts.Expression[];
+        }
         const emit = (
             pending: readonly UiMarkupPart[],
             prefix: string,
-            substitutions: readonly string[],
+            substitutions: readonly Hole[],
         ): string => {
             let source = prefix;
             const values = [...substitutions];
-            const text = (cpp: string): void => {
+            const text = (
+                cpp: string,
+                sources: readonly ts.Expression[],
+            ): void => {
                 source += uiMarkupHole(values.length);
-                values.push(cpp);
+                values.push({ cpp, sources });
             };
             for (let index = 0; index < pending.length; index++) {
                 const part = pending[index]!;
                 if (typeof part === "string") source += part;
-                else if (part.kind === "text") text(snapshot(part.expression));
+                else if (part.kind === "text")
+                    text(snapshot(part.expression), [part.expression]);
                 else if (part.kind === "stored" && part.shapes.length === 1) {
                     const value = part.value ?? snapshot(part.expression);
                     const shape = part.shapes[0]!;
-                    const hole = shape.indexOf(null);
-                    if (hole < 0) source += shape.join("");
+                    const hole = uiMarkupSpanIndex(shape);
+                    const span = shape[hole];
+                    if (span === undefined || typeof span === "string")
+                        source += uiMarkupText(shape);
                     else {
-                        const before = shape.slice(0, hole).join("");
-                        const after = shape.slice(hole + 1).join("");
+                        const before = uiMarkupText(shape.slice(0, hole));
+                        const after = uiMarkupText(shape.slice(hole + 1));
                         source += before;
                         text(
                             `bbl::js::string_substring(${value}, ${before.length}, bbl::js::string_length(${value}) - ${after.length})`,
+                            span.sources,
                         );
                         source += after;
                     }
@@ -6194,10 +6322,25 @@ export class UiProjection {
                     expression,
                     "Native UI innerHTML exceeds 32 closed markup alternatives.",
                 );
+            const imageSources = new Set<number>();
             const lowered = this.context.probeEmission(() =>
-                this.lowerUiMarkupLiteral(source, expression, ownerId),
+                this.lowerUiMarkupLiteral(
+                    source,
+                    expression,
+                    ownerId,
+                    imageSources,
+                ),
             );
-            return this.uiMarkupConcat(lowered, (index) => values[index]!);
+            return this.uiMarkupConcat(lowered, (index) => {
+                const hole = values[index]!;
+                return imageSources.has(index)
+                    ? this.uiMarkupImageSourceCpp(
+                          hole.cpp,
+                          hole.sources,
+                          expression,
+                      )
+                    : hole.cpp;
+            });
         };
         this.context.reachJsData();
         return emit(sourceParts, "", []);

@@ -141,12 +141,14 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 
 - Static innerHTML is parsed at generation by Chromium (the browser's tree, entities and implied end tags).
 - innerHTML admits text/div/span/label, comments, packaged img, reviewed SVG path/rect and packaged PNG/JPEG `<image>`,
-  role/aria-_/data-_; runtime text is escaped. Scripts, event attributes and runtime tag or attribute names refuse.
+  role/aria-_/data-_; runtime text is escaped. A runtime operand may be a whole img `src`, whose packaged candidates
+  the URL inference finds over the expression that built it, as for a `src` write; other attribute values are static.
+  Scripts, event attributes and runtime tag or attribute names refuse.
 - A runtime string with a closed string domain (`src/compiler/string-domain.ts`: constants, `for...of` elements,
   records read by a run-time key, call-site arguments, aliases) is markup: generation lowers each text it can hold and
   the string selects one. Past 256 texts it refuses, unless runtime text beside them makes it runtime text.
-- A stored string of fixed fragments (closed choices among them included) around one runtime text reads as the shape
-  whose fragments it holds, the most specific first.
+- A stored string of fixed fragments (closed choices among them included) around one runtime text (adjacent runtime
+  texts are one) reads as the shape whose fragments it holds, the most specific first.
 - Static innerHTML with input/select/option/textarea builds retained elements, so its controls own state as created
   ones do: div/span/p/h1/h2/b/strong/label/nav/a/form/output/button and reviewed control attributes, a label's `for`
   and a text control's `maxlength` among them. A flat template's runtime operands are text there (escaped, as in
