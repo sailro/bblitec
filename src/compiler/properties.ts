@@ -2771,13 +2771,11 @@ export class PropertyAccessLowerer {
         );
         this.context.reachJsData();
         const result = this.context.checker.getTypeAtLocation(node);
-        // A read typed `unknown` (not `any`, which an invalid read such as
-        // one through `void` also has) is the dynamic value it would have held.
-        const dynamic = (result.flags & ts.TypeFlags.Unknown) !== 0;
-        if (dynamic) this.context.reachFeature("data:json", node);
-        const type =
-            this.context.dataLowerer.dataTypeAt(node) ??
-            (dynamic ? ({ kind: "json" } as const) : undefined);
+        // A read typed `unknown` is the dynamic value it would have held.
+        const type = this.context.dataTypes.orDynamicJsonTypes(() =>
+            this.context.dataLowerer.dataTypeAt(node),
+        );
+        if (type?.kind === "json") this.context.reachFeature("data:json", node);
         if (type)
             return this.context.dataLowerer.leafValue(
                 `bbl::js::absent_receiver_read<${this.context.dataTypes.cppType(type)}>(${message})`,
