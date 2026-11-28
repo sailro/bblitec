@@ -71,13 +71,13 @@ export type NativeReturnValueCompiler = (
     node: ts.Node,
 ) => string;
 
-/** A shader stage's text and the uniforms it reads its lifted numbers from. */
 /** Entry-lifetime storage (`LoweringServices.entryStorage`): its binding and C++ type. */
 export interface EntryStorage {
     readonly binding: NativeCaptureBinding;
     readonly type: string;
 }
 
+/** A shader stage's text and the uniforms it reads its lifted numbers from. */
 export interface ShaderSourceText {
     source: string;
     dynamicUniforms: Array<{
