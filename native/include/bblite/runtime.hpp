@@ -4692,11 +4692,8 @@ struct UiStyleRule {
     std::string secondary{};
     std::string tag{};
     std::string style{};
-    /** The viewport bounds of the rule's media query, which the generated rule designates. */
-    double max_width = -1.0;
-    double min_width = -1.0;
-    double max_height = -1.0;
-    double min_height = -1.0;
+    /** The viewport bounds of the rule's media query. */
+    UiViewportBounds viewport{};
     bool hover = false;
     bool focus_visible = false;
     bool active = false;
@@ -4710,9 +4707,6 @@ struct UiStyleRule {
     UiOrientation orientation = UiOrientation::Any;
     /** The device features of the rule's media query. */
     UiMediaCondition media{};
-    [[nodiscard]] UiViewportBounds viewport() const {
-        return {max_width, min_width, max_height, min_height};
-    }
 };
 
 /** One event's listeners on a retained element, shared so a dispatch outlives storage growth. */

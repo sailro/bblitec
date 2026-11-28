@@ -815,13 +815,7 @@ export class UiProjection {
             rule.mediaPointer !== undefined &&
                 `.pointer = bbl::PointerPrecision::${uiPointerPrecisionCpp(rule.mediaPointer)}`,
         ].filter((member) => member !== false);
-        const members = [
-            `.selector = bbl::UiStyleSelectorKind::${uiStyleSelectorCppKind(rule.kind)}`,
-            `.primary = ${cppString(rule.primary)}`,
-            Boolean(rule.secondary) &&
-                `.secondary = ${cppString(rule.secondary!)}`,
-            Boolean(rule.tag) && `.tag = ${cppString(rule.tag!)}`,
-            `.style = ${cppString(rule.style)}`,
+        const viewport = [
             rule.maxWidth !== undefined &&
                 `.max_width = ${doubleLiteral(rule.maxWidth)}`,
             rule.minWidth !== undefined &&
@@ -830,6 +824,15 @@ export class UiProjection {
                 `.max_height = ${doubleLiteral(rule.maxHeight)}`,
             rule.minHeight !== undefined &&
                 `.min_height = ${doubleLiteral(rule.minHeight)}`,
+        ].filter((member) => member !== false);
+        const members = [
+            `.selector = bbl::UiStyleSelectorKind::${uiStyleSelectorCppKind(rule.kind)}`,
+            `.primary = ${cppString(rule.primary)}`,
+            Boolean(rule.secondary) &&
+                `.secondary = ${cppString(rule.secondary!)}`,
+            Boolean(rule.tag) && `.tag = ${cppString(rule.tag!)}`,
+            `.style = ${cppString(rule.style)}`,
+            viewport.length > 0 && `.viewport = {${viewport.join(", ")}}`,
             rule.hover && ".hover = true",
             rule.focusVisible === true && ".focus_visible = true",
             rule.active === true && ".active = true",

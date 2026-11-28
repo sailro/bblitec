@@ -15,13 +15,13 @@ test("max-width rules share ordinary retained declaration admission", () => {
     `);
     assert.match(
         result.cpp,
-        /"flex-wrap:wrap;margin-left:14px;text-align:right;[^"]*", \.max_width = 480\.0/,
+        /"flex-wrap:wrap;margin-left:14px;text-align:right;[^"]*", \.viewport = \{\.max_width = 480\.0\}/,
     );
     assert.match(
         compileSheet(
             "@media (min-width: 721px) and (max-height: 620px) and (min-height: 300px){.panel{margin-left:2px}}",
         ).cpp,
-        /"margin-left:2px", \.min_width = 721\.0, \.max_height = 620\.0, \.min_height = 300\.0/,
+        /"margin-left:2px", \.viewport = \{\.min_width = 721\.0, \.max_height = 620\.0, \.min_height = 300\.0\}/,
     );
     for (const query of [
         "(max-height:10%)",
@@ -93,7 +93,10 @@ test("stable scrollbar gutters share static, media and live style admission", ()
         ".panel{overflow-y:auto;scrollbar-gutter:stable;scrollbar-width:thin}@media(max-width:480px){.panel{scrollbar-gutter:auto}}",
     );
     assert.match(result.cpp, /scrollbar-gutter:stable/);
-    assert.match(result.cpp, /"scrollbar-gutter:auto", \.max_width = 480\.0/);
+    assert.match(
+        result.cpp,
+        /"scrollbar-gutter:auto", \.viewport = \{\.max_width = 480\.0\}/,
+    );
     assert.throws(
         () => compileSheet(".panel{scrollbar-gutter:stable both-edges}"),
         /style property/,

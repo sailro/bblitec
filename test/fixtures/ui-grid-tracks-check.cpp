@@ -83,9 +83,10 @@ int main() try {
         ui_add_class_style(engine, base_sheet, "responsive",
                            "display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;");
         ui_add_class_style(engine, base_sheet, "wide-cell", "width:130px;");
-        ui_add_style_rule(
-            engine, base_sheet,
-            {.primary = "responsive", .style = "grid-template-columns:1fr;", .max_width = 480});
+        ui_add_style_rule(engine, base_sheet,
+                          {.primary = "responsive",
+                           .style = "grid-template-columns:1fr;",
+                           .viewport = {.max_width = 480}});
         const auto override_sheet = ui_create_element(engine, "style");
         ui_append_to_root(engine, override_sheet);
         ui_add_id_style(engine, override_sheet, "responsive-grid",

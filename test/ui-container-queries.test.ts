@@ -17,7 +17,7 @@ test("container rules preserve their conditions through emission", () => {
     assert.match(result.cpp, /container-type:inline-size/);
     assert.match(
         result.cpp,
-        /"display:grid;grid-template-columns:1fr;--bbl-authored-display:1;", \.max_width = 800\.0, \.container_max_width = 320\.0\}\);/,
+        /"display:grid;grid-template-columns:1fr;--bbl-authored-display:1;", \.viewport = \{\.max_width = 800\.0\}, \.container_max_width = 320\.0\}\);/,
     );
     assert.match(
         result.cpp,
