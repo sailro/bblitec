@@ -25,9 +25,23 @@ export function uiMarkupText(parts: UiMarkupShape): string {
     return parts.map((part) => (typeof part === "string" ? part : "")).join("");
 }
 
-/** The index of a shape's first run-time span, or -1. */
-export function uiMarkupSpanIndex(shape: UiMarkupShape): number {
-    return shape.findIndex((part) => typeof part !== "string");
+/**
+ * A shape split at its first run-time span: the fixed text before it, the
+ * span, and the fixed text after it. Undefined for a shape without a span,
+ * whose whole text is `uiMarkupText(shape)`.
+ */
+export function uiMarkupSplit(
+    shape: UiMarkupShape,
+): { before: string; span: UiMarkupSpan; after: string } | undefined {
+    const index = shape.findIndex((part) => typeof part !== "string");
+    const span = shape[index];
+    return span === undefined || typeof span === "string"
+        ? undefined
+        : {
+              before: uiMarkupText(shape.slice(0, index)),
+              span,
+              after: uiMarkupText(shape.slice(index + 1)),
+          };
 }
 
 /** The most shapes one value is followed through; past it the value is runtime text. */

@@ -1854,7 +1854,9 @@ void select_media_resource(Engine& engine, UiElementHandle element, bool playing
     const auto& record = ui_element(engine, element);
     if (state.selecting || state.failed || !record.attributes.contains("src"))
         return;
-    if (!playing && ui_video_preload(engine, element) == "none" &&
+    if (!playing &&
+        ui_get_enumerated_attribute(engine, element, "preload", {"none", "metadata", "auto"},
+                                    "metadata", "auto") == "none" &&
         !record.attributes.contains("autoplay"))
         return;
     state.selecting = true;
@@ -1889,20 +1891,6 @@ void ui_video_set_muted(Engine& engine, UiElementHandle element, bool muted) {
 }
 bool ui_video_paused(Engine& engine, UiElementHandle element) {
     return media_state(engine, element).paused;
-}
-
-std::string ui_video_preload(Engine& engine, UiElementHandle element) {
-    static_cast<void>(media_state(engine, element));
-    const auto& attributes = ui_element(engine, element).attributes;
-    const auto found = attributes.find("preload");
-    // The empty value is the Automatic state; a missing or invalid one Chromium's Metadata.
-    if (found == attributes.end())
-        return "metadata";
-    if (found->second.empty() || ascii_iequals(found->second, "auto"))
-        return "auto";
-    if (ascii_iequals(found->second, "none"))
-        return "none";
-    return "metadata";
 }
 
 void ui_video_pause(Engine& engine, UiElementHandle element) {
@@ -2108,9 +2096,12 @@ std::string ui_get_url_attribute(Engine& engine, UiElementHandle element, std::s
 std::string ui_get_enumerated_attribute(Engine& engine, UiElementHandle element,
                                         std::string_view name,
                                         std::initializer_list<std::string_view> keywords,
-                                        std::string_view missing) {
+                                        std::string_view missing,
+                                        std::optional<std::string_view> empty) {
     const UiElementRecord& record = ui_element(engine, element);
     const auto found = record.attributes.find(std::string(name));
+    if (found != record.attributes.end() && empty && found->second.empty())
+        return std::string(*empty);
     if (found != record.attributes.end())
         for (const std::string_view keyword : keywords)
             if (ascii_iequals(found->second, keyword))

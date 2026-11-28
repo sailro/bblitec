@@ -3066,13 +3066,6 @@ export class PropertyAccessLowerer {
                     type,
                 );
             }
-            const video = this.context.ui.uiVideoRead(
-                owner,
-                property,
-                ownerExpression,
-                expression,
-            );
-            if (video) return video;
             const idl = this.context.ui.uiIdlAttributeRead(
                 owner,
                 property,
@@ -3165,6 +3158,7 @@ export class PropertyAccessLowerer {
             const attribute = this.context.ui.booleanAttribute(
                 owner,
                 property,
+                ownerExpression,
                 expression,
             );
             if (attribute)
