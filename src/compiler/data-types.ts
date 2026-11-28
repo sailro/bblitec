@@ -916,6 +916,11 @@ export function touchListDataType(): DataType {
     return { kind: "vector", element: { kind: "handle", handle: "touch" } };
 }
 
+/** Whether a DOM event interface extends MouseEvent: a pointer or a wheel event is a mouse event. */
+export function extendsMouseEvent(name: string | undefined): boolean {
+    return name === "PointerEvent" || name === "WheelEvent";
+}
+
 export function platformEventKind(
     symbol: ts.Symbol | undefined,
 ): DataType<"platform-event">["event"] | undefined {

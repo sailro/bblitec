@@ -6,6 +6,7 @@ import { domTargetIdentity } from "./dom-targets.js";
 import { jsonAbsenceCpp } from "./values/model.js";
 import { namedMember } from "./symbols.js";
 import { recordDocumentSnapshot } from "./data-sinks/scalars.js";
+import { extendsMouseEvent } from "./data-types.js";
 import {
     constructsSyntheticEvent,
     isSyntheticEventClass,
@@ -45,8 +46,8 @@ export function compileSyntheticEventConstructor(
         );
     const allowed = new Set<string>(options.Event);
     if (name !== "Event") for (const key of options[name]) allowed.add(key);
-    // A pointer and a wheel event are mouse events: their inits take its members.
-    if (name === "PointerEvent" || name === "WheelEvent")
+    // A mouse event's subtypes' inits take its members.
+    if (extendsMouseEvent(name))
         for (const key of options.MouseEvent) allowed.add(key);
     // The constructor converts its init as its own dictionary
     // (`MouseEventInit`): a member that dictionary does not declare is
