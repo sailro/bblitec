@@ -9031,6 +9031,22 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
+     * An optional engine handle where a required one is taken through an
+     * assertion (`xs[i]!`, an asserted view of an engine slot): the handle
+     * where present, and the TypeError a read through an absent value throws
+     * where not (`bbl::js::present`). Any other value as it is.
+     */
+    public presentHandle(value: Value): Value {
+        const inner =
+            value.kind === "data" && value.dataType?.kind === "optional"
+                ? value.dataType.inner
+                : undefined;
+        return inner?.kind === "handle"
+            ? this.leafValue(`bbl::js::present(${value.cpp})`, inner)
+            : value;
+    }
+
+    /**
      * Native identity token for a JavaScript plain-data object expression.
      *
      * Struct storage stays inline, but a binding that selects an existing
