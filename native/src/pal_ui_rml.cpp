@@ -74,6 +74,9 @@
 #endif
 #include "pal_system_preferences.hpp"
 #include "pal_input_capabilities.hpp"
+#if BBLITE_WORKERS
+#include "pal_media_play.hpp"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -159,6 +162,16 @@ std::optional<std::int32_t> html_integer(std::string_view text) {
 std::optional<std::int32_t> ui_tab_order(const UiElementRecord& record) {
     const auto found = record.attributes.find("tabindex");
     return found == record.attributes.end() ? std::nullopt : html_integer(found->second);
+}
+
+/** HTML's rules for parsing non-negative integers, on the element's `name` attribute when valid. */
+std::optional<std::int32_t> html_non_negative_attribute(const UiElementRecord& record,
+                                                        std::string_view name) {
+    const auto found = record.attributes.find(std::string(name));
+    if (found == record.attributes.end())
+        return std::nullopt;
+    const auto value = html_integer(found->second);
+    return value && *value >= 0 ? value : std::nullopt;
 }
 
 /** RmlUi's sequential navigation is tree order only: a positive order cannot be honoured. */
@@ -1683,6 +1696,19 @@ std::string ui_escape_rml(std::string_view text) {
     return escaped;
 }
 
+namespace {
+/** Fires a trusted, non-bubbling, non-cancelable `type` Event at an element that still exists. */
+void fire_element_event(Engine& engine, UiElementHandle element, const char* type) {
+    if (!engine.dom_input || element.value >= engine.ui_elements.size())
+        return;
+    PlatformMouseEvent payload;
+    payload.payload_kind = DomInputEventKind::Event;
+    const auto event = dom_event(payload, type, dom_ui_path(engine, element), false, false);
+    event.dom->trusted = true;
+    dispatch_dom_pointer(engine, event);
+}
+} // namespace
+
 #if BBLITE_WORKERS
 namespace {
 /**
@@ -1692,14 +1718,8 @@ namespace {
 void queue_image_event(Engine& engine, UiElementHandle element,
                        std::shared_ptr<UiImageRequest> request) {
     pal::EventLoop::current().post([&engine, element, request = std::move(request)] {
-        if (request->invalidated || !engine.dom_input || element.value >= engine.ui_elements.size())
-            return;
-        PlatformMouseEvent payload;
-        payload.payload_kind = DomInputEventKind::Event;
-        const auto event = dom_event(payload, request->decoded ? "load" : "error",
-                                     dom_ui_path(engine, element), false, false);
-        event.dom->trusted = true;
-        dispatch_dom_pointer(engine, event);
+        if (!request->invalidated)
+            fire_element_event(engine, element, request->decoded ? "load" : "error");
     });
 }
 
@@ -1778,10 +1798,8 @@ double image_extent(Engine& engine, UiElementHandle element, const char* axis) {
     if (ui_is_connected(engine, element))
         throw std::runtime_error(
             "The rendered size of a connected img element is not represented.");
-    const auto& attributes = ui_element(engine, element).attributes;
-    if (const auto found = attributes.find(axis); found != attributes.end())
-        if (const auto value = html_integer(found->second); value && *value >= 0)
-            return *value;
+    if (const auto value = html_non_negative_attribute(ui_element(engine, element), axis))
+        return *value;
     const auto request = image_request(engine, element);
     return std::string_view(axis) == "width" ? request->width : request->height;
 }
@@ -1836,12 +1854,6 @@ UiMediaState& media_state(Engine& engine, UiElementHandle element) {
 }
 
 #if BBLITE_WORKERS
-void reject_plays(std::vector<js::Promise<js::PromiseVoid>> plays, std::string message,
-                  std::string name) {
-    for (const auto& play : plays)
-        play.reject(js::dom_exception_error(message, name));
-}
-
 /**
  * HTML's resource selection algorithm with no decoder. Without a src attribute the network
  * state stays empty and nothing fires; `preload="none"` (without autoplay) suspends it until
@@ -1868,16 +1880,9 @@ void select_media_resource(Engine& engine, UiElementHandle element, bool playing
             return;
         media->selecting = false;
         media->failed = true;
-        if (engine.dom_input) {
-            PlatformMouseEvent payload;
-            payload.payload_kind = DomInputEventKind::Event;
-            const auto event =
-                dom_event(payload, "error", dom_ui_path(engine, element), false, false);
-            event.dom->trusted = true;
-            dispatch_dom_pointer(engine, event);
-        }
-        reject_plays(std::exchange(media->pending_plays, {}),
-                     "The element has no supported sources.", "NotSupportedError");
+        fire_element_event(engine, element, "error");
+        pal::reject_media_plays(std::exchange(media->pending_plays, {}),
+                                pal::media_no_supported_sources);
     });
 }
 #endif
@@ -1902,8 +1907,7 @@ void ui_video_pause(Engine& engine, UiElementHandle element) {
         return;
     state.paused = true;
 #if BBLITE_WORKERS
-    reject_plays(std::exchange(state.pending_plays, {}),
-                 "The play() request was interrupted by a call to pause().", "AbortError");
+    pal::reject_media_plays(std::exchange(state.pending_plays, {}), pal::media_play_paused);
 #endif
 }
 
@@ -1911,8 +1915,7 @@ void ui_video_pause(Engine& engine, UiElementHandle element) {
 js::Promise<js::PromiseVoid> ui_video_play(Engine& engine, UiElementHandle element) {
     auto& state = media_state(engine, element);
     if (state.failed)
-        return js::Promise<js::PromiseVoid>::rejected(
-            js::dom_exception_error("The element has no supported sources.", "NotSupportedError"));
+        return js::Promise<js::PromiseVoid>::rejected(pal::media_no_supported_sources.error());
     js::Promise<js::PromiseVoid> promise;
     state.pending_plays.push_back(promise);
     state.paused = false;
@@ -1927,28 +1930,21 @@ void ui_video_load(Engine& engine, UiElementHandle element) {
     state.failed = false;
     if (!state.paused) {
         state.paused = true;
-        reject_plays(std::exchange(state.pending_plays, {}),
-                     "The play() request was interrupted by a new load request.", "AbortError");
+        pal::reject_media_plays(std::exchange(state.pending_plays, {}), pal::media_play_reloaded);
     }
     select_media_resource(engine, element, false);
 }
 #endif
 
 double ui_dimension_attribute(Engine& engine, UiElementHandle element, std::string_view name) {
-    const auto& attributes = ui_element(engine, element).attributes;
-    if (const auto found = attributes.find(std::string(name)); found != attributes.end())
-        if (const auto value = html_integer(found->second); value && *value >= 0)
-            return *value;
-    return 0;
+    return html_non_negative_attribute(ui_element(engine, element), name).value_or(0);
 }
 
 void ui_set_dimension_attribute(Engine& engine, UiElementHandle element, std::string name,
                                 double value) {
     // WebIDL unsigned long, then HTML's reflection: a value past 2^31 - 1 stores the default 0.
-    const double integral = std::isfinite(value) ? std::trunc(value) : 0.0;
-    const double modulo = std::fmod(integral, 4294967296.0);
-    const double converted = modulo < 0 ? modulo + 4294967296.0 : modulo;
-    const auto stored = converted <= 2147483647.0 ? static_cast<std::uint32_t>(converted) : 0u;
+    const std::uint32_t converted = js::to_uint32(value);
+    const auto stored = converted <= 2147483647u ? converted : 0u;
     ui_set_attribute(engine, element, std::move(name), std::to_string(stored));
 }
 
@@ -1964,15 +1960,7 @@ void queue_details_toggle(Engine& engine, UiElementHandle element) {
         engine.ui_details_toggled(element);
         return;
     }
-    const auto fire = [&engine, element] {
-        if (!engine.dom_input || element.value >= engine.ui_elements.size())
-            return;
-        PlatformMouseEvent payload;
-        payload.payload_kind = DomInputEventKind::Event;
-        const auto event = dom_event(payload, "toggle", dom_ui_path(engine, element), false, false);
-        event.dom->trusted = true;
-        dispatch_dom_pointer(engine, event);
-    };
+    const auto fire = [&engine, element] { fire_element_event(engine, element, "toggle"); };
 #if BBLITE_WORKERS
     pal::EventLoop::current().post(fire);
 #else
@@ -2035,15 +2023,8 @@ void prepare_script(Engine& engine, UiElementHandle element) {
             "Inline script text does not run natively: there is no JavaScript engine.",
             "NotSupportedError");
 #if BBLITE_WORKERS
-    pal::EventLoop::current().post([&engine, element] {
-        if (!engine.dom_input || element.value >= engine.ui_elements.size())
-            return;
-        PlatformMouseEvent payload;
-        payload.payload_kind = DomInputEventKind::Event;
-        const auto event = dom_event(payload, "error", dom_ui_path(engine, element), false, false);
-        event.dom->trusted = true;
-        dispatch_dom_pointer(engine, event);
-    });
+    pal::EventLoop::current().post(
+        [&engine, element] { fire_element_event(engine, element, "error"); });
 #else
     throw std::logic_error("External scripts load in an application realm.");
 #endif
@@ -2143,11 +2124,7 @@ bool ui_get_spellcheck(Engine& engine, UiElementHandle element) {
 }
 
 double ui_get_max_length(Engine& engine, UiElementHandle element) {
-    const UiElementRecord& record = ui_element(engine, element);
-    const auto found = record.attributes.find("maxlength");
-    const auto parsed =
-        found == record.attributes.end() ? std::nullopt : html_integer(found->second);
-    return parsed && *parsed >= 0 ? *parsed : -1;
+    return html_non_negative_attribute(ui_element(engine, element), "maxlength").value_or(-1);
 }
 
 void ui_set_max_length(Engine& engine, UiElementHandle element, double value) {
@@ -7017,11 +6994,7 @@ struct UiRmlRuntime {
         return (rule.orientation == UiOrientation::Any ||
                 (viewport_width <= viewport_height) ==
                     (rule.orientation == UiOrientation::Portrait)) &&
-               (rule.max_width < 0.0 || width <= rule.max_width) &&
-               (rule.min_width < 0.0 || width >= rule.min_width) &&
-               (rule.max_height < 0.0 || height <= rule.max_height) &&
-               (rule.min_height < 0.0 || height >= rule.min_height) &&
-               rule.media.matches(media_device);
+               rule.viewport().matches(width, height) && rule.media.matches(media_device);
     }
 
     /**
@@ -7125,13 +7098,11 @@ struct UiRmlRuntime {
             if (public_style.empty() && rule.container_max_width < 0.0)
                 return;
             std::vector<std::string> conditions;
-            for (const auto& [feature, bound] :
-                 {std::pair{"max-width", rule.max_width}, std::pair{"min-width", rule.min_width},
-                  std::pair{"max-height", rule.max_height},
-                  std::pair{"min-height", rule.min_height}})
-                if (bound >= 0.0)
-                    conditions.push_back(std::string("(") + feature + ":" + std::to_string(bound) +
-                                         "px)");
+            const UiViewportBounds viewport = rule.viewport();
+            for (const auto& [feature, bound] : ui_viewport_features)
+                if (viewport.*bound >= 0.0)
+                    conditions.push_back("(" + std::string(feature) + ":" +
+                                         std::to_string(viewport.*bound) + "px)");
             if (!rule.media.empty())
                 conditions.push_back("(theme:" + theme->name + ")");
             if (rule.orientation != UiOrientation::Any)
@@ -9370,10 +9341,12 @@ struct UiRmlRuntime {
     UiFilterAmountParser filter_amount_parser;
     std::vector<std::unique_ptr<UiFilterInstancer>> filter_instancers;
     UiControlSchemeProperties control_scheme_properties{};
-    UiRangeDecoratorInstancer range_decorator{control_scheme_properties};
-    UiControlMarkDecoratorInstancer control_mark_decorator{control_scheme_properties};
+    UiSchemeDecoratorInstancer<UiRangeDecorator> range_decorator{control_scheme_properties};
+    UiSchemeDecoratorInstancer<UiControlMarkDecorator> control_mark_decorator{
+        control_scheme_properties};
     UiControlArrowDecoratorInstancer control_arrow_decorator;
-    UiSearchCancelDecoratorInstancer search_cancel_decorator{control_scheme_properties};
+    UiSchemeDecoratorInstancer<UiSearchCancelDecorator> search_cancel_decorator{
+        control_scheme_properties};
     Rml::ElementInstancerGeneric<UiButtonElement> button_instancer;
     Rml::ElementInstancerGeneric<UiCanvasElement> canvas_instancer;
     Rml::ElementInstancerGeneric<UiSelectElement> select_instancer;

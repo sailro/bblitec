@@ -41,6 +41,7 @@
 #include <bblite/pal_audio_element.hpp>
 #include <bblite/pal_native_workers.hpp>
 #include <bblite/pal_packaged_responses.hpp>
+#include "pal_media_play.hpp"
 #endif
 
 #include "pal_audio_sdl_device.hpp"
@@ -2365,12 +2366,6 @@ void queue_element_events(const AudioElement& element, std::vector<AudioElementE
     });
 }
 
-void reject_plays(std::vector<js::Promise<js::PromiseVoid>> plays, const char* message,
-                  const char* name) {
-    for (const auto& play : plays)
-        play.reject(js::dom_exception_error(message, name));
-}
-
 std::shared_ptr<lab::AudioBus> decoded_bus(const AudioElementPlayback& playback) {
     return {playback.decoded, playback.decoded->bus.get()};
 }
@@ -2445,8 +2440,9 @@ void tick_element(const AudioElement& element) {
         playback.paused = true;
         auto plays = std::exchange(playback.pending_plays, {});
         dispatch_element_event(playback, AudioElementEvent::Pause);
-        reject_plays(std::move(plays), "The play() request was interrupted by the end of playback.",
-                     "AbortError");
+        reject_media_plays(
+            std::move(plays),
+            {"The play() request was interrupted by the end of playback.", "AbortError"});
     }
     dispatch_element_event(playback, AudioElementEvent::Ended);
 }
@@ -2468,8 +2464,9 @@ const std::string* element_resource(const AudioElementPlayback& playback) {
 void fail_element_source(AudioElementPlayback& playback) {
     playback.loading = false;
     playback.failed = true;
-    reject_plays(std::exchange(playback.pending_plays, {}),
-                 "Failed to load because no supported source was found.", "NotSupportedError");
+    reject_media_plays(
+        std::exchange(playback.pending_plays, {}),
+        {"Failed to load because no supported source was found.", "NotSupportedError"});
     // Source children that all failed leave the element waiting, without an error of its own.
     if (playback.source)
         dispatch_element_event(playback, AudioElementEvent::Error);
@@ -2648,8 +2645,7 @@ AudioContextHandle audio_media_output(std::shared_ptr<AudioSession>& session) {
 js::Promise<js::PromiseVoid> audio_element_play(const AudioElement& element) {
     auto& playback = playback_of(element);
     if (!element_resource(playback) || playback.failed)
-        return js::Promise<js::PromiseVoid>::rejected(
-            js::dom_exception_error("The element has no supported sources.", "NotSupportedError"));
+        return js::Promise<js::PromiseVoid>::rejected(media_no_supported_sources.error());
     if (!playback.output) {
         try {
             const auto context = audio_media_output(playback.session);
@@ -2695,8 +2691,7 @@ void audio_element_pause(const AudioElement& element) {
     EventLoop::current().post([element, plays = std::move(plays)]() mutable {
         dispatch_element_event(*element->playback, AudioElementEvent::TimeUpdate);
         dispatch_element_event(*element->playback, AudioElementEvent::Pause);
-        reject_plays(std::move(plays), "The play() request was interrupted by a call to pause().",
-                     "AbortError");
+        reject_media_plays(std::move(plays), media_play_paused);
     });
 }
 
@@ -2718,8 +2713,7 @@ void audio_element_load(const AudioElement& element) {
     playback.position = 0.0;
     if (moved)
         queue_element_events(element, {AudioElementEvent::TimeUpdate});
-    reject_plays(std::exchange(playback.pending_plays, {}),
-                 "The play() request was interrupted by a new load request.", "AbortError");
+    reject_media_plays(std::exchange(playback.pending_plays, {}), media_play_reloaded);
     select_element_resource(element, false);
 }
 
