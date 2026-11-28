@@ -164,6 +164,16 @@ std::optional<std::int32_t> ui_tab_order(const UiElementRecord& record) {
     return found == record.attributes.end() ? std::nullopt : html_integer(found->second);
 }
 
+/** HTML's rules for parsing non-negative integers, on the element's `name` attribute when valid. */
+std::optional<std::int32_t> html_non_negative_attribute(const UiElementRecord& record,
+                                                        std::string_view name) {
+    const auto found = record.attributes.find(std::string(name));
+    if (found == record.attributes.end())
+        return std::nullopt;
+    const auto value = html_integer(found->second);
+    return value && *value >= 0 ? value : std::nullopt;
+}
+
 /** RmlUi's sequential navigation is tree order only: a positive order cannot be honoured. */
 void require_tree_tab_order(std::optional<std::int32_t> order) {
     if (order && *order > 0)
@@ -1781,10 +1791,8 @@ double image_extent(Engine& engine, UiElementHandle element, const char* axis) {
     if (ui_is_connected(engine, element))
         throw std::runtime_error(
             "The rendered size of a connected img element is not represented.");
-    const auto& attributes = ui_element(engine, element).attributes;
-    if (const auto found = attributes.find(axis); found != attributes.end())
-        if (const auto value = html_integer(found->second); value && *value >= 0)
-            return *value;
+    if (const auto value = html_non_negative_attribute(ui_element(engine, element), axis))
+        return *value;
     const auto request = image_request(engine, element);
     return std::string_view(axis) == "width" ? request->width : request->height;
 }
@@ -1941,11 +1949,7 @@ void ui_video_load(Engine& engine, UiElementHandle element) {
 #endif
 
 double ui_dimension_attribute(Engine& engine, UiElementHandle element, std::string_view name) {
-    const auto& attributes = ui_element(engine, element).attributes;
-    if (const auto found = attributes.find(std::string(name)); found != attributes.end())
-        if (const auto value = html_integer(found->second); value && *value >= 0)
-            return *value;
-    return 0;
+    return html_non_negative_attribute(ui_element(engine, element), name).value_or(0);
 }
 
 void ui_set_dimension_attribute(Engine& engine, UiElementHandle element, std::string name,
@@ -2144,11 +2148,7 @@ bool ui_get_spellcheck(Engine& engine, UiElementHandle element) {
 }
 
 double ui_get_max_length(Engine& engine, UiElementHandle element) {
-    const UiElementRecord& record = ui_element(engine, element);
-    const auto found = record.attributes.find("maxlength");
-    const auto parsed =
-        found == record.attributes.end() ? std::nullopt : html_integer(found->second);
-    return parsed && *parsed >= 0 ? *parsed : -1;
+    return html_non_negative_attribute(ui_element(engine, element), "maxlength").value_or(-1);
 }
 
 void ui_set_max_length(Engine& engine, UiElementHandle element, double value) {
