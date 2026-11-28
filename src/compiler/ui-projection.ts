@@ -531,6 +531,13 @@ function uiImageSourceHole(
     return hole ? Number(hole[1]) : undefined;
 }
 
+/** A runtime img source's packaged candidates (`packagedUiImageSource`). */
+interface UiPackagedImageSource {
+    readonly packaged: NonNullable<ReturnType<typeof packagedUrlAssets>>;
+    /** Whether a candidate is absolute on the deployment's origin. */
+    readonly absolute: boolean;
+}
+
 /** Elements whose `value` property is their form value. */
 const UI_FORM_VALUE_TAGS = ["textarea", "input", "select", "option", "output"];
 
@@ -831,20 +838,13 @@ export class UiProjection {
             (path) => registerUiImageAsset(this.context, path, path).output,
         );
         if (!found) return this.refuseUiImageSource(expression);
-        const { packaged, absolute } = found;
-        if (packaged.selected.staticString !== undefined)
-            return this.context.cppString(
-                deploymentDocumentUrl(
-                    packaged.selected.staticString,
-                    this.context.options,
-                ),
-            );
-        const selected = this.context.dataLowerer.compileKnownValueForSink(
-            packaged.selected,
-            { kind: "string" },
-            expression,
+        return this.uiImageSourceUrl(found, () =>
+            this.context.dataLowerer.compileKnownValueForSink(
+                found.packaged.selected,
+                { kind: "string" },
+                expression,
+            ),
         );
-        return this.uiDocumentImageUrl(selected, absolute);
     }
 
     /**
@@ -877,12 +877,7 @@ export class UiProjection {
         if (!found) return this.refuseUiImageSource(source);
         for (const path of paths)
             registerUiImageAsset(this.context, path, path);
-        const known = found.packaged.selected.staticString;
-        return known !== undefined
-            ? this.context.cppString(
-                  deploymentDocumentUrl(known, this.context.options),
-              )
-            : this.uiDocumentImageUrl(value, found.absolute);
+        return this.uiImageSourceUrl(found, () => value);
     }
 
     private refuseUiImageSource(expression: ts.Expression): never {
@@ -892,9 +887,22 @@ export class UiProjection {
         );
     }
 
-    /** A runtime source URL as the retained image loads it: an absolute candidate loads its path. */
-    private uiDocumentImageUrl(value: string, absolute: boolean): string {
-        return absolute
+    /**
+     * The URL the retained image loads for a packaged source: a
+     * generation-known one's document URL, else the `runtime` string, whose
+     * absolute candidates load their path.
+     */
+    private uiImageSourceUrl(
+        found: UiPackagedImageSource,
+        runtime: () => string,
+    ): string {
+        const known = found.packaged.selected.staticString;
+        if (known !== undefined)
+            return this.context.cppString(
+                deploymentDocumentUrl(known, this.context.options),
+            );
+        const value = runtime();
+        return found.absolute
             ? `bbl::ui_document_url(${value}, ${this.context.cppString(deploymentUrl(this.context.options).href)})`
             : value;
     }
@@ -908,12 +916,7 @@ export class UiProjection {
     private packagedUiImageSource(
         expression: ts.Expression,
         register: (path: string) => string,
-    ):
-        | {
-              packaged: NonNullable<ReturnType<typeof packagedUrlAssets>>;
-              absolute: boolean;
-          }
-        | undefined {
+    ): UiPackagedImageSource | undefined {
         const options = this.context.options;
         // An absolute candidate on the deployment's origin loads its path.
         let absolute = false;
@@ -7310,7 +7313,7 @@ export class UiProjection {
         }
         const tag = this.declaredUiTag(element, receiver);
         if (property === "src" && tag === "img") {
-            this.emitUiImageSource(element, engine, "src", assigned, property);
+            this.emitUiImageSource(element, engine, "src", assigned);
             return;
         }
         this.context.fail(
@@ -7329,9 +7332,8 @@ export class UiProjection {
         engine: string,
         attribute: "src" | "poster",
         assigned: UiAssigned,
-        property: string,
     ): void {
-        const right = this.assignedExpression(assigned, property);
+        const right = this.assignedExpression(assigned, attribute);
         const sources = this.uiImageSourceCandidates(right);
         if (!sources) {
             this.context.emit({
@@ -7386,13 +7388,7 @@ export class UiProjection {
         switch (member.kind) {
             case "url":
                 if (member.attribute === "poster") {
-                    this.emitUiImageSource(
-                        element,
-                        engine,
-                        "poster",
-                        assigned,
-                        property,
-                    );
+                    this.emitUiImageSource(element, engine, "poster", assigned);
                     return true;
                 }
                 // The media source is never fetched: nothing is packaged.
