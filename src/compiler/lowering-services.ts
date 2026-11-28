@@ -71,10 +71,14 @@ export type NativeReturnValueCompiler = (
     node: ts.Node,
 ) => string;
 
-/** Entry-lifetime storage (`LoweringServices.entryStorage`): its binding and C++ type. */
+/**
+ * Entry-lifetime storage (`LoweringServices.entryStorage`): its binding,
+ * C++ type and initializer, when it is not empty.
+ */
 export interface EntryStorage {
     readonly binding: NativeCaptureBinding;
     readonly type: string;
+    readonly initializer?: string;
 }
 
 /** A shader stage's text and the uniforms it reads its lifted numbers from. */

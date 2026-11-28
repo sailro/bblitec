@@ -8078,12 +8078,15 @@ class Compiler implements LoweringServices {
     /**
      * The storage `owner` holds for as long as the entry runs, declared
      * ahead of the entry body, so every statement and closure reaches its
-     * one object: made of `cppType` the first time, as it was afterwards.
+     * one object, even a closure being compiled when it is first reached:
+     * made of `cppType` (from `initializer`, else empty) the first time,
+     * as it was afterwards.
      */
     public entryStorage(
         owner: ts.Node,
         stem: string,
         cppType: string,
+        initializer?: string,
     ): EntryStorage {
         const known = this.entryStorageOwners.get(owner);
         if (known) return known;
@@ -8097,7 +8100,11 @@ class Compiler implements LoweringServices {
             entryLifetime: true,
         };
         this.nativeBindings.set(name, binding);
-        const storage = { binding, type: cppType };
+        const storage = {
+            binding,
+            type: cppType,
+            ...(initializer !== undefined ? { initializer } : {}),
+        };
         this.entryStorageOwners.set(owner, storage);
         return storage;
     }
@@ -12562,18 +12569,15 @@ class Compiler implements LoweringServices {
                     "Standalone Canvas2D presentation is not lowered in worker realms.",
                 );
             }
-            const name = this.allocateTemporaryCppName("presentation_host");
+            // The entry owns its one host.
+            const { name } = this.entryStorage(
+                this.sourceFile,
+                "presentation_host",
+                "bbl::Engine",
+                `bbl::create_engine(bbl::EngineOptions{${this.cppString(this.options.title)}, ${this.options.width}, ${this.options.height}})`,
+            ).binding;
             this.presentationHostCpp = name;
             this.defaultEngineCpp = name;
-            // Preamble storage precedes every closure, even one currently
-            // being compiled. Its capture boundary therefore is entry scope.
-            this.nativeBindings.set(name, {
-                name,
-                sequence: 0,
-                borrowed: true,
-                allowReference: false,
-                entryLifetime: true,
-            });
         }
         return this.requireDefaultEngine(node);
     }
@@ -13035,15 +13039,15 @@ class Compiler implements LoweringServices {
                       },
                   ]
                 : []),
-            ...(this.presentationHostCpp
-                ? [{ name: this.presentationHostCpp, type: "bbl::Engine" }]
-                : []),
             ...[...this.entryStorageOwners.values()].map(
                 ({ binding, type }) => ({ name: binding.name, type }),
             ),
         ]).map(renderNativeEmission);
         const entryStorage = [...this.entryStorageOwners.values()].map(
-            ({ binding, type }) => `        ${type} ${binding.name}{};`,
+            ({ binding, type, initializer }) =>
+                initializer === undefined
+                    ? `        ${type} ${binding.name}{};`
+                    : `        auto ${binding.name} = ${initializer};`,
         );
         // The worker runtime declares the messaging objects storage holds.
         if (!this.options.workers && this.dataTypes.usesWorkerStorage())
@@ -13098,14 +13102,15 @@ class Compiler implements LoweringServices {
             ...(physicsDebugConstructionBody
                 ? { physicsDebugConstructionBody }
                 : {}),
-            body: this.presentationHostCpp
-                ? [
-                      `        auto ${this.presentationHostCpp} = bbl::create_engine(bbl::EngineOptions{${this.cppString(this.options.title)}, ${this.options.width}, ${this.options.height}});`,
-                      ...entryStorage,
-                      ...body,
-                      `        bbl::start_engine(${this.presentationHostCpp});`,
-                  ]
-                : [...entryStorage, ...body],
+            body: [
+                ...entryStorage,
+                ...body,
+                ...(this.presentationHostCpp
+                    ? [
+                          `        bbl::start_engine(${this.presentationHostCpp});`,
+                      ]
+                    : []),
+            ],
         });
     }
 
